@@ -19,18 +19,23 @@ export interface ChatServices {
 // Module-level reference to the currently running AgentRunner (for abort)
 let currentRunner: AgentRunner | null = null
 
-async function getWorkspaceAccess(workspaceId?: string, accessScope?: Conversation['accessScope']): Promise<{ fileAccessGrants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean }> {
-  if (accessScope === 'full') {
+async function getConversationAccess(conversation?: Conversation): Promise<{ fileAccessGrants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean }> {
+  if (conversation?.permissionLevel) {
+    if (conversation.permissionLevel === 'full-access') {
+      return { fileAccessGrants: [], fullFilesystemAccess: true }
+    }
+    if (conversation.permissionLevel === 'granted-folders') {
+      return { fileAccessGrants: conversation.fileAccessGrants || [], fullFilesystemAccess: false }
+    }
+    return { fileAccessGrants: [], fullFilesystemAccess: false }
+  }
+
+  // Preserve behavior for conversations created before per-conversation permissions.
+  if (conversation?.accessScope === 'full') {
     return { fileAccessGrants: [], fullFilesystemAccess: true }
   }
-  if (workspaceId) {
-    const workspace = await getStorage().workspaces.get(workspaceId)
-    if (workspace) {
-      return {
-        fileAccessGrants: workspace.permissionLevel === 'granted-folders' ? workspace.fileAccessGrants : [],
-        fullFilesystemAccess: workspace.permissionLevel === 'full-access',
-      }
-    }
+  if (conversation?.workspacePath) {
+    return { fileAccessGrants: [], fullFilesystemAccess: false }
   }
   return {
     fileAccessGrants: getStorage().config.get('fileAccessGrants'),
@@ -49,7 +54,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
     IPC.CONVERSATION_CREATE,
     async (
       _event,
-      data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope'] }
+      data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope']; permissionLevel?: Conversation['permissionLevel']; fileAccessGrants?: Conversation['fileAccessGrants'] }
     ): Promise<Conversation> => {
       const workspace = data.workspaceId ? await getStorage().workspaces.get(data.workspaceId) : null
       return getStorage().conversations.createConversation({
@@ -58,6 +63,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
         mode: data.mode || 'normal',
         workspaceId: workspace?.id,
         accessScope: workspace ? 'workspace' : data.accessScope,
+        permissionLevel: data.permissionLevel || (workspace ? 'workspace' : 'full-access'),
+        fileAccessGrants: data.fileAccessGrants || [],
         workspacePath: data.workspacePath ?? workspace?.path ?? getStorage().config.get('workspacePath'),
       })
     }
@@ -88,7 +95,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
     async (
       _event,
       id: string,
-      data: Partial<Pick<Conversation, 'title'>>
+      data: Partial<Pick<Conversation, 'title' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>
     ): Promise<void> => {
       await getStorage().conversations.updateConversation(id, data)
     }
@@ -167,13 +174,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
         await convStore.addMessage(conversationId, userChatMessage)
 
         // 5. Create AgentRunner
-        const workspaceAccess = await getWorkspaceAccess(conversation.workspaceId, conversation.accessScope)
+        const workspaceAccess = await getConversationAccess(conversation)
         const runner = new AgentRunner({
           agentConfig: effectiveAgentConfig,
           provider,
           toolRegistry: services.toolRegistry,
           contextManager: new ContextManager(),
-          workspacePath: conversation.workspacePath || (conversation.accessScope === 'full' ? '' : getStorage().config.get('workspacePath')),
+          workspacePath: conversation.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
           fileAccessGrants: workspaceAccess.fileAccessGrants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
           fileService: services.fileService,

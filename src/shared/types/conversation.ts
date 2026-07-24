@@ -1,4 +1,7 @@
 import type { AgentConfig } from './agent'
+import type { FileAccessGrant } from './file-access'
+
+export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
 
 export interface Conversation {
   id: string
@@ -8,6 +11,9 @@ export interface Conversation {
   workspaceId?: string
   /** Full access is an explicit choice for conversations created outside a project. */
   accessScope?: 'workspace' | 'full'
+  permissionLevel?: ConversationPermissionLevel
+  fileAccessGrants?: FileAccessGrant[]
+  archived?: boolean
   workspacePath: string
   createdAt: number
   updatedAt: number

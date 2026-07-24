@@ -42,8 +42,6 @@ export class WorkspaceStore {
       id: uuidv4(),
       name: name?.trim() || path.basename(normalizedPath) || normalizedPath,
       path: normalizedPath,
-      permissionLevel: 'workspace',
-      fileAccessGrants: [],
       createdAt: now,
       updatedAt: now,
     }
@@ -54,7 +52,7 @@ export class WorkspaceStore {
 
   async update(
     id: string,
-    updates: Partial<Pick<Workspace, 'name' | 'permissionLevel' | 'fileAccessGrants'>>
+    updates: Partial<Pick<Workspace, 'name'>>
   ): Promise<Workspace> {
     const workspaces = this.read()
     const index = workspaces.findIndex((workspace) => workspace.id === id)

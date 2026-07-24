@@ -90,6 +90,42 @@ describe('ConversationStore', () => {
     expect(list.length).toBe(0)
   })
 
+  it('should archive and restore a conversation without deleting it', async () => {
+    const conv = await store.createConversation({
+      title: 'To Archive',
+      agentId: '',
+      mode: 'normal',
+      workspacePath: '',
+    })
+
+    expect(conv.archived).toBe(false)
+    await store.updateConversation(conv.id, { archived: true })
+    expect((await store.getConversation(conv.id))?.archived).toBe(true)
+
+    await store.updateConversation(conv.id, { archived: false })
+    expect((await store.getConversation(conv.id))?.archived).toBe(false)
+  })
+
+  it('should persist permissions on a conversation', async () => {
+    const conv = await store.createConversation({
+      title: 'Permission Test',
+      agentId: '',
+      mode: 'normal',
+      permissionLevel: 'workspace',
+      fileAccessGrants: [],
+      workspacePath: '/workspace',
+    })
+
+    await store.updateConversation(conv.id, {
+      permissionLevel: 'granted-folders',
+      fileAccessGrants: [{ path: '/shared', access: 'read' }],
+    })
+
+    const updated = await store.getConversation(conv.id)
+    expect(updated?.permissionLevel).toBe('granted-folders')
+    expect(updated?.fileAccessGrants).toEqual([{ path: '/shared', access: 'read' }])
+  })
+
   it('should add and get messages', async () => {
     const conv = await store.createConversation({
       title: 'Messages Test',
