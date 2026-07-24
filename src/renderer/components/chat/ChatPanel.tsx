@@ -38,7 +38,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
           <span className="text-sm text-zinc-500">{agent?.name || 'Coding Assistant'}</span>
         </div>
         <div className="flex items-center gap-2">
-          {currentConversation?.accessScope === 'full' && (
+          {(currentConversation?.permissionLevel === 'full-access' || (!currentConversation?.permissionLevel && currentConversation?.accessScope === 'full')) && (
             <Badge variant="warning" className="gap-1" title="This conversation can access the full local filesystem">
               <ShieldAlert className="h-3 w-3" />
               Full access

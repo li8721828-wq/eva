@@ -5,6 +5,7 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { Badge } from '@/components/ui/Badge'
 import { MessageSquarePlus, LayoutTemplate, Cpu, RefreshCw, Bug, PlusCircle, Eye, Sparkles } from 'lucide-react'
+import evaMark from '@/assets/eva-mark.svg'
 
 export interface WelcomeScreenProps {
   className?: string
@@ -43,9 +44,7 @@ export function WelcomeScreen({ className }: WelcomeScreenProps) {
     <div className={`flex flex-col items-center justify-center h-full px-6 ${className || ''}`}>
       <div className="flex w-full max-w-xl flex-col items-center gap-5 px-4 text-center">
         {/* Logo */}
-        <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-violet-600 text-2xl font-bold text-white shadow-lg shadow-violet-600/20">
-          E
-        </div>
+        <img src={evaMark} alt="Eva" className="h-14 w-14 drop-shadow-sm" />
         <h1 className="text-2xl font-bold text-zinc-900">Welcome to Eva</h1>
         <p className="text-base text-zinc-500 leading-relaxed">
           Your AI-powered coding agent. Write, debug, refactor, and review code with intelligent assistance.

@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { GoalConfig, TeamEvent } from '../../shared/types/task'
 import type { AgentConfig } from '../../shared/types/agent'
+import type { Conversation } from '../../shared/types/conversation'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
 import { ContextManager } from '../agent-engine/context'
@@ -22,18 +23,22 @@ let currentOrchestrator: TeamOrchestrator | null = null
 let currentGoalPlanner: GoalPlanner | null = null
 let taskServices: TaskServices | null = null
 
-async function getWorkspaceAccess(workspaceId?: string, accessScope?: 'workspace' | 'full'): Promise<{ grants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean }> {
-  if (accessScope === 'full') {
+async function getConversationAccess(conversation?: Conversation | null): Promise<{ grants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean }> {
+  if (conversation?.permissionLevel) {
+    if (conversation.permissionLevel === 'full-access') {
+      return { grants: [], fullFilesystemAccess: true }
+    }
+    if (conversation.permissionLevel === 'granted-folders') {
+      return { grants: conversation.fileAccessGrants || [], fullFilesystemAccess: false }
+    }
+    return { grants: [], fullFilesystemAccess: false }
+  }
+
+  if (conversation?.accessScope === 'full') {
     return { grants: [], fullFilesystemAccess: true }
   }
-  if (workspaceId) {
-    const workspace = await getStorage().workspaces.get(workspaceId)
-    if (workspace) {
-      return {
-        grants: workspace.permissionLevel === 'granted-folders' ? workspace.fileAccessGrants : [],
-        fullFilesystemAccess: workspace.permissionLevel === 'full-access',
-      }
-    }
+  if (conversation?.workspacePath) {
+    return { grants: [], fullFilesystemAccess: false }
   }
   return { grants: getStorage().config.get('fileAccessGrants'), fullFilesystemAccess: false }
 }
@@ -96,8 +101,8 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
         // 3. Load conversation for workspace path
         const conversation = await getStorage().conversations.getConversation(conversationId)
-        const workspacePath = conversation?.workspacePath || (conversation?.accessScope === 'full' ? '' : getStorage().config.get('workspacePath'))
-        const workspaceAccess = await getWorkspaceAccess(conversation?.workspaceId, conversation?.accessScope)
+        const workspaceAccess = await getConversationAccess(conversation)
+        const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
 
         // 4. Create TeamOrchestrator
         const orchestrator = new TeamOrchestrator({
@@ -175,21 +180,12 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         // 3. Get workspace path from conversation or config
-        let workspacePath = ''
-        let workspaceId: string | undefined
-        let accessScope: 'workspace' | 'full' | undefined
+        let conversation: Conversation | null = null
         if (payload.conversationId) {
-          const conv = await getStorage().conversations.getConversation(payload.conversationId)
-          if (conv) {
-            workspacePath = conv.workspacePath
-            workspaceId = conv.workspaceId
-            accessScope = conv.accessScope
-          }
+          conversation = await getStorage().conversations.getConversation(payload.conversationId)
         }
-        if (!workspacePath && accessScope !== 'full') {
-          workspacePath = getStorage().config.get('workspacePath') as string
-        }
-        const workspaceAccess = await getWorkspaceAccess(workspaceId, accessScope)
+        const workspaceAccess = await getConversationAccess(conversation)
+        const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
 
         // 4. Create GoalPlanner
         const goalConfig: GoalConfig = {

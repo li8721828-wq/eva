@@ -1,6 +1,5 @@
 import { create } from 'zustand'
-import type { FileAccessGrant } from '../../shared/types/file-access'
-import type { Workspace, WorkspacePermissionLevel } from '../../shared/types/workspace'
+import type { Workspace } from '../../shared/types/workspace'
 
 interface WorkspaceState {
   workspaces: Workspace[]
@@ -8,10 +7,9 @@ interface WorkspaceState {
   setActiveWorkspaceId: (id: string | null) => void
   loadWorkspaces: () => Promise<void>
   addWorkspace: () => Promise<Workspace | null>
+  addWorkspaceAtPath: (path: string) => Promise<Workspace>
   updateWorkspace: (id: string, updates: Partial<Workspace>) => Promise<void>
   deleteWorkspace: (id: string) => Promise<void>
-  setPermissionLevel: (id: string, level: WorkspacePermissionLevel) => Promise<void>
-  setFileAccessGrants: (id: string, grants: FileAccessGrant[]) => Promise<void>
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -32,15 +30,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }))
   },
 
-  addWorkspace: async () => {
-    const selectedPath = await window.eva.file.selectFolder()
-    if (!selectedPath) return null
-    const workspace = await window.eva.workspace.create(selectedPath)
+  addWorkspaceAtPath: async (path) => {
+    const workspace = await window.eva.workspace.create(path)
     set((state) => ({
       workspaces: [workspace, ...state.workspaces.filter((item) => item.id !== workspace.id)],
       activeWorkspaceId: workspace.id,
     }))
     return workspace
+  },
+
+  addWorkspace: async () => {
+    const selectedPath = await window.eva.file.selectFolder()
+    if (!selectedPath) return null
+    return get().addWorkspaceAtPath(selectedPath)
   },
 
   updateWorkspace: async (id, updates) => {
@@ -61,11 +63,4 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     })
   },
 
-  setPermissionLevel: async (id, permissionLevel) => {
-    await get().updateWorkspace(id, { permissionLevel })
-  },
-
-  setFileAccessGrants: async (id, fileAccessGrants) => {
-    await get().updateWorkspace(id, { fileAccessGrants })
-  },
 }))

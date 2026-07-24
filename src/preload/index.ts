@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
 import type { Conversation, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
@@ -33,7 +33,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Conversation>): Promise<Conversation>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
   }
 
   // 聊天
@@ -82,6 +82,7 @@ export interface EvaAPI {
     tree(path: string, workspacePath?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>
     search(path: string, query: string, workspacePath?: string): Promise<string[]>
     selectFolder(): Promise<string | null>
+    getPath(file: File): string
   }
 
   // 终端
@@ -197,6 +198,7 @@ const evaAPI: EvaAPI = {
     tree: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_TREE, path, workspacePath),
     search: (path, query, workspacePath) => ipcRenderer.invoke(IPC.FILE_SEARCH, query, workspacePath),
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
+    getPath: (file) => webUtils.getPathForFile(file),
   },
 
   // 终端

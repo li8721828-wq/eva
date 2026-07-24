@@ -4,7 +4,8 @@ import { useAppStore } from '@/stores/use-app-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
-import { Box, Loader2, Send, Square, Paperclip } from 'lucide-react'
+import { Box, FolderOpen, FolderPlus, Loader2, Paperclip, Send, ShieldCheck, Square, Trash2 } from 'lucide-react'
+import type { ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
 import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
 
 export interface InputBarProps {
@@ -12,11 +13,14 @@ export interface InputBarProps {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { isStreaming, inputText, setInputText, sendMessage, abortStream } = useChatStore()
+  const { conversations, createConversation, currentConversationId, isStreaming, inputText, setConversationPermissions, setInputText, sendMessage, abortStream } = useChatStore()
   const { activeProviderId, activeModel, setActiveModel } = useAppStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [availableModels, setAvailableModels] = useState<ProviderModelOption[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
+  const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
+  const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
+  const fileAccessGrants = currentConversation?.fileAccessGrants || []
 
   useEffect(() => {
     let cancelled = false
@@ -94,10 +98,43 @@ export function InputBar({ className }: InputBarProps) {
     }
   }
 
+  const handlePermissionChange = async (permission: ConversationPermissionLevel) => {
+    const conversation = currentConversation || await createConversation()
+    await setConversationPermissions(conversation.id, permission, conversation.fileAccessGrants || [])
+  }
+
+  const addFolderGrant = async () => {
+    if (!currentConversation) return
+    const path = await window.eva.file.selectFolder()
+    if (!path || fileAccessGrants.some((grant) => grant.path === path)) return
+    void setConversationPermissions(currentConversation.id, 'granted-folders', [
+      ...fileAccessGrants,
+      { path, access: 'read-write' },
+    ])
+  }
+
+  const updateFolderGrant = (path: string, access: FileAccessGrant['access']) => {
+    if (!currentConversation) return
+    void setConversationPermissions(
+      currentConversation.id,
+      'granted-folders',
+      fileAccessGrants.map((grant) => (grant.path === path ? { ...grant, access } : grant))
+    )
+  }
+
+  const removeFolderGrant = (path: string) => {
+    if (!currentConversation) return
+    void setConversationPermissions(
+      currentConversation.id,
+      'granted-folders',
+      fileAccessGrants.filter((grant) => grant.path !== path)
+    )
+  }
+
   return (
     <div className={cn('border-t border-zinc-200 bg-zinc-50/80 px-8 py-5', className)}>
       <div className="w-full">
-        <div className="chat-composer overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm transition-colors duration-200 focus-within:border-violet-500">
+        <div className="chat-composer overflow-hidden rounded-lg border border-zinc-300 bg-white shadow-sm transition-colors duration-200 focus-within:border-zinc-400 focus-within:shadow-md">
           <div className="flex min-h-16 items-end gap-3 px-4 py-3">
             <Button
               variant="ghost"
@@ -154,14 +191,59 @@ export function InputBar({ className }: InputBarProps) {
                   value={activeModel}
                   onChange={(event) => void handleModelChange(event.target.value)}
                   options={modelOptions.map((model) => ({ value: model.id, label: model.name }))}
-                  className="h-8 border-zinc-200 bg-white text-xs font-medium text-zinc-700"
+                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
                   aria-label="Select model"
                 />
               </div>
               {loadingModels && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-zinc-400" />}
             </div>
+            <div className="flex min-w-0 items-center gap-2">
+              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+              <div className="w-[176px]">
+                <Select
+                  value={permissionLevel}
+                  onChange={(event) => void handlePermissionChange(event.target.value as ConversationPermissionLevel)}
+                  options={[
+                    { value: 'workspace', label: 'Workspace only' },
+                    { value: 'granted-folders', label: 'Authorized folders' },
+                    { value: 'full-access', label: 'Full filesystem access' },
+                  ]}
+                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
+                  aria-label="Conversation file permission"
+                  title={currentConversation ? 'File access for this conversation' : 'Select a permission to create a draft conversation'}
+                />
+              </div>
+            </div>
             <span className="shrink-0 text-zinc-400">Shift+Enter for a new line</span>
           </div>
+
+          {currentConversation && permissionLevel === 'granted-folders' && (
+            <div className="flex flex-wrap items-center gap-2 border-t border-zinc-100 bg-white px-4 py-2.5">
+              {fileAccessGrants.map((grant) => (
+                <div key={grant.path} className="flex max-w-full items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs text-zinc-600">
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                  <span className="max-w-[200px] truncate" title={grant.path}>{grant.path}</span>
+                  <Select
+                    value={grant.access}
+                    onChange={(event) => updateFolderGrant(grant.path, event.target.value as FileAccessGrant['access'])}
+                    options={[
+                      { value: 'read', label: 'Read' },
+                      { value: 'read-write', label: 'Read & write' },
+                    ]}
+                    className="h-6 min-w-[92px] rounded border-transparent bg-transparent px-1 text-[11px] shadow-none hover:bg-white focus-visible:border-zinc-300"
+                    aria-label={`File access for ${grant.path}`}
+                  />
+                  <button type="button" onClick={() => removeFolderGrant(grant.path)} className="rounded p-1 text-zinc-400 hover:bg-red-50 hover:text-red-600" title="Remove folder access" aria-label="Remove folder access">
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs text-violet-700 hover:text-violet-800" onClick={() => void addFolderGrant()}>
+                <FolderPlus className="h-3.5 w-3.5" />
+                Add folder
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>
