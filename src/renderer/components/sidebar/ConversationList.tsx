@@ -1,13 +1,14 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { Conversation } from '../../../shared/types'
 import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
-import { AlertTriangle, Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, MessageSquare, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, MessageSquare, Plus, Radio, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
+import type { QqRemoteStatus } from '../../../shared/types/qq'
 
 function belongsToWorkspace(conversation: Conversation, workspace: Workspace): boolean {
   return conversation.workspaceId === workspace.id || (!conversation.workspaceId && conversation.workspacePath === workspace.path)
@@ -75,6 +76,20 @@ export function ConversationList({ className }: ConversationListProps) {
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
   const [archivedOpen, setArchivedOpen] = useState(false)
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null)
+  const [qqStatus, setQqStatus] = useState<QqRemoteStatus>({ state: 'disabled', message: 'QQ remote control is disabled.' })
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () => void window.eva.qqRemote.getStatus().then((status) => {
+      if (!cancelled) setQqStatus(status)
+    }).catch(() => undefined)
+    refresh()
+    const timer = window.setInterval(refresh, 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
 
   const toggleProject = (id: string) => {
     setActiveWorkspaceId(id)
@@ -87,8 +102,10 @@ export function ConversationList({ className }: ConversationListProps) {
   }
 
   const activeConversations = conversations.filter((conversation) => !conversation.archived)
+  const channelConversations = activeConversations.filter((conversation) => conversation.channel === 'qq')
+  const projectConversations = activeConversations.filter((conversation) => conversation.channel !== 'qq')
   const archivedConversations = conversations.filter((conversation) => conversation.archived)
-  const unassigned = activeConversations.filter((conversation) => !workspaces.some((workspace) => belongsToWorkspace(conversation, workspace)))
+  const unassigned = projectConversations.filter((conversation) => !workspaces.some((workspace) => belongsToWorkspace(conversation, workspace)))
 
   const confirmDelete = async () => {
     if (!conversationToDelete) return
@@ -102,10 +119,45 @@ export function ConversationList({ className }: ConversationListProps) {
     <>
       <ScrollArea className={cn('flex-1', className)}>
       <div className="flex flex-col gap-3 px-4 py-4">
+        <div>
+          <div className="flex items-center justify-between px-2 py-1 text-xs font-medium uppercase tracking-wider text-zinc-500">
+            <span>Channels</span>
+            <span className={qqStatus.state === 'connected' ? 'text-emerald-600' : qqStatus.state === 'error' ? 'text-red-600' : 'text-zinc-400'}>
+              {qqStatus.state === 'connected' ? 'Online' : qqStatus.state === 'connecting' ? 'Connecting' : 'Offline'}
+            </span>
+          </div>
+          <div className="mt-1 rounded-lg bg-violet-50/60 p-1.5">
+            <div className="flex items-center gap-2 px-2.5 py-2 text-sm text-zinc-700">
+              <Radio className={`h-4 w-4 shrink-0 ${qqStatus.state === 'connected' ? 'text-violet-600' : 'text-zinc-400'}`} />
+              <span className="font-medium">QQ Remote</span>
+              <span className="ml-auto text-xs text-zinc-400">{channelConversations.length}</span>
+            </div>
+            {channelConversations.length > 0 ? (
+              <div className="space-y-1 px-1 pb-1">
+                {channelConversations.map((conversation) => (
+                  <ConversationRow
+                    key={conversation.id}
+                    conversation={conversation}
+                    isSelected={currentConversationId === conversation.id}
+                    onSelect={(id) => void selectConversation(id)}
+                    onArchive={(id) => void archiveConversation(id)}
+                    onRestore={(id) => void restoreConversation(id)}
+                    onDelete={setConversationToDelete}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="px-9 pb-2 text-xs leading-5 text-zinc-400">
+                {qqStatus.state === 'connected' ? 'Waiting for a QQ message.' : 'Connect QQ Remote in Settings to receive messages.'}
+              </p>
+            )}
+          </div>
+        </div>
+
         <div className="px-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Projects</div>
 
         {workspaces.map((workspace) => {
-          const projectConversations = activeConversations.filter((conversation) => belongsToWorkspace(conversation, workspace))
+          const workspaceConversations = projectConversations.filter((conversation) => belongsToWorkspace(conversation, workspace))
           const isActive = activeWorkspaceId === workspace.id
           const isCollapsed = collapsedProjects.has(workspace.id)
 
@@ -120,7 +172,7 @@ export function ConversationList({ className }: ConversationListProps) {
                   {isCollapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
                   <Folder className="h-4 w-4 shrink-0 text-violet-500" />
                   <span className="truncate font-medium">{workspace.name}</span>
-                  <span className="ml-auto text-xs text-zinc-400">{projectConversations.length}</span>
+                  <span className="ml-auto text-xs text-zinc-400">{workspaceConversations.length}</span>
                 </button>
                 <Button
                   variant="ghost"
@@ -136,7 +188,7 @@ export function ConversationList({ className }: ConversationListProps) {
 
               {!isCollapsed && (
                 <div className="mb-2 space-y-1 px-3">
-                  {projectConversations.map((conversation) => (
+                  {workspaceConversations.map((conversation) => (
                     <ConversationRow
                       key={conversation.id}
                       conversation={conversation}
@@ -147,7 +199,7 @@ export function ConversationList({ className }: ConversationListProps) {
                       onDelete={setConversationToDelete}
                     />
                   ))}
-                  {projectConversations.length === 0 && <p className="px-3 py-2 text-xs text-zinc-400">No conversations</p>}
+                  {workspaceConversations.length === 0 && <p className="px-3 py-2 text-xs text-zinc-400">No conversations</p>}
                 </div>
               )}
             </div>

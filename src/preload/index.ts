@@ -7,6 +7,8 @@ import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, Prov
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
+import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
+import type { InstalledPlugin, MarketplacePluginView } from '../shared/types/plugin'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -35,6 +37,7 @@ export interface EvaAPI {
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
     update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
+    onChanged(callback: EventCallback<string>): Unsubscribe
   }
 
   // 聊天
@@ -126,6 +129,25 @@ export interface EvaAPI {
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
   }
+
+  qqRemote: {
+    getConfig(): Promise<QqRemoteConfig>
+    saveConfig(config: QqRemoteConfigInput): Promise<QqRemoteConfig>
+    getStatus(): Promise<QqRemoteStatus>
+    connect(): Promise<QqRemoteStatus>
+    disconnect(): Promise<QqRemoteStatus>
+  }
+
+  plugins: {
+    list(): Promise<InstalledPlugin[]>
+    marketplace(): Promise<MarketplacePluginView[]>
+    installMarketplace(id: string): Promise<InstalledPlugin>
+    importManifest(): Promise<InstalledPlugin | null>
+    setEnabled(id: string, enabled: boolean): Promise<InstalledPlugin>
+    remove(id: string): Promise<void>
+    updateSettings(id: string, settings: Record<string, string | number | boolean>): Promise<InstalledPlugin>
+    selectPath(kind: 'file' | 'directory'): Promise<string | null>
+  }
 }
 
 const evaAPI: EvaAPI = {
@@ -136,6 +158,7 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.CONVERSATION_DELETE, id),
     load: (id) => ipcRenderer.invoke(IPC.CONVERSATION_LOAD, id),
     update: (id, data) => ipcRenderer.invoke(IPC.CONVERSATION_UPDATE, id, data),
+    onChanged: (callback) => onStream(IPC.CONVERSATION_CHANGED, callback),
   },
 
   // 聊天
@@ -252,6 +275,25 @@ const evaAPI: EvaAPI = {
     saveConfig: (config) => ipcRenderer.invoke(IPC.PROVIDER_CONFIG, config),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
+  },
+
+  qqRemote: {
+    getConfig: () => ipcRenderer.invoke(IPC.QQ_REMOTE_GET_CONFIG),
+    saveConfig: (config) => ipcRenderer.invoke(IPC.QQ_REMOTE_SAVE_CONFIG, config),
+    getStatus: () => ipcRenderer.invoke(IPC.QQ_REMOTE_GET_STATUS),
+    connect: () => ipcRenderer.invoke(IPC.QQ_REMOTE_CONNECT),
+    disconnect: () => ipcRenderer.invoke(IPC.QQ_REMOTE_DISCONNECT),
+  },
+
+  plugins: {
+    list: () => ipcRenderer.invoke(IPC.PLUGIN_LIST),
+    marketplace: () => ipcRenderer.invoke(IPC.PLUGIN_MARKETPLACE),
+    installMarketplace: (id) => ipcRenderer.invoke(IPC.PLUGIN_INSTALL_MARKETPLACE, id),
+    importManifest: () => ipcRenderer.invoke(IPC.PLUGIN_IMPORT),
+    setEnabled: (id, enabled) => ipcRenderer.invoke(IPC.PLUGIN_TOGGLE, id, enabled),
+    remove: (id) => ipcRenderer.invoke(IPC.PLUGIN_DELETE, id),
+    updateSettings: (id, settings) => ipcRenderer.invoke(IPC.PLUGIN_UPDATE_SETTINGS, id, settings),
+    selectPath: (kind) => ipcRenderer.invoke(IPC.PLUGIN_SELECT_PATH, kind),
   },
 }
 

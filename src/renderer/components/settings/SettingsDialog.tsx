@@ -28,9 +28,15 @@ import {
   Loader2,
   RefreshCw,
   Server,
+  ShieldCheck,
+  Smartphone,
 } from 'lucide-react'
 import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
+import type { QqRemoteConfig, QqRemoteStatus } from '../../../shared/types/qq'
+import type { Workspace } from '../../../shared/types/workspace'
+import type { AgentConfig } from '../../../shared/types/agent'
 import evaMark from '@/assets/eva-mark.svg'
+import { PluginCenter } from './PluginCenter'
 
 type ProviderType = ProviderConfigEntry['type']
 
@@ -40,6 +46,16 @@ const PROVIDER_OPTIONS: Array<{ value: ProviderType; label: string }> = [
   { value: 'deepseek', label: 'DeepSeek' },
   { value: 'custom', label: 'Custom (OpenAI-compatible)' },
 ]
+
+const EMPTY_QQ_CONFIG: QqRemoteConfig = {
+  enabled: false,
+  appId: '',
+  hasAppSecret: false,
+  allowedUserIds: [],
+  defaultWorkspaceId: null,
+  defaultAgentId: null,
+  sandbox: false,
+}
 
 export function SettingsDialog() {
   const {
@@ -65,6 +81,14 @@ export function SettingsDialog() {
   const [availableModels, setAvailableModels] = useState<ProviderModelOption[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [modelsMessage, setModelsMessage] = useState<string | null>(null)
+  const [qqConfig, setQqConfig] = useState<QqRemoteConfig>(EMPTY_QQ_CONFIG)
+  const [qqSecret, setQqSecret] = useState('')
+  const [showQqSecret, setShowQqSecret] = useState(false)
+  const [qqStatus, setQqStatus] = useState<QqRemoteStatus>({ state: 'disabled', message: 'QQ remote control is not configured.' })
+  const [qqWorkspaces, setQqWorkspaces] = useState<Workspace[]>([])
+  const [qqAgents, setQqAgents] = useState<AgentConfig[]>([])
+  const [qqSaving, setQqSaving] = useState(false)
+  const [qqResult, setQqResult] = useState<{ success: boolean; message: string } | null>(null)
 
   const getProviderTestConfig = (): ProviderTestConfig => ({
     id: providerType,
@@ -101,6 +125,14 @@ export function SettingsDialog() {
 
   useEffect(() => {
     if (!settingsOpen) return
+    const timer = window.setInterval(() => {
+      void window.eva.qqRemote.getStatus().then(setQqStatus).catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [settingsOpen])
+
+  useEffect(() => {
+    if (!settingsOpen) return
     let cancelled = false
 
     const loadProviderConfig = async () => {
@@ -120,6 +152,32 @@ export function SettingsDialog() {
       cancelled = true
     }
   }, [settingsOpen, providerType])
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    let cancelled = false
+    const loadQqRemote = async () => {
+      try {
+        const [config, status, workspaces, agents] = await Promise.all([
+          window.eva.qqRemote.getConfig(),
+          window.eva.qqRemote.getStatus(),
+          window.eva.workspace.list(),
+          window.eva.agent.list(),
+        ])
+        if (cancelled) return
+        setQqConfig(config)
+        setQqStatus(status)
+        setQqWorkspaces(workspaces)
+        setQqAgents(agents)
+        setQqSecret('')
+        setQqResult(null)
+      } catch {
+        if (!cancelled) setQqResult({ success: false, message: 'Unable to load QQ remote-control settings.' })
+      }
+    }
+    void loadQqRemote()
+    return () => { cancelled = true }
+  }, [settingsOpen])
 
   const handleBrowseFolder = async () => {
     try {
@@ -218,6 +276,61 @@ export function SettingsDialog() {
     }
   }
 
+  const saveQqRemote = async (connect: boolean) => {
+    const nextConfig = connect ? { ...qqConfig, enabled: true } : qqConfig
+    if (nextConfig.enabled && !nextConfig.appId.trim()) {
+      setQqResult({ success: false, message: 'Enter the QQ Bot AppID.' })
+      return
+    }
+    if (nextConfig.enabled && !nextConfig.hasAppSecret && !qqSecret.trim()) {
+      setQqResult({ success: false, message: 'Enter the QQ Bot AppSecret.' })
+      return
+    }
+    if (nextConfig.enabled && nextConfig.allowedUserIds.length === 0) {
+      setQqResult({ success: false, message: 'Add at least one allowed QQ OpenID.' })
+      return
+    }
+    if (nextConfig.enabled && !nextConfig.defaultWorkspaceId) {
+      setQqResult({ success: false, message: 'Choose the project workspace available to the remote agent.' })
+      return
+    }
+
+    setQqSaving(true)
+    setQqResult(null)
+    try {
+      const saved = await window.eva.qqRemote.saveConfig({
+        ...nextConfig,
+        appId: nextConfig.appId.trim(),
+        appSecret: qqSecret.trim() || undefined,
+      })
+      setQqConfig(saved)
+      setQqSecret('')
+      if (connect && saved.enabled) {
+        const status = await window.eva.qqRemote.connect()
+        setQqStatus(status)
+        setQqResult({ success: status.state === 'connected' || status.state === 'connecting', message: status.message })
+      } else {
+        setQqStatus(await window.eva.qqRemote.getStatus())
+        setQqResult({ success: true, message: 'QQ remote-control settings saved.' })
+      }
+    } catch (error) {
+      setQqResult({ success: false, message: error instanceof Error ? error.message : 'Failed to save QQ remote-control settings.' })
+    } finally {
+      setQqSaving(false)
+    }
+  }
+
+  const disconnectQqRemote = async () => {
+    setQqSaving(true)
+    try {
+      const status = await window.eva.qqRemote.disconnect()
+      setQqStatus(status)
+      setQqResult({ success: true, message: status.message })
+    } finally {
+      setQqSaving(false)
+    }
+  }
+
   return (
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen} className="settings-dialog">
       <DialogClose onClose={() => setSettingsOpen(false)} />
@@ -231,6 +344,8 @@ export function SettingsDialog() {
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="models">Models</TabsTrigger>
           <TabsTrigger value="agents">Agents</TabsTrigger>
+          <TabsTrigger value="plugins">Plugins</TabsTrigger>
+          <TabsTrigger value="qq">QQ Remote</TabsTrigger>
           <TabsTrigger value="about">About</TabsTrigger>
         </TabsList>
 
@@ -410,6 +525,142 @@ export function SettingsDialog() {
             <div className="py-4 text-center text-sm text-zinc-500">
               Open Agent Manager to create, edit, and remove custom agents.
             </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="plugins" className="settings-dialog__content">
+          <PluginCenter />
+        </TabsContent>
+
+        <TabsContent value="qq" className="settings-dialog__content">
+          <div className="settings-dialog__model-layout">
+            <div className="settings-dialog__card settings-dialog__model-card">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium text-zinc-800">
+                    <Smartphone className="h-4 w-4 text-violet-500" />
+                    QQ remote control
+                  </div>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">
+                    Messages from approved QQ accounts are routed to an Eva conversation in the selected project.
+                  </p>
+                </div>
+                <label className="flex shrink-0 items-center gap-2 text-sm text-zinc-600">
+                  <input
+                    type="checkbox"
+                    checked={qqConfig.enabled}
+                    onChange={(event) => setQqConfig((config) => ({ ...config, enabled: event.target.checked }))}
+                    className="h-4 w-4 accent-violet-600"
+                  />
+                  Enabled
+                </label>
+              </div>
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                  <Key className="h-4 w-4 text-zinc-500" />
+                  QQ Bot AppID
+                </label>
+                <Input value={qqConfig.appId} onChange={(event) => setQqConfig((config) => ({ ...config, appId: event.target.value }))} placeholder="QQ Open Platform AppID" autoComplete="off" />
+              </div>
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                  <Key className="h-4 w-4 text-zinc-500" />
+                  QQ Bot AppSecret
+                  {qqConfig.hasAppSecret && <span className="text-xs font-normal text-emerald-600">Saved securely</span>}
+                </label>
+                <div className="relative">
+                  <Input
+                    type={showQqSecret ? 'text' : 'password'}
+                    value={qqSecret}
+                    onChange={(event) => setQqSecret(event.target.value)}
+                    placeholder={qqConfig.hasAppSecret ? 'Leave blank to keep the saved secret' : 'Paste AppSecret'}
+                    className="pr-9"
+                    autoComplete="new-password"
+                  />
+                  <button type="button" onClick={() => setShowQqSecret((visible) => !visible)} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 hover:text-zinc-600" aria-label={showQqSecret ? 'Hide AppSecret' : 'Show AppSecret'}>
+                    {showQqSecret ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                  <ShieldCheck className="h-4 w-4 text-zinc-500" />
+                  Allowed QQ OpenIDs (not QQ numbers)
+                </label>
+                <Input
+                  value={qqConfig.allowedUserIds.join(', ')}
+                  onChange={(event) => setQqConfig((config) => ({ ...config, allowedUserIds: event.target.value.split(/[\s,]+/).filter(Boolean) }))}
+                  placeholder="QQ-assigned OpenIDs, separated by commas"
+                />
+                <p className="text-xs leading-5 text-zinc-500">QQ assigns a separate OpenID for each account; it is not the numeric QQ account. Send a test message, then copy the OpenID from the Activity Log&apos;s blocked request entry.</p>
+              </div>
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                  <FolderOpen className="h-4 w-4 text-zinc-500" />
+                  Default project workspace
+                </label>
+                <Select
+                  value={qqConfig.defaultWorkspaceId || ''}
+                  onChange={(event) => setQqConfig((config) => ({ ...config, defaultWorkspaceId: event.target.value || null }))}
+                  options={[{ value: '', label: 'Select a project workspace' }, ...qqWorkspaces.map((workspace) => ({ value: workspace.id, label: workspace.name }))]}
+                />
+                <p className="text-xs leading-5 text-zinc-500">Remote conversations use workspace-only permissions. They never inherit full filesystem access.</p>
+              </div>
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                  <Bot className="h-4 w-4 text-zinc-500" />
+                  Default agent
+                </label>
+                <Select
+                  value={qqConfig.defaultAgentId || ''}
+                  onChange={(event) => setQqConfig((config) => ({ ...config, defaultAgentId: event.target.value || null }))}
+                  options={[{ value: '', label: 'Use Eva default agent' }, ...qqAgents.map((agent) => ({ value: agent.id, label: agent.name }))]}
+                />
+              </div>
+
+              <Separator />
+
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span className={qqStatus.state === 'connected' ? 'text-emerald-600' : qqStatus.state === 'error' ? 'text-red-600' : 'text-zinc-500'}>{qqStatus.message}</span>
+                <label className="flex shrink-0 items-center gap-2 text-xs text-zinc-500">
+                  <input type="checkbox" checked={qqConfig.sandbox} onChange={(event) => setQqConfig((config) => ({ ...config, sandbox: event.target.checked }))} className="h-3.5 w-3.5 accent-violet-600" />
+                  QQ sandbox
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-dialog__actions">
+              {qqStatus.state === 'connected' || qqStatus.state === 'connecting' ? (
+                <Button variant="outline" onClick={disconnectQqRemote} disabled={qqSaving}>Disconnect</Button>
+              ) : null}
+              <Button variant="outline" onClick={() => void saveQqRemote(false)} disabled={qqSaving}>Save</Button>
+              <Button onClick={() => void saveQqRemote(true)} disabled={qqSaving} className="min-w-[116px]">
+                {qqSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                {qqSaving ? 'Working...' : 'Save & Connect'}
+              </Button>
+            </div>
+
+            {qqResult && (
+              <div className="settings-dialog__result" data-status={qqResult.success ? 'success' : 'error'}>
+                {qqResult.success ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}
+                {qqResult.message}
+              </div>
+            )}
           </div>
         </TabsContent>
 

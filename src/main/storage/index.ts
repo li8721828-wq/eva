@@ -6,6 +6,8 @@ import { ConversationStore } from './conversation-store'
 import { AgentStore } from './agent-store'
 import { WorkspaceStore } from './workspace-store'
 import { ActivityLogStore } from './activity-log-store'
+import { QqRemoteStore } from './qq-remote-store'
+import { PluginStore } from './plugin-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -13,6 +15,8 @@ export class StorageManager {
   agents: AgentStore
   workspaces: WorkspaceStore
   activity: ActivityLogStore
+  qqRemote: QqRemoteStore
+  plugins: PluginStore
 
   private userDataPath: string
 
@@ -25,6 +29,8 @@ export class StorageManager {
     this.agents = new AgentStore(path.join(this.userDataPath, 'agents'))
     this.workspaces = new WorkspaceStore(this.userDataPath)
     this.activity = new ActivityLogStore(this.userDataPath)
+    this.qqRemote = new QqRemoteStore()
+    this.plugins = new PluginStore()
   }
 
   async initialize(): Promise<void> {

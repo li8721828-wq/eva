@@ -7,13 +7,14 @@ import { AgentEditor } from './AgentEditor'
 import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/Dialog'
 import { Button } from '@/components/ui/Button'
 import { Trash2, AlertTriangle } from 'lucide-react'
+import { ToolAccessPanel } from './ToolAccessPanel'
 
 export interface AgentManagerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-type View = 'list' | 'create' | 'edit' | 'view' | 'confirm-delete'
+type View = 'list' | 'create' | 'edit' | 'view' | 'tools' | 'confirm-delete'
 
 export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogProps) {
   const { agents, createAgent, updateAgent, deleteAgent, selectedAgentId } = useAgentStore()
@@ -22,6 +23,7 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
   const [view, setView] = useState<View>('list')
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null)
   const [agentToDelete, setAgentToDelete] = useState<AgentConfig | null>(null)
+  const [toolSelection, setToolSelection] = useState<string[]>([])
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
 
@@ -44,6 +46,23 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
       setView('edit')
     }
   }, [])
+
+  const handleManageTools = useCallback((agent: AgentConfig) => {
+    setEditingAgent(agent)
+    setToolSelection(agent.tools)
+    setView('tools')
+  }, [])
+
+  const handleSaveTools = useCallback(async () => {
+    if (!editingAgent) return
+    try {
+      await updateAgent(editingAgent.id, { tools: toolSelection })
+      setEditingAgent({ ...editingAgent, tools: toolSelection })
+      setView('view')
+    } catch (err) {
+      console.error('Failed to update tool access:', err)
+    }
+  }, [editingAgent, toolSelection, updateAgent])
 
   const handleDeleteRequest = useCallback((agent: AgentConfig) => {
     setAgentToDelete(agent)
@@ -112,6 +131,7 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
           {view === 'create' && 'Create a new custom agent.'}
           {view === 'edit' && 'Edit agent configuration.'}
           {view === 'view' && 'View built-in agent configuration (read-only).'}
+          {view === 'tools' && 'Assign the capabilities available to this agent.'}
           {view === 'confirm-delete' && 'Confirm deletion.'}
         </DialogDescription>
       </DialogHeader>
@@ -191,7 +211,10 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
               </div>
             </div>
             <div>
-              <label className="text-xs text-zinc-500 block mb-1">Tools</label>
+              <div className="mb-1 flex items-center justify-between gap-3">
+                <label className="text-xs text-zinc-500">Tools</label>
+                <Button variant="outline" size="sm" onClick={() => handleManageTools(editingAgent)}>Manage access</Button>
+              </div>
               <div className="flex flex-wrap gap-1">
                 {editingAgent.tools.map((tool) => (
                   <span
@@ -207,6 +230,16 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
               <Button variant="ghost" size="sm" onClick={handleCancel}>
                 Close
               </Button>
+            </div>
+          </div>
+        )}
+
+        {view === 'tools' && editingAgent && (
+          <div className="-mx-6 -mb-6 max-h-[560px] overflow-y-auto p-6">
+            <ToolAccessPanel tools={toolSelection} onChange={setToolSelection} />
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="outline" onClick={handleCancel}>Cancel</Button>
+              <Button onClick={() => void handleSaveTools()}>Save tool access</Button>
             </div>
           </div>
         )}

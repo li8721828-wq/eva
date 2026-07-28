@@ -9,6 +9,8 @@ export interface AgentConfig {
   model: string
   providerId: string
   tools: string[]
+  /** Tracks the one-time migration that introduced the shared tool catalog. */
+  toolCatalogVersion?: number
   maxIterations: number
   temperature: number
   isBuiltIn: boolean

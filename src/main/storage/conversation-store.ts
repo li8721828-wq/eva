@@ -100,6 +100,7 @@ export class ConversationStore {
     agentId: string
     mode: 'normal' | 'expert' | 'goal'
     workspaceId?: string
+    channel?: Conversation['channel']
     accessScope?: 'workspace' | 'full'
     permissionLevel?: Conversation['permissionLevel']
     fileAccessGrants?: Conversation['fileAccessGrants']
@@ -113,6 +114,7 @@ export class ConversationStore {
         agentId: params.agentId,
         mode: params.mode,
         workspaceId: params.workspaceId,
+        channel: params.channel,
         accessScope: params.accessScope,
         permissionLevel: params.permissionLevel,
         fileAccessGrants: params.fileAccessGrants || [],

@@ -7,6 +7,8 @@ import { TerminalServiceImpl } from './services/terminal-service'
 import { createToolRegistry } from './tools'
 import { providerRegistry } from './providers'
 import { setupGlobalErrorHandlers } from './utils/error-handler'
+import { QqRemoteBridge } from './services/qq-remote-bridge'
+import { registerQqRemoteHandlers } from './ipc/qq-remote'
 
 // Set up global error handlers before anything else
 setupGlobalErrorHandlers()
@@ -49,11 +51,23 @@ app.whenReady().then(async () => {
     providerRegistry,
   })
 
+  const qqRemoteBridge = new QqRemoteBridge({
+    fileService,
+    terminalService,
+    toolRegistry,
+    providerRegistry,
+  })
+  registerQqRemoteHandlers(qqRemoteBridge)
+
   // 6. Set the native menu before creating the main window
   createApplicationMenu()
 
   // 7. Create the main window
   mainWindow = createMainWindow()
+
+  if (getStorage().qqRemote.getConfig().enabled) {
+    void qqRemoteBridge.start()
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

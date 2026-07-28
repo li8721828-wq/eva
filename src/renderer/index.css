@@ -303,6 +303,96 @@ html, body, #root {
   gap: 16px;
 }
 
+.settings-dialog__plugin-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-dialog__plugin-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 20px;
+  border: 1px solid #ddd6fe;
+  border-radius: 8px;
+  background: #faf9ff;
+}
+
+.settings-dialog__plugin-tabs {
+  min-height: 0;
+}
+
+.settings-dialog__plugin-tabs-list {
+  padding: 0;
+  background: transparent;
+}
+
+.settings-dialog__plugin-tab-content {
+  padding: 16px 0 0 !important;
+}
+
+.settings-dialog__plugin-list,
+.settings-dialog__plugin-marketplace-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-dialog__plugin-card,
+.settings-dialog__marketplace-card {
+  display: flex;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.settings-dialog__marketplace-card {
+  display: block;
+}
+
+.settings-dialog__plugin-empty,
+.settings-dialog__plugin-marketplace-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 72px;
+  padding: 16px;
+  border: 1px dashed #d4d4d8;
+  border-radius: 8px;
+  color: #71717a;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.settings-dialog__plugin-marketplace-note {
+  min-height: 0;
+  margin-bottom: 12px;
+  border-style: solid;
+  border-color: #ddd6fe;
+  background: #faf9ff;
+}
+
+.settings-dialog__plugin-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: 14px;
+  color: #71717a;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.settings-dialog__plugin-config {
+  margin-top: 16px;
+  padding: 18px;
+  border: 1px solid #c4b5fd;
+  border-radius: 8px;
+  background: #faf9ff;
+}
+
 .settings-dialog__about {
   display: flex;
   flex-direction: column;
@@ -349,6 +439,16 @@ html, body, #root {
 
   .settings-dialog__access-header {
     flex-direction: column;
+  }
+
+  .settings-dialog__plugin-intro {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .settings-dialog__plugin-card {
+    gap: 10px;
+    padding: 14px;
   }
 
   .settings-dialog__access-row {

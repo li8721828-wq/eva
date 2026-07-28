@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useMemo } from 'react'
+import React, { useRef, useEffect, useLayoutEffect, useState, useMemo } from 'react'
 import type { ChatMessage } from '../../../shared/types'
 import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
@@ -16,10 +16,19 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
+  const { messages, currentConversationId, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
   const { rightPanelVisible } = useAppStore()
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const previousMessagesRef = useRef(messages)
+  const pendingConversationScrollRef = useRef(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+
+  const scrollToBottom = (behavior: ScrollBehavior) => {
+    const scrollArea = scrollAreaRef.current
+    if (!scrollArea) return false
+    scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior })
+    return true
+  }
 
   // Reset visible count when conversation changes (message count drops)
   useEffect(() => {
@@ -36,16 +45,31 @@ export function MessageList({ className }: MessageListProps) {
 
   const hasMore = messages.length > visibleCount
 
+  useLayoutEffect(() => {
+    // A selected conversation loads asynchronously. Its first message render
+    // must jump straight to the saved position rather than replay a scroll.
+    pendingConversationScrollRef.current = true
+    scrollAreaRef.current?.scrollTo({ top: 0, behavior: 'auto' })
+  }, [currentConversationId])
+
+  useLayoutEffect(() => {
+    if (previousMessagesRef.current === messages) return
+
+    if (!scrollToBottom(pendingConversationScrollRef.current ? 'auto' : 'smooth')) return
+    pendingConversationScrollRef.current = false
+    previousMessagesRef.current = messages
+  }, [messages])
+
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamingContent, streamingToolCalls])
+    if (isStreaming) scrollToBottom('smooth')
+  }, [isStreaming, streamingContent, streamingToolCalls])
 
   if (messages.length === 0 && !isStreaming) {
     return <WelcomeScreen className={className} />
   }
 
   return (
-    <ScrollArea className={cn('flex-1', className)}>
+    <ScrollArea ref={scrollAreaRef} className={cn('flex-1', className)}>
       <div
         className={cn(
           'flex w-full flex-col space-y-7 px-12 py-8',
@@ -95,8 +119,6 @@ export function MessageList({ className }: MessageListProps) {
             </div>
           </div>
         )}
-
-        <div ref={bottomRef} />
       </div>
     </ScrollArea>
   )

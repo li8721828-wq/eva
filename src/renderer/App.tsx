@@ -50,7 +50,7 @@ const App: React.FC = () => {
     setWorkMode,
   } = useAppStore()
 
-  const { loadConversations, createConversation, setInputText } = useChatStore()
+  const { loadConversations, createConversation, setInputText, currentConversationId, selectConversation } = useChatStore()
   const { loadAgents } = useAgentStore()
   const { loadWorkspaces } = useWorkspaceStore()
   const { startExpertTask, startGoal } = useTaskStore()
@@ -70,6 +70,11 @@ const App: React.FC = () => {
   }, [])
 
   useEffect(() => window.eva.menu.onToggleTerminal(toggleTerminal), [toggleTerminal])
+
+  useEffect(() => window.eva.conversation.onChanged((_event, conversationId) => {
+    void loadConversations()
+    if (conversationId === currentConversationId) void selectConversation(conversationId)
+  }), [currentConversationId, loadConversations, selectConversation])
 
   // Responsive: auto-hide right panel on small windows
   useEffect(() => {

@@ -9,6 +9,8 @@ export interface Conversation {
   agentId: string
   mode: 'normal' | 'expert' | 'goal'
   workspaceId?: string
+  /** External message channel that owns this conversation. */
+  channel?: 'qq'
   /** Full access is an explicit choice for conversations created outside a project. */
   accessScope?: 'workspace' | 'full'
   permissionLevel?: ConversationPermissionLevel

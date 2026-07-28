@@ -3,6 +3,8 @@ import type { FileAccessGrant } from '../../shared/types/file-access'
 import { createFileTools } from './file-tools'
 import { createTerminalTools } from './terminal-tools'
 import { createSearchTools } from './search-tools'
+import { createWebTools } from './web-tools'
+import { createBlenderTools } from './blender-tools'
 
 export interface ToolContext {
   workspacePath: string
@@ -88,6 +90,8 @@ export function createToolRegistry(): ToolRegistry {
   for (const tool of createFileTools()) registry.register(tool)
   for (const tool of createTerminalTools()) registry.register(tool)
   for (const tool of createSearchTools()) registry.register(tool)
+  for (const tool of createWebTools()) registry.register(tool)
+  for (const tool of createBlenderTools()) registry.register(tool)
 
   return registry
 }

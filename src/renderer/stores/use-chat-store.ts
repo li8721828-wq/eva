@@ -116,9 +116,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   selectConversation: async (id) => {
     try {
-      set({ currentConversationId: id, isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', error: null })
+      set({ currentConversationId: id, messages: [], isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', error: null })
       const result = await window.eva.conversation.load(id)
-      set({ messages: result.messages })
+      if (get().currentConversationId === id) {
+        set({ messages: result.messages })
+      }
     } catch (err) {
       console.error('Failed to load conversation:', err)
     }

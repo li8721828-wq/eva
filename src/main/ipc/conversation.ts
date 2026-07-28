@@ -9,6 +9,7 @@ import { ContextManager } from '../agent-engine/context'
 import { getStorage } from '../storage'
 import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
+import { sanitizeToolHistory } from '../agent-engine/tool-history'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -203,7 +204,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           send({ type: 'done', content: '' })
           return
         }
-        const historyMessages = await convStore.getMessages(conversationId)
+        const historyMessages = sanitizeToolHistory(await convStore.getMessages(conversationId))
 
         // 2. Load agent config — prefer payload agentId, fallback to conversation.agentId, then first available
         let agentId = payload.agentId || conversation.agentId

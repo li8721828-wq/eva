@@ -18,6 +18,21 @@ export interface AgentRunnerConfig {
   fullFilesystemAccess?: boolean
   fileService: FileService
   terminalService: TerminalService
+  requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
+}
+
+export interface ToolApprovalRequest {
+  toolCall: {
+    id: string
+    name: string
+    arguments: Record<string, unknown>
+  }
+  workspacePath: string
+}
+
+export interface ToolApprovalDecision {
+  approved: boolean
+  message?: string
 }
 
 export interface RunParams {
@@ -293,6 +308,23 @@ export class AgentRunner {
       return {
         result: `Error: Tool '${toolCall.name}' is not permitted for this agent.`,
         isError: true,
+      }
+    }
+
+    if (this.config.requestToolApproval) {
+      const approval = await this.config.requestToolApproval({
+        toolCall: {
+          id: toolCall.id,
+          name: toolCall.name,
+          arguments: toolCall.arguments,
+        },
+        workspacePath: toolContext.workspacePath,
+      })
+      if (!approval.approved) {
+        return {
+          result: approval.message || `Execution of '${toolCall.name}' was not approved.`,
+          isError: true,
+        }
       }
     }
 
