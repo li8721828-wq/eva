@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
 import type { Conversation, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
@@ -6,6 +6,9 @@ import type { TeamEvent, GoalConfig, GoalProgress } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
+import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
+import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
+import type { InstalledPlugin, MarketplacePluginView } from '../shared/types/plugin'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -33,7 +36,8 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Conversation>): Promise<Conversation>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
+    onChanged(callback: EventCallback<string>): Unsubscribe
   }
 
   // 聊天
@@ -82,6 +86,7 @@ export interface EvaAPI {
     tree(path: string, workspacePath?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>
     search(path: string, query: string, workspacePath?: string): Promise<string[]>
     selectFolder(): Promise<string | null>
+    getPath(file: File): string
   }
 
   // 终端
@@ -91,6 +96,11 @@ export interface EvaAPI {
     onOutput(callback: EventCallback<{ id: string; data: string }>): Unsubscribe
     resize(id: string, cols: number, rows: number): Promise<void>
     destroy(id: string): Promise<void>
+  }
+
+  activity: {
+    list(filter?: ActivityLogFilter): Promise<ActivityLogEntry[]>
+    onEntry(callback: EventCallback<ActivityLogEntry>): Unsubscribe
   }
 
   workspace: {
@@ -119,6 +129,25 @@ export interface EvaAPI {
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
   }
+
+  qqRemote: {
+    getConfig(): Promise<QqRemoteConfig>
+    saveConfig(config: QqRemoteConfigInput): Promise<QqRemoteConfig>
+    getStatus(): Promise<QqRemoteStatus>
+    connect(): Promise<QqRemoteStatus>
+    disconnect(): Promise<QqRemoteStatus>
+  }
+
+  plugins: {
+    list(): Promise<InstalledPlugin[]>
+    marketplace(): Promise<MarketplacePluginView[]>
+    installMarketplace(id: string): Promise<InstalledPlugin>
+    importManifest(): Promise<InstalledPlugin | null>
+    setEnabled(id: string, enabled: boolean): Promise<InstalledPlugin>
+    remove(id: string): Promise<void>
+    updateSettings(id: string, settings: Record<string, string | number | boolean>): Promise<InstalledPlugin>
+    selectPath(kind: 'file' | 'directory'): Promise<string | null>
+  }
 }
 
 const evaAPI: EvaAPI = {
@@ -129,6 +158,7 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.CONVERSATION_DELETE, id),
     load: (id) => ipcRenderer.invoke(IPC.CONVERSATION_LOAD, id),
     update: (id, data) => ipcRenderer.invoke(IPC.CONVERSATION_UPDATE, id, data),
+    onChanged: (callback) => onStream(IPC.CONVERSATION_CHANGED, callback),
   },
 
   // 聊天
@@ -197,6 +227,7 @@ const evaAPI: EvaAPI = {
     tree: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_TREE, path, workspacePath),
     search: (path, query, workspacePath) => ipcRenderer.invoke(IPC.FILE_SEARCH, query, workspacePath),
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
+    getPath: (file) => webUtils.getPathForFile(file),
   },
 
   // 终端
@@ -212,6 +243,11 @@ const evaAPI: EvaAPI = {
       return Promise.resolve()
     },
     destroy: (id) => ipcRenderer.invoke(IPC.TERMINAL_DESTROY, id),
+  },
+
+  activity: {
+    list: (filter) => ipcRenderer.invoke(IPC.ACTIVITY_LIST, filter),
+    onEntry: (callback) => onStream(IPC.ACTIVITY_STREAM, callback),
   },
 
   workspace: {
@@ -239,6 +275,25 @@ const evaAPI: EvaAPI = {
     saveConfig: (config) => ipcRenderer.invoke(IPC.PROVIDER_CONFIG, config),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
+  },
+
+  qqRemote: {
+    getConfig: () => ipcRenderer.invoke(IPC.QQ_REMOTE_GET_CONFIG),
+    saveConfig: (config) => ipcRenderer.invoke(IPC.QQ_REMOTE_SAVE_CONFIG, config),
+    getStatus: () => ipcRenderer.invoke(IPC.QQ_REMOTE_GET_STATUS),
+    connect: () => ipcRenderer.invoke(IPC.QQ_REMOTE_CONNECT),
+    disconnect: () => ipcRenderer.invoke(IPC.QQ_REMOTE_DISCONNECT),
+  },
+
+  plugins: {
+    list: () => ipcRenderer.invoke(IPC.PLUGIN_LIST),
+    marketplace: () => ipcRenderer.invoke(IPC.PLUGIN_MARKETPLACE),
+    installMarketplace: (id) => ipcRenderer.invoke(IPC.PLUGIN_INSTALL_MARKETPLACE, id),
+    importManifest: () => ipcRenderer.invoke(IPC.PLUGIN_IMPORT),
+    setEnabled: (id, enabled) => ipcRenderer.invoke(IPC.PLUGIN_TOGGLE, id, enabled),
+    remove: (id) => ipcRenderer.invoke(IPC.PLUGIN_DELETE, id),
+    updateSettings: (id, settings) => ipcRenderer.invoke(IPC.PLUGIN_UPDATE_SETTINGS, id, settings),
+    selectPath: (kind) => ipcRenderer.invoke(IPC.PLUGIN_SELECT_PATH, kind),
   },
 }
 

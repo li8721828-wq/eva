@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
-import { Plus, X, Terminal, PanelBottomClose } from 'lucide-react'
+import { Plus, X, Terminal, PanelBottomClose, ListTree } from 'lucide-react'
+import { ActivityPanel } from '@/components/activity/ActivityPanel'
 
 interface TerminalTab {
   id: string
@@ -18,6 +19,7 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeTab, setActiveTab] = useState<string>('')
   const [output, setOutput] = useState<Record<string, string[]>>({})
+  const [activeView, setActiveView] = useState<'terminal' | 'activity'>('terminal')
   const outputRef = useRef<HTMLDivElement>(null)
   const initializedRef = useRef(false)
 
@@ -70,7 +72,7 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
     setTabs(newTabs)
     if (newTabs.length === 0) {
       setActiveTab('')
-      toggleTerminal()
+      setActiveView('activity')
     } else if (activeTab === id) {
       setActiveTab(newTabs[0].id)
     }
@@ -96,11 +98,19 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
   )
 
   return (
-    <div className={cn('flex flex-col h-48 border-t border-zinc-200 bg-white', className)}>
+    <div className={cn('flex h-56 flex-col border-t border-zinc-200 bg-white', className)}>
       {/* Tab bar */}
       <div className="flex min-h-12 items-center justify-between border-b border-zinc-200 px-4">
-        <div className="flex items-center gap-0.5 overflow-x-auto">
-          {tabs.map((tab) => (
+        <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
+          <button type="button" onClick={() => setActiveView('terminal')} className={cn('flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors', activeView === 'terminal' ? 'bg-violet-50 text-violet-700' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700')}>
+            <Terminal className="h-3.5 w-3.5" />
+            Terminal
+          </button>
+          <button type="button" onClick={() => setActiveView('activity')} className={cn('flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm transition-colors', activeView === 'activity' ? 'bg-violet-50 text-violet-700' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700')}>
+            <ListTree className="h-3.5 w-3.5" />
+            Activity
+          </button>
+          {activeView === 'terminal' && tabs.map((tab) => (
             <div
               key={tab.id}
               className={cn(
@@ -128,9 +138,9 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
         </div>
 
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={createTerminal} title="New terminal">
+          {activeView === 'terminal' && <Button variant="ghost" size="icon" className="h-8 w-8" onClick={createTerminal} title="New terminal">
             <Plus className="h-3.5 w-3.5" />
-          </Button>
+          </Button>}
           <Button
             variant="ghost"
             size="icon"
@@ -144,24 +154,24 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
         </div>
       </div>
 
-      {/* Terminal content */}
-      <div ref={outputRef} className="flex-1 overflow-auto bg-zinc-50 p-4 font-mono text-sm text-zinc-700">
-        {activeTab && output[activeTab]?.map((line, i) => (
-          <div key={i} className="whitespace-pre-wrap">{line}</div>
-        ))}
-      </div>
-
-      {/* Input */}
-      {activeTab && (
-        <div className="flex min-h-11 items-center border-t border-zinc-200 px-4 py-2.5">
-          <span className="text-zinc-400 text-sm mr-2">$</span>
-          <input
-            className="flex-1 bg-transparent text-sm text-zinc-800 font-mono focus:outline-none"
-            placeholder="Type a command..."
-            onKeyDown={handleKeyDown}
-          />
+      {activeView === 'activity' ? <ActivityPanel /> : <>
+        <div ref={outputRef} className="flex-1 overflow-auto bg-zinc-50 p-4 font-mono text-sm text-zinc-700">
+          {activeTab && output[activeTab]?.map((line, i) => (
+            <div key={i} className="whitespace-pre-wrap">{line}</div>
+          ))}
         </div>
-      )}
+
+        {activeTab && (
+          <div className="flex min-h-11 items-center border-t border-zinc-200 px-4 py-2.5">
+            <span className="text-zinc-400 text-sm mr-2">$</span>
+            <input
+              className="flex-1 bg-transparent text-sm text-zinc-800 font-mono focus:outline-none"
+              placeholder="Type a command..."
+              onKeyDown={handleKeyDown}
+            />
+          </div>
+        )}
+      </>}
     </div>
   )
 }

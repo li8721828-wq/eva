@@ -3,6 +3,8 @@ import { registerAgentHandlers } from './agent'
 import { registerTaskHandlers, type TaskServices } from './task'
 import { registerSystemHandlers } from './system'
 import { registerWorkspaceHandlers } from './workspace'
+import { registerActivityHandlers } from './activity'
+import { registerPluginHandlers } from './plugin'
 import type { FileService, TerminalService, ToolRegistry } from '../tools'
 import type { ProviderRegistry } from '../providers'
 
@@ -25,7 +27,9 @@ export function registerAllIpcHandlers(services?: Services): void {
 
   registerConversationHandlers(chatServices)
   registerWorkspaceHandlers()
+  registerActivityHandlers()
   registerAgentHandlers()
+  registerPluginHandlers()
   const taskServices: TaskServices | undefined = services
     ? {
         toolRegistry: services.toolRegistry,

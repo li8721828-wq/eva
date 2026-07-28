@@ -100,7 +100,10 @@ export class ConversationStore {
     agentId: string
     mode: 'normal' | 'expert' | 'goal'
     workspaceId?: string
+    channel?: Conversation['channel']
     accessScope?: 'workspace' | 'full'
+    permissionLevel?: Conversation['permissionLevel']
+    fileAccessGrants?: Conversation['fileAccessGrants']
     workspacePath: string
   }): Promise<Conversation> {
     return this.enqueue(() => {
@@ -111,7 +114,11 @@ export class ConversationStore {
         agentId: params.agentId,
         mode: params.mode,
         workspaceId: params.workspaceId,
+        channel: params.channel,
         accessScope: params.accessScope,
+        permissionLevel: params.permissionLevel,
+        fileAccessGrants: params.fileAccessGrants || [],
+        archived: false,
         workspacePath: params.workspacePath,
         createdAt: now,
         updatedAt: now,
@@ -142,7 +149,7 @@ export class ConversationStore {
 
   async updateConversation(
     id: string,
-    updates: Partial<Pick<Conversation, 'title' | 'updatedAt'>>
+    updates: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'updatedAt'>>
   ): Promise<void> {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)

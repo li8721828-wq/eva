@@ -75,20 +75,11 @@ export class OpenAIProvider implements LLMProvider {
         content: delta?.content || '',
       }
 
-      // Only include toolCalls in the chunk when we have accumulated data
-      if (delta?.tool_calls && delta.tool_calls.length > 0) {
-        yieldChunk.toolCalls = delta.tool_calls.map((tc) => ({
-          index: tc.index,
-          id: tc.id,
-          name: tc.function?.name,
-          arguments: tc.function?.arguments,
-        }))
-      }
-
       if (finishReason) {
         yieldChunk.finishReason = finishReason
 
-        // On finish, if tool_calls accumulated, include the full assembled calls
+        // Tool argument deltas are not forwarded. AgentRunner accepts completed
+        // calls, so emitting both deltas and this final value would duplicate JSON.
         if (finishReason === 'tool_calls' && toolCallsAccumulator.size > 0) {
           yieldChunk.toolCalls = Array.from(toolCallsAccumulator.entries()).map(([index, acc]) => ({
             index,

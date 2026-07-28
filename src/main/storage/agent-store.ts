@@ -3,6 +3,7 @@ import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { AgentConfig } from '../../shared/types/agent'
 import { BUILT_IN_AGENTS } from '../../shared/constants'
+import { TOOL_CATALOG_VERSION } from '../../shared/tool-catalog'
 
 export class AgentStore {
   private dataDir: string
@@ -94,21 +95,29 @@ export class AgentStore {
 
   async initializeBuiltInAgents(): Promise<void> {
     const existing = this.readAgents()
-    const existingBuiltInIds = new Set(
-      existing.filter((a) => a.isBuiltIn).map((a) => a.name)
-    )
-
     const now = Date.now()
     const newAgents: AgentConfig[] = [...existing]
 
     for (const builtIn of BUILT_IN_AGENTS) {
-      if (!existingBuiltInIds.has(builtIn.name)) {
+      const existingBuiltIn = newAgents.find((agent) => agent.isBuiltIn && agent.name === builtIn.name)
+      if (!existingBuiltIn) {
         newAgents.push({
           ...builtIn,
           id: uuidv4(),
           createdAt: now,
           updatedAt: now,
         })
+      } else if (existingBuiltIn.systemPrompt !== builtIn.systemPrompt) {
+        // Built-in agents are read-only in the UI, so keep their shipped safety
+        // instructions current for users who already have a persisted config.
+        existingBuiltIn.systemPrompt = builtIn.systemPrompt
+        existingBuiltIn.updatedAt = now
+      }
+
+      if (existingBuiltIn && existingBuiltIn.toolCatalogVersion !== TOOL_CATALOG_VERSION) {
+        existingBuiltIn.tools = [...new Set([...existingBuiltIn.tools, ...builtIn.tools])]
+        existingBuiltIn.toolCatalogVersion = TOOL_CATALOG_VERSION
+        existingBuiltIn.updatedAt = now
       }
     }
 

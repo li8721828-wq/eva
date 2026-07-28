@@ -1,4 +1,7 @@
 import type { AgentConfig } from './agent'
+import type { FileAccessGrant } from './file-access'
+
+export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
 
 export interface Conversation {
   id: string
@@ -6,8 +9,13 @@ export interface Conversation {
   agentId: string
   mode: 'normal' | 'expert' | 'goal'
   workspaceId?: string
+  /** External message channel that owns this conversation. */
+  channel?: 'qq'
   /** Full access is an explicit choice for conversations created outside a project. */
   accessScope?: 'workspace' | 'full'
+  permissionLevel?: ConversationPermissionLevel
+  fileAccessGrants?: FileAccessGrant[]
+  archived?: boolean
   workspacePath: string
   createdAt: number
   updatedAt: number
@@ -35,12 +43,13 @@ export interface ToolCall {
 }
 
 export interface ChatStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
+  type: 'thinking' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
   messageId?: string
   content?: string
   toolCall?: Partial<ToolCall>
   toolCallId?: string
   toolResult?: string
+  isError?: boolean
   error?: string
   finishReason?: string
 }

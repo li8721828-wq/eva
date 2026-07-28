@@ -5,12 +5,27 @@ export const IPC = {
   CONVERSATION_DELETE: 'conversation:delete',
   CONVERSATION_LOAD: 'conversation:load',
   CONVERSATION_UPDATE: 'conversation:update',
+  CONVERSATION_CHANGED: 'conversation:changed',
+
+  // Activity log
+  ACTIVITY_LIST: 'activity:list',
+  ACTIVITY_STREAM: 'activity:stream',
 
   // Workspace management
   WORKSPACE_LIST: 'workspace:list',
   WORKSPACE_CREATE: 'workspace:create',
   WORKSPACE_UPDATE: 'workspace:update',
   WORKSPACE_DELETE: 'workspace:delete',
+
+  // Plugin management
+  PLUGIN_LIST: 'plugin:list',
+  PLUGIN_MARKETPLACE: 'plugin:marketplace',
+  PLUGIN_INSTALL_MARKETPLACE: 'plugin:install-marketplace',
+  PLUGIN_IMPORT: 'plugin:import',
+  PLUGIN_TOGGLE: 'plugin:toggle',
+  PLUGIN_DELETE: 'plugin:delete',
+  PLUGIN_UPDATE_SETTINGS: 'plugin:update-settings',
+  PLUGIN_SELECT_PATH: 'plugin:select-path',
 
   // 聊天（流式）
   CHAT_SEND: 'chat:send',
@@ -62,4 +77,11 @@ export const IPC = {
   PROVIDER_CONFIG: 'provider:config',
   PROVIDER_TEST: 'provider:test',
   PROVIDER_MODELS: 'provider:models',
+
+  // QQ remote control
+  QQ_REMOTE_GET_CONFIG: 'qq-remote:get-config',
+  QQ_REMOTE_SAVE_CONFIG: 'qq-remote:save-config',
+  QQ_REMOTE_GET_STATUS: 'qq-remote:get-status',
+  QQ_REMOTE_CONNECT: 'qq-remote:connect',
+  QQ_REMOTE_DISCONNECT: 'qq-remote:disconnect',
 } as const

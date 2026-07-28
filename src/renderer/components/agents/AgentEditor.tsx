@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input'
 import { Textarea } from '@/components/ui/Textarea'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
+import { ToolAccessPanel } from './ToolAccessPanel'
 import { Save, X } from 'lucide-react'
 
 export interface AgentEditorProps {
@@ -25,17 +26,6 @@ const roleOptions = (Object.entries(AGENT_ROLES) as [string, { label: string; de
     label: info.label,
   })
 )
-
-const TOOL_LIST = [
-  'read_file',
-  'write_file',
-  'list_directory',
-  'search_files',
-  'file_info',
-  'execute_command',
-  'search_code',
-  'search_by_regex',
-]
 
 export function AgentEditor({
   agent,
@@ -103,10 +93,6 @@ export function AgentEditor({
     const providers = availableProviders || Object.keys(DEFAULT_MODELS)
     return providers.map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))
   }, [availableProviders])
-
-  const toggleTool = (tool: string) => {
-    setTools((prev) => (prev.includes(tool) ? prev.filter((t) => t !== tool) : [...prev, tool]))
-  }
 
   const handleSave = () => {
     if (!name.trim()) {
@@ -241,27 +227,7 @@ export function AgentEditor({
         </div>
       </div>
 
-      {/* Tool Permissions */}
-      <div className="space-y-1.5">
-        <label className="text-sm font-medium text-zinc-500">Tool Permissions</label>
-        <div className="flex flex-wrap gap-2">
-          {TOOL_LIST.map((tool) => (
-            <button
-              key={tool}
-              type="button"
-              onClick={() => toggleTool(tool)}
-              className={cn(
-                'rounded-md px-2.5 py-1 text-xs transition-colors cursor-pointer',
-                tools.includes(tool)
-                  ? 'bg-violet-100 text-violet-700 border border-violet-300'
-                  : 'bg-zinc-100 text-zinc-500 border border-zinc-200 hover:text-zinc-700'
-              )}
-            >
-              {tool}
-            </button>
-          ))}
-        </div>
-      </div>
+      <ToolAccessPanel tools={tools} onChange={setTools} />
     </div>
   )
 }

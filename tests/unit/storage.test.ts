@@ -24,6 +24,9 @@ vi.mock('electron-store', () => {
 })
 
 import { ConversationStore } from '../../src/main/storage/conversation-store'
+import { ActivityLogStore } from '../../src/main/storage/activity-log-store'
+import { AgentStore } from '../../src/main/storage/agent-store'
+import { BUILT_IN_AGENTS } from '../../src/shared/constants'
 
 describe('ConversationStore', () => {
   let store: ConversationStore
@@ -88,6 +91,42 @@ describe('ConversationStore', () => {
     expect(await store.getConversation(conv.id)).toBeNull()
     const list = await store.listConversations()
     expect(list.length).toBe(0)
+  })
+
+  it('should archive and restore a conversation without deleting it', async () => {
+    const conv = await store.createConversation({
+      title: 'To Archive',
+      agentId: '',
+      mode: 'normal',
+      workspacePath: '',
+    })
+
+    expect(conv.archived).toBe(false)
+    await store.updateConversation(conv.id, { archived: true })
+    expect((await store.getConversation(conv.id))?.archived).toBe(true)
+
+    await store.updateConversation(conv.id, { archived: false })
+    expect((await store.getConversation(conv.id))?.archived).toBe(false)
+  })
+
+  it('should persist permissions on a conversation', async () => {
+    const conv = await store.createConversation({
+      title: 'Permission Test',
+      agentId: '',
+      mode: 'normal',
+      permissionLevel: 'workspace',
+      fileAccessGrants: [],
+      workspacePath: '/workspace',
+    })
+
+    await store.updateConversation(conv.id, {
+      permissionLevel: 'granted-folders',
+      fileAccessGrants: [{ path: '/shared', access: 'read' }],
+    })
+
+    const updated = await store.getConversation(conv.id)
+    expect(updated?.permissionLevel).toBe('granted-folders')
+    expect(updated?.fileAccessGrants).toEqual([{ path: '/shared', access: 'read' }])
   })
 
   it('should add and get messages', async () => {
@@ -182,5 +221,75 @@ describe('ConversationStore', () => {
     expect(remaining.length).toBe(2)
     expect(remaining[0].content).toBe('Message 0')
     expect(remaining[1].content).toBe('Message 1')
+  })
+})
+
+describe('ActivityLogStore', () => {
+  let store: ActivityLogStore
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eva-test-activity-'))
+    store = new ActivityLogStore(tmpDir)
+  })
+
+  afterEach(() => {
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('persists entries newest first and filters by conversation', async () => {
+    await store.append({
+      category: 'conversation',
+      action: 'conversation.created',
+      status: 'success',
+      summary: 'Created first conversation.',
+      conversationId: 'conversation-a',
+      timestamp: 100,
+    })
+    await store.append({
+      category: 'tool',
+      action: 'tool.completed',
+      status: 'success',
+      summary: 'Completed tool call.',
+      conversationId: 'conversation-b',
+      timestamp: 200,
+    })
+
+    const allEntries = await store.list()
+    expect(allEntries.map((entry) => entry.summary)).toEqual(['Completed tool call.', 'Created first conversation.'])
+
+    const filteredEntries = await store.list({ conversationId: 'conversation-a' })
+    expect(filteredEntries).toHaveLength(1)
+    expect(filteredEntries[0].action).toBe('conversation.created')
+  })
+})
+
+describe('AgentStore', () => {
+  let store: AgentStore
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eva-test-agents-'))
+    store = new AgentStore(tmpDir)
+  })
+
+  afterEach(() => {
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('updates persisted built-in prompts during initialization', async () => {
+    await store.initializeBuiltInAgents()
+    const codingAssistant = (await store.listAgents()).find((agent) => agent.name === 'Coding Assistant')!
+
+    await store.updateAgent(codingAssistant.id, { systemPrompt: 'Old built-in prompt' })
+    await store.initializeBuiltInAgents()
+
+    const updated = await store.getAgent(codingAssistant.id)
+    const shippedPrompt = BUILT_IN_AGENTS.find((agent) => agent.name === 'Coding Assistant')!.systemPrompt
+    expect(updated?.systemPrompt).toBe(shippedPrompt)
   })
 })

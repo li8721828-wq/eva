@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import { getStorage } from '../storage'
 import type { Workspace } from '../../shared/types/workspace'
+import fs from 'fs'
 
 export function registerWorkspaceHandlers(): void {
   ipcMain.handle(IPC.WORKSPACE_LIST, async (): Promise<Workspace[]> => {
@@ -9,6 +10,9 @@ export function registerWorkspaceHandlers(): void {
   })
 
   ipcMain.handle(IPC.WORKSPACE_CREATE, async (_event, path: string, name?: string): Promise<Workspace> => {
+    if (!path || !fs.existsSync(path) || !fs.statSync(path).isDirectory()) {
+      throw new Error('Please choose a folder to create a project workspace.')
+    }
     return getStorage().workspaces.create(path, name)
   })
 
