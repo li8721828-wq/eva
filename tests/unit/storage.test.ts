@@ -24,6 +24,9 @@ vi.mock('electron-store', () => {
 })
 
 import { ConversationStore } from '../../src/main/storage/conversation-store'
+import { ActivityLogStore } from '../../src/main/storage/activity-log-store'
+import { AgentStore } from '../../src/main/storage/agent-store'
+import { BUILT_IN_AGENTS } from '../../src/shared/constants'
 
 describe('ConversationStore', () => {
   let store: ConversationStore
@@ -218,5 +221,75 @@ describe('ConversationStore', () => {
     expect(remaining.length).toBe(2)
     expect(remaining[0].content).toBe('Message 0')
     expect(remaining[1].content).toBe('Message 1')
+  })
+})
+
+describe('ActivityLogStore', () => {
+  let store: ActivityLogStore
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eva-test-activity-'))
+    store = new ActivityLogStore(tmpDir)
+  })
+
+  afterEach(() => {
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('persists entries newest first and filters by conversation', async () => {
+    await store.append({
+      category: 'conversation',
+      action: 'conversation.created',
+      status: 'success',
+      summary: 'Created first conversation.',
+      conversationId: 'conversation-a',
+      timestamp: 100,
+    })
+    await store.append({
+      category: 'tool',
+      action: 'tool.completed',
+      status: 'success',
+      summary: 'Completed tool call.',
+      conversationId: 'conversation-b',
+      timestamp: 200,
+    })
+
+    const allEntries = await store.list()
+    expect(allEntries.map((entry) => entry.summary)).toEqual(['Completed tool call.', 'Created first conversation.'])
+
+    const filteredEntries = await store.list({ conversationId: 'conversation-a' })
+    expect(filteredEntries).toHaveLength(1)
+    expect(filteredEntries[0].action).toBe('conversation.created')
+  })
+})
+
+describe('AgentStore', () => {
+  let store: AgentStore
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eva-test-agents-'))
+    store = new AgentStore(tmpDir)
+  })
+
+  afterEach(() => {
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('updates persisted built-in prompts during initialization', async () => {
+    await store.initializeBuiltInAgents()
+    const codingAssistant = (await store.listAgents()).find((agent) => agent.name === 'Coding Assistant')!
+
+    await store.updateAgent(codingAssistant.id, { systemPrompt: 'Old built-in prompt' })
+    await store.initializeBuiltInAgents()
+
+    const updated = await store.getAgent(codingAssistant.id)
+    const shippedPrompt = BUILT_IN_AGENTS.find((agent) => agent.name === 'Coding Assistant')!.systemPrompt
+    expect(updated?.systemPrompt).toBe(shippedPrompt)
   })
 })

@@ -4,8 +4,9 @@ import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, MessageSquare, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, MessageSquare, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 
 function belongsToWorkspace(conversation: Conversation, workspace: Workspace): boolean {
@@ -19,16 +20,10 @@ interface ConversationRowProps {
   onSelect: (id: string) => void
   onArchive: (id: string) => void
   onRestore: (id: string) => void
-  onDelete: (id: string) => void
+  onDelete: (conversation: Conversation) => void
 }
 
 function ConversationRow({ conversation, isSelected, archived = false, onSelect, onArchive, onRestore, onDelete }: ConversationRowProps) {
-  const confirmDelete = () => {
-    if (window.confirm(`Permanently delete "${conversation.title || 'Untitled'}"? This cannot be undone.`)) {
-      onDelete(conversation.id)
-    }
-  }
-
   return (
     <div
       className={cn(
@@ -58,7 +53,7 @@ function ConversationRow({ conversation, isSelected, archived = false, onSelect,
             <Archive className="h-3.5 w-3.5" />
           </button>
         )}
-        <button type="button" onClick={confirmDelete} className="rounded p-1 text-zinc-400 hover:bg-red-50 hover:text-red-600" title="Delete permanently" aria-label="Delete conversation">
+        <button type="button" onClick={() => onDelete(conversation)} className="rounded p-1 text-zinc-400 hover:bg-red-50 hover:text-red-600" title="Delete permanently" aria-label="Delete conversation">
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -79,6 +74,7 @@ export function ConversationList({ className }: ConversationListProps) {
   } = useWorkspaceStore()
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
   const [archivedOpen, setArchivedOpen] = useState(false)
+  const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null)
 
   const toggleProject = (id: string) => {
     setActiveWorkspaceId(id)
@@ -94,8 +90,17 @@ export function ConversationList({ className }: ConversationListProps) {
   const archivedConversations = conversations.filter((conversation) => conversation.archived)
   const unassigned = activeConversations.filter((conversation) => !workspaces.some((workspace) => belongsToWorkspace(conversation, workspace)))
 
+  const confirmDelete = async () => {
+    if (!conversationToDelete) return
+
+    const conversationId = conversationToDelete.id
+    setConversationToDelete(null)
+    await deleteConversation(conversationId)
+  }
+
   return (
-    <ScrollArea className={cn('flex-1', className)}>
+    <>
+      <ScrollArea className={cn('flex-1', className)}>
       <div className="flex flex-col gap-3 px-4 py-4">
         <div className="px-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Projects</div>
 
@@ -139,7 +144,7 @@ export function ConversationList({ className }: ConversationListProps) {
                       onSelect={(id) => void selectConversation(id)}
                       onArchive={(id) => void archiveConversation(id)}
                       onRestore={(id) => void restoreConversation(id)}
-                      onDelete={(id) => void deleteConversation(id)}
+                      onDelete={setConversationToDelete}
                     />
                   ))}
                   {projectConversations.length === 0 && <p className="px-3 py-2 text-xs text-zinc-400">No conversations</p>}
@@ -165,7 +170,7 @@ export function ConversationList({ className }: ConversationListProps) {
                   onSelect={(id) => void selectConversation(id)}
                   onArchive={(id) => void archiveConversation(id)}
                   onRestore={(id) => void restoreConversation(id)}
-                  onDelete={(id) => void deleteConversation(id)}
+                  onDelete={setConversationToDelete}
                 />
               ))}
             </div>
@@ -190,14 +195,34 @@ export function ConversationList({ className }: ConversationListProps) {
                     onSelect={(id) => void selectConversation(id)}
                     onArchive={(id) => void archiveConversation(id)}
                     onRestore={(id) => void restoreConversation(id)}
-                    onDelete={(id) => void deleteConversation(id)}
+                    onDelete={setConversationToDelete}
                   />
                 ))}
               </div>
             )}
           </div>
         )}
-      </div>
-    </ScrollArea>
+        </div>
+      </ScrollArea>
+
+      <Dialog open={conversationToDelete !== null} onOpenChange={(open) => !open && setConversationToDelete(null)} className="max-w-md overflow-hidden rounded-xl p-0">
+        <DialogClose onClose={() => setConversationToDelete(null)} />
+        <div className="p-6 pb-5">
+          <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-600">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <DialogHeader className="mb-0 gap-2 pr-8">
+            <DialogTitle>Delete conversation?</DialogTitle>
+            <DialogDescription className="leading-6">
+              <span className="font-medium text-zinc-700">{conversationToDelete?.title || 'Untitled'}</span> will be permanently deleted. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+        </div>
+        <div className="flex items-center justify-end gap-3 border-t border-zinc-100 bg-zinc-50/70 px-6 py-4">
+          <Button variant="outline" onClick={() => setConversationToDelete(null)}>Cancel</Button>
+          <Button variant="destructive" onClick={() => void confirmDelete()}>Delete</Button>
+        </div>
+      </Dialog>
+    </>
   )
 }

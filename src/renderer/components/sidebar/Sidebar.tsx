@@ -1,7 +1,6 @@
 import React, { useRef, useState } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
-import { useAgentStore } from '@/stores/use-agent-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
@@ -20,12 +19,10 @@ export function Sidebar({ className }: SidebarProps) {
     useAppStore()
   const { createConversation } = useChatStore()
   const { addWorkspace, addWorkspaceAtPath, activeWorkspaceId, workspaces } = useWorkspaceStore()
-  const { agents, selectedAgentId } = useAgentStore()
   const [isDraggingFolder, setIsDraggingFolder] = useState(false)
   const [dropMessage, setDropMessage] = useState<string | null>(null)
   const dragDepth = useRef(0)
 
-  const activeAgent = agents.find((a) => a.id === selectedAgentId)
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
 
   const isFileDrag = (event: React.DragEvent) => Array.from(event.dataTransfer.types).includes('Files')
@@ -196,27 +193,6 @@ export function Sidebar({ className }: SidebarProps) {
 
       {/* Conversation list */}
       <ConversationList className="flex-1" />
-
-      <Separator />
-
-      {/* Active Agent */}
-      <div className="p-3">
-        <button
-          className={cn(
-            'flex min-h-14 w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm transition-all duration-200',
-            'text-zinc-600 hover:bg-zinc-200 hover:text-zinc-800'
-          )}
-          onClick={() => setAgentManagerOpen(true)}
-        >
-          <Bot className="h-4 w-4 shrink-0 text-violet-500" />
-          <div className="flex-1 min-w-0">
-            <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-0.5">Agent</div>
-            <div className="text-sm text-zinc-800 truncate">
-              {activeAgent?.name || 'Select Agent'}
-            </div>
-          </div>
-        </button>
-      </div>
 
       <Separator />
 

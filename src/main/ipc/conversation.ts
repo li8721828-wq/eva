@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatMessage, ToolCall } from '../../shared/types/conversation'
+import type { Conversation, ChatMessage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
 import type { AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -8,6 +8,7 @@ import { AgentRunner } from '../agent-engine/agent-runner'
 import { ContextManager } from '../agent-engine/context'
 import { getStorage } from '../storage'
 import { v4 as uuidv4 } from 'uuid'
+import { recordActivity } from '../services/activity-log'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -18,6 +19,28 @@ export interface ChatServices {
 
 // Module-level reference to the currently running AgentRunner (for abort)
 let currentRunner: AgentRunner | null = null
+
+function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
+  switch (event.type) {
+    case 'text':
+      return { type: 'text_delta', content: event.content }
+    case 'thinking':
+      return { type: 'thinking', content: event.content }
+    case 'tool_call':
+      return { type: 'tool_call_start', toolCall: event.toolCall }
+    case 'tool_result':
+      return {
+        type: 'tool_result',
+        toolCallId: event.toolResult?.toolCallId,
+        toolResult: event.toolResult?.result,
+        isError: event.toolResult?.isError,
+      }
+    case 'error':
+      return { type: 'error', error: event.error }
+    case 'done':
+      return { type: 'done', content: event.content }
+  }
+}
 
 async function getConversationAccess(conversation?: Conversation): Promise<{ fileAccessGrants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean }> {
   if (conversation?.permissionLevel) {
@@ -57,7 +80,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope']; permissionLevel?: Conversation['permissionLevel']; fileAccessGrants?: Conversation['fileAccessGrants'] }
     ): Promise<Conversation> => {
       const workspace = data.workspaceId ? await getStorage().workspaces.get(data.workspaceId) : null
-      return getStorage().conversations.createConversation({
+      const conversation = await getStorage().conversations.createConversation({
         title: data.title || 'New Conversation',
         agentId: data.agentId || '',
         mode: data.mode || 'normal',
@@ -67,11 +90,28 @@ export function registerConversationHandlers(services?: ChatServices): void {
         fileAccessGrants: data.fileAccessGrants || [],
         workspacePath: data.workspacePath ?? workspace?.path ?? getStorage().config.get('workspacePath'),
       })
+      void recordActivity({
+        category: 'conversation',
+        action: 'conversation.created',
+        status: 'success',
+        summary: `Created conversation: ${conversation.title}`,
+        conversationId: conversation.id,
+        workspaceId: conversation.workspaceId,
+      }, BrowserWindow.fromWebContents(_event.sender))
+      return conversation
     }
   )
 
-  ipcMain.handle(IPC.CONVERSATION_DELETE, async (_event, id: string): Promise<void> => {
+  ipcMain.handle(IPC.CONVERSATION_DELETE, async (event, id: string): Promise<void> => {
+    const conversation = await getStorage().conversations.getConversation(id)
     await getStorage().conversations.deleteConversation(id)
+    void recordActivity({
+      category: 'conversation',
+      action: 'conversation.deleted',
+      status: 'info',
+      summary: `Deleted conversation: ${conversation?.title || 'Untitled'}`,
+      workspaceId: conversation?.workspaceId,
+    }, BrowserWindow.fromWebContents(event.sender))
   })
 
   ipcMain.handle(
@@ -93,11 +133,43 @@ export function registerConversationHandlers(services?: ChatServices): void {
   ipcMain.handle(
     IPC.CONVERSATION_UPDATE,
     async (
-      _event,
+      event,
       id: string,
-      data: Partial<Pick<Conversation, 'title' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>
+      data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>
     ): Promise<void> => {
+      const conversation = await getStorage().conversations.getConversation(id)
       await getStorage().conversations.updateConversation(id, data)
+
+      if (data.archived !== undefined) {
+        void recordActivity({
+          category: 'conversation',
+          action: data.archived ? 'conversation.archived' : 'conversation.restored',
+          status: 'success',
+          summary: `${data.archived ? 'Archived' : 'Restored'} conversation: ${conversation?.title || 'Untitled'}`,
+          conversationId: id,
+          workspaceId: conversation?.workspaceId,
+        }, BrowserWindow.fromWebContents(event.sender))
+      }
+      if (data.permissionLevel) {
+        void recordActivity({
+          category: 'permission',
+          action: 'permission.updated',
+          status: 'info',
+          summary: `Set access to ${data.permissionLevel.replace('-', ' ')}.`,
+          conversationId: id,
+          workspaceId: conversation?.workspaceId,
+        }, BrowserWindow.fromWebContents(event.sender))
+      }
+      if (data.agentId) {
+        void recordActivity({
+          category: 'conversation',
+          action: 'conversation.agent_updated',
+          status: 'info',
+          summary: 'Updated the conversation agent.',
+          conversationId: id,
+          workspaceId: conversation?.workspaceId,
+        }, BrowserWindow.fromWebContents(event.sender))
+      }
     }
   )
 
@@ -110,9 +182,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
 
-      const send = (streamEvent: AgentEvent & { conversationId?: string }): void => {
+      const send = (agentEvent: AgentEvent): void => {
         if (!win.isDestroyed()) {
-          win.webContents.send(IPC.CHAT_STREAM, { ...streamEvent, conversationId })
+          win.webContents.send(IPC.CHAT_STREAM, { ...toChatStreamEvent(agentEvent), conversationId })
         }
       }
 
@@ -154,6 +226,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const effectiveAgentConfig = agentConfig.isBuiltIn
           ? { ...agentConfig, providerId: activeProviderId, model: activeModel }
           : agentConfig
+
+        void recordActivity({
+          category: 'agent',
+          action: 'agent.started',
+          status: 'info',
+          summary: `${effectiveAgentConfig.name} started a response.`,
+          conversationId,
+          workspaceId: conversation.workspaceId,
+        }, win)
 
         const provider = services.providerRegistry.get(effectiveAgentConfig.providerId)
         if (!provider) {
@@ -202,9 +283,25 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
             allToolCalls.push(agentEvent.toolCall)
+            void recordActivity({
+              category: 'tool',
+              action: 'tool.started',
+              status: 'info',
+              summary: `${effectiveAgentConfig.name} started ${agentEvent.toolCall.name}.`,
+              conversationId,
+              workspaceId: conversation.workspaceId,
+            }, win)
           }
           if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
             allToolResults.push(agentEvent.toolResult)
+            void recordActivity({
+              category: 'tool',
+              action: 'tool.completed',
+              status: agentEvent.toolResult.isError ? 'error' : 'success',
+              summary: `${agentEvent.toolResult.name} ${agentEvent.toolResult.isError ? 'failed' : 'completed'}.`,
+              conversationId,
+              workspaceId: conversation.workspaceId,
+            }, win)
           }
           if (agentEvent.type === 'done' && agentEvent.content) {
             assistantContent = agentEvent.content
@@ -256,7 +353,22 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           await convStore.addMessage(conversationId, toolMessage)
         }
+        void recordActivity({
+          category: 'agent',
+          action: 'agent.completed',
+          status: 'success',
+          summary: `${effectiveAgentConfig.name} completed the response.`,
+          conversationId,
+          workspaceId: conversation.workspaceId,
+        }, win)
       } catch (err: any) {
+        void recordActivity({
+          category: 'agent',
+          action: 'agent.failed',
+          status: 'error',
+          summary: 'Agent response failed.',
+          conversationId,
+        }, win)
         send({ type: 'error', error: err?.message ?? String(err) })
         send({ type: 'done', content: '' })
       } finally {

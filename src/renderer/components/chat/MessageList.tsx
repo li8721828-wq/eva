@@ -16,7 +16,7 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, isStreaming, streamingContent, streamingToolCalls } = useChatStore()
+  const { messages, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
   const { rightPanelVisible } = useAppStore()
   const bottomRef = useRef<HTMLDivElement>(null)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -68,6 +68,13 @@ export function MessageList({ className }: MessageListProps) {
           <MessageBubble key={msg.id} message={msg} />
         ))}
 
+        {isStreaming && (
+          <div className="flex items-center gap-2 px-0 py-1 text-sm text-zinc-500">
+            <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+            <span>{streamingStatus || 'Working...'}</span>
+          </div>
+        )}
+
         {/* Streaming tool calls */}
         {isStreaming && streamingToolCalls.length > 0 && (
           <div className="px-0 py-2">
@@ -86,13 +93,6 @@ export function MessageList({ className }: MessageListProps) {
             <div className="max-w-[78%] rounded-2xl rounded-tl-sm border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-relaxed text-zinc-700 whitespace-pre-wrap shadow-sm">
               {streamingContent}
             </div>
-          </div>
-        )}
-
-        {isStreaming && !streamingContent && streamingToolCalls.length === 0 && (
-          <div className="flex items-center gap-2 px-0 py-3 text-zinc-500 text-sm">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Thinking...
           </div>
         )}
 

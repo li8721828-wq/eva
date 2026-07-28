@@ -6,6 +6,10 @@ export const IPC = {
   CONVERSATION_LOAD: 'conversation:load',
   CONVERSATION_UPDATE: 'conversation:update',
 
+  // Activity log
+  ACTIVITY_LIST: 'activity:list',
+  ACTIVITY_STREAM: 'activity:stream',
+
   // Workspace management
   WORKSPACE_LIST: 'workspace:list',
   WORKSPACE_CREATE: 'workspace:create',

@@ -10,6 +10,7 @@ import { TeamOrchestrator } from '../agent-engine/team-orchestrator'
 import { GoalPlanner } from '../agent-engine/goal-planner'
 import type { GoalEvent } from '../agent-engine/goal-planner'
 import { getStorage } from '../storage'
+import { recordActivity } from '../services/activity-log'
 
 export interface TaskServices {
   toolRegistry: ToolRegistry
@@ -118,12 +119,32 @@ export function registerTaskHandlers(services?: TaskServices): void {
           terminalService: taskServices.terminalService,
         })
         currentOrchestrator = orchestrator
+        void recordActivity({
+          category: 'agent',
+          action: 'team.started',
+          status: 'info',
+          summary: 'Expert Team started a task.',
+          conversationId,
+          workspaceId: conversation?.workspaceId,
+        }, win)
 
         // 5. Execute and stream events
         for await (const teamEvent of orchestrator.run({ goal })) {
+          if (teamEvent.type === 'plan_created') {
+            void recordActivity({ category: 'agent', action: 'team.planned', status: 'success', summary: `Expert Team created a plan with ${teamEvent.plan?.subtasks.length || 0} tasks.`, conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (teamEvent.type === 'task_assigned') {
+            void recordActivity({ category: 'agent', action: 'team.assigned', status: 'info', summary: `${teamEvent.agentName || 'An agent'} was assigned a task.`, conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (teamEvent.type === 'task_completed') {
+            void recordActivity({ category: 'agent', action: 'team.task_completed', status: 'success', summary: `${teamEvent.agentName || 'An agent'} completed a task.`, conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (teamEvent.type === 'task_failed' || teamEvent.type === 'error') {
+            void recordActivity({ category: 'agent', action: 'team.task_failed', status: 'error', summary: `${teamEvent.agentName || 'An agent'} failed a task.`, conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (teamEvent.type === 'done') {
+            void recordActivity({ category: 'agent', action: 'team.completed', status: 'success', summary: 'Expert Team completed the task.', conversationId, workspaceId: conversation?.workspaceId }, win)
+          }
           send(teamEvent)
         }
       } catch (err: any) {
+        void recordActivity({ category: 'agent', action: 'team.failed', status: 'error', summary: 'Expert Team task failed.', conversationId }, win)
         send({ type: 'error', error: err?.message ?? String(err) })
         send({ type: 'done' })
       } finally {
@@ -209,12 +230,32 @@ export function registerTaskHandlers(services?: TaskServices): void {
           timeout: goalConfig.timeout,
         })
         currentGoalPlanner = planner
+        void recordActivity({
+          category: 'agent',
+          action: 'goal.started',
+          status: 'info',
+          summary: `${agentConfig.name} started a goal-driven task.`,
+          conversationId: payload.conversationId,
+          workspaceId: conversation?.workspaceId,
+        }, win)
 
         // 5. Execute and stream events
         for await (const goalEvent of planner.run(goalConfig)) {
+          if (goalEvent.type === 'plan_created') {
+            void recordActivity({ category: 'agent', action: 'goal.planned', status: 'success', summary: `Created a goal plan with ${goalEvent.steps.length} steps.`, conversationId: payload.conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (goalEvent.type === 'step_started') {
+            void recordActivity({ category: 'agent', action: 'goal.step_started', status: 'info', summary: `Started goal step ${goalEvent.stepIndex + 1}.`, conversationId: payload.conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (goalEvent.type === 'step_completed') {
+            void recordActivity({ category: 'agent', action: 'goal.step_completed', status: 'success', summary: 'Completed a goal step.', conversationId: payload.conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (goalEvent.type === 'step_failed' || goalEvent.type === 'error') {
+            void recordActivity({ category: 'agent', action: 'goal.step_failed', status: 'error', summary: 'A goal step failed.', conversationId: payload.conversationId, workspaceId: conversation?.workspaceId }, win)
+          } else if (goalEvent.type === 'done') {
+            void recordActivity({ category: 'agent', action: 'goal.completed', status: 'success', summary: 'Goal-driven task completed.', conversationId: payload.conversationId, workspaceId: conversation?.workspaceId }, win)
+          }
           send(goalEvent)
         }
       } catch (err: any) {
+        void recordActivity({ category: 'agent', action: 'goal.failed', status: 'error', summary: 'Goal-driven task failed.', conversationId: payload.conversationId }, win)
         send({ type: 'error', error: err?.message ?? String(err) })
       } finally {
         currentGoalPlanner = null

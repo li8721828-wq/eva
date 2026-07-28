@@ -147,7 +147,7 @@ export class ConversationStore {
 
   async updateConversation(
     id: string,
-    updates: Partial<Pick<Conversation, 'title' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'updatedAt'>>
+    updates: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'updatedAt'>>
   ): Promise<void> {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)

@@ -1,10 +1,11 @@
 import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
+import { useAgentStore } from '@/stores/use-agent-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
-import { Box, FolderOpen, FolderPlus, Loader2, Paperclip, Send, ShieldCheck, Square, Trash2 } from 'lucide-react'
+import { Bot, Box, FolderOpen, FolderPlus, Loader2, Paperclip, Send, ShieldCheck, Square, Trash2 } from 'lucide-react'
 import type { ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
 import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
 
@@ -13,14 +14,16 @@ export interface InputBarProps {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, isStreaming, inputText, setConversationPermissions, setInputText, sendMessage, abortStream } = useChatStore()
+  const { conversations, createConversation, currentConversationId, isStreaming, inputText, setConversationAgent, setConversationPermissions, setInputText, sendMessage, abortStream } = useChatStore()
   const { activeProviderId, activeModel, setActiveModel } = useAppStore()
+  const { agents, selectedAgentId, selectAgent } = useAgentStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [availableModels, setAvailableModels] = useState<ProviderModelOption[]>([])
   const [loadingModels, setLoadingModels] = useState(false)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
   const fileAccessGrants = currentConversation?.fileAccessGrants || []
+  const activeAgentId = currentConversation?.agentId || selectedAgentId || ''
 
   useEffect(() => {
     let cancelled = false
@@ -101,6 +104,13 @@ export function InputBar({ className }: InputBarProps) {
   const handlePermissionChange = async (permission: ConversationPermissionLevel) => {
     const conversation = currentConversation || await createConversation()
     await setConversationPermissions(conversation.id, permission, conversation.fileAccessGrants || [])
+  }
+
+  const handleAgentChange = async (agentId: string) => {
+    if (!agentId) return
+    selectAgent(agentId)
+    const conversation = currentConversation || await createConversation(agentId)
+    await setConversationAgent(conversation.id, agentId)
   }
 
   const addFolderGrant = async () => {
@@ -185,8 +195,19 @@ export function InputBar({ className }: InputBarProps) {
 
           <div className="flex min-h-11 items-center justify-between gap-4 border-t border-zinc-100 bg-zinc-50 px-4 py-2.5 text-xs text-zinc-500">
             <div className="flex min-w-0 items-center gap-2">
+              <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+              <div className="w-[176px]">
+                <Select
+                  value={activeAgentId}
+                  onChange={(event) => void handleAgentChange(event.target.value)}
+                  options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
+                  aria-label="Select agent"
+                  title={currentConversation ? 'Agent for this conversation' : 'Select an agent to create a draft conversation'}
+                />
+              </div>
               <Box className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-              <div className="w-[220px]">
+              <div className="w-[190px]">
                 <Select
                   value={activeModel}
                   onChange={(event) => void handleModelChange(event.target.value)}

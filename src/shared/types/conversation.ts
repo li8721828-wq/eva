@@ -41,12 +41,13 @@ export interface ToolCall {
 }
 
 export interface ChatStreamEvent {
-  type: 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
+  type: 'thinking' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
   messageId?: string
   content?: string
   toolCall?: Partial<ToolCall>
   toolCallId?: string
   toolResult?: string
+  isError?: boolean
   error?: string
   finishReason?: string
 }

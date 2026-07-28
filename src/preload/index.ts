@@ -6,6 +6,7 @@ import type { TeamEvent, GoalConfig, GoalProgress } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
+import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -33,7 +34,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Pick<Conversation, 'title' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
   }
 
   // 聊天
@@ -92,6 +93,11 @@ export interface EvaAPI {
     onOutput(callback: EventCallback<{ id: string; data: string }>): Unsubscribe
     resize(id: string, cols: number, rows: number): Promise<void>
     destroy(id: string): Promise<void>
+  }
+
+  activity: {
+    list(filter?: ActivityLogFilter): Promise<ActivityLogEntry[]>
+    onEntry(callback: EventCallback<ActivityLogEntry>): Unsubscribe
   }
 
   workspace: {
@@ -214,6 +220,11 @@ const evaAPI: EvaAPI = {
       return Promise.resolve()
     },
     destroy: (id) => ipcRenderer.invoke(IPC.TERMINAL_DESTROY, id),
+  },
+
+  activity: {
+    list: (filter) => ipcRenderer.invoke(IPC.ACTIVITY_LIST, filter),
+    onEntry: (callback) => onStream(IPC.ACTIVITY_STREAM, callback),
   },
 
   workspace: {
