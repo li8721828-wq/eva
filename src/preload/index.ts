@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron'
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
 import type { Conversation, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
@@ -6,6 +6,7 @@ import type { TeamEvent, GoalConfig, GoalProgress } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
+import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -33,7 +34,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Conversation>): Promise<Conversation>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
   }
 
   // 聊天
@@ -82,6 +83,7 @@ export interface EvaAPI {
     tree(path: string, workspacePath?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>
     search(path: string, query: string, workspacePath?: string): Promise<string[]>
     selectFolder(): Promise<string | null>
+    getPath(file: File): string
   }
 
   // 终端
@@ -91,6 +93,11 @@ export interface EvaAPI {
     onOutput(callback: EventCallback<{ id: string; data: string }>): Unsubscribe
     resize(id: string, cols: number, rows: number): Promise<void>
     destroy(id: string): Promise<void>
+  }
+
+  activity: {
+    list(filter?: ActivityLogFilter): Promise<ActivityLogEntry[]>
+    onEntry(callback: EventCallback<ActivityLogEntry>): Unsubscribe
   }
 
   workspace: {
@@ -197,6 +204,7 @@ const evaAPI: EvaAPI = {
     tree: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_TREE, path, workspacePath),
     search: (path, query, workspacePath) => ipcRenderer.invoke(IPC.FILE_SEARCH, query, workspacePath),
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
+    getPath: (file) => webUtils.getPathForFile(file),
   },
 
   // 终端
@@ -212,6 +220,11 @@ const evaAPI: EvaAPI = {
       return Promise.resolve()
     },
     destroy: (id) => ipcRenderer.invoke(IPC.TERMINAL_DESTROY, id),
+  },
+
+  activity: {
+    list: (filter) => ipcRenderer.invoke(IPC.ACTIVITY_LIST, filter),
+    onEntry: (callback) => onStream(IPC.ACTIVITY_STREAM, callback),
   },
 
   workspace: {

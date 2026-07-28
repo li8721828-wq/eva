@@ -18,6 +18,7 @@ vi.mock('electron', () => ({
 }))
 
 import { ProviderRegistry, createProvider } from '../../src/main/providers'
+import { OpenAIProvider } from '../../src/main/providers/openai'
 import type { LLMProviderConfig } from '../../src/shared/types/provider'
 
 describe('ProviderRegistry', () => {
@@ -135,5 +136,75 @@ describe('createProvider', () => {
         isEnabled: true,
       })
     ).toThrow('Unknown provider type')
+  })
+})
+
+describe('OpenAIProvider streaming tool calls', () => {
+  it('emits one complete tool call instead of duplicating streamed arguments', async () => {
+    async function* streamToolCall() {
+      yield {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_1',
+                  function: { name: 'write_file', arguments: '{"path":"notes/' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }
+      yield {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  function: { arguments: 'story.md","content":"hello"}' },
+                },
+              ],
+            },
+            finish_reason: null,
+          },
+        ],
+      }
+      yield {
+        choices: [{ delta: {}, finish_reason: 'tool_calls' }],
+      }
+    }
+
+    const provider = new OpenAIProvider('test', 'Test', 'openai', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn().mockResolvedValue(streamToolCall()),
+        },
+      },
+    }
+
+    const chunks = []
+    for await (const chunk of provider.chat({ model: 'test-model', messages: [], tools: [] })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks).toEqual([
+      {
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: [
+          {
+            index: 0,
+            id: 'call_1',
+            name: 'write_file',
+            arguments: '{"path":"notes/story.md","content":"hello"}',
+          },
+        ],
+      },
+    ])
   })
 })

@@ -22,18 +22,15 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
-  FolderPlus,
   Info,
   Key,
   Link,
   Loader2,
   RefreshCw,
   Server,
-  ShieldCheck,
-  Trash2,
 } from 'lucide-react'
 import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
-import type { FileAccessGrant } from '../../../shared/types/file-access'
+import evaMark from '@/assets/eva-mark.svg'
 
 type ProviderType = ProviderConfigEntry['type']
 
@@ -50,8 +47,6 @@ export function SettingsDialog() {
     setSettingsOpen,
     workspacePath,
     setWorkspacePath,
-    fileAccessGrants,
-    setFileAccessGrants,
     activeProviderId,
     setActiveProvider,
     activeModel,
@@ -133,26 +128,6 @@ export function SettingsDialog() {
     } catch (error) {
       console.error('Failed to select folder:', error)
     }
-  }
-
-  const handleAddFileAccess = async () => {
-    try {
-      const path = await window.eva.file.selectFolder()
-      if (!path || fileAccessGrants.some((grant) => grant.path === path)) return
-      setFileAccessGrants([...fileAccessGrants, { path, access: 'read' }])
-    } catch (error) {
-      console.error('Failed to select access folder:', error)
-    }
-  }
-
-  const updateFileAccess = (path: string, access: FileAccessGrant['access']) => {
-    setFileAccessGrants(
-      fileAccessGrants.map((grant) => (grant.path === path ? { ...grant, access } : grant))
-    )
-  }
-
-  const removeFileAccess = (path: string) => {
-    setFileAccessGrants(fileAccessGrants.filter((grant) => grant.path !== path))
   }
 
   const handleSaveProvider = async () => {
@@ -278,64 +253,7 @@ export function SettingsDialog() {
                 </Button>
               </div>
               <p className="text-xs leading-5 text-zinc-500">
-                The workspace is always available to the selected agent with read and write access.
-              </p>
-            </div>
-
-            <div className="settings-dialog__card settings-dialog__access-card">
-              <div className="settings-dialog__access-header">
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-medium text-zinc-700">
-                    <ShieldCheck className="h-4 w-4 text-violet-600" />
-                    Legacy Conversation Access
-                  </div>
-                  <p className="mt-1 text-xs leading-5 text-zinc-500">
-                    Project permissions are configured from the project sidebar. New global conversations use full filesystem access; these folders are retained only for older unassigned conversations.
-                  </p>
-                </div>
-                <Button variant="outline" size="sm" className="gap-1.5" onClick={handleAddFileAccess}>
-                  <FolderPlus className="h-3.5 w-3.5" />
-                  Add Folder
-                </Button>
-              </div>
-
-              {fileAccessGrants.length > 0 ? (
-                <div className="settings-dialog__access-list">
-                  {fileAccessGrants.map((grant) => (
-                    <div className="settings-dialog__access-row" key={grant.path}>
-                      <FolderOpen className="h-4 w-4 shrink-0 text-zinc-400" />
-                      <span className="min-w-0 flex-1 truncate text-sm text-zinc-700" title={grant.path}>
-                        {grant.path}
-                      </span>
-                      <Select
-                        value={grant.access}
-                        onChange={(event) => updateFileAccess(grant.path, event.target.value as FileAccessGrant['access'])}
-                        options={[
-                          { value: 'read', label: 'Read only' },
-                          { value: 'read-write', label: 'Read & write' },
-                        ]}
-                        className="h-8 w-[132px] shrink-0 text-xs"
-                        aria-label={`File access for ${grant.path}`}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0 text-zinc-400 hover:text-red-600"
-                        onClick={() => removeFileAccess(grant.path)}
-                        title="Remove folder access"
-                        aria-label={`Remove access to ${grant.path}`}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="settings-dialog__access-empty">No additional folders are authorized.</div>
-              )}
-
-              <p className="text-xs leading-5 text-zinc-400">
-                File permissions apply to file and search tools. Command execution is controlled separately in Agent Manager.
+                Used as a fallback for older conversations. New conversations use their selected project, and file access is configured in each conversation input bar.
               </p>
             </div>
           </div>
@@ -498,9 +416,7 @@ export function SettingsDialog() {
         <TabsContent value="about" className="settings-dialog__content">
           <div className="settings-dialog__about">
             <div className="flex justify-center">
-              <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-violet-600 text-xl font-bold text-white">
-                E
-              </div>
+              <img src={evaMark} alt="Eva" className="h-12 w-12" />
             </div>
             <div>
               <h3 className="flex items-center justify-center gap-2 text-lg font-semibold text-zinc-900">

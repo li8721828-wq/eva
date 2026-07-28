@@ -5,12 +5,14 @@ import { ConfigStore } from './config-store'
 import { ConversationStore } from './conversation-store'
 import { AgentStore } from './agent-store'
 import { WorkspaceStore } from './workspace-store'
+import { ActivityLogStore } from './activity-log-store'
 
 export class StorageManager {
   config: ConfigStore
   conversations: ConversationStore
   agents: AgentStore
   workspaces: WorkspaceStore
+  activity: ActivityLogStore
 
   private userDataPath: string
 
@@ -22,6 +24,7 @@ export class StorageManager {
     )
     this.agents = new AgentStore(path.join(this.userDataPath, 'agents'))
     this.workspaces = new WorkspaceStore(this.userDataPath)
+    this.activity = new ActivityLogStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {

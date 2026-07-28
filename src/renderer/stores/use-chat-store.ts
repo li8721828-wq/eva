@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ChatMessage, Conversation, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
 import { useAgentStore } from './use-agent-store'
 import { useWorkspaceStore } from './use-workspace-store'
 
@@ -10,6 +10,7 @@ interface ChatState {
   isStreaming: boolean
   streamingContent: string
   streamingToolCalls: ToolCall[]
+  streamingStatus: string
   inputText: string
   error: string | null
 
@@ -29,6 +30,10 @@ interface ChatState {
   createConversation: (agentId?: string, mode?: 'normal' | 'expert' | 'goal', workspaceId?: string | null) => Promise<Conversation>
   selectConversation: (id: string) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
+  archiveConversation: (id: string) => Promise<void>
+  restoreConversation: (id: string) => Promise<void>
+  setConversationAgent: (id: string, agentId: string) => Promise<void>
+  setConversationPermissions: (id: string, permissionLevel: ConversationPermissionLevel, fileAccessGrants?: FileAccessGrant[]) => Promise<void>
   sendMessage: () => Promise<void>
   abortStream: () => void
   appendStreamEvent: (event: ChatStreamEvent) => void
@@ -52,6 +57,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isStreaming: false,
   streamingContent: '',
   streamingToolCalls: [],
+  streamingStatus: '',
   inputText: '',
   error: null,
 
@@ -88,6 +94,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         mode: mode || 'normal',
         workspaceId: workspace?.id,
         accessScope: workspace ? 'workspace' : 'full',
+        permissionLevel: workspace ? 'workspace' : 'full-access',
+        fileAccessGrants: [],
         workspacePath: workspace?.path || '',
       })
       set((s) => ({
@@ -96,6 +104,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: [],
         streamingContent: '',
         streamingToolCalls: [],
+        streamingStatus: '',
         error: null,
       }))
       return conv
@@ -107,7 +116,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   selectConversation: async (id) => {
     try {
-      set({ currentConversationId: id, isStreaming: false, streamingContent: '', streamingToolCalls: [], error: null })
+      set({ currentConversationId: id, isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', error: null })
       const result = await window.eva.conversation.load(id)
       set({ messages: result.messages })
     } catch (err) {
@@ -122,10 +131,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const conversations = s.conversations.filter((c) => c.id !== id)
         const updates: Partial<ChatState> = { conversations }
         if (s.currentConversationId === id) {
-          updates.currentConversationId = conversations[0]?.id || null
+          updates.currentConversationId = conversations.find((conversation) => !conversation.archived)?.id || null
           updates.messages = []
           updates.streamingContent = ''
           updates.streamingToolCalls = []
+          updates.streamingStatus = ''
         }
         return updates
       })
@@ -141,6 +151,80 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       console.error('Failed to delete conversation:', err)
+    }
+  },
+
+  archiveConversation: async (id) => {
+    try {
+      await window.eva.conversation.update(id, { archived: true })
+      set((state) => {
+        const conversations = state.conversations.map((conversation) =>
+          conversation.id === id ? { ...conversation, archived: true } : conversation
+        )
+        const updates: Partial<ChatState> = { conversations }
+        if (state.currentConversationId === id) {
+          updates.currentConversationId = conversations.find((conversation) => !conversation.archived)?.id || null
+          updates.messages = []
+          updates.streamingContent = ''
+          updates.streamingToolCalls = []
+          updates.streamingStatus = ''
+        }
+        return updates
+      })
+
+      const nextConversationId = get().currentConversationId
+      if (nextConversationId) {
+        const result = await window.eva.conversation.load(nextConversationId)
+        set({ messages: result.messages })
+      }
+    } catch (err) {
+      console.error('Failed to archive conversation:', err)
+    }
+  },
+
+  restoreConversation: async (id) => {
+    try {
+      await window.eva.conversation.update(id, { archived: false })
+      set((state) => ({
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === id ? { ...conversation, archived: false } : conversation
+        ),
+      }))
+    } catch (err) {
+      console.error('Failed to restore conversation:', err)
+    }
+  },
+
+  setConversationAgent: async (id, agentId) => {
+    const conversation = get().conversations.find((item) => item.id === id)
+    if (!conversation || conversation.agentId === agentId) return
+
+    try {
+      await window.eva.conversation.update(id, { agentId })
+      set((state) => ({
+        conversations: state.conversations.map((item) =>
+          item.id === id ? { ...item, agentId } : item
+        ),
+      }))
+    } catch (err) {
+      console.error('Failed to update conversation agent:', err)
+    }
+  },
+
+  setConversationPermissions: async (id, permissionLevel, fileAccessGrants) => {
+    const conversation = get().conversations.find((item) => item.id === id)
+    if (!conversation) return
+
+    const nextGrants = fileAccessGrants ?? conversation.fileAccessGrants ?? []
+    try {
+      await window.eva.conversation.update(id, { permissionLevel, fileAccessGrants: nextGrants })
+      set((state) => ({
+        conversations: state.conversations.map((item) =>
+          item.id === id ? { ...item, permissionLevel, fileAccessGrants: nextGrants } : item
+        ),
+      }))
+    } catch (err) {
+      console.error('Failed to update conversation permissions:', err)
     }
   },
 
@@ -186,11 +270,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       isStreaming: true,
       streamingContent: '',
       streamingToolCalls: [],
+      streamingStatus: 'Preparing the request...',
       error: null,
     }))
 
     try {
-      const selectedAgentId = useAgentStore.getState().selectedAgentId || ''
+      const selectedAgentId = conversation?.agentId || useAgentStore.getState().selectedAgentId || ''
       await window.eva.chat.send(convId, inputText.trim(), selectedAgentId)
     } catch (err) {
       console.error('Failed to send message:', err)
@@ -221,26 +306,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: [...s.messages, assistantMessage],
         streamingContent: '',
         streamingToolCalls: [],
+        streamingStatus: '',
         isStreaming: false,
       }))
     } else {
-      set({ isStreaming: false })
+      set({ isStreaming: false, streamingStatus: '' })
     }
   },
 
   appendStreamEvent: (event) => {
-    // The main process sends AgentEvent types which may have:
-    // - type: 'text' (full text or delta) -> map to text_delta
-    // - type: 'tool_call' -> map to tool_call_start
-    // - type: 'tool_result' -> map to tool_result
-    // - type: 'done' -> finalize
-    // - type: 'error' -> error
-    const eventType = (event.type as string) === 'text' ? 'text_delta' : event.type
+    switch (event.type) {
+      case 'thinking': {
+        set({ streamingStatus: event.content || 'Preparing the next step...' })
+        break
+      }
 
-    switch (eventType) {
       case 'text_delta': {
         if (event.content) {
-          set((s) => ({ streamingContent: s.streamingContent + event.content }))
+          set((s) => ({
+            streamingContent: s.streamingContent + event.content,
+            streamingStatus: 'Generating response...',
+          }))
         }
         break
       }
@@ -256,6 +342,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 streamingToolCalls: s.streamingToolCalls.map((t) =>
                   t.id === tc.id ? { ...t, ...tc } : t
                 ),
+                streamingStatus: `Running ${tc.name || 'tool'}...`,
               }
             }
             return {
@@ -269,6 +356,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   isError: tc.isError,
                 },
               ],
+              streamingStatus: `Running ${tc.name || 'tool'}...`,
             }
           })
         }
@@ -280,9 +368,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set((s) => ({
             streamingToolCalls: s.streamingToolCalls.map((tc) =>
               tc.id === event.toolCallId
-                ? { ...tc, result: event.toolResult || '', isError: false }
+                ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError) }
                 : tc
             ),
+            streamingStatus: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...',
           }))
         }
         break
@@ -307,10 +396,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             messages: [...messages, assistantMessage],
             streamingContent: '',
             streamingToolCalls: [],
+            streamingStatus: '',
             isStreaming: false,
           })
         } else {
-          set({ isStreaming: false, streamingContent: '', streamingToolCalls: [] })
+          set({ isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '' })
         }
 
         // Refresh conversation list
@@ -332,6 +422,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isStreaming: false,
           streamingContent: '',
           streamingToolCalls: [],
+          streamingStatus: '',
           error: errorMsg,
         }))
         break
@@ -344,6 +435,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [],
       streamingContent: '',
       streamingToolCalls: [],
+      streamingStatus: '',
       isStreaming: false,
       error: null,
     })

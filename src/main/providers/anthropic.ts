@@ -123,17 +123,6 @@ export class AnthropicProvider implements LLMProvider {
               name: block.name,
               inputJson: '',
             })
-            yield {
-              content: '',
-              toolCalls: [
-                {
-                  index: currentBlockIndex,
-                  id: block.id,
-                  name: block.name,
-                  arguments: '',
-                },
-              ],
-            }
           }
           break
         }
@@ -151,21 +140,13 @@ export class AnthropicProvider implements LLMProvider {
             if (block) {
               block.inputJson += delta.partial_json || ''
             }
-            yield {
-              content: '',
-              toolCalls: [
-                {
-                  index: idx,
-                  arguments: delta.partial_json || '',
-                },
-              ],
-            }
           }
           break
         }
 
         case 'content_block_stop': {
-          // Emit assembled tool call on block stop
+          // Emit each completed tool call once. Sending argument fragments before
+          // this value would make AgentRunner concatenate the JSON twice.
           const block = toolUseBlocks.get(event.index)
           if (block) {
             yield {

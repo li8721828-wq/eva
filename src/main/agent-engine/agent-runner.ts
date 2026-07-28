@@ -93,6 +93,11 @@ export class AgentRunner {
           return
         }
 
+        yield {
+          type: 'thinking',
+          content: iteration === 0 ? 'Preparing the response and any required tools...' : 'Reviewing the tool results...',
+        }
+
         // Call LLM (yields real-time text_delta events to caller)
         const response = yield* this.executeLLMCall(messages, toolDefs)
 

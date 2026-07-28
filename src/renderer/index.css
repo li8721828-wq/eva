@@ -54,7 +54,7 @@ html, body, #root {
 
 /* Focus visible */
 *:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 1px solid #a1a1aa;
   outline-offset: 1px;
 }
 

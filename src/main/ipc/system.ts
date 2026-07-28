@@ -1,4 +1,4 @@
-import { ipcMain, dialog } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { SpecTemplate } from '../../shared/types/spec'
 import type { ProviderConfigEntry } from '../storage/config-store'
@@ -10,6 +10,22 @@ import path from 'path'
 import { getStorage } from '../storage'
 import { SpecService } from '../services/spec-service'
 import { createProvider, type ProviderRegistry } from '../providers'
+import { recordActivity } from '../services/activity-log'
+
+const terminalWorkspaces = new Map<string, string>()
+
+function recordWorkspaceActivity(
+  event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent,
+  input: Parameters<typeof recordActivity>[0],
+  workspacePath?: string
+): void {
+  void (async () => {
+    const workspaceId = workspacePath
+      ? (await getStorage().workspaces.list()).find((workspace) => workspace.path === workspacePath)?.id
+      : undefined
+    await recordActivity({ ...input, workspaceId }, BrowserWindow.fromWebContents(event.sender))
+  })()
+}
 
 export function registerSystemHandlers(
   fileService?: FileService,
@@ -18,20 +34,26 @@ export function registerSystemHandlers(
 ): void {
   // ── File system handlers ──────────────────────────────────────────────────
 
-  ipcMain.handle(IPC.FILE_READ, async (_event, filePath: string, workspacePath?: string): Promise<string> => {
+  ipcMain.handle(IPC.FILE_READ, async (event, filePath: string, workspacePath?: string): Promise<string> => {
+    let content: string
     if (fileService && workspacePath) {
-      return fileService.readFile(filePath, workspacePath)
+      content = await fileService.readFile(filePath, workspacePath)
+    } else {
+      content = fs.readFileSync(filePath, 'utf-8')
     }
-    return fs.readFileSync(filePath, 'utf-8')
+    recordWorkspaceActivity(event, { category: 'file', action: 'file.read', status: 'success', summary: `Read ${path.basename(filePath)}.` }, workspacePath)
+    return content
   })
 
   ipcMain.handle(
     IPC.FILE_WRITE,
-    async (_event, filePath: string, content: string, workspacePath?: string): Promise<void> => {
+    async (event, filePath: string, content: string, workspacePath?: string): Promise<void> => {
       if (fileService && workspacePath) {
-        return fileService.writeFile(filePath, content, workspacePath)
+        await fileService.writeFile(filePath, content, workspacePath)
+      } else {
+        fs.writeFileSync(filePath, content, 'utf-8')
       }
-      fs.writeFileSync(filePath, content, 'utf-8')
+      recordWorkspaceActivity(event, { category: 'file', action: 'file.write', status: 'success', summary: `Wrote ${path.basename(filePath)}.` }, workspacePath)
     }
   )
 
@@ -96,16 +118,22 @@ export function registerSystemHandlers(
 
   // ── Terminal handlers ──────────────────────────────────────────────────────
 
-  ipcMain.handle(IPC.TERMINAL_CREATE, async (_event, id: string, cwd: string): Promise<void> => {
+  ipcMain.handle(IPC.TERMINAL_CREATE, async (event, id: string, cwd: string): Promise<void> => {
     if (terminalService) {
-      return terminalService.createSession(id, cwd)
+      await terminalService.createSession(id, cwd)
+    } else {
+      console.log('Terminal create (no service):', id)
     }
-    console.log('Terminal create (no service):', id)
+    terminalWorkspaces.set(id, cwd)
+    recordWorkspaceActivity(event, { category: 'terminal', action: 'terminal.created', status: 'success', summary: 'Opened a terminal session.' }, cwd)
   })
 
-  ipcMain.handle(IPC.TERMINAL_WRITE, async (_event, id: string, data: string): Promise<void> => {
+  ipcMain.on(IPC.TERMINAL_WRITE, (event, id: string, data: string): void => {
     if (terminalService) {
       terminalService.writeInput(id, data)
+    }
+    if (data.trim()) {
+      recordWorkspaceActivity(event, { category: 'terminal', action: 'terminal.command', status: 'info', summary: 'Executed a terminal command.' }, terminalWorkspaces.get(id))
     }
   })
 
@@ -115,10 +143,12 @@ export function registerSystemHandlers(
     }
   })
 
-  ipcMain.handle(IPC.TERMINAL_DESTROY, async (_event, id: string): Promise<void> => {
+  ipcMain.handle(IPC.TERMINAL_DESTROY, async (event, id: string): Promise<void> => {
     if (terminalService) {
-      terminalService.destroySession(id)
+      await terminalService.destroySession(id)
     }
+    recordWorkspaceActivity(event, { category: 'terminal', action: 'terminal.closed', status: 'info', summary: 'Closed a terminal session.' }, terminalWorkspaces.get(id))
+    terminalWorkspaces.delete(id)
   })
 
   // Config handlers
