@@ -68,9 +68,9 @@ export interface EvaAPI {
   goal: {
     start(payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string }): void
     onStream(callback: EventCallback<GoalEvent>): Unsubscribe
-    abort(): void
-    pause(): void
-    resume(): void
+    abort(conversationId: string): void
+    pause(conversationId: string): void
+    resume(conversationId: string): void
   }
 
   // Spec 模板
@@ -205,14 +205,14 @@ const evaAPI: EvaAPI = {
       ipcRenderer.send(IPC.TASK_GOAL_START, payload)
     },
     onStream: (callback) => onStream(IPC.TASK_GOAL_STREAM, callback),
-    abort: () => {
-      ipcRenderer.send(IPC.TASK_GOAL_ABORT)
+    abort: (conversationId) => {
+      ipcRenderer.send(IPC.TASK_GOAL_ABORT, conversationId)
     },
-    pause: () => {
-      ipcRenderer.send(IPC.TASK_GOAL_PAUSE)
+    pause: (conversationId) => {
+      ipcRenderer.send(IPC.TASK_GOAL_PAUSE, conversationId)
     },
-    resume: () => {
-      ipcRenderer.send(IPC.TASK_GOAL_RESUME)
+    resume: (conversationId) => {
+      ipcRenderer.send(IPC.TASK_GOAL_RESUME, conversationId)
     },
   },
 

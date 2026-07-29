@@ -37,3 +37,10 @@ release/
 
 # Eva Blender Connector runtime scripts and generated review renders
 .eva/
+
+# Local Blender task artifacts
+*.blend
+*.blend1
+output/
+test_render*.png
+build_chibi_maid.py

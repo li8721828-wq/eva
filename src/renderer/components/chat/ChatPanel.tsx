@@ -2,12 +2,13 @@ import React from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
-import { useTaskStore } from '@/stores/use-task-store'
+import { EMPTY_EXPERT_TASK, useTaskStore } from '@/stores/use-task-store'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { TeamCollaborationPanel } from './TeamCollaborationPanel'
+import { ExecutionMonitor } from './ExecutionMonitor'
 import { Bot, AlertCircle, ShieldAlert, X } from 'lucide-react'
 
 export interface ChatPanelProps {
@@ -18,7 +19,8 @@ export function ChatPanel({ className }: ChatPanelProps) {
   const { conversations, currentConversationId, error, setError } = useChatStore()
   const { workMode } = useAppStore()
   const { agents, getSelectedAgent } = useAgentStore()
-  const { currentPlan, isTaskRunning } = useTaskStore()
+  const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
+  const { currentPlan, isRunning: isTaskRunning } = expertTask
 
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId) || getSelectedAgent()
@@ -84,6 +86,8 @@ export function ChatPanel({ className }: ChatPanelProps) {
 
       {/* Messages */}
       <MessageList className="flex-1" />
+
+      <ExecutionMonitor />
 
       {/* Input */}
       <InputBar />

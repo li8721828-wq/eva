@@ -21,9 +21,10 @@ export interface TaskServices {
   terminalService: TerminalService
 }
 
-// Module-level references for abort
-let currentOrchestrator: TeamOrchestrator | null = null
-let currentGoalPlanner: GoalPlanner | null = null
+// Execution controls are keyed by conversation so separate chats can run in
+// parallel without sharing a cancellation handle or status.
+const activeOrchestrators = new Map<string, TeamOrchestrator>()
+const activeGoalPlanners = new Map<string, GoalPlanner>()
 let taskServices: TaskServices | null = null
 
 async function getConversationAccess(conversation?: Conversation | null): Promise<{ grants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean }> {
@@ -60,6 +61,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
       const { conversationId, goal } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
+      let orchestrator: TeamOrchestrator | null = null
 
       const send = (teamEvent: TeamEvent): void => {
         if (!win.isDestroyed()) {
@@ -193,7 +195,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         // 4. Create TeamOrchestrator
-        const orchestrator = new TeamOrchestrator({
+        orchestrator = new TeamOrchestrator({
           leader,
           workers,
           providerForAgent: (agent) => taskServices?.providerRegistry.get(agent.providerId),
@@ -208,7 +210,8 @@ export function registerTaskHandlers(services?: TaskServices): void {
           createWorkerConversation,
           onWorkerEvent: persistWorkerEvent,
         })
-        currentOrchestrator = orchestrator
+        activeOrchestrators.get(conversationId)?.abort()
+        activeOrchestrators.set(conversationId, orchestrator)
         void recordActivity({
           category: 'agent',
           action: 'team.started',
@@ -253,21 +256,21 @@ export function registerTaskHandlers(services?: TaskServices): void {
         send({ type: 'error', error: err?.message ?? String(err) })
         send({ type: 'done' })
       } finally {
-        currentOrchestrator = null
+        if (orchestrator && activeOrchestrators.get(conversationId) === orchestrator) {
+          activeOrchestrators.delete(conversationId)
+        }
       }
     }
   )
 
   // Expert mode - abort
-  ipcMain.on(IPC.TASK_ABORT, (_event, _conversationId: string) => {
-    if (currentOrchestrator) {
-      currentOrchestrator.abort()
-    }
+  ipcMain.on(IPC.TASK_ABORT, (_event, conversationId: string) => {
+    activeOrchestrators.get(conversationId)?.abort()
   })
 
   // Expert mode - status
-  ipcMain.handle(IPC.TASK_STATUS, async (_event, _conversationId: string): Promise<string> => {
-    return currentOrchestrator ? 'running' : 'idle'
+  ipcMain.handle(IPC.TASK_STATUS, async (_event, conversationId: string): Promise<string> => {
+    return activeOrchestrators.has(conversationId) ? 'running' : 'idle'
   })
 
   // ─── Goal Mode ──────────────────────────────────────────────────────────────
@@ -278,6 +281,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
     async (event, payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string }) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
+      let planner: GoalPlanner | null = null
 
       const send = (goalEvent: GoalEvent): void => {
         if (!win.isDestroyed()) {
@@ -322,7 +326,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           autoAdjust: payload.config?.autoAdjust ?? true,
         }
 
-        const planner = new GoalPlanner({
+        planner = new GoalPlanner({
           agentConfig,
           provider,
           toolRegistry: activeTaskServices.toolRegistry,
@@ -335,7 +339,8 @@ export function registerTaskHandlers(services?: TaskServices): void {
           maxSteps: goalConfig.maxSteps,
           timeout: goalConfig.timeout,
         })
-        currentGoalPlanner = planner
+        activeGoalPlanners.get(payload.conversationId)?.abort()
+        activeGoalPlanners.set(payload.conversationId, planner)
         void recordActivity({
           category: 'agent',
           action: 'goal.started',
@@ -364,29 +369,25 @@ export function registerTaskHandlers(services?: TaskServices): void {
         void recordActivity({ category: 'agent', action: 'goal.failed', status: 'error', summary: 'Goal-driven task failed.', conversationId: payload.conversationId }, win)
         send({ type: 'error', error: err?.message ?? String(err) })
       } finally {
-        currentGoalPlanner = null
+        if (planner && activeGoalPlanners.get(payload.conversationId) === planner) {
+          activeGoalPlanners.delete(payload.conversationId)
+        }
       }
     }
   )
 
   // Goal mode - abort
-  ipcMain.on(IPC.TASK_GOAL_ABORT, () => {
-    if (currentGoalPlanner) {
-      currentGoalPlanner.abort()
-    }
+  ipcMain.on(IPC.TASK_GOAL_ABORT, (_event, conversationId: string) => {
+    activeGoalPlanners.get(conversationId)?.abort()
   })
 
   // Goal mode - pause
-  ipcMain.on(IPC.TASK_GOAL_PAUSE, () => {
-    if (currentGoalPlanner) {
-      currentGoalPlanner.pause()
-    }
+  ipcMain.on(IPC.TASK_GOAL_PAUSE, (_event, conversationId: string) => {
+    activeGoalPlanners.get(conversationId)?.pause()
   })
 
   // Goal mode - resume
-  ipcMain.on(IPC.TASK_GOAL_RESUME, () => {
-    if (currentGoalPlanner) {
-      currentGoalPlanner.resume()
-    }
+  ipcMain.on(IPC.TASK_GOAL_RESUME, (_event, conversationId: string) => {
+    activeGoalPlanners.get(conversationId)?.resume()
   })
 }

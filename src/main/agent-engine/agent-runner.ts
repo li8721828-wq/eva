@@ -157,6 +157,7 @@ export class AgentRunner {
             timestamp: params.newMessage.timestamp || Date.now(),
           }
       const allHistory = [...params.messages, userMessage]
+      const hasImageInput = allHistory.some((message) => message.images?.some((image) => Boolean(image.dataUrl)))
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -193,6 +194,16 @@ export class AgentRunner {
 
         // No tool calls → the model is done reasoning
         if (!hasToolCalls) {
+          if (!response.content.trim()) {
+            const imageHint = hasImageInput
+              ? ` The conversation includes image input; select a vision-capable model before retrying.`
+              : ''
+            yield {
+              type: 'error',
+              error: `Model ${agentConfig.model} returned an empty response.${imageHint}`,
+            }
+            return
+          }
           yield { type: 'done', content: response.content }
           return
         }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
-import { useTaskStore } from '@/stores/use-task-store'
+import { EMPTY_GOAL_TASK, useTaskStore } from '@/stores/use-task-store'
+import { useChatStore } from '@/stores/use-chat-store'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { Button } from '@/components/ui/Button'
@@ -55,16 +56,10 @@ export interface GoalProgressProps {
 }
 
 export function GoalProgress({ className }: GoalProgressProps) {
-  const {
-    goalProgress,
-    goalStreamingContent,
-    isGoalRunning,
-    isGoalPaused,
-    abortGoal,
-    pauseGoal,
-    resumeGoal,
-    clearGoalProgress,
-  } = useTaskStore()
+  const currentConversationId = useChatStore((state) => state.currentConversationId)
+  const goalTask = useTaskStore((state) => state.goalTasks[currentConversationId || ''] || EMPTY_GOAL_TASK)
+  const { abortGoal, pauseGoal, resumeGoal, clearGoalProgress } = useTaskStore()
+  const { progress: goalProgress, streamingContent: goalStreamingContent, isRunning: isGoalRunning, isPaused: isGoalPaused } = goalTask
 
   const [expandedStep, setExpandedStep] = useState<string | null>(null)
 
@@ -102,11 +97,11 @@ export function GoalProgress({ className }: GoalProgressProps) {
       <div className="border-b border-zinc-200 px-4 py-2 flex gap-2">
         {isGoalRunning && !isGoalPaused && (
           <>
-            <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={pauseGoal}>
+            <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={() => pauseGoal(currentConversationId || '')}>
               <Pause className="h-3.5 w-3.5" />
               Pause
             </Button>
-            <Button variant="destructive" size="sm" className="flex-1 gap-1.5" onClick={abortGoal}>
+            <Button variant="destructive" size="sm" className="flex-1 gap-1.5" onClick={() => abortGoal(currentConversationId || '')}>
               <StopCircle className="h-3.5 w-3.5" />
               Abort
             </Button>
@@ -114,18 +109,18 @@ export function GoalProgress({ className }: GoalProgressProps) {
         )}
         {isGoalRunning && isGoalPaused && (
           <>
-            <Button size="sm" className="flex-1 gap-1.5" onClick={resumeGoal}>
+            <Button size="sm" className="flex-1 gap-1.5" onClick={() => resumeGoal(currentConversationId || '')}>
               <Play className="h-3.5 w-3.5" />
               Resume
             </Button>
-            <Button variant="destructive" size="sm" className="flex-1 gap-1.5" onClick={abortGoal}>
+            <Button variant="destructive" size="sm" className="flex-1 gap-1.5" onClick={() => abortGoal(currentConversationId || '')}>
               <StopCircle className="h-3.5 w-3.5" />
               Abort
             </Button>
           </>
         )}
         {isDone && (
-          <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={clearGoalProgress}>
+          <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={() => clearGoalProgress(currentConversationId || '')}>
             <RotateCcw className="h-3.5 w-3.5" />
             New Goal
           </Button>

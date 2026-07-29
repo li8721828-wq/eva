@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import type { SubTask } from '../../../shared/types'
-import { useTaskStore } from '@/stores/use-task-store'
+import { EMPTY_EXPERT_TASK, useTaskStore } from '@/stores/use-task-store'
+import { useChatStore } from '@/stores/use-chat-store'
 import { cn } from '@/lib/utils'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { TaskCard } from './TaskCard'
@@ -22,8 +23,10 @@ export interface TaskBoardProps {
 }
 
 export function TaskBoard({ className }: TaskBoardProps) {
-  const { currentPlan, isTaskRunning, summary, startExpertTask, abortExpertTask, clearPlan } =
-    useTaskStore()
+  const currentConversationId = useChatStore((state) => state.currentConversationId)
+  const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
+  const { currentPlan, isRunning: isTaskRunning, summary } = expertTask
+  const { startExpertTask, abortExpertTask, clearPlan } = useTaskStore()
   const [goalInput, setGoalInput] = useState('')
 
   const tasks = currentPlan?.subtasks || []
@@ -41,12 +44,12 @@ export function TaskBoard({ className }: TaskBoardProps) {
 
   const handleStart = () => {
     if (!goalInput.trim()) return
-    startExpertTask(goalInput.trim())
+    void startExpertTask(goalInput.trim(), currentConversationId || undefined)
     setGoalInput('')
   }
 
   const handleAbort = () => {
-    abortExpertTask()
+    void abortExpertTask(currentConversationId || undefined)
   }
 
   return (
@@ -122,7 +125,7 @@ export function TaskBoard({ className }: TaskBoardProps) {
             size="sm"
             className="flex-1"
             onClick={() => {
-              clearPlan()
+              clearPlan(currentConversationId || undefined)
             }}
           >
             Clear Plan

@@ -91,6 +91,27 @@ function ensureOutputPath(outputFile: unknown, context: ToolContext): string {
   return outputPath
 }
 
+function pathsMatch(first: string, second: string): boolean {
+  const normalizedFirst = path.resolve(first)
+  const normalizedSecond = path.resolve(second)
+  return process.platform === 'win32'
+    ? normalizedFirst.toLowerCase() === normalizedSecond.toLowerCase()
+    : normalizedFirst === normalizedSecond
+}
+
+async function ensureModelProjectReadable(projectFile: unknown, outputPath: string, context: ToolContext): Promise<string | null> {
+  if (typeof projectFile !== 'string' || !projectFile.trim()) return null
+
+  const resolved = resolvePath(projectFile.trim(), context)
+  if (!resolved.toLowerCase().endsWith('.blend')) throw new Error('Blender project file must have a .blend extension.')
+
+  const exists = await context.fileService.fileExists(resolved, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+  // Some models redundantly send the new output path as projectFile. It is not an input until it exists.
+  if (!exists && pathsMatch(resolved, outputPath)) return null
+  if (!exists) throw new Error(`Blender project was not found or is outside the authorized workspace: ${projectFile}`)
+  return resolved
+}
+
 function ensureReviewDirectory(outputDirectory: unknown, projectPath: string, context: ToolContext): string {
   const fallback = path.join(context.workspacePath, '.eva', 'blender-reviews', `${path.basename(projectPath, '.blend')}-${Date.now()}`)
   const directory = resolvePath(typeof outputDirectory === 'string' && outputDirectory.trim() ? outputDirectory.trim() : fallback, context)
@@ -296,7 +317,7 @@ const blenderModelFromReference: ToolExecutor = {
     const executable = configuredExecutable(settings)
     const referenceImages = await ensureReferenceImages(params.referenceImages, context)
     const outputPath = ensureOutputPath(params.outputFile, context)
-    const projectPath = await ensureProjectReadable(params.projectFile, context)
+    const projectPath = await ensureModelProjectReadable(params.projectFile, outputPath, context)
     const directory = configuredScriptDirectory(settings, context)
     await fs.promises.mkdir(directory, { recursive: true })
     await fs.promises.mkdir(path.dirname(outputPath), { recursive: true })

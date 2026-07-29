@@ -11,6 +11,8 @@ interface ChatState {
   streamingContent: string
   streamingToolCalls: ToolCall[]
   streamingStatus: string
+  streamingStartedAt: number | null
+  streamingLastActivityAt: number | null
   inputText: string
   referenceImages: ChatImageAttachment[]
   error: string | null
@@ -64,6 +66,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingContent: '',
   streamingToolCalls: [],
   streamingStatus: '',
+  streamingStartedAt: null,
+  streamingLastActivityAt: null,
   inputText: '',
   referenceImages: [],
   error: null,
@@ -113,6 +117,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: '',
         streamingToolCalls: [],
         streamingStatus: '',
+        streamingStartedAt: null,
+        streamingLastActivityAt: null,
         error: null,
       }))
       return conv
@@ -124,7 +130,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   selectConversation: async (id) => {
     try {
-      set({ currentConversationId: id, messages: [], isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', error: null })
+      set({ currentConversationId: id, messages: [], isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null, error: null })
       const result = await window.eva.conversation.load(id)
       if (get().currentConversationId === id) {
         set({ messages: result.messages })
@@ -146,6 +152,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           updates.streamingContent = ''
           updates.streamingToolCalls = []
           updates.streamingStatus = ''
+          updates.streamingStartedAt = null
+          updates.streamingLastActivityAt = null
         }
         return updates
       })
@@ -178,6 +186,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           updates.streamingContent = ''
           updates.streamingToolCalls = []
           updates.streamingStatus = ''
+          updates.streamingStartedAt = null
+          updates.streamingLastActivityAt = null
         }
         return updates
       })
@@ -301,6 +311,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingContent: '',
       streamingToolCalls: [],
       streamingStatus: 'Preparing the request...',
+      streamingStartedAt: Date.now(),
+      streamingLastActivityAt: Date.now(),
       error: null,
     }))
 
@@ -337,14 +349,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         streamingContent: '',
         streamingToolCalls: [],
         streamingStatus: '',
+        streamingStartedAt: null,
+        streamingLastActivityAt: null,
         isStreaming: false,
       }))
     } else {
-      set({ isStreaming: false, streamingStatus: '' })
+      set({ isStreaming: false, streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null })
     }
   },
 
   appendStreamEvent: (event) => {
+    set({ streamingLastActivityAt: Date.now() })
     switch (event.type) {
       case 'thinking': {
         set({ streamingStatus: event.content || 'Preparing the next step...' })
@@ -427,10 +442,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             streamingContent: '',
             streamingToolCalls: [],
             streamingStatus: '',
+            streamingStartedAt: null,
+            streamingLastActivityAt: null,
             isStreaming: false,
           })
         } else {
-          set({ isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '' })
+          set({ isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null })
         }
 
         // Refresh conversation list
@@ -453,6 +470,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
           streamingContent: '',
           streamingToolCalls: [],
           streamingStatus: '',
+          streamingStartedAt: null,
+          streamingLastActivityAt: null,
           error: errorMsg,
         }))
         break
@@ -466,6 +485,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       streamingContent: '',
       streamingToolCalls: [],
       streamingStatus: '',
+      streamingStartedAt: null,
+      streamingLastActivityAt: null,
       isStreaming: false,
       error: null,
     })

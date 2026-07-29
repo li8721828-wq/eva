@@ -2,12 +2,13 @@ import { useMemo } from 'react'
 import { Bot, ChevronRight, Cpu, MessageSquareText, Sparkles, Users } from 'lucide-react'
 import { AGENT_ROLES } from '../../../shared/constants'
 import { useChatStore } from '@/stores/use-chat-store'
-import { useTaskStore } from '@/stores/use-task-store'
+import { EMPTY_EXPERT_TASK, useTaskStore } from '@/stores/use-task-store'
 import { Badge } from '@/components/ui/Badge'
 
 export function TeamCollaborationPanel() {
-  const { currentPlan, isTaskRunning } = useTaskStore()
-  const { selectConversation } = useChatStore()
+  const { currentConversationId, selectConversation } = useChatStore()
+  const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
+  const { currentPlan, isRunning: isTaskRunning } = expertTask
 
   const members = useMemo(() => {
     if (!currentPlan) return []

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { CheckCircle2, ChevronRight, Circle, Loader2, Target, XCircle } from 'lucide-react'
 import type { GoalStep, TaskStatus } from '../../../shared/types/task'
-import { useTaskStore } from '@/stores/use-task-store'
+import { EMPTY_GOAL_TASK, useTaskStore } from '@/stores/use-task-store'
 import { cn } from '@/lib/utils'
 import { ToolCallView } from './ToolCallView'
 
@@ -65,7 +65,8 @@ export interface GoalExecutionCardProps {
 
 /** Inline progress for a Goal that was invoked from the current conversation. */
 export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
-  const { goalProgress, isGoalRunning, goalStreamingContent } = useTaskStore()
+  const goalTask = useTaskStore((state) => state.goalTasks[conversationId || ''] || EMPTY_GOAL_TASK)
+  const { progress: goalProgress, isRunning: isGoalRunning, streamingContent: goalStreamingContent } = goalTask
 
   if (!goalProgress || goalProgress.conversationId !== conversationId) return null
 

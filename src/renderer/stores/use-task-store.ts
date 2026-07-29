@@ -1,334 +1,255 @@
-import { create } from 'zustand'
-import type { TaskPlan, SubTask, GoalProgress, TeamEvent, GoalConfig } from '../../shared/types'
+import type { GoalConfig, GoalProgress, SubTask, TaskPlan, TeamEvent } from '../../shared/types'
 import type { GoalEvent } from '../lib/goal-event'
+import { create } from 'zustand'
+
+export interface ExpertTaskState {
+  currentPlan: TaskPlan | null
+  isRunning: boolean
+  summary: string | null
+}
+
+export interface GoalTaskState {
+  progress: GoalProgress | null
+  streamingContent: string
+  isRunning: boolean
+  isPaused: boolean
+}
+
+export const EMPTY_EXPERT_TASK: ExpertTaskState = { currentPlan: null, isRunning: false, summary: null }
+export const EMPTY_GOAL_TASK: GoalTaskState = { progress: null, streamingContent: '', isRunning: false, isPaused: false }
+
+type ScopedTeamEvent = TeamEvent & { conversationId?: string }
 
 interface TaskState {
-  currentPlan: TaskPlan | null
-  goalProgress: GoalProgress | null
-  isTaskRunning: boolean
-  summary: string | null
-
-  // Goal mode state
-  goalStreamingContent: string
-  isGoalRunning: boolean
-  isGoalPaused: boolean
-
-  setCurrentPlan: (plan: TaskPlan | null) => void
-  setGoalProgress: (progress: GoalProgress | null) => void
-  setTaskRunning: (running: boolean) => void
-  updateSubTask: (subtaskId: string, updates: Partial<SubTask>) => void
-  clearPlan: () => void
-  clearGoalProgress: () => void
-  handleTeamEvent: (event: TeamEvent) => void
+  expertTasks: Record<string, ExpertTaskState>
+  goalTasks: Record<string, GoalTaskState>
+  getExpertTask: (conversationId?: string | null) => ExpertTaskState
+  getGoalTask: (conversationId?: string | null) => GoalTaskState
+  handleTeamEvent: (event: ScopedTeamEvent) => void
   startExpertTask: (goal: string, conversationId?: string) => Promise<void>
   abortExpertTask: (conversationId?: string) => Promise<void>
-
-  // Goal mode methods
+  clearPlan: (conversationId?: string) => void
   startGoal: (goal: string, agentId: string, conversationId: string, config?: Partial<GoalConfig>) => void
-  abortGoal: () => void
-  pauseGoal: () => void
-  resumeGoal: () => void
+  abortGoal: (conversationId: string) => void
+  pauseGoal: (conversationId: string) => void
+  resumeGoal: (conversationId: string) => void
+  clearGoalProgress: (conversationId?: string) => void
   handleGoalEvent: (event: GoalEvent) => void
 }
 
-export const useTaskStore = create<TaskState>((set) => ({
-  currentPlan: null,
-  goalProgress: null,
-  isTaskRunning: false,
-  summary: null,
-  goalStreamingContent: '',
-  isGoalRunning: false,
-  isGoalPaused: false,
+function updateTask<T>(
+  tasks: Record<string, T>,
+  conversationId: string,
+  update: (current: T) => T,
+  fallback: T,
+): Record<string, T> {
+  return { ...tasks, [conversationId]: update(tasks[conversationId] || fallback) }
+}
 
-  setCurrentPlan: (plan) => set({ currentPlan: plan }),
-  setGoalProgress: (progress) => set({ goalProgress: progress }),
-  setTaskRunning: (running) => set({ isTaskRunning: running }),
+export const useTaskStore = create<TaskState>((set, get) => ({
+  expertTasks: {},
+  goalTasks: {},
 
-  updateSubTask: (subtaskId, updates) =>
-    set((s) => {
-      if (!s.currentPlan) return {}
-      return {
-        currentPlan: {
-          ...s.currentPlan,
-          subtasks: s.currentPlan.subtasks.map((st) =>
-            st.id === subtaskId ? { ...st, ...updates } : st
-          ),
-        },
-      }
-    }),
-
-  clearPlan: () => set({ currentPlan: null, summary: null }),
-  clearGoalProgress: () => set({ goalProgress: null }),
+  getExpertTask: (conversationId) => conversationId ? get().expertTasks[conversationId] || EMPTY_EXPERT_TASK : EMPTY_EXPERT_TASK,
+  getGoalTask: (conversationId) => conversationId ? get().goalTasks[conversationId] || EMPTY_GOAL_TASK : EMPTY_GOAL_TASK,
 
   handleTeamEvent: (event) => {
-    switch (event.type) {
-      case 'plan_created':
-        if (event.plan) set({ currentPlan: event.plan, isTaskRunning: true, summary: null })
-        break
+    const conversationId = event.conversationId
+    if (!conversationId) return
 
-      case 'task_created':
-        // Plan is being created, nothing specific to update yet
-        break
+    set((state) => {
+      const current = state.expertTasks[conversationId] || EMPTY_EXPERT_TASK
+      let next = current
 
-      case 'task_assigned':
-        if (event.subtaskId && event.agentName) {
-          const state = useTaskStore.getState()
-          state.updateSubTask(event.subtaskId, {
-            ...event.subtask,
-            assignedAgentId: event.agentId,
-            assignedAgentName: event.agentName,
-            status: 'pending',
-          })
+      switch (event.type) {
+        case 'plan_created':
+          next = { currentPlan: event.plan || null, isRunning: true, summary: null }
+          break
+        case 'task_assigned':
+        case 'task_progress':
+        case 'task_completed':
+        case 'task_failed': {
+          if (!current.currentPlan || !event.subtaskId) return state
+          const status = event.type === 'task_assigned' ? 'pending'
+            : event.type === 'task_progress' ? 'in_progress'
+              : event.type === 'task_completed' ? 'completed' : 'failed'
+          const result = event.progress || event.result || event.error
+          next = {
+            ...current,
+            currentPlan: {
+              ...current.currentPlan,
+              subtasks: current.currentPlan.subtasks.map((subtask) => subtask.id === event.subtaskId
+                ? {
+                    ...subtask,
+                    ...event.subtask,
+                    assignedAgentId: event.agentId || subtask.assignedAgentId,
+                    assignedAgentName: event.agentName || subtask.assignedAgentName,
+                    status,
+                    result: result || subtask.result,
+                    completedAt: status === 'completed' || status === 'failed' ? Date.now() : subtask.completedAt,
+                  }
+                : subtask),
+            },
+          }
+          break
         }
-        break
-
-      case 'task_progress':
-        if (event.subtaskId && event.progress) {
-          const state = useTaskStore.getState()
-          state.updateSubTask(event.subtaskId, {
-            ...event.subtask,
-            status: 'in_progress',
-            result: event.progress,
-          })
-        }
-        break
-
-      case 'task_completed':
-        if (event.subtaskId) {
-          const state = useTaskStore.getState()
-          state.updateSubTask(event.subtaskId, {
-            ...event.subtask,
-            status: 'completed',
-            result: event.result,
-            completedAt: Date.now(),
-          })
-        }
-        break
-
-      case 'task_failed':
-        if (event.subtaskId) {
-          const state = useTaskStore.getState()
-          state.updateSubTask(event.subtaskId, {
-            ...event.subtask,
-            status: 'failed',
-            result: event.error,
-            completedAt: Date.now(),
-          })
-        }
-        break
-
-      case 'summary':
-        set({ summary: event.summary || null })
-        break
-
-      case 'done':
-        set({ isTaskRunning: false })
-        break
-
-      case 'error':
-        set({ isTaskRunning: false })
-        break
-    }
-  },
-
-  startExpertTask: async (goal: string, conversationId?: string) => {
-    set({ isTaskRunning: true, summary: null, currentPlan: null })
-    try {
-      let convId = conversationId
-      if (!convId) {
-        // Create an expert mode conversation
-        const conv = await window.eva.conversation.create({
-          title: `Expert: ${goal.slice(0, 60)}`,
-          mode: 'expert',
-        })
-        convId = conv.id
+        case 'summary':
+          next = { ...current, summary: event.summary || null }
+          break
+        case 'done':
+        case 'error':
+          next = { ...current, isRunning: false }
+          break
       }
-      await window.eva.task.start(convId, goal)
-    } catch (err) {
-      console.error('Failed to start expert task:', err)
-      set({ isTaskRunning: false })
-    }
+
+      return { expertTasks: { ...state.expertTasks, [conversationId]: next } }
+    })
   },
 
-  abortExpertTask: async (conversationId?: string) => {
-    const convId = conversationId || ''
+  startExpertTask: async (goal, conversationId) => {
+    let convId = conversationId
+    if (!convId) {
+      const conversation = await window.eva.conversation.create({ title: `Expert: ${goal.slice(0, 60)}`, mode: 'expert' })
+      convId = conversation.id
+    }
+    set((state) => ({
+      expertTasks: { ...state.expertTasks, [convId!]: { currentPlan: null, isRunning: true, summary: null } },
+    }))
     try {
-      await window.eva.task.abort(convId)
-      set({ isTaskRunning: false })
-    } catch (err) {
-      console.error('Failed to abort expert task:', err)
+      await window.eva.task.start(convId, goal)
+    } catch (error) {
+      console.error('Failed to start expert task:', error)
+      set((state) => ({
+        expertTasks: updateTask(state.expertTasks, convId!, (task) => ({ ...task, isRunning: false }), EMPTY_EXPERT_TASK),
+      }))
     }
   },
 
-  // ─── Goal Mode ─────────────────────────────────────────────────────────────
+  abortExpertTask: async (conversationId) => {
+    if (!conversationId) return
+    try {
+      await window.eva.task.abort(conversationId)
+      set((state) => ({
+        expertTasks: updateTask(state.expertTasks, conversationId, (task) => ({ ...task, isRunning: false }), EMPTY_EXPERT_TASK),
+      }))
+    } catch (error) {
+      console.error('Failed to abort expert task:', error)
+    }
+  },
 
-  startGoal: (goal, agentId, conversationId, config?) => {
-    set({ isGoalRunning: true, isGoalPaused: false, goalStreamingContent: '', goalProgress: null })
+  clearPlan: (conversationId) => {
+    if (!conversationId) return
+    set((state) => {
+      const { [conversationId]: _removed, ...expertTasks } = state.expertTasks
+      return { expertTasks }
+    })
+  },
+
+  startGoal: (goal, agentId, conversationId, config) => {
+    if (!conversationId) return
+    set((state) => ({
+      goalTasks: { ...state.goalTasks, [conversationId]: { progress: null, streamingContent: '', isRunning: true, isPaused: false } },
+    }))
     window.eva.goal.start({ goal, config, conversationId, agentId })
   },
 
-  abortGoal: () => {
-    window.eva.goal.abort()
-    set({ isGoalRunning: false, isGoalPaused: false })
+  abortGoal: (conversationId) => {
+    if (!conversationId) return
+    window.eva.goal.abort(conversationId)
+    set((state) => ({
+      goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({ ...task, isRunning: false, isPaused: false }), EMPTY_GOAL_TASK),
+    }))
   },
 
-  pauseGoal: () => {
-    window.eva.goal.pause()
-    set({ isGoalPaused: true })
+  pauseGoal: (conversationId) => {
+    if (!conversationId) return
+    window.eva.goal.pause(conversationId)
+    set((state) => ({
+      goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({ ...task, isPaused: true }), EMPTY_GOAL_TASK),
+    }))
   },
 
-  resumeGoal: () => {
-    window.eva.goal.resume()
-    set({ isGoalPaused: false })
+  resumeGoal: (conversationId) => {
+    if (!conversationId) return
+    window.eva.goal.resume(conversationId)
+    set((state) => ({
+      goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({ ...task, isPaused: false }), EMPTY_GOAL_TASK),
+    }))
+  },
+
+  clearGoalProgress: (conversationId) => {
+    if (!conversationId) return
+    set((state) => {
+      const { [conversationId]: _removed, ...goalTasks } = state.goalTasks
+      return { goalTasks }
+    })
   },
 
   handleGoalEvent: (event) => {
-    const state = useTaskStore.getState()
-    const progress = state.goalProgress
+    const conversationId = event.conversationId
+    if (!conversationId) return
 
-    switch (event.type) {
-      case 'goal_started':
-        set({
-          goalProgress: {
-            goal: event.goal,
-            steps: [],
-            currentStepIndex: 0,
-            totalSteps: 0,
-            status: 'in_progress',
-            startedAt: Date.now(),
-            conversationId: event.conversationId,
-          },
-          isGoalRunning: true,
-          isGoalPaused: false,
-          goalStreamingContent: '',
-        })
-        break
+    set((state) => {
+      const current = state.goalTasks[conversationId] || EMPTY_GOAL_TASK
+      const progress = current.progress
+      let next = current
 
-      case 'plan_created':
-        set({
-          goalProgress: {
-            goal: progress?.goal || '',
-            steps: event.steps,
-            currentStepIndex: 0,
-            totalSteps: event.steps?.length || 0,
-            status: 'in_progress' as const,
-            startedAt: Date.now(),
-            conversationId: event.conversationId || progress?.conversationId,
-          },
-          goalStreamingContent: '',
-        })
-        break
+      switch (event.type) {
+        case 'goal_started':
+          next = {
+            progress: { goal: event.goal, steps: [], currentStepIndex: 0, totalSteps: 0, status: 'in_progress', startedAt: Date.now(), conversationId },
+            streamingContent: '', isRunning: true, isPaused: false,
+          }
+          break
+        case 'plan_created':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, steps: event.steps, totalSteps: event.steps.length }, streamingContent: '' }
+          break
+        case 'step_started':
+          if (!progress) return state
+          next = {
+            ...current,
+            progress: { ...progress, currentStepIndex: event.stepIndex, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress' } : step) },
+            streamingContent: '',
+          }
+          break
+        case 'step_progress':
+          next = { ...current, streamingContent: current.streamingContent + event.content }
+          break
+        case 'step_tool_call':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: [...(step.toolCalls || []), event.toolCall] } : step) } }
+          break
+        case 'step_tool_result':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: (step.toolCalls || []).map((call) => call.id === event.toolCallId ? { ...call, result: event.result, isError: event.isError } : call) } : step) } }
+          break
+        case 'step_completed':
+        case 'step_failed':
+          if (!progress) return state
+          next = {
+            ...current,
+            progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error } : step) },
+            streamingContent: '',
+          }
+          break
+        case 'plan_adjusted':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, steps: [...progress.steps.filter((step) => step.status === 'completed' || step.status === 'failed'), ...event.steps] } }
+          break
+        case 'summary':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, summary: event.content } }
+          break
+        case 'done':
+          next = { ...current, progress: { ...event.progress, conversationId }, isRunning: false, isPaused: false }
+          break
+        case 'error':
+          next = { ...current, progress: progress ? { ...progress, status: 'failed' } : null, isRunning: false, isPaused: false }
+          break
+      }
 
-      case 'step_started':
-        if (progress) {
-          const updatedSteps = progress.steps.map((s) =>
-            s.id === event.stepId ? { ...s, status: 'in_progress' as const } : s
-          )
-          set({
-            goalProgress: { ...progress, steps: updatedSteps, currentStepIndex: event.stepIndex },
-            goalStreamingContent: '',
-          })
-        }
-        break
-
-      case 'step_progress':
-        set((s) => ({
-          goalStreamingContent: s.goalStreamingContent + event.content,
-        }))
-        break
-
-      case 'step_tool_call':
-        if (progress) {
-          const updatedSteps = progress.steps.map((step) =>
-            step.id === event.stepId
-              ? { ...step, toolCalls: [...(step.toolCalls || []), event.toolCall] }
-              : step
-          )
-          set({ goalProgress: { ...progress, steps: updatedSteps } })
-        }
-        break
-
-      case 'step_tool_result':
-        if (progress) {
-          const updatedSteps = progress.steps.map((step) =>
-            step.id === event.stepId
-              ? {
-                  ...step,
-                  toolCalls: (step.toolCalls || []).map((toolCall) =>
-                    toolCall.id === event.toolCallId
-                      ? { ...toolCall, result: event.result, isError: event.isError }
-                      : toolCall
-                  ),
-                }
-              : step
-          )
-          set({ goalProgress: { ...progress, steps: updatedSteps } })
-        }
-        break
-
-      case 'step_completed':
-        if (progress) {
-          const updatedSteps = progress.steps.map((s) =>
-            s.id === event.stepId ? { ...s, status: 'completed' as const, result: event.result } : s
-          )
-          const completedCount = updatedSteps.filter((s) => s.status === 'completed').length
-          set({
-            goalProgress: { ...progress, steps: updatedSteps, totalSteps: updatedSteps.length },
-            goalStreamingContent: '',
-          })
-        }
-        break
-
-      case 'step_failed':
-        if (progress) {
-          const updatedSteps = progress.steps.map((s) =>
-            s.id === event.stepId ? { ...s, status: 'failed' as const, result: event.error } : s
-          )
-          set({
-            goalProgress: { ...progress, steps: updatedSteps },
-            goalStreamingContent: '',
-          })
-        }
-        break
-
-      case 'plan_adjusted':
-        if (progress) {
-          const completedSteps = progress.steps.filter((s) => s.status === 'completed' || s.status === 'failed')
-          const updatedSteps = [...completedSteps, ...event.steps]
-          set({
-            goalProgress: { ...progress, steps: updatedSteps },
-          })
-        }
-        break
-
-      case 'summary':
-        if (progress) {
-          set({
-            goalProgress: { ...progress, summary: event.content },
-          })
-        }
-        break
-
-      case 'done':
-        set((state) => ({
-          goalProgress: {
-            ...event.progress,
-            conversationId: event.conversationId || state.goalProgress?.conversationId,
-          },
-          isGoalRunning: false,
-          isGoalPaused: false,
-        }))
-        break
-
-      case 'error':
-        if (progress) {
-          set({
-            goalProgress: { ...progress, status: 'failed' },
-            isGoalRunning: false,
-            isGoalPaused: false,
-          })
-        }
-        break
-    }
+      return { goalTasks: { ...state.goalTasks, [conversationId]: next } }
+    })
   },
 }))

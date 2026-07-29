@@ -25,8 +25,9 @@ export interface ChatServices {
   terminalService: TerminalService
 }
 
-// Module-level reference to the currently running AgentRunner (for abort)
-let currentRunner: AgentRunner | null = null
+// Each conversation owns its runner. A model connection may be shared, but the
+// prompt history, cancellation handle, and lifecycle must stay conversation-scoped.
+const activeRunners = new Map<string, AgentRunner>()
 const MAX_REFERENCE_IMAGES = 4
 const MAX_REFERENCE_IMAGE_BYTES = 12 * 1024 * 1024
 const IMAGE_MEDIA_TYPES = new Set<ChatImageAttachment['mediaType']>(['image/jpeg', 'image/png', 'image/webp'])
@@ -314,6 +315,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
+      let runner: AgentRunner | null = null
 
       const send = (agentEvent: AgentEvent): void => {
         if (!win.isDestroyed()) {
@@ -475,7 +477,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               return specService.instantiateTemplate(templateId, parameters)
             }
           : undefined
-        const runner = new AgentRunner({
+        runner = new AgentRunner({
           agentConfig: effectiveAgentConfig,
           provider,
           toolRegistry: services.toolRegistry,
@@ -497,12 +499,16 @@ export function registerConversationHandlers(services?: ChatServices): void {
           createExecutionPlan,
           applySpecTemplate,
         })
-        currentRunner = runner
+        // A second send in the same chat replaces the prior run; other chats
+        // retain their own runners and continue independently.
+        activeRunners.get(conversationId)?.abort()
+        activeRunners.set(conversationId, runner)
 
         // 6. Execute the ReAct loop and stream events
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
         const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean }> = []
         let assistantContent = ''
+        let runError: string | null = null
 
         for await (const agentEvent of runner.run({ messages: historyMessages, newMessage: userChatMessage })) {
           // Accumulate content and tool info for persistence
@@ -536,6 +542,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
           if (agentEvent.type === 'done' && agentEvent.content) {
             assistantContent = agentEvent.content
           }
+          if (agentEvent.type === 'error') {
+            runError = agentEvent.error || 'The model response failed.'
+          }
 
           // Forward event to renderer
           send(agentEvent)
@@ -561,7 +570,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           id: assistantMessageId,
           conversationId,
           role: 'assistant',
-          content: assistantContent,
+          content: runError && !assistantContent && allToolCalls.length === 0 ? `Error: ${runError}` : assistantContent,
           toolCalls: toolCallsForMessage,
           agentId: agentConfig.id,
           agentName: agentConfig.name,
@@ -583,11 +592,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           await convStore.addMessage(conversationId, toolMessage)
         }
+        win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         void recordActivity({
           category: 'agent',
-          action: 'agent.completed',
-          status: 'success',
-          summary: `${effectiveAgentConfig.name} completed the response.`,
+          action: runError ? 'agent.failed' : 'agent.completed',
+          status: runError ? 'error' : 'success',
+          summary: runError || `${effectiveAgentConfig.name} completed the response.`,
           conversationId,
           workspaceId: conversation.workspaceId,
         }, win)
@@ -602,7 +612,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
         send({ type: 'error', error: err?.message ?? String(err) })
         send({ type: 'done', content: '' })
       } finally {
-        currentRunner = null
+        // Do not remove a newer run started for the same conversation.
+        if (runner && activeRunners.get(conversationId) === runner) {
+          activeRunners.delete(conversationId)
+        }
       }
     }
   )
@@ -610,8 +623,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
   // ─── Chat: abort ────────────────────────────────────────────────────────────
 
   ipcMain.on(IPC.CHAT_ABORT, (_event, conversationId?: string) => {
-    if (currentRunner) {
-      currentRunner.abort()
+    if (conversationId) {
+      activeRunners.get(conversationId)?.abort()
     }
   })
 }

@@ -14,6 +14,9 @@ export function useStreaming(): void {
     // Listen for chat stream events
     const cleanupChat = window.eva.chat.onStream((_event, data) => {
       const streamEvent = data as unknown as ChatStreamEvent
+      // The chat surface has one visible stream. Events for a background
+      // conversation are persisted by the main process and loaded on return.
+      if (streamEvent.conversationId !== useChatStore.getState().currentConversationId) return
       useChatStore.getState().appendStreamEvent(streamEvent)
     })
 

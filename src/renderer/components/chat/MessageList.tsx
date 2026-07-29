@@ -20,7 +20,7 @@ export interface MessageListProps {
 export function MessageList({ className }: MessageListProps) {
   const { messages, currentConversationId, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
   const { rightPanelVisible } = useAppStore()
-  const isTeamRunning = useTaskStore((state) => state.isTaskRunning)
+  const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const previousMessagesRef = useRef(messages)
   const pendingConversationScrollRef = useRef(true)
