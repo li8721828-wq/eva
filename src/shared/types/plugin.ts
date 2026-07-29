@@ -13,7 +13,7 @@ export interface PluginConfigField {
   key: string
   label: string
   description?: string
-  type: 'text' | 'path-file' | 'path-directory' | 'number' | 'select'
+  type: 'text' | 'secret' | 'path-file' | 'path-directory' | 'number' | 'select'
   required?: boolean
   placeholder?: string
   options?: Array<{ value: string; label: string }>

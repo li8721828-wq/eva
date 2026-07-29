@@ -1,7 +1,7 @@
 import type { LLMProvider } from '../providers/base-provider'
 import type { ToolRegistry, FileService, TerminalService } from '../tools/index'
-import type { AgentConfig } from '../../shared/types/agent'
-import type { TaskPlan, SubTask, TeamEvent, TaskStatus } from '../../shared/types/task'
+import type { AgentConfig, AgentModelCandidate, AgentModelPreference } from '../../shared/types/agent'
+import type { DynamicAgentProfile, TaskPlan, SubTask, TeamEvent, TaskStatus } from '../../shared/types/task'
 import type { ChatMessage } from '../../shared/types/conversation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import { AgentRunner } from './agent-runner'
@@ -12,7 +12,10 @@ import type { FileAccessGrant } from '../../shared/types/file-access'
 export interface TeamOrchestratorConfig {
   leader: AgentConfig
   workers: AgentConfig[]
-  provider: LLMProvider
+  /** Resolves each agent's saved model connection at execution time. */
+  providerForAgent: (agent: AgentConfig) => LLMProvider | undefined
+  /** Active chat model used as a fallback for built-in agents without assigned candidates. */
+  fallbackModel?: AgentModelCandidate
   toolRegistry: ToolRegistry
   contextManager: ContextManager
   workspacePath: string
@@ -20,6 +23,10 @@ export interface TeamOrchestratorConfig {
   fullFilesystemAccess?: boolean
   fileService: FileService
   terminalService: TerminalService
+  /** Creates a persisted, isolated conversation for an assigned worker. */
+  createWorkerConversation?: (subtask: SubTask, worker: AgentConfig) => Promise<string>
+  /** Receives worker events for persistence without exposing the worker's context to other agents. */
+  onWorkerEvent?: (subtask: SubTask, worker: AgentConfig, event: import('../../shared/types/agent').AgentEvent) => Promise<void>
   maxSubtasks?: number
 }
 
@@ -33,6 +40,17 @@ export class TeamOrchestrator {
   private abortController: AbortController | null = null
   private isRunning = false
   private currentRunners: Map<string, AgentRunner> = new Map()
+  private assignmentCursor: Map<string, number> = new Map()
+  private dynamicWorkers: Map<string, AgentConfig> = new Map()
+
+  private static readonly MUTATING_TOOLS = new Set([
+    'write_file',
+    'execute_command',
+    'blender_run_script',
+    'blender_model_from_reference',
+    'blender_render_review',
+    'blender_open_gui',
+  ])
 
   constructor(config: TeamOrchestratorConfig) {
     this.config = config
@@ -42,7 +60,8 @@ export class TeamOrchestrator {
    * Execute expert team mode:
    * 1. Leader creates task plan
    * 2. Assign workers to subtasks
-   * 3. Execute subtasks (sequentially for safety)
+   * 3. Execute independent read-only subtasks concurrently. Any worker that can
+   *    write files or execute commands stays serialized to protect the workspace.
    * 4. Leader summarizes results
    */
   async *run(params: TeamRunParams): AsyncGenerator<TeamEvent> {
@@ -53,6 +72,8 @@ export class TeamOrchestrator {
 
     this.isRunning = true
     this.abortController = new AbortController()
+    this.assignmentCursor.clear()
+    this.dynamicWorkers.clear()
     const signal = this.abortController.signal
 
     try {
@@ -66,6 +87,7 @@ export class TeamOrchestrator {
       }
 
       yield { type: 'plan_created', plan }
+      this.registerDynamicWorkers(plan.dynamicAgents || [])
 
       // Step 2: Assign workers & execute
       const completedResults = new Map<string, string>()
@@ -76,12 +98,21 @@ export class TeamOrchestrator {
       for (const batch of batches) {
         if (signal.aborted) break
 
-        // Assign workers for this batch
+        // Assign independently named workers and resolve the model that will
+        // actually execute each subtask before exposing the assignment.
+        const assigned = [] as Array<{ subtask: SubTask; worker: AgentConfig }>
         for (const subtask of batch) {
-          const worker = this.assignWorker(subtask)
+          const worker = this.selectExecutionAgent(this.assignWorker(subtask), subtask)
           subtask.assignedAgentId = worker.id
           subtask.assignedAgentName = worker.name
+          subtask.assignedProviderId = worker.providerId
+          subtask.assignedModel = worker.model
+          subtask.isDynamicAgent = Boolean(worker.taskScoped)
+          if (this.config.createWorkerConversation) {
+            subtask.agentConversationId = await this.config.createWorkerConversation(subtask, worker)
+          }
           subtask.status = 'pending'
+          assigned.push({ subtask, worker })
 
           yield {
             type: 'task_assigned',
@@ -92,60 +123,27 @@ export class TeamOrchestrator {
           }
         }
 
-        // Execute batch subtasks sequentially (to avoid file conflicts)
-        for (const subtask of batch) {
+        const readOnly = assigned.filter(({ worker }) => this.isReadOnlyWorker(worker))
+        const mutating = assigned.filter(({ worker }) => !this.isReadOnlyWorker(worker))
+
+        // A batch is already dependency-safe. Merge read-only worker events so
+        // research/review work can progress at the same time.
+        if (readOnly.length > 1) {
+          for await (const event of this.executeConcurrentBatch(readOnly, plan, completedResults)) {
+            yield event
+          }
+        } else if (readOnly.length === 1) {
+          for await (const event of this.executeWithRetry(readOnly[0].subtask, readOnly[0].worker, plan, completedResults)) {
+            yield event
+          }
+        }
+
+        // Mutating workers intentionally run one at a time to prevent races.
+        for (const { subtask, worker } of mutating) {
           if (signal.aborted) break
-
-          subtask.status = 'in_progress'
-          subtask.startedAt = Date.now()
-          yield {
-            type: 'task_progress',
-            subtaskId: subtask.id,
-            subtask: { ...subtask },
-            progress: `Starting: ${subtask.title}`,
+          for await (const event of this.executeWithRetry(subtask, worker, plan, completedResults)) {
+            yield event
           }
-
-          // Update plan status
-          plan.subtasks = plan.subtasks.map((st) =>
-            st.id === subtask.id ? { ...subtask } : st
-          )
-
-          const worker = this.config.workers.find(
-            (w) => w.id === subtask.assignedAgentId
-          ) || this.assignWorker(subtask)
-
-          try {
-            const events = this.executeSubtask(
-              subtask,
-              worker,
-              plan,
-              completedResults
-            )
-
-            for await (const evt of events) {
-              if (signal.aborted) break
-              yield evt
-            }
-
-            if ((subtask.status as TaskStatus) === 'completed') {
-              completedResults.set(subtask.id, subtask.result || '')
-            }
-          } catch (err: any) {
-            subtask.status = 'failed'
-            subtask.result = err?.message ?? String(err)
-            subtask.completedAt = Date.now()
-            yield {
-              type: 'task_failed',
-              subtaskId: subtask.id,
-              subtask: { ...subtask },
-              error: subtask.result,
-            }
-          }
-
-          // Update plan
-          plan.subtasks = plan.subtasks.map((st) =>
-            st.id === subtask.id ? { ...subtask } : st
-          )
         }
       }
 
@@ -192,6 +190,142 @@ export class TeamOrchestrator {
     return this.isRunning
   }
 
+  private isReadOnlyWorker(worker: AgentConfig): boolean {
+    return !worker.tools.some((tool) => TeamOrchestrator.MUTATING_TOOLS.has(tool))
+  }
+
+  private selectExecutionAgent(worker: AgentConfig, subtask?: SubTask): AgentConfig {
+    const candidates = [
+      ...(worker.modelCandidates || []),
+      { providerId: worker.providerId, model: worker.model },
+      ...(worker.isBuiltIn && this.config.fallbackModel ? [this.config.fallbackModel] : []),
+    ].filter((candidate, index, all) =>
+      candidate.providerId && candidate.model
+      && all.findIndex((item) => item.providerId === candidate.providerId && item.model === candidate.model) === index
+    )
+
+    const available = candidates.filter((candidate) =>
+      this.config.providerForAgent({ ...worker, providerId: candidate.providerId, model: candidate.model })
+    )
+    if (!available.length) return worker
+
+    const role = subtask?.assignedRole || worker.role
+    const preference = worker.modelPreference
+    const taskText = `${subtask?.title || ''} ${subtask?.description || ''}`.toLowerCase()
+    const score = (candidate: typeof available[number]): number => {
+      const model = candidate.model.toLowerCase()
+      let value = 0
+      if (role === 'coder' && /(coder|code|dev|qwen)/.test(model)) value += 6
+      if (role === 'researcher' && /(search|research|chat|sonnet|gpt|gemini)/.test(model)) value += 4
+      if ((role === 'reviewer' || role === 'tester') && /(reason|r1|sonnet|gpt-4|pro)/.test(model)) value += 5
+      if (/(refactor|implement|debug|test)/.test(taskText) && /(code|coder|dev|qwen)/.test(model)) value += 3
+      if (/(analy[sz]e|research|document|summari[sz]e)/.test(taskText) && /(chat|sonnet|gpt|gemini)/.test(model)) value += 2
+      if (preference === 'coding' && /(coder|code|dev|qwen)/.test(model)) value += 8
+      if (preference === 'research' && /(search|research|chat|sonnet|gpt|gemini)/.test(model)) value += 8
+      if (preference === 'reasoning' && /(reason|r1|sonnet|gpt-4|pro)/.test(model)) value += 8
+      if (preference === 'fast' && /(flash|mini|haiku|lite|turbo)/.test(model)) value += 8
+      return value
+    }
+
+    const selected = available.reduce((best, candidate) => score(candidate) > score(best) ? candidate : best)
+    return { ...worker, providerId: selected.providerId, model: selected.model }
+  }
+
+  private async *executeWithRetry(
+    subtask: SubTask,
+    worker: AgentConfig,
+    plan: TaskPlan,
+    completedResults: Map<string, string>
+  ): AsyncGenerator<TeamEvent> {
+    const maxAttempts = 2
+    const executionAgent = this.selectExecutionAgent(worker, subtask)
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      if (this.abortController?.signal.aborted) return
+
+      subtask.status = 'in_progress'
+      subtask.startedAt = subtask.startedAt || Date.now()
+      subtask.attempt = attempt
+      plan.subtasks = plan.subtasks.map((item) => item.id === subtask.id ? { ...subtask } : item)
+      yield {
+        type: 'task_progress',
+        subtaskId: subtask.id,
+        subtask: { ...subtask },
+        agentId: executionAgent.id,
+        agentName: executionAgent.name,
+        progress: attempt === 1 ? `Starting: ${subtask.title}` : `Retrying (${attempt}/${maxAttempts}): ${subtask.title}`,
+      }
+
+      let failure = ''
+      try {
+        for await (const event of this.executeSubtask(subtask, executionAgent, plan, completedResults)) {
+          if (event.type === 'task_failed') failure = event.error || 'Subtask failed'
+          yield { ...event, agentId: event.agentId || executionAgent.id, agentName: event.agentName || executionAgent.name }
+        }
+      } catch (error: any) {
+        failure = error?.message ?? String(error)
+      }
+
+      if ((subtask as { status: TaskStatus }).status === 'completed') {
+        completedResults.set(subtask.id, subtask.result || '')
+        plan.subtasks = plan.subtasks.map((item) => item.id === subtask.id ? { ...subtask } : item)
+        return
+      }
+
+      if (attempt < maxAttempts) {
+        yield {
+          type: 'task_progress',
+          subtaskId: subtask.id,
+          subtask: { ...subtask },
+          agentId: executionAgent.id,
+          agentName: executionAgent.name,
+          progress: `Attempt ${attempt} failed; retrying once. ${failure}`,
+        }
+      }
+    }
+
+    plan.subtasks = plan.subtasks.map((item) => item.id === subtask.id ? { ...subtask } : item)
+  }
+
+  private async *executeConcurrentBatch(
+    assignments: Array<{ subtask: SubTask; worker: AgentConfig }>,
+    plan: TaskPlan,
+    completedResults: Map<string, string>
+  ): AsyncGenerator<TeamEvent> {
+    const queued: TeamEvent[] = []
+    let remaining = assignments.length
+    let notify: (() => void) | undefined
+
+    const push = (event: TeamEvent): void => {
+      queued.push(event)
+      notify?.()
+      notify = undefined
+    }
+
+    const runners = assignments.map(async ({ subtask, worker }) => {
+      try {
+        for await (const event of this.executeWithRetry(subtask, worker, plan, completedResults)) {
+          push(event)
+        }
+      } finally {
+        remaining -= 1
+        notify?.()
+        notify = undefined
+      }
+    })
+
+    while (remaining > 0 || queued.length > 0) {
+      const event = queued.shift()
+      if (event) {
+        yield event
+        continue
+      }
+      await new Promise<void>((resolve) => { notify = resolve })
+    }
+
+    await Promise.all(runners)
+  }
+
   // ─── Internal ────────────────────────────────────────────────────────────
 
   /**
@@ -201,12 +335,38 @@ export class TeamOrchestrator {
     goal: string,
     messages?: ChatMessage[]
   ): Promise<TaskPlan> {
-    const { leader, provider } = this.config
+    const leader = this.selectExecutionAgent(this.config.leader)
+    const provider = this.config.providerForAgent(leader)
+    if (!provider) {
+      throw new Error(`The leader connection for ${leader.name} is unavailable. Configure or enable its model connection.`)
+    }
     const maxSubtasks = this.config.maxSubtasks ?? 10
+    const teamDirectory = this.config.workers.length
+      ? this.config.workers.map((worker) => {
+          const candidates = worker.modelCandidates?.length
+            ? worker.modelCandidates.map((candidate) => `${candidate.providerId}/${candidate.model}`).join(', ')
+            : `${worker.providerId}/${worker.model}`
+          return `- ${worker.name} (${worker.role}): ${candidates}`
+        }).join('\n')
+      : '- No specialist workers are configured; the leader must complete the work directly.'
+    const availableToolNames = [...new Set([this.config.leader, ...this.config.workers].flatMap((agent) => agent.tools))]
+    const modelDirectory = [...new Set([
+      this.config.leader,
+      ...this.config.workers,
+    ].flatMap((agent) => [
+      ...(agent.modelCandidates || []).map((candidate) => `${candidate.providerId}/${candidate.model}`),
+      `${agent.providerId}/${agent.model}`,
+    ]))].join(', ')
 
     const planningPrompt = `You are a team leader. Analyze the following goal and create a task plan.
 
 Goal: ${goal}
+
+Available team members and their candidate models:
+${teamDirectory}
+
+Tools available for task-scoped members: ${availableToolNames.join(', ') || 'none'}
+Configured model connections available for task-scoped members: ${modelDirectory || 'none'}
 
 ${messages && messages.length > 0 ? `Recent conversation context:\n${messages.slice(-4).map((m) => `${m.role}: ${m.content.slice(0, 500)}`).join('\n')}\n` : ''}
 
@@ -218,7 +378,18 @@ Create a JSON plan with the following structure:
       "title": "Brief title",
       "description": "Detailed description of what needs to be done",
       "dependencies": [],
-      "assignedRole": "researcher|coder|reviewer|tester"
+      "assignedRole": "researcher|coder|reviewer|tester",
+      "assignedAgentProfileId": "optional-custom-agent-id"
+    }
+  ],
+  "agentProfiles": [
+    {
+      "id": "optional-custom-agent-id",
+      "name": "Role Name",
+      "description": "A concise responsibility statement",
+      "systemPrompt": "Focused operating instructions for this specialist",
+      "tools": ["only names from the available tool list"],
+      "modelPreference": "reasoning|coding|research|fast"
     }
   ]
 }
@@ -228,6 +399,9 @@ Rules:
 - Each subtask should be independently executable
 - Set dependencies correctly (e.g., review depends on implementation)
 - Assign appropriate roles (researcher, coder, reviewer, tester)
+- Only assign a role that exists in the available team directory; otherwise use the closest available role
+- If none of the existing members fits a specialized responsibility, define a task-scoped agent in agentProfiles and reference its id from assignedAgentProfileId. Do not create one merely to rename an existing role.
+- Task-scoped agents must use only listed tools and configured model connections. They are isolated workers that return a concrete handoff to the leader.
 - Maximum ${maxSubtasks} subtasks
 - Output ONLY the JSON, no other text`
 
@@ -252,13 +426,16 @@ Rules:
       description: string
       dependencies: string[]
       assignedRole: string
+      assignedAgentProfileId?: string
     }> = []
+    let parsedProfiles: Array<Partial<DynamicAgentProfile>> = []
 
     try {
       const jsonMatch = response.content.match(/\{[\s\S]*\}/)
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0])
         parsedSubtasks = parsed.subtasks || []
+        parsedProfiles = Array.isArray(parsed.agentProfiles) ? parsed.agentProfiles : []
       }
     } catch {
       // If JSON parsing fails, create a single subtask
@@ -276,6 +453,33 @@ Rules:
     const planId = uuidv4()
     const now = Date.now()
 
+    const validRoles = new Set(['researcher', 'coder', 'reviewer', 'tester'])
+    const permittedToolSet = new Set([this.config.leader, ...this.config.workers].flatMap((agent) => agent.tools))
+    const validPreferences = new Set<AgentModelPreference>(['reasoning', 'coding', 'research', 'fast'])
+    const dynamicAgents: DynamicAgentProfile[] = parsedProfiles.slice(0, 4).map((profile, index) => {
+      const id = String(profile.id || `specialist-${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 48) || `specialist-${index + 1}`
+      const name = String(profile.name || `Specialist ${index + 1}`).trim().slice(0, 80) || `Specialist ${index + 1}`
+      const tools = Array.isArray(profile.tools)
+        ? profile.tools.filter((tool): tool is string => typeof tool === 'string' && permittedToolSet.has(tool)).slice(0, 12)
+        : []
+      return {
+        id,
+        name,
+        description: String(profile.description || 'Task-scoped specialist').trim().slice(0, 240),
+        systemPrompt: String(profile.systemPrompt || profile.description || 'Complete the assigned specialist task and report a concise handoff to the team leader.').trim().slice(0, 2000),
+        tools: tools.length ? tools : this.config.leader.tools.filter((tool) => permittedToolSet.has(tool)),
+        modelPreference: validPreferences.has(profile.modelPreference as AgentModelPreference)
+          ? profile.modelPreference as AgentModelPreference
+          : undefined,
+      }
+    })
+    const dynamicProfileIds = new Set(dynamicAgents.map((profile) => profile.id))
+    const dynamicProfileIdBySource = new Map(
+      parsedProfiles.slice(0, 4).map((profile, index) => [
+        String(profile.id || `specialist-${index + 1}`),
+        dynamicAgents[index]?.id,
+      ] as const).filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
+    )
     const subtasks: SubTask[] = parsedSubtasks.slice(0, maxSubtasks).map((st) => ({
       id: st.id || `task-${uuidv4().slice(0, 8)}`,
       planId,
@@ -283,6 +487,12 @@ Rules:
       description: st.description || '',
       status: 'pending' as TaskStatus,
       dependencies: Array.isArray(st.dependencies) ? st.dependencies : [],
+      assignedRole: validRoles.has(st.assignedRole)
+        ? st.assignedRole as SubTask['assignedRole']
+        : undefined,
+      assignedAgentProfileId: dynamicProfileIds.has(dynamicProfileIdBySource.get(st.assignedAgentProfileId || '') || '')
+        ? dynamicProfileIdBySource.get(st.assignedAgentProfileId || '')
+        : undefined,
     }))
 
     // If no subtasks were parsed, create a fallback
@@ -303,6 +513,7 @@ Rules:
       subtasks,
       createdAt: now,
       status: 'in_progress',
+      dynamicAgents,
     }
 
     return plan
@@ -312,12 +523,21 @@ Rules:
    * Assign a worker based on the subtask's content.
    */
   private assignWorker(subtask: SubTask): AgentConfig {
+    if (subtask.assignedAgentProfileId) {
+      const dynamicWorker = this.dynamicWorkers.get(subtask.assignedAgentProfileId)
+      if (dynamicWorker) return dynamicWorker
+    }
     const text = `${subtask.title} ${subtask.description}`.toLowerCase()
     const workers = this.config.workers
 
     if (workers.length === 0) {
       // Fallback to leader if no workers available
       return this.config.leader
+    }
+
+    if (subtask.assignedRole) {
+      const assignedWorker = this.nextWorkerForRole(subtask.assignedRole)
+      if (assignedWorker) return assignedWorker
     }
 
     // Role-based matching
@@ -330,13 +550,53 @@ Rules:
 
     for (const { pattern, role } of rolePatterns) {
       if (pattern.test(text)) {
-        const match = workers.find((w) => w.role === role)
+        const match = this.nextWorkerForRole(role)
         if (match) return match
       }
     }
 
     // Default: coder (or first available worker)
-    return workers.find((w) => w.role === 'coder') || workers[0]
+    return this.nextWorkerForRole('coder') || workers[0]
+  }
+
+  private nextWorkerForRole(role: string): AgentConfig | undefined {
+    const candidates = this.config.workers.filter((worker) => worker.role === role)
+    if (!candidates.length) return undefined
+    const cursor = this.assignmentCursor.get(role) || 0
+    this.assignmentCursor.set(role, cursor + 1)
+    return candidates[cursor % candidates.length]
+  }
+
+  private registerDynamicWorkers(profiles: DynamicAgentProfile[]): void {
+    const candidatePool = [this.config.leader, ...this.config.workers]
+      .flatMap((agent) => [
+        ...(agent.modelCandidates || []),
+        { providerId: agent.providerId, model: agent.model },
+      ])
+      .filter((candidate, index, all) => candidate.providerId && candidate.model
+        && all.findIndex((item) => item.providerId === candidate.providerId && item.model === candidate.model) === index)
+    const fallback = this.config.fallbackModel || candidatePool[0] || { providerId: this.config.leader.providerId, model: this.config.leader.model }
+
+    for (const profile of profiles) {
+      this.dynamicWorkers.set(profile.id, {
+        id: `task-agent-${uuidv4()}`,
+        name: profile.name,
+        description: profile.description,
+        role: 'custom',
+        systemPrompt: `You are ${profile.name}, a task-scoped specialist in a coordinated team.\n\n${profile.systemPrompt}\n\nWork only on your assigned subtask. Respect the available tools and permissions. Return concrete findings, artifacts, and risks for the team leader.`,
+        providerId: fallback.providerId,
+        model: fallback.model,
+        modelCandidates: candidatePool,
+        modelPreference: profile.modelPreference,
+        tools: profile.tools,
+        maxIterations: this.config.leader.maxIterations,
+        temperature: this.config.leader.temperature,
+        isBuiltIn: false,
+        taskScoped: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      })
+    }
   }
 
   /**
@@ -348,9 +608,14 @@ Rules:
     plan: TaskPlan,
     completedResults: Map<string, string>
   ): AsyncGenerator<TeamEvent> {
+    const provider = this.config.providerForAgent(worker)
+    if (!provider) {
+      throw new Error(`The model connection for ${worker.name} is unavailable. Configure or enable its model connection.`)
+    }
+
     const runner = new AgentRunner({
       agentConfig: worker,
-      provider: this.config.provider,
+      provider,
       toolRegistry: this.config.toolRegistry,
       contextManager: this.config.contextManager,
       workspacePath: this.config.workspacePath,
@@ -391,12 +656,26 @@ Please complete this task. Use the available tools as needed. When done, provide
 
     let result = ''
     let lastTextContent = ''
+    let runnerError = ''
 
     try {
       for await (const event of runner.run({
         messages: [],
-        newMessage: workerPrompt,
+        newMessage: {
+          id: uuidv4(),
+          conversationId: subtask.agentConversationId || '',
+          role: 'user',
+          content: workerPrompt,
+          timestamp: Date.now(),
+        },
       })) {
+        // Text deltas can arrive hundreds or thousands of times for a long
+        // response. Persisting every delta blocks the Electron main process
+        // because conversation storage rewrites the complete JSON history.
+        // The final `done` event still stores the full worker handoff.
+        if (event.type !== 'text' && event.type !== 'thinking') {
+          await this.config.onWorkerEvent?.(subtask, worker, event)
+        }
         if (event.type === 'text' && event.content) {
           lastTextContent = event.content
         }
@@ -404,7 +683,7 @@ Please complete this task. Use the available tools as needed. When done, provide
           result = event.content
         }
         if (event.type === 'error' && event.error) {
-          // Yield progress but don't fail yet
+          runnerError = event.error
           yield {
             type: 'task_progress',
             subtaskId: subtask.id,
@@ -416,6 +695,10 @@ Please complete this task. Use the available tools as needed. When done, provide
       // Use the last text content if no 'done' content
       if (!result && lastTextContent) {
         result = lastTextContent
+      }
+
+      if (runnerError) {
+        throw new Error(runnerError)
       }
 
       subtask.status = 'completed'
@@ -451,7 +734,11 @@ Please complete this task. Use the available tools as needed. When done, provide
     plan: TaskPlan,
     results: Map<string, string>
   ): Promise<string> {
-    const { leader, provider } = this.config
+    const leader = this.selectExecutionAgent(this.config.leader)
+    const provider = this.config.providerForAgent(leader)
+    if (!provider) {
+      return `Team plan finished, but the leader connection is unavailable for a final summary.\n\n${plan.subtasks.map((subtask) => `- ${subtask.title}: ${subtask.status}`).join('\n')}`
+    }
 
     const taskSummaries = plan.subtasks
       .map((st) => {

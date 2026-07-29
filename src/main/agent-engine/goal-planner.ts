@@ -2,15 +2,20 @@ import type { LLMProvider } from '../providers/base-provider'
 import type { ToolRegistry, FileService, TerminalService } from '../tools/index'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { GoalConfig, GoalStep, GoalProgress, TaskStatus } from '../../shared/types/task'
+import type { ToolCall } from '../../shared/types/conversation'
 import type { ChatMessageInput } from '../../shared/types/provider'
+import type { ChatMessage } from '../../shared/types/conversation'
 import { AgentRunner } from './agent-runner'
 import { ContextManager } from './context'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
 export type GoalEvent =
+  | { type: 'goal_started'; goal: string }
   | { type: 'plan_created'; steps: GoalStep[] }
   | { type: 'step_started'; stepId: string; stepIndex: number }
   | { type: 'step_progress'; stepId: string; content: string }
+  | { type: 'step_tool_call'; stepId: string; toolCall: ToolCall }
+  | { type: 'step_tool_result'; stepId: string; toolCallId: string; result: string; isError: boolean }
   | { type: 'step_completed'; stepId: string; result: string }
   | { type: 'step_failed'; stepId: string; error: string }
   | { type: 'plan_adjusted'; steps: GoalStep[]; reason: string }
@@ -62,6 +67,7 @@ export class GoalPlanner {
     }
 
     try {
+      yield { type: 'goal_started', goal: goalConfig.goal }
       // 1. Generate execution plan
       let steps: GoalStep[]
       try {
@@ -300,15 +306,41 @@ Rules:
     let lastContent = ''
 
     try {
-      for await (const event of runner.run({ messages: [], newMessage: contextMsg })) {
+      const stepMessage: ChatMessage = {
+        id: `goal-step-${step.id}-${Date.now()}`,
+        conversationId: '',
+        role: 'user',
+        content: contextMsg,
+        timestamp: Date.now(),
+      }
+      for await (const event of runner.run({ messages: [], newMessage: stepMessage })) {
         if (event.type === 'text' && event.content) {
           lastContent += event.content
           yield { type: 'step_progress', stepId: step.id, content: event.content }
         } else if (event.type === 'tool_call' && event.toolCall) {
+          const toolCall: ToolCall = {
+            id: event.toolCall.id,
+            name: event.toolCall.name,
+            arguments: event.toolCall.arguments,
+          }
+          step.toolCalls = [...(step.toolCalls || []), toolCall]
+          yield { type: 'step_tool_call', stepId: step.id, toolCall }
           const toolInfo = `\n[Tool: ${event.toolCall.name}]\n`
           lastContent += toolInfo
           yield { type: 'step_progress', stepId: step.id, content: toolInfo }
         } else if (event.type === 'tool_result' && event.toolResult) {
+          step.toolCalls = (step.toolCalls || []).map((toolCall) =>
+            toolCall.id === event.toolResult!.toolCallId
+              ? { ...toolCall, result: event.toolResult!.result, isError: event.toolResult!.isError }
+              : toolCall
+          )
+          yield {
+            type: 'step_tool_result',
+            stepId: step.id,
+            toolCallId: event.toolResult.toolCallId,
+            result: event.toolResult.result,
+            isError: event.toolResult.isError,
+          }
           const resultSnippet = event.toolResult.result.slice(0, 500)
           const resultInfo = `\n[Result: ${resultSnippet}]\n`
           lastContent += resultInfo

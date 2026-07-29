@@ -6,6 +6,8 @@ import {
 } from '../../shared/constants'
 import type { ProviderConfigEntry } from '../../shared/types/provider'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import type { AutomationConfig } from '../../shared/types/automation'
+import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 
 export type { ProviderConfigEntry }
 
@@ -28,6 +30,7 @@ export interface AppConfig {
   maxIterations: number
   temperature: number
   maxTokens: number
+  automation: AutomationConfig
 }
 
 const DEFAULT_PROVIDERS: ProviderConfigEntry[] = [
@@ -69,6 +72,7 @@ const DEFAULTS: AppConfig = {
   maxIterations: DEFAULT_MAX_ITERATIONS,
   temperature: DEFAULT_TEMPERATURE,
   maxTokens: DEFAULT_MAX_TOKENS,
+  automation: DEFAULT_AUTOMATION_CONFIG,
 }
 
 export class ConfigStore {

@@ -2,6 +2,8 @@ import Store from 'electron-store'
 import { MARKETPLACE_PLUGINS, validatePluginManifest } from '../../shared/plugin-marketplace'
 import type { InstalledPlugin, MarketplacePluginView, PluginManifest } from '../../shared/types/plugin'
 
+const SEARCH_PLUGIN_IDS = new Set(['brave-search', 'tavily-search', 'searxng-search'])
+
 interface PluginStoreSchema {
   plugins: InstalledPlugin[]
 }
@@ -51,6 +53,13 @@ export class PluginStore {
     const index = plugins.findIndex((plugin) => plugin.id === id)
     if (index < 0) throw new Error('Installed plugin was not found.')
     const next = { ...plugins[index], enabled, updatedAt: new Date().toISOString() }
+    if (enabled && SEARCH_PLUGIN_IDS.has(id)) {
+      for (let otherIndex = 0; otherIndex < plugins.length; otherIndex += 1) {
+        if (otherIndex !== index && SEARCH_PLUGIN_IDS.has(plugins[otherIndex].id) && plugins[otherIndex].enabled) {
+          plugins[otherIndex] = { ...plugins[otherIndex], enabled: false, updatedAt: next.updatedAt }
+        }
+      }
+    }
     plugins[index] = next
     this.store.set('plugins', plugins)
     return next

@@ -2,15 +2,21 @@ import fs from 'fs'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { Conversation, ChatImageAttachment, ChatMessage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
-import type { AgentEvent } from '../../shared/types/agent'
+import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
 import { AgentRunner } from '../agent-engine/agent-runner'
 import { ContextManager } from '../agent-engine/context'
+import { TeamOrchestrator } from '../agent-engine/team-orchestrator'
+import { GoalPlanner } from '../agent-engine/goal-planner'
 import { getStorage } from '../storage'
 import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
+import { SpecService } from '../services/spec-service'
+import type { AutomationConfig } from '../../shared/types/automation'
+import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
+import type { ChatMessageInput } from '../../shared/types/provider'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -47,6 +53,104 @@ function loadReferenceImages(images: ChatImageAttachment[] | undefined, strict: 
 
 function persistableImages(images: ChatImageAttachment[] | undefined): ChatImageAttachment[] | undefined {
   return images?.map(({ dataUrl: _dataUrl, ...image }) => image)
+}
+
+async function runInternalTeamDelegation(
+  services: ChatServices,
+  conversation: Conversation,
+  historyMessages: ChatMessage[],
+  goal: string,
+  win: BrowserWindow
+): Promise<string> {
+  const agents = await getStorage().agents.listAgents()
+  const leader = agents.find((agent: AgentConfig) => agent.role === 'leader')
+  if (!leader) throw new Error('No Team Leader agent is configured.')
+
+  const workers = agents.filter((agent: AgentConfig) =>
+    ['researcher', 'coder', 'reviewer', 'tester'].includes(agent.role)
+  )
+  const connectionCandidates = [
+    ...(leader.modelCandidates || []),
+    { providerId: leader.providerId, model: leader.model },
+    ...(leader.isBuiltIn ? [{ providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() }] : []),
+  ]
+  if (!connectionCandidates.some((candidate) => services.providerRegistry.get(candidate.providerId))) {
+    throw new Error('The Team Leader has no available model connection. Configure its model access first.')
+  }
+
+  const access = await getConversationAccess(conversation)
+  const workerContexts = new Map<string, string>()
+  const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
+    const child = await getStorage().conversations.createConversation({
+      title: `${worker.name}: ${subtask.title}`,
+      agentId: worker.id,
+      mode: 'expert',
+      workspaceId: conversation.workspaceId,
+      accessScope: conversation.accessScope,
+      permissionLevel: conversation.permissionLevel,
+      fileAccessGrants: conversation.fileAccessGrants,
+      workspacePath: conversation.workspacePath,
+      parentConversationId: conversation.id,
+      teamTaskId: subtask.id,
+    })
+    workerContexts.set(subtask.id, child.id)
+    await getStorage().conversations.addMessage(child.id, {
+      id: uuidv4(), conversationId: child.id, role: 'user',
+      content: `Team assignment\n\nTask: ${subtask.title}\n\nResponsibility: ${subtask.description}\n\nRole: ${subtask.assignedRole || worker.role}\nModel: ${worker.providerId} / ${worker.model}\n\nThis is an isolated worker context. Report concrete findings and completed work back to the team leader.`,
+      timestamp: Date.now(),
+    })
+    if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, child.id)
+    return child.id
+  }
+  const persistWorkerEvent = async (
+    subtask: import('../../shared/types/task').SubTask,
+    worker: AgentConfig,
+    agentEvent: AgentEvent,
+  ): Promise<void> => {
+    if (agentEvent.type === 'text' || agentEvent.type === 'thinking') return
+    const childId = subtask.agentConversationId || workerContexts.get(subtask.id)
+    if (!childId) return
+    let content = ''
+    let role: ChatMessage['role'] = 'assistant'
+    if (agentEvent.type === 'tool_call' && agentEvent.toolCall) content = `Calling tool: ${agentEvent.toolCall.name}`
+    if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
+      role = 'tool'
+      const result = agentEvent.toolResult.result
+      content = `${agentEvent.toolResult.name}: ${result.length > 8000 ? `${result.slice(0, 8000)}\n\n[Output truncated in worker history]` : result}`
+    }
+    if (agentEvent.type === 'done' && agentEvent.content) content = agentEvent.content
+    if (agentEvent.type === 'error' && agentEvent.error) content = `Error: ${agentEvent.error}`
+    if (!content) return
+    await getStorage().conversations.addMessage(childId, {
+      id: uuidv4(), conversationId: childId, role, content, agentId: worker.id, agentName: worker.name, timestamp: Date.now(),
+    })
+    if ((agentEvent.type === 'done' || agentEvent.type === 'error') && !win.isDestroyed()) {
+      win.webContents.send(IPC.CONVERSATION_CHANGED, childId)
+    }
+  }
+  const orchestrator = new TeamOrchestrator({
+    leader,
+    workers,
+    providerForAgent: (agent) => services.providerRegistry.get(agent.providerId),
+    fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
+    toolRegistry: services.toolRegistry,
+    contextManager: new ContextManager(),
+    workspacePath: conversation.workspacePath || (access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
+    fileAccessGrants: access.fileAccessGrants,
+    fullFilesystemAccess: access.fullFilesystemAccess,
+    fileService: services.fileService,
+    terminalService: services.terminalService,
+    createWorkerConversation,
+    onWorkerEvent: persistWorkerEvent,
+  })
+
+  let summary = ''
+  for await (const event of orchestrator.run({ goal, messages: historyMessages })) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.TASK_STREAM, { ...event, conversationId: conversation.id })
+    if (event.type === 'summary') summary = event.summary || ''
+    if (event.type === 'error') throw new Error(event.error || 'Team orchestration failed.')
+  }
+  return summary || 'The specialist team completed the delegated work without a separate summary.'
 }
 
 function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
@@ -290,16 +394,108 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
         // 5. Create AgentRunner
         const workspaceAccess = await getConversationAccess(conversation)
+        const storedAutomation = getStorage().config.get('automation')
+        const automation: AutomationConfig = {
+          ...DEFAULT_AUTOMATION_CONFIG,
+          ...storedAutomation,
+          team: { ...DEFAULT_AUTOMATION_CONFIG.team, ...storedAutomation?.team },
+          task: { ...DEFAULT_AUTOMATION_CONFIG.task, ...storedAutomation?.task },
+          goal: { ...DEFAULT_AUTOMATION_CONFIG.goal, ...storedAutomation?.goal },
+          plan: { ...DEFAULT_AUTOMATION_CONFIG.plan, ...storedAutomation?.plan },
+          spec: { ...DEFAULT_AUTOMATION_CONFIG.spec, ...storedAutomation?.spec },
+        }
+        const runnerWorkspacePath = conversation.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
+        const runTask = automation.task.enabled && automation.task.autoInvoke
+          ? async (task: string): Promise<string> => {
+              const worker = new AgentRunner({
+                agentConfig: effectiveAgentConfig,
+                provider,
+                toolRegistry: services.toolRegistry,
+                contextManager: new ContextManager(),
+                workspacePath: runnerWorkspacePath,
+                fileAccessGrants: workspaceAccess.fileAccessGrants,
+                fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
+                fileService: services.fileService,
+                terminalService: services.terminalService,
+              })
+              let output = ''
+              const taskMessage: ChatMessage = {
+                id: uuidv4(), conversationId, role: 'user', content: `Complete this bounded internal task and report the concrete result:\n${task}`, timestamp: Date.now(),
+              }
+              for await (const event of worker.run({ messages: [], newMessage: taskMessage })) {
+                if (event.type === 'text' && event.content) output += event.content
+                if (event.type === 'tool_result' && event.toolResult) output += `\n[${event.toolResult.name}] ${event.toolResult.result}`
+                if (event.type === 'error') throw new Error(event.error)
+              }
+              return output.trim() || 'Task execution completed.'
+            }
+          : undefined
+        const runGoal = automation.goal.enabled && automation.goal.autoInvoke
+          ? async (goal: string): Promise<string> => {
+              const planner = new GoalPlanner({
+                agentConfig: effectiveAgentConfig,
+                provider,
+                toolRegistry: services.toolRegistry,
+                contextManager: new ContextManager(),
+                workspacePath: runnerWorkspacePath,
+                fileAccessGrants: workspaceAccess.fileAccessGrants,
+                fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
+                fileService: services.fileService,
+                terminalService: services.terminalService,
+                maxSteps: automation.goal.maxSteps,
+                timeout: automation.goal.timeoutMinutes * 60 * 1000,
+              })
+              let summary = ''
+              for await (const event of planner.run({ goal, maxSteps: automation.goal.maxSteps, timeout: automation.goal.timeoutMinutes * 60 * 1000, autoAdjust: true })) {
+                if (!win.isDestroyed()) {
+                  win.webContents.send(IPC.TASK_GOAL_STREAM, { ...event, conversationId })
+                }
+                if (event.type === 'summary') summary = event.content
+                if (event.type === 'error') throw new Error(event.error)
+              }
+              return summary || 'Goal execution completed.'
+            }
+          : undefined
+        const createExecutionPlan = automation.plan.enabled && automation.plan.autoInvoke
+          ? async (goal: string): Promise<string> => {
+              const messages: ChatMessageInput[] = [
+                { role: 'system', content: 'Create a concise actionable execution plan. Include ordered steps, risks, verification, and stop conditions. Do not execute work.' },
+                { role: 'user', content: `Goal: ${goal}\nWorkspace: ${runnerWorkspacePath || 'not restricted to a single workspace'}` },
+              ]
+              const response = await provider.chatComplete({ model: effectiveAgentConfig.model, messages, temperature: 0.2, maxTokens: 2048 })
+              return response.content
+            }
+          : undefined
+        const applySpecTemplate = automation.spec.enabled && automation.spec.autoInvoke
+          ? async (templateId: string, parameters: Record<string, string>): Promise<string> => {
+              const specService = new SpecService()
+              specService.initialize()
+              const template = specService.getTemplate(templateId)
+              if (!template) throw new Error(`Spec template '${templateId}' was not found.`)
+              return specService.instantiateTemplate(templateId, parameters)
+            }
+          : undefined
         const runner = new AgentRunner({
           agentConfig: effectiveAgentConfig,
           provider,
           toolRegistry: services.toolRegistry,
           contextManager: new ContextManager(),
-          workspacePath: conversation.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
+          workspacePath: runnerWorkspacePath,
           fileAccessGrants: workspaceAccess.fileAccessGrants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
           fileService: services.fileService,
           terminalService: services.terminalService,
+          delegateToTeam: automation.team.enabled && automation.team.autoInvoke ? (goal) => runInternalTeamDelegation(
+            services,
+            conversation,
+            historyMessages,
+            goal,
+            win
+          ) : undefined,
+          runTask,
+          runGoal,
+          createExecutionPlan,
+          applySpecTemplate,
         })
         currentRunner = runner
 

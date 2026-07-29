@@ -26,6 +26,7 @@ export function registerAgentHandlers(): void {
         systemPrompt: data.systemPrompt || '',
         model: data.model || 'gpt-4o',
         providerId: data.providerId || 'openai',
+        modelCandidates: data.modelCandidates || [],
         tools: data.tools || [],
         maxIterations: data.maxIterations || 20,
         temperature: data.temperature ?? 0.7,

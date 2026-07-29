@@ -2,10 +2,12 @@ import React from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
+import { useTaskStore } from '@/stores/use-task-store'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
+import { TeamCollaborationPanel } from './TeamCollaborationPanel'
 import { Bot, AlertCircle, ShieldAlert, X } from 'lucide-react'
 
 export interface ChatPanelProps {
@@ -15,14 +17,15 @@ export interface ChatPanelProps {
 export function ChatPanel({ className }: ChatPanelProps) {
   const { conversations, currentConversationId, error, setError } = useChatStore()
   const { workMode } = useAppStore()
-  const { getSelectedAgent } = useAgentStore()
+  const { agents, getSelectedAgent } = useAgentStore()
+  const { currentPlan, isTaskRunning } = useTaskStore()
 
-  const agent = getSelectedAgent()
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
+  const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId) || getSelectedAgent()
 
   const modeLabels: Record<string, string> = {
-    normal: 'Normal',
-    expert: 'Expert Team',
+    normal: 'Auto',
+    expert: 'Team',
     goal: 'Goal',
   }
 
@@ -49,6 +52,20 @@ export function ChatPanel({ className }: ChatPanelProps) {
           </Badge>
         </div>
       </div>
+
+      {workMode === 'expert' && (isTaskRunning || currentPlan) && (
+        <div className="flex items-center gap-3 border-b border-violet-100 bg-violet-50/60 px-6 py-2 text-xs text-zinc-600">
+          <Bot className={cn('h-3.5 w-3.5 text-violet-600', isTaskRunning && 'animate-pulse')} />
+          <span className="font-medium text-violet-800">Expert Team</span>
+          <span className="truncate">
+            {isTaskRunning
+              ? `Working on ${currentPlan?.subtasks.filter((task) => task.status === 'in_progress').length || 0} task(s)`
+              : `${currentPlan?.subtasks.filter((task) => task.status === 'completed').length || 0}/${currentPlan?.subtasks.length || 0} tasks completed`}
+          </span>
+        </div>
+      )}
+
+      <TeamCollaborationPanel />
 
       {/* Error Banner */}
       {error && (

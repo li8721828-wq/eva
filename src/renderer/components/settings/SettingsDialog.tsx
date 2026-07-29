@@ -1,13 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
-import {
-  Dialog,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogClose,
-} from '@/components/ui/Dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -16,6 +9,7 @@ import { Separator } from '@/components/ui/Separator'
 import { APP_VERSION } from '../../../shared/constants'
 import {
   AlertCircle,
+  ArrowLeft,
   Bot,
   Box,
   CheckCircle2,
@@ -26,15 +20,20 @@ import {
   Key,
   Link,
   Loader2,
+  Plus,
   RefreshCw,
   Server,
   ShieldCheck,
   Smartphone,
+  Trash2,
+  X,
 } from 'lucide-react'
 import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
 import type { QqRemoteConfig, QqRemoteStatus } from '../../../shared/types/qq'
 import type { Workspace } from '../../../shared/types/workspace'
 import type { AgentConfig } from '../../../shared/types/agent'
+import type { AutomationConfig, HiddenCapabilityId } from '../../../shared/types/automation'
+import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 
@@ -57,6 +56,14 @@ const EMPTY_QQ_CONFIG: QqRemoteConfig = {
   sandbox: false,
 }
 
+const HIDDEN_CAPABILITIES: Array<{ id: HiddenCapabilityId; name: string; description: string; workflow: string; context: string; dependencies: string }> = [
+  { id: 'team', name: 'Team orchestration', description: 'Delegates complex work to specialist agents for research, implementation, review, and testing.', workflow: 'Agent -> delegate_to_team -> leader plan -> specialist runners -> consolidated result', context: 'Team roster, each agent model candidates, tool permissions, workspace access, recent conversation.', dependencies: 'TeamOrchestrator, AgentRunner, configured agents and model connections.' },
+  { id: 'task', name: 'Task execution', description: 'Runs one bounded implementation or investigation through an isolated internal worker.', workflow: 'Agent -> run_task -> worker uses current tools and permissions -> result returned to agent', context: 'Task objective, active agent, current workspace, conversation context, allowed tools and access level.', dependencies: 'AgentRunner, ToolRegistry, current model connection.' },
+  { id: 'goal', name: 'Goal execution', description: 'Builds and adapts a multi-step plan while executing toward a measurable outcome.', workflow: 'Agent -> run_goal -> plan steps -> execute and evaluate -> summary', context: 'Goal, workspace, permissions, maximum steps, timeout, previous step results.', dependencies: 'GoalPlanner, AgentRunner, assigned tools.' },
+  { id: 'plan', name: 'Execution planning', description: 'Creates a structured plan without performing work, useful before risky or broad changes.', workflow: 'Agent -> create_execution_plan -> structured steps -> agent continues with the plan', context: 'User objective, workspace context, available tools, current model.', dependencies: 'Planning prompt and the active model connection.' },
+  { id: 'spec', name: 'Specification templates', description: 'Loads a reusable task template and expands it into a structured implementation brief.', workflow: 'Agent -> apply_spec_template -> template expansion -> agent follows generated brief', context: 'Template ID, provided parameters, active workspace and conversation.', dependencies: 'SpecService and built-in or imported templates.' },
+]
+
 export function SettingsDialog() {
   const {
     settingsOpen,
@@ -70,15 +77,21 @@ export function SettingsDialog() {
     setAgentManagerOpen,
   } = useAppStore()
 
-  const [providerType, setProviderType] = useState<ProviderType>(activeProviderId as ProviderType)
+  const [providerType, setProviderType] = useState<ProviderType>('openai')
+  const [providerName, setProviderName] = useState('OpenAI')
+  const [providerEnabled, setProviderEnabled] = useState(true)
+  const [editingProviderId, setEditingProviderId] = useState('')
+  const [providerPendingDeletionId, setProviderPendingDeletionId] = useState<string | null>(null)
+  const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
-  const [selectedModel, setSelectedModel] = useState(activeModel)
+  const [selectedModelIds, setSelectedModelIds] = useState<string[]>(activeModel ? [activeModel] : [])
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [showApiKey, setShowApiKey] = useState(false)
   const [availableModels, setAvailableModels] = useState<ProviderModelOption[]>([])
+  const [modelSearch, setModelSearch] = useState('')
   const [loadingModels, setLoadingModels] = useState(false)
   const [modelsMessage, setModelsMessage] = useState<string | null>(null)
   const [qqConfig, setQqConfig] = useState<QqRemoteConfig>(EMPTY_QQ_CONFIG)
@@ -89,39 +102,108 @@ export function SettingsDialog() {
   const [qqAgents, setQqAgents] = useState<AgentConfig[]>([])
   const [qqSaving, setQqSaving] = useState(false)
   const [qqResult, setQqResult] = useState<{ success: boolean; message: string } | null>(null)
+  const [automation, setAutomation] = useState<AutomationConfig>(DEFAULT_AUTOMATION_CONFIG)
 
   const getProviderTestConfig = (): ProviderTestConfig => ({
-    id: providerType,
-    name: PROVIDER_OPTIONS.find((provider) => provider.value === providerType)?.label || providerType,
+    id: editingProviderId || `provider-${providerType}`,
+    name: providerName.trim() || PROVIDER_OPTIONS.find((provider) => provider.value === providerType)?.label || providerType,
     type: providerType,
     apiKey: apiKey.trim(),
     baseUrl: baseUrl.trim() || undefined,
-    defaultModel: selectedModel.trim(),
+    defaultModel: selectedModelIds[0] || '',
   })
 
   const validateProviderConfig = (): string | null => {
     const config = getProviderTestConfig()
+    if (!config.name) return 'Enter a name for this saved connection.'
     if (!config.apiKey) return 'Enter an API key before saving.'
     if (config.type === 'custom' && !config.baseUrl) return 'Enter a base URL for a custom provider.'
-    if (!config.defaultModel) return 'Choose or enter a default model before saving.'
+    if (!config.defaultModel) return 'Select at least one model for this connection.'
     return null
   }
 
   const invalidateModels = () => {
     setAvailableModels([])
     setModelsMessage(null)
-    setSelectedModel('')
+    setSelectedModelIds([])
+    setModelSearch('')
+  }
+
+  const applyProviderProfile = (provider: ProviderConfigEntry) => {
+    setEditingProviderId(provider.id)
+    setProviderName(provider.name)
+    setProviderType(provider.type)
+    setProviderEnabled(provider.isEnabled)
+    setApiKey(provider.apiKey)
+    setBaseUrl(provider.baseUrl || '')
+    const savedModels = provider.models?.length
+      ? provider.models
+      : provider.defaultModel
+        ? [{ id: provider.defaultModel, name: provider.defaultModel }]
+        : []
+    setAvailableModels(savedModels)
+    setSelectedModelIds(savedModels.map((model) => model.id))
+    setModelSearch('')
+    setModelsMessage(null)
+    setTestResult(null)
+  }
+
+  const startNewProviderProfile = (type: ProviderType = 'openai') => {
+    setEditingProviderId(`provider-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+    setProviderType(type)
+    setProviderName('New connection')
+    setProviderEnabled(true)
+    setApiKey('')
+    setBaseUrl('')
+    setSelectedModelIds([])
+    setAvailableModels([])
+    setModelSearch('')
+    setModelsMessage(null)
+    setTestResult(null)
   }
 
   useEffect(() => {
     if (!settingsOpen) return
-    setProviderType(activeProviderId as ProviderType)
-    setSelectedModel(activeModel)
-    setTestResult(null)
-    setShowApiKey(false)
-    setAvailableModels([])
-    setModelsMessage(null)
+    let cancelled = false
+    void window.eva.provider.list().then((providers) => {
+      if (cancelled) return
+      setSavedProviders(providers)
+      const current = providers.find((provider) => provider.id === activeProviderId)
+        || providers.find((provider) => provider.isEnabled && provider.apiKey)
+        || providers[0]
+      if (current) applyProviderProfile(current)
+      else startNewProviderProfile()
+      setShowApiKey(false)
+    }).catch((error) => console.error('Failed to load saved provider profiles:', error))
+    return () => { cancelled = true }
   }, [settingsOpen])
+
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    void window.eva.config.get<AutomationConfig>('automation')
+      .then((config) => setAutomation({
+        ...DEFAULT_AUTOMATION_CONFIG,
+        ...config,
+        team: { ...DEFAULT_AUTOMATION_CONFIG.team, ...config?.team },
+        task: { ...DEFAULT_AUTOMATION_CONFIG.task, ...config?.task },
+        goal: { ...DEFAULT_AUTOMATION_CONFIG.goal, ...config?.goal },
+        plan: { ...DEFAULT_AUTOMATION_CONFIG.plan, ...config?.plan },
+        spec: { ...DEFAULT_AUTOMATION_CONFIG.spec, ...config?.spec },
+      }))
+      .catch(() => setAutomation(DEFAULT_AUTOMATION_CONFIG))
+  }, [settingsOpen])
+
+  const updateAutomation = async (id: HiddenCapabilityId, updates: Partial<AutomationConfig[HiddenCapabilityId]>) => {
+    const next = { ...automation, [id]: { ...automation[id], ...updates } } as AutomationConfig
+    setAutomation(next)
+    try {
+      await window.eva.config.set('automation', next)
+    } catch {
+      setAutomation(automation)
+    }
+  }
+
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -130,28 +212,6 @@ export function SettingsDialog() {
     }, 2000)
     return () => window.clearInterval(timer)
   }, [settingsOpen])
-
-  useEffect(() => {
-    if (!settingsOpen) return
-    let cancelled = false
-
-    const loadProviderConfig = async () => {
-      try {
-        const providers = (await window.eva.provider.list()) as ProviderConfigEntry[]
-        const current = providers.find((provider) => provider.id === providerType)
-        if (cancelled) return
-        setApiKey(current?.apiKey || '')
-        setBaseUrl(current?.baseUrl || '')
-      } catch (error) {
-        console.error('Failed to load provider config:', error)
-      }
-    }
-
-    void loadProviderConfig()
-    return () => {
-      cancelled = true
-    }
-  }, [settingsOpen, providerType])
 
   useEffect(() => {
     if (!settingsOpen) return
@@ -204,22 +264,74 @@ export function SettingsDialog() {
         type: configToSave.type,
         apiKey: configToSave.apiKey,
         baseUrl: configToSave.baseUrl,
-        isEnabled: true,
+        isEnabled: providerEnabled,
+        defaultModel: configToSave.defaultModel,
+        models: availableModels.filter((model) => selectedModelIds.includes(model.id)),
       }
 
-      await window.eva.config.set('activeProviderId', providerType)
-      await window.eva.config.set('activeModel', selectedModel)
       await window.eva.provider.saveConfig(config)
-      setActiveProvider(providerType)
-      setActiveModel(selectedModel)
+      setSavedProviders((providers) => {
+        const index = providers.findIndex((provider) => provider.id === config.id)
+        return index >= 0 ? providers.map((provider) => provider.id === config.id ? config : provider) : [...providers, config]
+      })
+      setEditingProviderId(config.id)
       setTestResult({
         success: true,
-        message: 'Configuration saved and applied to built-in agents.',
+        message: providerEnabled
+          ? 'Connection saved. Its models are now available in the chat model picker.'
+          : 'Connection saved but hidden from the chat model picker until enabled.',
       })
     } catch (error) {
       setTestResult({ success: false, message: 'Failed to save configuration.' })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const toggleSavedProvider = async (provider: ProviderConfigEntry) => {
+    const next = { ...provider, isEnabled: !provider.isEnabled }
+    try {
+      await window.eva.provider.saveConfig(next)
+      setSavedProviders((providers) => providers.map((item) => item.id === next.id ? next : item))
+      if (editingProviderId === next.id) setProviderEnabled(next.isEnabled)
+
+      if (!next.isEnabled && provider.id === activeProviderId) {
+        const fallback = savedProviders.find((item) => item.id !== provider.id && item.isEnabled && item.apiKey && item.defaultModel)
+        if (fallback?.defaultModel) {
+          await window.eva.config.set('activeProviderId', fallback.id)
+          await window.eva.config.set('activeModel', fallback.defaultModel)
+          setActiveProvider(fallback.id)
+          setActiveModel(fallback.defaultModel)
+        }
+      }
+    } catch (error) {
+      setTestResult({ success: false, message: 'Failed to change this connection state.' })
+    }
+  }
+
+  const deleteSavedProvider = async (provider: ProviderConfigEntry) => {
+    try {
+      await window.eva.provider.delete(provider.id)
+      const remaining = savedProviders.filter((item) => item.id !== provider.id)
+      setSavedProviders(remaining)
+      setProviderPendingDeletionId(null)
+
+      const fallback = remaining.find((item) => item.isEnabled && item.apiKey && (item.defaultModel || item.models?.[0]?.id))
+      if (provider.id === activeProviderId) {
+        const fallbackModel = fallback?.defaultModel || fallback?.models?.[0]?.id || ''
+        await window.eva.config.set('activeProviderId', fallback?.id || '')
+        await window.eva.config.set('activeModel', fallbackModel)
+        setActiveProvider(fallback?.id || '')
+        setActiveModel(fallbackModel)
+      }
+
+      if (provider.id === editingProviderId) {
+        if (fallback) applyProviderProfile(fallback)
+        else startNewProviderProfile()
+      }
+      setTestResult({ success: true, message: `Deleted connection "${provider.name}".` })
+    } catch (error) {
+      setTestResult({ success: false, message: 'Failed to delete this connection.' })
     }
   }
 
@@ -258,23 +370,44 @@ export function SettingsDialog() {
       const result = await window.eva.provider.listModels(config)
       if (!result.success) {
         setAvailableModels([])
-        setSelectedModel('')
+        setSelectedModelIds([])
+        setModelSearch('')
         setModelsMessage(result.message || 'Failed to fetch models.')
         return
       }
 
       setAvailableModels(result.models)
-      setSelectedModel((current) =>
-        result.models.some((model) => model.id === current) ? current : result.models[0]?.id || ''
-      )
+      setSelectedModelIds((current) => current.filter((id) => result.models.some((model) => model.id === id)))
+      setModelSearch('')
     } catch (error) {
       setAvailableModels([])
-      setSelectedModel('')
+      setSelectedModelIds([])
       setModelsMessage('Failed to fetch models.')
     } finally {
       setLoadingModels(false)
     }
   }
+
+  const toggleModelSelection = (modelId: string) => {
+    setSelectedModelIds((current) =>
+      current.includes(modelId)
+        ? current.filter((id) => id !== modelId)
+        : [...current, modelId]
+    )
+  }
+
+  const toggleAllModels = () => {
+    setSelectedModelIds((current) =>
+      current.length === availableModels.length
+        ? []
+        : availableModels.map((model) => model.id)
+    )
+  }
+
+  const filteredModels = availableModels.filter((model) => {
+    const query = modelSearch.trim().toLowerCase()
+    return !query || model.name.toLowerCase().includes(query) || model.id.toLowerCase().includes(query)
+  })
 
   const saveQqRemote = async (connect: boolean) => {
     const nextConfig = connect ? { ...qqConfig, enabled: true } : qqConfig
@@ -331,19 +464,26 @@ export function SettingsDialog() {
     }
   }
 
+  if (!settingsOpen) return null
+
   return (
-    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen} className="settings-dialog">
-      <DialogClose onClose={() => setSettingsOpen(false)} />
-      <DialogHeader className="settings-dialog__header">
-        <DialogTitle>Settings</DialogTitle>
-        <DialogDescription>Configure Eva to your preferences</DialogDescription>
-      </DialogHeader>
+    <section className="settings-page" aria-label="Settings">
+      <header className="settings-page__header">
+        <div>
+          <h1 className="settings-page__title">Settings</h1>
+          <p className="settings-page__description">Configure Eva to your preferences</p>
+        </div>
+        <Button variant="ghost" size="icon" className="settings-page__back" onClick={() => setSettingsOpen(false)} title="Back to workspace" aria-label="Back to workspace">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+      </header>
 
       <Tabs defaultValue="general" className="settings-dialog__tabs">
         <TabsList className="settings-dialog__tabs-list">
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="models">Models</TabsTrigger>
           <TabsTrigger value="agents">Agents</TabsTrigger>
+          <TabsTrigger value="automation">Automation</TabsTrigger>
           <TabsTrigger value="plugins">Plugins</TabsTrigger>
           <TabsTrigger value="qq">QQ Remote</TabsTrigger>
           <TabsTrigger value="about">About</TabsTrigger>
@@ -376,11 +516,70 @@ export function SettingsDialog() {
 
         <TabsContent value="models" className="settings-dialog__content">
           <div className="settings-dialog__model-layout">
-            <div className="settings-dialog__card settings-dialog__model-card">
+            <div className="settings-dialog__card settings-dialog__model-card settings-dialog__model-card--flat">
+              <section className="settings-dialog__provider-library" aria-label="Saved model connections">
+                <div className="settings-dialog__provider-library-header">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-medium text-zinc-800"><Server className="h-4 w-4 text-zinc-500" /> Model connections</div>
+                    <p>Every connection is independent: name it, choose its provider and model, then keep its own API key and endpoint.</p>
+                  </div>
+                  <Button variant="outline" size="sm" className="gap-1.5" onClick={() => startNewProviderProfile()}>
+                    <Plus className="h-3.5 w-3.5" /> Add connection
+                  </Button>
+                </div>
+                <div className="settings-dialog__provider-library-list">
+                  {savedProviders.length === 0 ? (
+                    <div className="settings-dialog__provider-library-empty">No saved connections yet. Add one to configure a model channel.</div>
+                  ) : savedProviders.map((provider) => {
+                    const models = provider.models?.length ? provider.models : provider.defaultModel ? [{ id: provider.defaultModel, name: provider.defaultModel }] : []
+                    return (
+                      <article key={provider.id} className={`settings-dialog__provider-library-item ${provider.id === editingProviderId ? 'is-selected' : ''}`}>
+                        <button type="button" className="settings-dialog__provider-library-edit" onClick={() => applyProviderProfile(provider)}>
+                          <span className="settings-dialog__provider-library-name">
+                            <strong>{provider.name}</strong>
+                            <small>{PROVIDER_OPTIONS.find((option) => option.value === provider.type)?.label || provider.type}{provider.id === activeProviderId ? ' · Active' : ''}</small>
+                          </span>
+                          <span className="settings-dialog__provider-library-models">
+                            {models.slice(0, 3).map((model) => <span key={model.id}>{model.name}</span>)}
+                            {models.length > 3 ? <span>+{models.length - 3}</span> : null}
+                            {models.length === 0 ? <span>No models fetched</span> : null}
+                          </span>
+                        </button>
+                        <div className="settings-dialog__provider-library-actions">
+                          <label className="settings-dialog__provider-library-switch" title={provider.isEnabled ? 'Hide from chat model picker. Agents can still use this connection.' : 'Show in chat model picker. Agents can still use this connection.'}>
+                            <input type="checkbox" checked={provider.isEnabled} onChange={() => void toggleSavedProvider(provider)} />
+                            <span>{provider.isEnabled ? 'Show in chat' : 'Hidden from chat'}</span>
+                          </label>
+                          {providerPendingDeletionId === provider.id ? (
+                            <div className="settings-dialog__provider-delete-confirm">
+                              <button type="button" onClick={() => setProviderPendingDeletionId(null)} title="Cancel deletion" aria-label="Cancel deletion"><X className="h-3.5 w-3.5" /></button>
+                              <button type="button" onClick={() => void deleteSavedProvider(provider)} title="Permanently delete connection" aria-label="Permanently delete connection"><Trash2 className="h-3.5 w-3.5" /></button>
+                            </div>
+                          ) : (
+                            <button type="button" className="settings-dialog__provider-delete" onClick={() => setProviderPendingDeletionId(provider.id)} title="Delete connection" aria-label={`Delete ${provider.name}`}><Trash2 className="h-3.5 w-3.5" /></button>
+                          )}
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+
+              <Separator />
+
+              <div className="settings-dialog__provider-profile-row">
+                <div className="settings-dialog__field flex-1">
+                  <label className="text-sm font-medium text-zinc-700">Connection name</label>
+                  <Input value={providerName} onChange={(event) => setProviderName(event.target.value)} placeholder="e.g. DeepSeek personal" />
+                </div>
+              </div>
+
+              <Separator />
+
               <div className="settings-dialog__field">
                 <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                   <Server className="h-4 w-4 text-zinc-500" />
-                  Provider
+                  Provider type
                 </label>
                 <Select
                   value={providerType}
@@ -450,28 +649,60 @@ export function SettingsDialog() {
                 <div className="settings-dialog__model-label-row">
                   <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                     <Box className="h-4 w-4 text-zinc-500" />
-                    Default Model
+                    Models
                   </label>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="settings-dialog__fetch-models"
-                    onClick={handleFetchModels}
-                    disabled={loadingModels || saving || testing}
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${loadingModels ? 'animate-spin' : ''}`} />
-                    {loadingModels ? 'Fetching...' : 'Fetch Models'}
-                  </Button>
+                  <div className="settings-dialog__model-label-actions">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="settings-dialog__fetch-models"
+                      onClick={handleFetchModels}
+                      disabled={loadingModels || saving || testing}
+                    >
+                      <RefreshCw className={`h-3.5 w-3.5 ${loadingModels ? 'animate-spin' : ''}`} />
+                      {loadingModels ? 'Fetching...' : 'Fetch Models'}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={toggleAllModels}
+                      disabled={availableModels.length === 0 || loadingModels}
+                    >
+                      {selectedModelIds.length === availableModels.length ? 'Clear all' : 'Select all'}
+                    </Button>
+                  </div>
                 </div>
                 {availableModels.length > 0 ? (
-                  <Select
-                    value={selectedModel}
-                    onChange={(event) => setSelectedModel(event.target.value)}
-                    options={availableModels.map((model) => ({ value: model.id, label: model.name }))}
-                  />
+                  <div className="settings-dialog__model-picker">
+                    <Input
+                      value={modelSearch}
+                      onChange={(event) => setModelSearch(event.target.value)}
+                      placeholder="Search fetched models"
+                      aria-label="Search fetched models"
+                    />
+                    <div className="settings-dialog__model-options" role="group" aria-label="Models to include in this connection">
+                      {filteredModels.length > 0 ? filteredModels.map((model) => (
+                        <label key={model.id} className="settings-dialog__model-option">
+                          <input
+                            type="checkbox"
+                            checked={selectedModelIds.includes(model.id)}
+                            onChange={() => toggleModelSelection(model.id)}
+                          />
+                          <span>{model.name}</span>
+                        </label>
+                      )) : (
+                        <div className="settings-dialog__model-no-results">No matching models.</div>
+                      )}
+                    </div>
+                    <p className="settings-dialog__model-selection-summary">
+                      {selectedModelIds.length === 0
+                        ? 'Select one or more models to add them to this connection.'
+                        : `${selectedModelIds.length} model${selectedModelIds.length === 1 ? '' : 's'} will be added to this connection.`}
+                    </p>
+                  </div>
                 ) : (
                   <div className="settings-dialog__models-empty">
-                    {modelsMessage || 'Fetch models using the API key and base URL above.'}
+                    {modelsMessage || 'Fetch models using the API key and base URL above, then select the models for this connection.'}
                   </div>
                 )}
               </div>
@@ -501,6 +732,41 @@ export function SettingsDialog() {
               </div>
             )}
           </div>
+        </TabsContent>
+
+        <TabsContent value="automation" className="settings-dialog__content">
+          <section className="mx-auto w-full max-w-5xl divide-y divide-zinc-200 border-y border-zinc-200">
+            <div className="py-5">
+              <h2 className="text-base font-semibold text-zinc-900">Internal capabilities</h2>
+              <p className="mt-1 text-sm leading-6 text-zinc-500">Capabilities available to the agent as internal tools. They stay within the current conversation and are injected into system context only when enabled.</p>
+            </div>
+            {HIDDEN_CAPABILITIES.map((capability) => {
+              const config = automation[capability.id]
+              return (
+                <article key={capability.id} className="grid gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_260px]">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-zinc-900">{capability.name}</h3>
+                    <p className="mt-1 text-sm leading-6 text-zinc-600">{capability.description}</p>
+                    <dl className="mt-4 grid gap-3 text-xs leading-5 text-zinc-500">
+                      <div><dt className="font-medium text-zinc-700">Flow</dt><dd>{capability.workflow}</dd></div>
+                      <div><dt className="font-medium text-zinc-700">System context</dt><dd>{capability.context}</dd></div>
+                      <div><dt className="font-medium text-zinc-700">Skills and services</dt><dd>{capability.dependencies}</dd></div>
+                    </dl>
+                  </div>
+                  <div className="flex flex-col gap-3 self-start border-l border-zinc-200 pl-5 text-sm">
+                    <label className="flex cursor-pointer items-center justify-between gap-3 text-zinc-700"><span>Enabled</span><input type="checkbox" checked={config.enabled} onChange={(event) => void updateAutomation(capability.id, { enabled: event.target.checked })} className="h-4 w-4 accent-violet-600" /></label>
+                    <label className="flex cursor-pointer items-center justify-between gap-3 text-zinc-700"><span>Agent may invoke</span><input type="checkbox" checked={config.autoInvoke} disabled={!config.enabled} onChange={(event) => void updateAutomation(capability.id, { autoInvoke: event.target.checked })} className="h-4 w-4 accent-violet-600 disabled:opacity-40" /></label>
+                    {capability.id === 'goal' && (
+                      <>
+                        <label className="space-y-1 text-xs text-zinc-500"><span>Maximum steps</span><Input type="number" min={2} max={30} value={automation.goal.maxSteps} onChange={(event) => void updateAutomation('goal', { maxSteps: Math.max(2, Math.min(30, Number(event.target.value) || 12)) })} /></label>
+                        <label className="space-y-1 text-xs text-zinc-500"><span>Timeout (minutes)</span><Input type="number" min={1} max={60} value={automation.goal.timeoutMinutes} onChange={(event) => void updateAutomation('goal', { timeoutMinutes: Math.max(1, Math.min(60, Number(event.target.value) || 10)) })} /></label>
+                      </>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+          </section>
         </TabsContent>
 
         <TabsContent value="agents" className="settings-dialog__content">
@@ -680,6 +946,6 @@ export function SettingsDialog() {
           </div>
         </TabsContent>
       </Tabs>
-    </Dialog>
+    </section>
   )
 }

@@ -22,7 +22,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      aria-label="Copy code"
+      aria-label="Copy message"
       className="absolute right-2 top-2 p-1 rounded bg-zinc-200/80 text-zinc-500 hover:text-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity"
       title="Copy"
     >
@@ -42,15 +42,31 @@ export function MessageBubble({ message, className }: MessageBubbleProps) {
 
   if (isUser) {
     return (
-      <article className={cn('flex justify-end', className)}>
-        <div className="ml-auto flex min-h-12 max-w-[72%] items-center rounded-2xl rounded-br-sm bg-violet-600 px-5 py-3.5 text-white shadow-sm">
+      <article
+        className={cn('flex justify-end', className)}
+        style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+      >
+        <div className="chat-user-message group relative ml-auto flex min-h-12 max-w-[72%] flex-col rounded-2xl rounded-br-sm border border-[#d5def4] bg-[#eef4ff] px-5 py-3.5 pr-12 text-[#203150] shadow-sm">
           {/* Agent name label */}
           {message.agentName && (
             <Badge variant="primary" className="mb-1">
               {message.agentName}
             </Badge>
           )}
-          <div className="text-[15px] leading-7 whitespace-pre-wrap">{message.content}</div>
+          <div
+            className="chat-user-message__content cursor-text select-text text-[15px] leading-7 whitespace-pre-wrap"
+            style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+            contentEditable
+            suppressContentEditableWarning
+            spellCheck={false}
+            onBeforeInput={(event) => event.preventDefault()}
+            onPaste={(event) => event.preventDefault()}
+            onDrop={(event) => event.preventDefault()}
+            onCut={(event) => event.preventDefault()}
+          >
+            {message.content}
+          </div>
+          <CopyButton text={message.content} />
           {message.images?.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
               {message.images.map((image) => (

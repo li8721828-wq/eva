@@ -204,6 +204,7 @@ export class QqRemoteBridge {
       conversationId = conversation.id
       getStorage().qqRemote.setConversationId(incoming.userId, conversationId)
     }
+    if (!conversationId) throw new Error('Unable to create a conversation for the QQ message.')
 
     this.activeUsers.add(incoming.userId)
     try {

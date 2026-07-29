@@ -74,9 +74,10 @@ export const useTaskStore = create<TaskState>((set) => ({
         if (event.subtaskId && event.agentName) {
           const state = useTaskStore.getState()
           state.updateSubTask(event.subtaskId, {
+            ...event.subtask,
             assignedAgentId: event.agentId,
             assignedAgentName: event.agentName,
-            status: 'in_progress',
+            status: 'pending',
           })
         }
         break
@@ -85,6 +86,7 @@ export const useTaskStore = create<TaskState>((set) => ({
         if (event.subtaskId && event.progress) {
           const state = useTaskStore.getState()
           state.updateSubTask(event.subtaskId, {
+            ...event.subtask,
             status: 'in_progress',
             result: event.progress,
           })
@@ -95,6 +97,7 @@ export const useTaskStore = create<TaskState>((set) => ({
         if (event.subtaskId) {
           const state = useTaskStore.getState()
           state.updateSubTask(event.subtaskId, {
+            ...event.subtask,
             status: 'completed',
             result: event.result,
             completedAt: Date.now(),
@@ -106,6 +109,7 @@ export const useTaskStore = create<TaskState>((set) => ({
         if (event.subtaskId) {
           const state = useTaskStore.getState()
           state.updateSubTask(event.subtaskId, {
+            ...event.subtask,
             status: 'failed',
             result: event.error,
             completedAt: Date.now(),
@@ -183,6 +187,23 @@ export const useTaskStore = create<TaskState>((set) => ({
     const progress = state.goalProgress
 
     switch (event.type) {
+      case 'goal_started':
+        set({
+          goalProgress: {
+            goal: event.goal,
+            steps: [],
+            currentStepIndex: 0,
+            totalSteps: 0,
+            status: 'in_progress',
+            startedAt: Date.now(),
+            conversationId: event.conversationId,
+          },
+          isGoalRunning: true,
+          isGoalPaused: false,
+          goalStreamingContent: '',
+        })
+        break
+
       case 'plan_created':
         set({
           goalProgress: {
@@ -192,6 +213,7 @@ export const useTaskStore = create<TaskState>((set) => ({
             totalSteps: event.steps?.length || 0,
             status: 'in_progress' as const,
             startedAt: Date.now(),
+            conversationId: event.conversationId || progress?.conversationId,
           },
           goalStreamingContent: '',
         })
@@ -213,6 +235,35 @@ export const useTaskStore = create<TaskState>((set) => ({
         set((s) => ({
           goalStreamingContent: s.goalStreamingContent + event.content,
         }))
+        break
+
+      case 'step_tool_call':
+        if (progress) {
+          const updatedSteps = progress.steps.map((step) =>
+            step.id === event.stepId
+              ? { ...step, toolCalls: [...(step.toolCalls || []), event.toolCall] }
+              : step
+          )
+          set({ goalProgress: { ...progress, steps: updatedSteps } })
+        }
+        break
+
+      case 'step_tool_result':
+        if (progress) {
+          const updatedSteps = progress.steps.map((step) =>
+            step.id === event.stepId
+              ? {
+                  ...step,
+                  toolCalls: (step.toolCalls || []).map((toolCall) =>
+                    toolCall.id === event.toolCallId
+                      ? { ...toolCall, result: event.result, isError: event.isError }
+                      : toolCall
+                  ),
+                }
+              : step
+          )
+          set({ goalProgress: { ...progress, steps: updatedSteps } })
+        }
         break
 
       case 'step_completed':
@@ -259,11 +310,14 @@ export const useTaskStore = create<TaskState>((set) => ({
         break
 
       case 'done':
-        set({
-          goalProgress: event.progress,
+        set((state) => ({
+          goalProgress: {
+            ...event.progress,
+            conversationId: event.conversationId || state.goalProgress?.conversationId,
+          },
           isGoalRunning: false,
           isGoalPaused: false,
-        })
+        }))
         break
 
       case 'error':

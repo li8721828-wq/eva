@@ -192,31 +192,23 @@ export function registerSystemHandlers(
   ipcMain.handle(IPC.PROVIDER_CONFIG, async (_event, provider: ProviderConfigEntry): Promise<void> => {
     getStorage().config.saveProvider(provider)
 
-    // Built-in agents always follow the active Models settings. This runs in the
-    // main process so the update does not depend on renderer store timing.
-    const activeModel = getStorage().config.getActiveModel()
-    const agents = await getStorage().agents.listAgents()
-    await Promise.all(
-      agents
-        .filter((agent) => agent.isBuiltIn)
-        .map((agent) =>
-          getStorage().agents.updateAgent(agent.id, {
-            providerId: provider.id,
-            model: activeModel,
-          })
-        )
-    )
-
     if (!providerRegistry) return
 
     providerRegistry.unregister(provider.id)
-    if (provider.isEnabled && provider.apiKey) {
+    if (provider.apiKey) {
       providerRegistry.register({
         ...provider,
         models: [],
-        defaultModel: activeModel,
+        defaultModel: provider.defaultModel || getStorage().config.getActiveModel(),
+        // isEnabled is chat-picker visibility, not connection availability.
+        isEnabled: true,
       })
     }
+  })
+
+  ipcMain.handle(IPC.PROVIDER_DELETE, async (_event, id: string): Promise<void> => {
+    getStorage().config.deleteProvider(id)
+    providerRegistry?.unregister(id)
   })
 
   ipcMain.handle(

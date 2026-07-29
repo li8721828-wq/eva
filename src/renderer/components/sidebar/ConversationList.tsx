@@ -101,10 +101,12 @@ export function ConversationList({ className }: ConversationListProps) {
     })
   }
 
-  const activeConversations = conversations.filter((conversation) => !conversation.archived)
+  // Worker contexts remain reachable from the collaboration panel; showing
+  // them as top-level conversations would duplicate every team task here.
+  const activeConversations = conversations.filter((conversation) => !conversation.archived && !conversation.parentConversationId)
   const channelConversations = activeConversations.filter((conversation) => conversation.channel === 'qq')
   const projectConversations = activeConversations.filter((conversation) => conversation.channel !== 'qq')
-  const archivedConversations = conversations.filter((conversation) => conversation.archived)
+  const archivedConversations = conversations.filter((conversation) => conversation.archived && !conversation.parentConversationId)
   const unassigned = projectConversations.filter((conversation) => !workspaces.some((workspace) => belongsToWorkspace(conversation, workspace)))
 
   const confirmDelete = async () => {

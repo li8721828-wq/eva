@@ -21,6 +21,12 @@ export interface AgentRunnerConfig {
   fileService: FileService
   terminalService: TerminalService
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
+  /** Internal orchestration capability available in Auto conversations. */
+  delegateToTeam?: (goal: string) => Promise<string>
+  runTask?: (task: string) => Promise<string>
+  runGoal?: (goal: string) => Promise<string>
+  createExecutionPlan?: (goal: string) => Promise<string>
+  applySpecTemplate?: (templateId: string, parameters: Record<string, string>) => Promise<string>
 }
 
 export interface ToolApprovalRequest {
@@ -56,6 +62,37 @@ interface CompletedToolResult {
 
 const MAX_TOOL_REVIEW_IMAGES = 4
 const MAX_TOOL_REVIEW_IMAGE_BYTES = 12 * 1024 * 1024
+const TEAM_DELEGATION_TOOL: ToolDefinition = {
+  name: 'delegate_to_team',
+  description: 'Delegate a complex multi-step task to Eva\'s internal specialist team. Use this when work benefits from separate research, implementation, review, or testing. The team returns a consolidated result; do not ask the user to switch modes.',
+  parameters: {
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: 'A complete, concrete task goal for the specialist team.' },
+    },
+    required: ['goal'],
+  },
+}
+const GOAL_TOOL: ToolDefinition = {
+  name: 'run_goal',
+  description: 'Run a long-lived goal through Eva\'s internal goal planner. Use when the task requires a measurable multi-step outcome with progress evaluation and adaptation.',
+  parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Concrete outcome to achieve.' } }, required: ['goal'] },
+}
+const TASK_TOOL: ToolDefinition = {
+  name: 'run_task',
+  description: 'Run one bounded implementation or investigation task through an isolated internal worker. The worker uses only this agent\'s existing tools and current workspace permissions.',
+  parameters: { type: 'object', properties: { task: { type: 'string', description: 'A concrete, self-contained task to carry out.' } }, required: ['task'] },
+}
+const PLAN_TOOL: ToolDefinition = {
+  name: 'create_execution_plan',
+  description: 'Create a structured execution plan without carrying out changes. Use before broad, risky, or ambiguous work when a plan will help the current conversation.',
+  parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Objective to plan.' } }, required: ['goal'] },
+}
+const SPEC_TOOL: ToolDefinition = {
+  name: 'apply_spec_template',
+  description: 'Expand a reusable Eva specification template into an implementation brief. Use only when a matching template will add useful structure.',
+  parameters: { type: 'object', properties: { templateId: { type: 'string', description: 'Template identifier.' }, parameters: { type: 'object', description: 'Template parameter values.' } }, required: ['templateId'] },
+}
 
 export class AgentRunner {
   private config: AgentRunnerConfig
@@ -91,10 +128,34 @@ export class AgentRunner {
       const maxIter = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
 
       // Tool definitions filtered by agent's allowed tool list
-      const toolDefs: ToolDefinition[] = toolRegistry.getDefinitionsByNames(agentConfig.tools)
+      const toolDefs: ToolDefinition[] = [
+        ...toolRegistry.getDefinitionsByNames(agentConfig.tools),
+        ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
+        ...(this.config.runTask ? [TASK_TOOL] : []),
+        ...(this.config.runGoal ? [GOAL_TOOL] : []),
+        ...(this.config.createExecutionPlan ? [PLAN_TOOL] : []),
+        ...(this.config.applySpecTemplate ? [SPEC_TOOL] : []),
+      ]
 
       // Build initial context: system prompt + history + new user message
-      const userMessage: ChatMessage = { ...params.newMessage, id: '__pending_user_msg__' }
+      // Internal callers should pass ChatMessage, but normalize defensively so
+      // a malformed legacy caller can never send a role-less API message.
+      const candidateMessage = params.newMessage as unknown
+      const userMessage: ChatMessage = typeof candidateMessage === 'string'
+        ? {
+            id: '__pending_user_msg__',
+            conversationId: '',
+            role: 'user',
+            content: candidateMessage,
+            timestamp: Date.now(),
+          }
+        : {
+            ...params.newMessage,
+            id: '__pending_user_msg__',
+            role: params.newMessage.role || 'user',
+            content: params.newMessage.content || '',
+            timestamp: params.newMessage.timestamp || Date.now(),
+          }
       const allHistory = [...params.messages, userMessage]
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
@@ -315,6 +376,43 @@ export class AgentRunner {
     toolCall: CompletedToolCall,
     toolContext: ToolContext
   ): Promise<CompletedToolResult> {
+    if (toolCall.name === TEAM_DELEGATION_TOOL.name && this.config.delegateToTeam) {
+      const goal = typeof toolCall.arguments.goal === 'string' ? toolCall.arguments.goal.trim() : ''
+      if (!goal) return { result: 'Error: delegate_to_team requires a non-empty goal.', isError: true }
+      try {
+        return { result: await this.config.delegateToTeam(goal), isError: false }
+      } catch (error: any) {
+        return { result: `Error: Team delegation failed: ${error?.message ?? String(error)}`, isError: true }
+      }
+    }
+
+    if (toolCall.name === TASK_TOOL.name && this.config.runTask) {
+      const task = typeof toolCall.arguments.task === 'string' ? toolCall.arguments.task.trim() : ''
+      if (!task) return { result: 'Error: run_task requires a non-empty task.', isError: true }
+      try { return { result: await this.config.runTask(task), isError: false } } catch (error: any) { return { result: `Error: Task execution failed: ${error?.message ?? String(error)}`, isError: true } }
+    }
+
+    if (toolCall.name === GOAL_TOOL.name && this.config.runGoal) {
+      const goal = typeof toolCall.arguments.goal === 'string' ? toolCall.arguments.goal.trim() : ''
+      if (!goal) return { result: 'Error: run_goal requires a non-empty goal.', isError: true }
+      try { return { result: await this.config.runGoal(goal), isError: false } } catch (error: any) { return { result: `Error: Goal execution failed: ${error?.message ?? String(error)}`, isError: true } }
+    }
+
+    if (toolCall.name === PLAN_TOOL.name && this.config.createExecutionPlan) {
+      const goal = typeof toolCall.arguments.goal === 'string' ? toolCall.arguments.goal.trim() : ''
+      if (!goal) return { result: 'Error: create_execution_plan requires a non-empty goal.', isError: true }
+      try { return { result: await this.config.createExecutionPlan(goal), isError: false } } catch (error: any) { return { result: `Error: Plan creation failed: ${error?.message ?? String(error)}`, isError: true } }
+    }
+
+    if (toolCall.name === SPEC_TOOL.name && this.config.applySpecTemplate) {
+      const templateId = typeof toolCall.arguments.templateId === 'string' ? toolCall.arguments.templateId.trim() : ''
+      const parameters = typeof toolCall.arguments.parameters === 'object' && toolCall.arguments.parameters && !Array.isArray(toolCall.arguments.parameters)
+        ? Object.fromEntries(Object.entries(toolCall.arguments.parameters as Record<string, unknown>).map(([key, value]) => [key, String(value)]))
+        : {}
+      if (!templateId) return { result: 'Error: apply_spec_template requires a templateId.', isError: true }
+      try { return { result: await this.config.applySpecTemplate(templateId, parameters), isError: false } } catch (error: any) { return { result: `Error: Template expansion failed: ${error?.message ?? String(error)}`, isError: true } }
+    }
+
     const tool: ToolExecutor | undefined = this.config.toolRegistry.get(toolCall.name)
 
     if (!tool) {

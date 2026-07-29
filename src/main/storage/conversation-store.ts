@@ -101,6 +101,8 @@ export class ConversationStore {
     mode: 'normal' | 'expert' | 'goal'
     workspaceId?: string
     channel?: Conversation['channel']
+    parentConversationId?: string
+    teamTaskId?: string
     accessScope?: 'workspace' | 'full'
     permissionLevel?: Conversation['permissionLevel']
     fileAccessGrants?: Conversation['fileAccessGrants']
@@ -115,6 +117,8 @@ export class ConversationStore {
         mode: params.mode,
         workspaceId: params.workspaceId,
         channel: params.channel,
+        parentConversationId: params.parentConversationId,
+        teamTaskId: params.teamTaskId,
         accessScope: params.accessScope,
         permissionLevel: params.permissionLevel,
         fileAccessGrants: params.fileAccessGrants || [],
@@ -192,10 +196,11 @@ export class ConversationStore {
     })
   }
 
-  async addMessage(conversationId: string, message: ChatMessage): Promise<void> {
+  async addMessage(conversationId: string, message: Omit<ChatMessage, 'conversationId'> | ChatMessage): Promise<void> {
     return this.enqueue(() => {
       const messages = this.readJson<ChatMessage[]>(this.messagesPath(conversationId), [])
-      messages.push(message)
+      const storedMessage: ChatMessage = { ...message, conversationId }
+      messages.push(storedMessage)
       fs.writeFileSync(
         this.messagesPath(conversationId),
         JSON.stringify(messages, null, 2),

@@ -21,6 +21,9 @@ export function useStreaming(): void {
     const cleanupTask = window.eva.task.onStream((_event, data) => {
       const teamEvent = data as unknown as TeamEvent
       useTaskStore.getState().handleTeamEvent(teamEvent)
+      if (teamEvent.type === 'error' && teamEvent.error) {
+        useChatStore.getState().setError(`Expert Team: ${teamEvent.error}`)
+      }
     })
 
     // Listen for goal stream events

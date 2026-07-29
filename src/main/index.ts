@@ -29,7 +29,7 @@ app.whenReady().then(async () => {
   // 4. Load provider configs and register providers
   const providerConfigs = getStorage().config.getProviders()
   for (const cfg of providerConfigs) {
-    if (cfg.isEnabled && cfg.apiKey) {
+    if (cfg.apiKey) {
       providerRegistry.register({
         id: cfg.id,
         name: cfg.name,
@@ -37,8 +37,8 @@ app.whenReady().then(async () => {
         apiKey: cfg.apiKey,
         baseUrl: cfg.baseUrl,
         models: [],
-        defaultModel: '',
-        isEnabled: cfg.isEnabled,
+        defaultModel: cfg.defaultModel || '',
+        isEnabled: true,
       })
     }
   }

@@ -11,6 +11,7 @@ import {
   Loader2,
   Circle,
   FileText,
+  Sparkles,
 } from 'lucide-react'
 
 const statusConfig: Record<
@@ -116,9 +117,25 @@ export function TaskCard({ task, className }: TaskCardProps) {
             <div className="flex items-center gap-1.5 text-xs text-zinc-400">
               <User className="h-3 w-3" />
               <span>{task.assignedAgentName}</span>
+              {task.assignedRole && (
+                <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700">
+                  {task.assignedRole}
+                </span>
+              )}
+              {task.isDynamicAgent && (
+                <span className="flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-700">
+                  <Sparkles className="h-2.5 w-2.5" /> AI-defined
+                </span>
+              )}
               {task.assignedAgentId && (
                 <span className="text-zinc-600 text-[10px]">({task.assignedAgentId.slice(0, 8)})</span>
               )}
+            </div>
+          )}
+
+          {task.attempt && task.attempt > 1 && (
+            <div className="text-xs text-amber-700">
+              Retried once (attempt {task.attempt})
             </div>
           )}
 

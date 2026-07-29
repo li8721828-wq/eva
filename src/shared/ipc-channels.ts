@@ -76,6 +76,7 @@ export const IPC = {
   CONFIG_GET_ALL: 'config:get-all',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_CONFIG: 'provider:config',
+  PROVIDER_DELETE: 'provider:delete',
   PROVIDER_TEST: 'provider:test',
   PROVIDER_MODELS: 'provider:models',
 

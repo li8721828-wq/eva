@@ -1,20 +1,14 @@
-import React, { useEffect, useCallback, lazy, Suspense, useState } from 'react'
-import type { SpecTemplate } from '../shared/types/spec'
+import React, { useEffect, lazy, Suspense } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAgentStore } from '@/stores/use-agent-store'
-import { useTaskStore } from '@/stores/use-task-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { useStreaming } from '@/hooks/use-streaming'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatPanel } from '@/components/chat/ChatPanel'
-import { TaskBoard } from '@/components/task-board/TaskBoard'
-import { GoalInput } from '@/components/goal/GoalInput'
-import { GoalProgress } from '@/components/goal/GoalProgress'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
-import { SpecSelector } from '@/components/specs/SpecSelector'
 import { Separator } from '@/components/ui/Separator'
 import { Button } from '@/components/ui/Button'
 import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
@@ -34,7 +28,6 @@ function LazyFallback({ className }: { className?: string }) {
 
 const App: React.FC = () => {
   const {
-    workMode,
     rightPanelVisible,
     toggleRightPanel,
     setRightPanelVisible,
@@ -45,21 +38,15 @@ const App: React.FC = () => {
     loadConfig,
     agentManagerOpen,
     setAgentManagerOpen,
-    specSelectorOpen,
-    setSpecSelectorOpen,
-    setWorkMode,
+    settingsOpen,
   } = useAppStore()
 
-  const { loadConversations, createConversation, setInputText, currentConversationId, selectConversation } = useChatStore()
+  const { loadConversations, currentConversationId, selectConversation } = useChatStore()
   const { loadAgents } = useAgentStore()
   const { loadWorkspaces } = useWorkspaceStore()
-  const { startExpertTask, startGoal } = useTaskStore()
 
   // Initialize streaming listeners
   useStreaming()
-
-  // Track window width for responsive layout
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth)
 
   // Load data on mount
   useEffect(() => {
@@ -80,7 +67,6 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleResize = () => {
       const width = window.innerWidth
-      setWindowWidth(width)
       if (width < 1000 && rightPanelVisible) {
         setRightPanelVisible(false)
       }
@@ -88,51 +74,6 @@ const App: React.FC = () => {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [rightPanelVisible, setRightPanelVisible])
-
-  const showTaskBoard = workMode === 'expert'
-  const showGoalMode = workMode === 'goal'
-  const goalProgress = useTaskStore((s) => s.goalProgress)
-
-  const handleSelectTemplate = useCallback(
-    async (template: SpecTemplate, params: Record<string, string>) => {
-      // Build the instantiated prompt by replacing placeholders in each step
-      const sections = template.steps.map((step) => {
-        let prompt = step.prompt
-        for (const [key, value] of Object.entries(params)) {
-          prompt = prompt.replaceAll(`{{${key}}}`, value || '')
-        }
-        return `## ${step.title}\n${step.description}\n\n${prompt}`
-      })
-      const fullPrompt = `# ${template.name}\n${template.description}\n\n${sections.join('\n\n---\n\n')}`
-
-      const mode = template.recommendedMode
-
-      if (mode === 'normal') {
-        // Create a new conversation and send the prompt as the first message
-        const conv = await createConversation(undefined, 'normal')
-        setInputText(fullPrompt)
-        // Use setTimeout to allow state to settle, then send
-        setTimeout(() => {
-          useChatStore.getState().sendMessage()
-        }, 200)
-      } else if (mode === 'expert') {
-        // Switch to expert mode and start an expert task
-        setWorkMode('expert')
-        setTimeout(() => {
-          startExpertTask(fullPrompt)
-        }, 200)
-      } else if (mode === 'goal') {
-        // Switch to goal mode and start a goal
-        setWorkMode('goal')
-        const agentId = useAgentStore.getState().selectedAgentId || ''
-        const conv = await createConversation(agentId, 'goal')
-        setTimeout(() => {
-          startGoal(fullPrompt, agentId, conv.id)
-        }, 200)
-      }
-    },
-    [createConversation, setInputText, setWorkMode, startExpertTask, startGoal]
-  )
 
   return (
     <ErrorBoundary>
@@ -142,29 +83,14 @@ const App: React.FC = () => {
 
       {/* Main Workspace */}
       <div className="flex flex-1 flex-col min-w-0">
+        {settingsOpen ? (
+          <SettingsDialog />
+        ) : (
+          <>
         <div className="flex flex-1 min-h-0">
-          {(showTaskBoard || showGoalMode) ? (
-            <>
-              {/* Left panel: Task Board or Goal UI */}
-              <div className={`${windowWidth < 800 ? 'w-[300px]' : 'w-[380px]'} min-w-[280px] shrink-0 border-r border-zinc-200`}>
-                {showTaskBoard && <TaskBoard className="h-full" />}
-                {showGoalMode && (
-                  goalProgress
-                    ? <GoalProgress className="h-full" />
-                    : <GoalInput className="h-full" />
-                )}
-              </div>
-              {/* Chat Panel (right portion of main area) */}
-              <div className="flex-1 min-w-0">
-                <ChatPanel className="h-full" />
-              </div>
-            </>
-          ) : (
-            /* Full-width Chat Panel */
-            <div className="flex-1 min-w-0">
-              <ChatPanel className="h-full" />
-            </div>
-          )}
+          <div className="flex-1 min-w-0">
+            <ChatPanel className="h-full" />
+          </div>
 
           {/* Right Panel Toggle */}
           {!rightPanelVisible && (
@@ -216,22 +142,14 @@ const App: React.FC = () => {
             <TerminalPanel />
           </Suspense>
         )}
+          </>
+        )}
       </div>
-
-      {/* Settings Dialog */}
-      <SettingsDialog />
 
       {/* Agent Manager Dialog */}
       <AgentManagerDialog
         open={agentManagerOpen}
         onOpenChange={setAgentManagerOpen}
-      />
-
-      {/* Spec Template Selector Dialog */}
-      <SpecSelector
-        open={specSelectorOpen}
-        onOpenChange={setSpecSelectorOpen}
-        onSelectTemplate={handleSelectTemplate}
       />
     </div>
     </ErrorBoundary>

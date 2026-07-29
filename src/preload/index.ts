@@ -127,6 +127,7 @@ export interface EvaAPI {
     list(): Promise<ProviderConfigEntry[]>
     getConfig(id: string): Promise<LLMProviderConfig>
     saveConfig(config: ProviderConfigEntry): Promise<void>
+    delete(id: string): Promise<void>
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
   }
@@ -275,6 +276,7 @@ const evaAPI: EvaAPI = {
     list: () => ipcRenderer.invoke(IPC.PROVIDER_LIST),
     getConfig: (id) => ipcRenderer.invoke(IPC.PROVIDER_CONFIG, id),
     saveConfig: (config) => ipcRenderer.invoke(IPC.PROVIDER_CONFIG, config),
+    delete: (id) => ipcRenderer.invoke(IPC.PROVIDER_DELETE, id),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
   },

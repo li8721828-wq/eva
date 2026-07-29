@@ -5,6 +5,8 @@ export interface ProviderConfigEntry {
   apiKey: string
   baseUrl?: string
   isEnabled: boolean
+  defaultModel?: string
+  models?: ProviderModelOption[]
 }
 
 export interface ProviderTestConfig {

@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid'
-import type { Conversation, ToolCall } from '../../shared/types/conversation'
+import type { ChatMessage, Conversation, ToolCall } from '../../shared/types/conversation'
 import type { ChatServices } from '../ipc/conversation'
 import { AgentRunner } from '../agent-engine/agent-runner'
 import { ContextManager } from '../agent-engine/context'
@@ -46,13 +46,14 @@ export async function executeRemoteConversationMessage(
   if (!provider) throw new Error(`Provider ${effectiveAgent.providerId} is not available.`)
 
   const history = sanitizeToolHistory(await storage.conversations.getMessages(conversationId))
-  await storage.conversations.addMessage(conversationId, {
+  const userMessage: ChatMessage = {
     id: uuidv4(),
     conversationId,
     role: 'user',
     content: message,
     timestamp: Date.now(),
-  })
+  }
+  await storage.conversations.addMessage(conversationId, userMessage)
   notifyConversationChanged(conversationId)
 
   const access = getConversationAccess(conversation)
@@ -84,7 +85,7 @@ export async function executeRemoteConversationMessage(
   const toolCalls: ToolCall[] = []
   let assistantContent = ''
   try {
-    for await (const event of runner.run({ messages: history, newMessage: message })) {
+    for await (const event of runner.run({ messages: history, newMessage: userMessage })) {
       if (event.type === 'text' && event.content) assistantContent += event.content
       if (event.type === 'done' && event.content) assistantContent = event.content
       if (event.type === 'tool_call' && event.toolCall) {

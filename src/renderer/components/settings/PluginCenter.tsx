@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, Download, FolderOpen, FolderUp, Loader2, PackageCheck, PlugZap, Power, Settings2, ShieldCheck, Trash2, X } from 'lucide-react'
+import { CheckCircle2, Download, Eye, EyeOff, FolderOpen, FolderUp, Loader2, PackageCheck, PlugZap, Power, Settings2, ShieldCheck, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
@@ -26,6 +26,7 @@ export function PluginCenter() {
   const [notice, setNotice] = useState<{ kind: 'success' | 'error'; message: string } | null>(null)
   const [configuringId, setConfiguringId] = useState<string | null>(null)
   const [configValues, setConfigValues] = useState<Record<string, string>>({})
+  const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({})
 
   const refresh = useCallback(async () => {
     const [nextInstalled, nextMarketplace] = await Promise.all([
@@ -100,6 +101,7 @@ export function PluginCenter() {
     const initial = Object.fromEntries((plugin.configuration || []).map((field) => [field.key, String(plugin.settings[field.key] ?? '')]))
     setConfiguringId(plugin.id)
     setConfigValues(initial)
+    setVisibleSecrets({})
     setNotice(null)
   }
 
@@ -221,7 +223,7 @@ export function PluginCenter() {
                         </select>
                       ) : (
                         <div className="flex gap-2">
-                          <Input type={field.type === 'number' ? 'number' : 'text'} value={configValues[field.key] || ''} onChange={(event) => setConfigValues((values) => ({ ...values, [field.key]: event.target.value }))} placeholder={field.placeholder} />
+                          <div className="relative min-w-0 flex-1"><Input type={field.type === 'number' ? 'number' : field.type === 'secret' && !visibleSecrets[field.key] ? 'password' : 'text'} value={configValues[field.key] || ''} onChange={(event) => setConfigValues((values) => ({ ...values, [field.key]: event.target.value }))} placeholder={field.placeholder} className={field.type === 'secret' ? 'pr-9' : undefined} autoComplete={field.type === 'secret' ? 'off' : undefined} />{field.type === 'secret' ? <button type="button" onClick={() => setVisibleSecrets((current) => ({ ...current, [field.key]: !current[field.key] }))} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 hover:text-zinc-600" aria-label={visibleSecrets[field.key] ? 'Hide API key' : 'Show API key'}>{visibleSecrets[field.key] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button> : null}</div>
                           {field.type === 'path-file' || field.type === 'path-directory' ? <Button type="button" variant="outline" size="sm" onClick={() => void browseConfigurationPath(field)} title="Browse path" aria-label={`Browse ${field.label}`}><FolderOpen className="h-4 w-4" /></Button> : null}
                         </div>
                       )}
@@ -237,7 +239,7 @@ export function PluginCenter() {
         </TabsContent>
 
         <TabsContent value="marketplace" className="settings-dialog__plugin-tab-content">
-          <div className="settings-dialog__plugin-marketplace-note"><ShieldCheck className="h-4 w-4 text-violet-600" /> Curated entries are verified by Eva Labs. Their requested capabilities are shown before installation.</div>
+          <div className="settings-dialog__plugin-marketplace-note"><ShieldCheck className="h-4 w-4 text-violet-600" /> Curated entries are verified by Eva Labs. Search providers are alternatives: enabling one automatically disables the other search providers.</div>
           <div className="settings-dialog__plugin-marketplace-grid">
             {marketplace.map((plugin) => {
               const installedPlugin = plugin.installedPlugin

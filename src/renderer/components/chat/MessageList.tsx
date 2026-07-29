@@ -4,10 +4,12 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MessageBubble } from './MessageBubble'
 import { ToolCallView } from './ToolCallView'
+import { GoalExecutionCard } from './GoalExecutionCard'
 import { WelcomeScreen } from './WelcomeScreen'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
+import { useTaskStore } from '@/stores/use-task-store'
 
 const PAGE_SIZE = 100
 
@@ -18,6 +20,7 @@ export interface MessageListProps {
 export function MessageList({ className }: MessageListProps) {
   const { messages, currentConversationId, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
   const { rightPanelVisible } = useAppStore()
+  const isTeamRunning = useTaskStore((state) => state.isTaskRunning)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const previousMessagesRef = useRef(messages)
   const pendingConversationScrollRef = useRef(true)
@@ -64,7 +67,7 @@ export function MessageList({ className }: MessageListProps) {
     if (isStreaming) scrollToBottom('smooth')
   }, [isStreaming, streamingContent, streamingToolCalls])
 
-  if (messages.length === 0 && !isStreaming) {
+  if (messages.length === 0 && !isStreaming && !isTeamRunning) {
     return <WelcomeScreen className={className} />
   }
 
@@ -99,6 +102,13 @@ export function MessageList({ className }: MessageListProps) {
           </div>
         )}
 
+        {isTeamRunning && (
+          <div className="flex items-center gap-2 px-0 py-1 text-sm text-zinc-500">
+            <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+            <span>Expert Team is planning and assigning work...</span>
+          </div>
+        )}
+
         {/* Streaming tool calls */}
         {isStreaming && streamingToolCalls.length > 0 && (
           <div className="px-0 py-2">
@@ -107,6 +117,8 @@ export function MessageList({ className }: MessageListProps) {
             ))}
           </div>
         )}
+
+        <GoalExecutionCard conversationId={currentConversationId} />
 
         {/* Streaming text indicator */}
         {isStreaming && streamingContent && (

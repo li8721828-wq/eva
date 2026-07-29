@@ -3,6 +3,7 @@ import { IPC } from '../../shared/ipc-channels'
 import type { GoalConfig, TeamEvent } from '../../shared/types/task'
 import type { AgentConfig } from '../../shared/types/agent'
 import type { Conversation } from '../../shared/types/conversation'
+import type { ChatMessage } from '../../shared/types/conversation'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
 import { ContextManager } from '../agent-engine/context'
@@ -11,6 +12,7 @@ import { GoalPlanner } from '../agent-engine/goal-planner'
 import type { GoalEvent } from '../agent-engine/goal-planner'
 import { getStorage } from '../storage'
 import { recordActivity } from '../services/activity-log'
+import { v4 as uuidv4 } from 'uuid'
 
 export interface TaskServices {
   toolRegistry: ToolRegistry
@@ -70,6 +72,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         send({ type: 'done' })
         return
       }
+      const activeTaskServices = taskServices
 
       try {
         // 1. Load agents
@@ -89,12 +92,17 @@ export function registerTaskHandlers(services?: TaskServices): void {
             ['researcher', 'coder', 'reviewer', 'tester'].includes(a.role)
         )
 
-        // 2. Get provider
-        const provider = taskServices.providerRegistry.get(leader.providerId)
-        if (!provider) {
+        // 2. Validate the leader connection. Workers resolve their own connections
+        // so that a team can deliberately use different models for different roles.
+        const leaderConnections = [
+          ...(leader.modelCandidates || []),
+          { providerId: leader.providerId, model: leader.model },
+          ...(leader.isBuiltIn ? [{ providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() }] : []),
+        ]
+        if (!leaderConnections.some((connection) => activeTaskServices.providerRegistry.get(connection.providerId))) {
           send({
             type: 'error',
-            error: `Provider '${leader.providerId}' not available. Please configure a provider.`,
+            error: `No model connection for Team Leader is available. Configure its model access first.`,
           })
           send({ type: 'done' })
           return
@@ -102,21 +110,103 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
         // 3. Load conversation for workspace path
         const conversation = await getStorage().conversations.getConversation(conversationId)
+        if (!conversation) {
+          send({ type: 'error', error: 'Conversation not found.' })
+          send({ type: 'done' })
+          return
+        }
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
+        const historyMessages = await getStorage().conversations.getMessages(conversationId, { limit: 12 })
+
+        // Team work belongs to the same conversation as normal chat. Persist the
+        // goal immediately so it remains available after switching modes or restart.
+        const goalMessage: ChatMessage = {
+          id: uuidv4(),
+          conversationId,
+          role: 'user',
+          content: goal,
+          timestamp: Date.now(),
+        }
+        await getStorage().conversations.addMessage(conversationId, goalMessage)
+        win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
+
+        const workerContexts = new Map<string, string>()
+        const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
+          const child = await getStorage().conversations.createConversation({
+            title: `${worker.name}: ${subtask.title}`,
+            agentId: worker.id,
+            mode: 'expert',
+            workspaceId: conversation.workspaceId,
+            accessScope: conversation.accessScope,
+            permissionLevel: conversation.permissionLevel,
+            fileAccessGrants: conversation.fileAccessGrants,
+            workspacePath: conversation.workspacePath,
+            parentConversationId: conversationId,
+            teamTaskId: subtask.id,
+          })
+          workerContexts.set(subtask.id, child.id)
+          await getStorage().conversations.addMessage(child.id, {
+            id: uuidv4(),
+            conversationId: child.id,
+            role: 'user',
+            content: `Team assignment\n\nTask: ${subtask.title}\n\nResponsibility: ${subtask.description}\n\nRole: ${subtask.assignedRole || worker.role}\nModel: ${worker.providerId} / ${worker.model}\n\nThis is an isolated worker context. Report concrete findings and completed work back to the team leader.`,
+            timestamp: Date.now(),
+          })
+          win.webContents.send(IPC.CONVERSATION_CHANGED, child.id)
+          return child.id
+        }
+
+        const persistWorkerEvent = async (
+          subtask: import('../../shared/types/task').SubTask,
+          worker: AgentConfig,
+          agentEvent: import('../../shared/types/agent').AgentEvent,
+        ): Promise<void> => {
+          if (agentEvent.type === 'text' || agentEvent.type === 'thinking') return
+          const childId = subtask.agentConversationId || workerContexts.get(subtask.id)
+          if (!childId) return
+
+          let content = ''
+          let role: ChatMessage['role'] = 'assistant'
+          if (agentEvent.type === 'tool_call' && agentEvent.toolCall) content = `Calling tool: ${agentEvent.toolCall.name}`
+          if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
+            role = 'tool'
+            const result = agentEvent.toolResult.result
+            content = `${agentEvent.toolResult.name}: ${result.length > 8000 ? `${result.slice(0, 8000)}\n\n[Output truncated in worker history]` : result}`
+          }
+          if (agentEvent.type === 'done' && agentEvent.content) content = agentEvent.content
+          if (agentEvent.type === 'error' && agentEvent.error) content = `Error: ${agentEvent.error}`
+          if (!content) return
+
+          await getStorage().conversations.addMessage(childId, {
+            id: uuidv4(),
+            conversationId: childId,
+            role,
+            content,
+            agentId: worker.id,
+            agentName: worker.name,
+            timestamp: Date.now(),
+          })
+          if (agentEvent.type === 'done' || agentEvent.type === 'error') {
+            win.webContents.send(IPC.CONVERSATION_CHANGED, childId)
+          }
+        }
 
         // 4. Create TeamOrchestrator
         const orchestrator = new TeamOrchestrator({
           leader,
           workers,
-          provider,
-          toolRegistry: taskServices.toolRegistry,
+          providerForAgent: (agent) => taskServices?.providerRegistry.get(agent.providerId),
+          fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
+          toolRegistry: activeTaskServices.toolRegistry,
           contextManager: new ContextManager(),
           workspacePath,
           fileAccessGrants: workspaceAccess.grants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
-          fileService: taskServices.fileService,
-          terminalService: taskServices.terminalService,
+          fileService: activeTaskServices.fileService,
+          terminalService: activeTaskServices.terminalService,
+          createWorkerConversation,
+          onWorkerEvent: persistWorkerEvent,
         })
         currentOrchestrator = orchestrator
         void recordActivity({
@@ -129,7 +219,9 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }, win)
 
         // 5. Execute and stream events
-        for await (const teamEvent of orchestrator.run({ goal })) {
+        let finalSummary: string | undefined
+        for await (const teamEvent of orchestrator.run({ goal, messages: historyMessages })) {
+          if (teamEvent.type === 'summary') finalSummary = teamEvent.summary
           if (teamEvent.type === 'plan_created') {
             void recordActivity({ category: 'agent', action: 'team.planned', status: 'success', summary: `Expert Team created a plan with ${teamEvent.plan?.subtasks.length || 0} tasks.`, conversationId, workspaceId: conversation?.workspaceId }, win)
           } else if (teamEvent.type === 'task_assigned') {
@@ -142,6 +234,19 @@ export function registerTaskHandlers(services?: TaskServices): void {
             void recordActivity({ category: 'agent', action: 'team.completed', status: 'success', summary: 'Expert Team completed the task.', conversationId, workspaceId: conversation?.workspaceId }, win)
           }
           send(teamEvent)
+        }
+
+        if (finalSummary) {
+          await getStorage().conversations.addMessage(conversationId, {
+            id: uuidv4(),
+            conversationId,
+            role: 'assistant',
+            content: finalSummary,
+            agentId: leader.id,
+            agentName: leader.name,
+            timestamp: Date.now(),
+          })
+          win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         }
       } catch (err: any) {
         void recordActivity({ category: 'agent', action: 'team.failed', status: 'error', summary: 'Expert Team task failed.', conversationId }, win)
@@ -176,7 +281,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
       const send = (goalEvent: GoalEvent): void => {
         if (!win.isDestroyed()) {
-          win.webContents.send(IPC.TASK_GOAL_STREAM, goalEvent)
+          win.webContents.send(IPC.TASK_GOAL_STREAM, { ...goalEvent, conversationId: payload.conversationId })
         }
       }
 
@@ -185,6 +290,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           send({ type: 'error', error: 'Task services not initialized' })
           return
         }
+        const activeTaskServices = taskServices
 
         // 1. Load agent config
         const agentConfig = await getStorage().agents.getAgent(payload.agentId)
@@ -194,7 +300,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         // 2. Get LLM provider
-        const provider = taskServices.providerRegistry.get(agentConfig.providerId)
+        const provider = activeTaskServices.providerRegistry.get(agentConfig.providerId)
         if (!provider) {
           send({ type: 'error', error: `Provider ${agentConfig.providerId} not available` })
           return
@@ -219,13 +325,13 @@ export function registerTaskHandlers(services?: TaskServices): void {
         const planner = new GoalPlanner({
           agentConfig,
           provider,
-          toolRegistry: taskServices.toolRegistry,
+          toolRegistry: activeTaskServices.toolRegistry,
           contextManager: new ContextManager(),
           workspacePath,
           fileAccessGrants: workspaceAccess.grants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
-          fileService: taskServices.fileService,
-          terminalService: taskServices.terminalService,
+          fileService: activeTaskServices.fileService,
+          terminalService: activeTaskServices.terminalService,
           maxSteps: goalConfig.maxSteps,
           timeout: goalConfig.timeout,
         })

@@ -1,5 +1,6 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState, useCallback, useEffect } from 'react'
 import type { AgentConfig } from '../../../shared/types'
+import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { AgentSelector } from './AgentSelector'
@@ -8,13 +9,14 @@ import { Dialog, DialogHeader, DialogTitle, DialogDescription, DialogClose } fro
 import { Button } from '@/components/ui/Button'
 import { Trash2, AlertTriangle } from 'lucide-react'
 import { ToolAccessPanel } from './ToolAccessPanel'
+import { ModelAccessPanel } from './ModelAccessPanel'
 
 export interface AgentManagerDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-type View = 'list' | 'create' | 'edit' | 'view' | 'tools' | 'confirm-delete'
+type View = 'list' | 'create' | 'edit' | 'view' | 'tools' | 'models' | 'confirm-delete'
 
 export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogProps) {
   const { agents, createAgent, updateAgent, deleteAgent, selectedAgentId } = useAgentStore()
@@ -24,6 +26,8 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null)
   const [agentToDelete, setAgentToDelete] = useState<AgentConfig | null>(null)
   const [toolSelection, setToolSelection] = useState<string[]>([])
+  const [modelSelection, setModelSelection] = useState<NonNullable<AgentConfig['modelCandidates']>>([])
+  const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId)
 
@@ -38,14 +42,14 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
   }, [])
 
   const handleView = useCallback((agent: AgentConfig) => {
-    if (agent.isBuiltIn) {
-      setEditingAgent(agent)
-      setView('view')
-    } else {
-      setEditingAgent(agent)
-      setView('edit')
-    }
+    setEditingAgent(agent)
+    setView('view')
   }, [])
+
+  useEffect(() => {
+    if (!open) return
+    void window.eva.provider.list().then(setSavedProviders).catch((error) => console.error('Failed to load model connections:', error))
+  }, [open])
 
   const handleManageTools = useCallback((agent: AgentConfig) => {
     setEditingAgent(agent)
@@ -63,6 +67,23 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
       console.error('Failed to update tool access:', err)
     }
   }, [editingAgent, toolSelection, updateAgent])
+
+  const handleManageModels = useCallback((agent: AgentConfig) => {
+    setEditingAgent(agent)
+    setModelSelection(agent.modelCandidates?.length ? agent.modelCandidates : [{ providerId: agent.providerId, model: agent.model }])
+    setView('models')
+  }, [])
+
+  const handleSaveModels = useCallback(async () => {
+    if (!editingAgent) return
+    try {
+      await updateAgent(editingAgent.id, { modelCandidates: modelSelection })
+      setEditingAgent({ ...editingAgent, modelCandidates: modelSelection })
+      setView('view')
+    } catch (error) {
+      console.error('Failed to update model access:', error)
+    }
+  }, [editingAgent, modelSelection, updateAgent])
 
   const handleDeleteRequest = useCallback((agent: AgentConfig) => {
     setAgentToDelete(agent)
@@ -132,6 +153,7 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
           {view === 'edit' && 'Edit agent configuration.'}
           {view === 'view' && 'View built-in agent configuration (read-only).'}
           {view === 'tools' && 'Assign the capabilities available to this agent.'}
+          {view === 'models' && 'Choose the saved model connections this agent may use.'}
           {view === 'confirm-delete' && 'Confirm deletion.'}
         </DialogDescription>
       </DialogHeader>
@@ -212,6 +234,17 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
+                <label className="text-xs text-zinc-500">Model access</label>
+                <Button variant="outline" size="sm" onClick={() => handleManageModels(editingAgent)}>Configure</Button>
+              </div>
+              <p className="text-xs text-zinc-500">
+                {editingAgent.modelCandidates?.length
+                  ? `${editingAgent.modelCandidates.length} candidate model${editingAgent.modelCandidates.length === 1 ? '' : 's'} assigned.`
+                  : 'Uses its default model connection.'}
+              </p>
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between gap-3">
                 <label className="text-xs text-zinc-500">Tools</label>
                 <Button variant="outline" size="sm" onClick={() => handleManageTools(editingAgent)}>Manage access</Button>
               </div>
@@ -240,6 +273,16 @@ export function AgentManagerDialog({ open, onOpenChange }: AgentManagerDialogPro
             <div className="mt-6 flex justify-end gap-2">
               <Button variant="outline" onClick={handleCancel}>Cancel</Button>
               <Button onClick={() => void handleSaveTools()}>Save tool access</Button>
+            </div>
+          </div>
+        )}
+
+        {view === 'models' && editingAgent && (
+          <div className="-mx-6 -mb-6 max-h-[560px] overflow-y-auto p-6">
+            <ModelAccessPanel candidates={modelSelection} providers={savedProviders} onChange={setModelSelection} />
+            <div className="mt-6 flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setView('view')}>Cancel</Button>
+              <Button onClick={() => void handleSaveModels()}>Save model access</Button>
             </div>
           </div>
         )}

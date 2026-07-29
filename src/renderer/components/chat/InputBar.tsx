@@ -2,78 +2,102 @@ import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
+import { useTaskStore } from '@/stores/use-task-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Box, FolderOpen, FolderPlus, ImagePlus, Loader2, Paperclip, Send, ShieldCheck, Square, Trash2, X } from 'lucide-react'
+import { Bot, FolderOpen, FolderPlus, ImagePlus, Paperclip, Send, Square, Trash2, X } from 'lucide-react'
 import type { ChatImageAttachment, ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
-import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
+import type { ProviderConfigEntry } from '../../../shared/types/provider'
 
 export interface InputBarProps {
   className?: string
 }
 
+function getConnectionDisplayName(provider: ProviderConfigEntry): string {
+  const defaultNames: Record<ProviderConfigEntry['type'], string> = {
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    deepseek: 'DeepSeek',
+    custom: 'Custom (OpenAI-compatible)',
+  }
+  return provider.name === defaultNames[provider.type]
+    ? (provider.type === 'custom' ? 'Custom' : defaultNames[provider.type])
+    : provider.name
+}
+
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, isStreaming, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream } = useChatStore()
-  const { activeProviderId, activeModel, setActiveModel } = useAppStore()
+  const { conversations, createConversation, currentConversationId, isStreaming, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage } = useChatStore()
+  const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore()
   const { agents, selectedAgentId, selectAgent } = useAgentStore()
+  const { isTaskRunning, startExpertTask, abortExpertTask } = useTaskStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDraggingImages, setIsDraggingImages] = useState(false)
-  const [availableModels, setAvailableModels] = useState<ProviderModelOption[]>([])
-  const [loadingModels, setLoadingModels] = useState(false)
+  const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
   const fileAccessGrants = currentConversation?.fileAccessGrants || []
   const activeAgentId = currentConversation?.agentId || selectedAgentId || ''
 
+  const connectionOptions = useMemo(() => {
+    const enabled = savedProviders.filter((provider) => provider.isEnabled && provider.apiKey)
+    const options = enabled.map((provider) => ({ value: provider.id, label: getConnectionDisplayName(provider) }))
+    const active = savedProviders.find((provider) => provider.id === activeProviderId)
+    if (activeProviderId && !options.some((option) => option.value === activeProviderId)) {
+      options.unshift({ value: activeProviderId, label: active ? getConnectionDisplayName(active) : 'Current connection' })
+    }
+    return options.length > 0 ? options : [{ value: '', label: 'No model connections' }]
+  }, [activeProviderId, savedProviders])
+
+  const activeConnectionModels = useMemo(() => {
+    const provider = savedProviders.find((item) => item.id === activeProviderId)
+    const models = provider?.models?.length
+      ? provider.models
+      : provider?.defaultModel
+        ? [{ id: provider.defaultModel, name: provider.defaultModel }]
+        : []
+    const options = models.map((model) => ({ value: model.id, label: model.name }))
+    if (activeModel && !options.some((option) => option.value === activeModel)) {
+      options.unshift({ value: activeModel, label: activeModel })
+    }
+    return options.length > 0 ? options : [{ value: '', label: 'No models in connection' }]
+  }, [activeModel, activeProviderId, savedProviders])
+
   useEffect(() => {
     let cancelled = false
+    void window.eva.provider.list()
+      .then((providers) => { if (!cancelled) setSavedProviders(providers) })
+      .catch((error) => console.error('Failed to load saved provider profiles:', error))
+    return () => { cancelled = true }
+  }, [activeProviderId, activeModel, settingsOpen])
 
-    const loadModels = async () => {
-      setLoadingModels(true)
-      try {
-        const providers = (await window.eva.provider.list()) as ProviderConfigEntry[]
-        const provider = providers.find((item) => item.id === activeProviderId)
-        if (!provider) return
-
-        const config: ProviderTestConfig = {
-          ...provider,
-          defaultModel: activeModel,
-        }
-        const result = await window.eva.provider.listModels(config)
-        if (!cancelled && result.success) {
-          setAvailableModels(result.models)
-        }
-      } catch (error) {
-        console.error('Failed to load available models:', error)
-      } finally {
-        if (!cancelled) setLoadingModels(false)
-      }
+  const handleSend = useCallback(async () => {
+    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming || isTaskRunning) return
+    const useTeam = workMode === 'expert'
+    if (useTeam) {
+      const goal = inputText.trim()
+      if (!goal) return
+      const conversation = currentConversation || await createConversation(activeAgentId, 'expert')
+      addMessage({
+        id: crypto.randomUUID(),
+        conversationId: conversation.id,
+        role: 'user',
+        content: goal,
+        timestamp: Date.now(),
+      })
+      setInputText('')
+      setReferenceImages([])
+      await startExpertTask(goal, conversation.id)
+    } else {
+      await sendMessage()
     }
-
-    void loadModels()
-    return () => {
-      cancelled = true
-    }
-  }, [activeProviderId])
-
-  const modelOptions = useMemo(() => {
-    const current = { id: activeModel, name: activeModel }
-    return availableModels.some((model) => model.id === activeModel)
-      ? availableModels
-      : [current, ...availableModels]
-  }, [activeModel, availableModels])
-
-  const handleSend = useCallback(() => {
-    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming) return
-    sendMessage()
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [inputText, isStreaming, referenceImages.length, sendMessage])
+  }, [activeAgentId, addMessage, createConversation, currentConversation, inputText, isStreaming, isTaskRunning, referenceImages.length, sendMessage, setInputText, setReferenceImages, startExpertTask, workMode])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -91,6 +115,10 @@ export function InputBar({ className }: InputBarProps) {
   }
 
   const handleStop = () => {
+    if (workMode === 'expert' && isTaskRunning) {
+      void abortExpertTask(currentConversationId || undefined)
+      return
+    }
     abortStream()
   }
 
@@ -144,15 +172,37 @@ export function InputBar({ className }: InputBarProps) {
     setAttachmentError(null)
   }
 
-  const handleModelChange = async (model: string) => {
-    if (model === activeModel) return
+  const saveModelSelection = async (providerId: string, model: string) => {
+    if (providerId === activeProviderId && model === activeModel) return
+    setActiveProvider(providerId)
     setActiveModel(model)
     try {
+      await window.eva.config.set('activeProviderId', providerId)
       await window.eva.config.set('activeModel', model)
     } catch (error) {
+      setActiveProvider(activeProviderId)
       setActiveModel(activeModel)
       console.error('Failed to save active model:', error)
     }
+  }
+
+  const handleConnectionChange = async (providerId: string) => {
+    const provider = savedProviders.find((item) => item.id === providerId)
+    if (!provider) return
+    const models = provider.models?.length
+      ? provider.models
+      : provider.defaultModel
+        ? [{ id: provider.defaultModel, name: provider.defaultModel }]
+        : []
+    const model = models.some((item) => item.id === activeModel)
+      ? activeModel
+      : models[0]?.id || ''
+    await saveModelSelection(providerId, model)
+  }
+
+  const handleModelChange = async (model: string) => {
+    if (!activeProviderId || !model) return
+    await saveModelSelection(activeProviderId, model)
   }
 
   const handlePermissionChange = async (permission: ConversationPermissionLevel) => {
@@ -244,12 +294,12 @@ export function InputBar({ className }: InputBarProps) {
               className="chat-composer__textarea max-h-[200px] min-h-[32px] flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-zinc-900 placeholder:text-zinc-400 focus:outline-none"
             />
 
-            {isStreaming ? (
+            {isStreaming || isTaskRunning ? (
               <button
                 className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-red-500 text-white transition-colors hover:bg-red-600"
                 onClick={handleStop}
-                title="Stop"
-                aria-label="Stop generating"
+                title={isTaskRunning ? 'Stop team' : 'Stop'}
+                aria-label={isTaskRunning ? 'Stop team' : 'Stop generating'}
               >
                 <Square className="h-3.5 w-3.5" />
               </button>
@@ -286,20 +336,32 @@ export function InputBar({ className }: InputBarProps) {
                   title={currentConversation ? 'Agent for this conversation' : 'Select an agent to create a draft conversation'}
                 />
               </div>
-              <Box className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-              <div className="w-[190px]">
+              <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
+              <div className="w-[144px]">
+                <Select
+                  value={activeProviderId}
+                  onChange={(event) => void handleConnectionChange(event.target.value)}
+                  options={connectionOptions}
+                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
+                  aria-label="Select model connection"
+                  title="Select model connection"
+                />
+              </div>
+              <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
+              <div className="w-[170px]">
                 <Select
                   value={activeModel}
                   onChange={(event) => void handleModelChange(event.target.value)}
-                  options={modelOptions.map((model) => ({ value: model.id, label: model.name }))}
+                  options={activeConnectionModels}
+                  disabled={activeConnectionModels.length === 1 && !activeConnectionModels[0].value}
                   className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                  aria-label="Select model"
+                  aria-label="Select model from connection"
+                  title="Select model in this connection"
                 />
               </div>
-              {loadingModels && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-zinc-400" />}
             </div>
             <div className="flex min-w-0 items-center gap-2">
-              <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+              <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
               <div className="w-[176px]">
                 <Select
                   value={permissionLevel}

@@ -40,14 +40,67 @@ export const MARKETPLACE_PLUGINS: MarketplacePlugin[] = [
     ],
   },
   {
-    id: 'web-research-suite',
-    name: 'Web Research Suite',
+    id: 'brave-search',
+    name: 'Brave Search',
     version: '1.0.0',
-    description: 'Research public web pages and turn source material into concise, cited working notes.',
+    description: 'Official Brave Search API connector for current web results, news, and source snippets.',
     author: 'Eva Labs',
     category: 'research',
     permissions: ['network'],
     verified: true,
+    requirements: 'Requires a Brave Search API key. Brave applies plan quota and rate limits to this key.',
+    configuration: [
+      {
+        key: 'apiKey',
+        label: 'Brave Search API key',
+        description: 'Create and manage the key in the Brave Search API Dashboard.',
+        type: 'secret',
+        required: true,
+        placeholder: 'BSA...',
+      },
+    ],
+  },
+  {
+    id: 'tavily-search',
+    name: 'Tavily Search',
+    version: '1.0.0',
+    description: 'AI-oriented web search connector with compact result content for agent research.',
+    author: 'Eva Labs',
+    category: 'research',
+    permissions: ['network'],
+    verified: true,
+    requirements: 'Requires a Tavily API key and uses Tavily account credits.',
+    configuration: [
+      {
+        key: 'apiKey',
+        label: 'Tavily API key',
+        description: 'Create and manage the key in the Tavily dashboard.',
+        type: 'secret',
+        required: true,
+        placeholder: 'tvly-...',
+      },
+    ],
+  },
+  {
+    id: 'searxng-search',
+    name: 'SearXNG Search',
+    version: '1.0.0',
+    description: 'Connect Eva to your own SearXNG instance, giving you control over the search backend.',
+    author: 'Eva Labs',
+    category: 'research',
+    permissions: ['network'],
+    verified: true,
+    requirements: 'Requires a reachable SearXNG instance with its JSON search API enabled.',
+    configuration: [
+      {
+        key: 'endpoint',
+        label: 'SearXNG endpoint',
+        description: 'Base address of the SearXNG instance, for example https://search.example.com.',
+        type: 'text',
+        required: true,
+        placeholder: 'https://search.example.com',
+      },
+    ],
   },
   {
     id: 'git-workspace-tools',
@@ -115,5 +168,5 @@ export function validatePluginManifest(value: unknown): PluginManifest {
 
 function isPluginConfigField(value: unknown): value is NonNullable<PluginManifest['configuration']>[number] {
   if (!isRecord(value) || typeof value.key !== 'string' || typeof value.label !== 'string') return false
-  return ['text', 'path-file', 'path-directory', 'number', 'select'].includes(String(value.type))
+  return ['text', 'secret', 'path-file', 'path-directory', 'number', 'select'].includes(String(value.type))
 }

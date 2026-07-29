@@ -143,10 +143,11 @@ export function AgentEditor({
               setName(e.target.value)
               if (nameError) setNameError('')
             }}
-            placeholder="Agent name"
+            placeholder="e.g. Researcher Jack"
             className={nameError ? 'border-red-500' : ''}
           />
           {nameError && <p className="text-xs text-red-500">{nameError}</p>}
+          <p className="text-xs leading-5 text-zinc-500">Roles are reusable templates. Give each Agent an individual name, such as Researcher Jack or Researcher Lucy.</p>
         </div>
         <div className="space-y-1.5">
           <label className="text-sm font-medium text-zinc-500">Role</label>

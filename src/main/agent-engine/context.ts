@@ -169,6 +169,26 @@ export class ContextManager {
     parts.push(agentConfig.systemPrompt)
 
     parts.push('')
+    parts.push('--- Eva Platform Capabilities ---')
+    const internalCapabilities: string[] = []
+    if (tools.some((tool) => tool.name === 'delegate_to_team')) internalCapabilities.push('Team orchestration: for complex work, call delegate_to_team directly. The team leader may compose task-scoped custom specialists when the saved agents do not fit; each gets isolated context, an appropriate configured model, and only allowed tools. Do not ask the user to switch modes.')
+    if (tools.some((tool) => tool.name === 'run_task')) internalCapabilities.push('Task execution: call run_task for a bounded implementation or investigation that can be carried out by an isolated worker with the current permissions.')
+    if (tools.some((tool) => tool.name === 'run_goal')) internalCapabilities.push('Goal execution: call run_goal for long-lived, measurable multi-step work that needs progress evaluation.')
+    if (tools.some((tool) => tool.name === 'create_execution_plan')) internalCapabilities.push('Execution planning: call create_execution_plan when a structured plan is needed before work.')
+    if (tools.some((tool) => tool.name === 'apply_spec_template')) internalCapabilities.push('Specification templates: call apply_spec_template when an existing template provides useful structure.')
+    if (internalCapabilities.length) {
+      parts.push('Internal capabilities available to this conversation:')
+      internalCapabilities.forEach((capability) => parts.push(`- ${capability}`))
+    }
+    parts.push('Each agent can have its own permitted tools and candidate model connections. The runtime chooses only from that agent\'s configured candidates; a connection hidden from the chat picker can still be assigned to an agent.')
+    parts.push('Never claim that Eva lacks a capability without checking the tools and permissions listed below. State only the capabilities currently available to this agent.')
+    parts.push('Report tool failures and unavailable capabilities plainly. Never claim to have searched the web, read or written files, executed a command, or completed delegated work unless the corresponding tool result confirms it.')
+    parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
+    if (agentConfig.modelCandidates?.length) {
+      parts.push(`Candidate models for delegated work: ${agentConfig.modelCandidates.map((candidate) => `${candidate.providerId}/${candidate.model}`).join(', ')}`)
+    }
+
+    parts.push('')
     parts.push('--- Environment ---')
     parts.push(`Workspace: ${workspacePath}`)
     if (fullFilesystemAccess) {

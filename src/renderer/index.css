@@ -52,6 +52,38 @@ html, body, #root {
 /* Selection */
 ::selection { background: rgba(124, 58, 237, 0.2); }
 
+/* User messages must remain selectable, including conversations saved before
+   this rule was added. The scoped !important guards against inherited
+   drag/selection styles from layout wrappers. */
+.chat-user-message,
+.chat-user-message * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+}
+
+.chat-user-message__content {
+  cursor: text;
+  outline: 0;
+  color: #203150;
+  font-family: "MiSans", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  font-size: 0.96875rem;
+  font-weight: 450;
+  line-height: 1.7;
+  text-rendering: optimizeLegibility;
+}
+
+.chat-user-message__content:focus,
+.chat-user-message__content:focus-visible {
+  outline: none;
+}
+
+/* A cool-blue selection remains visible without adding a focus frame. */
+.chat-user-message::selection,
+.chat-user-message *::selection {
+  background: #c7d7fe;
+  color: #172554;
+}
+
 /* Focus visible */
 *:focus-visible {
   outline: 1px solid #a1a1aa;
@@ -82,6 +114,17 @@ html, body, #root {
 .chat-message-markdown {
   font-size: 0.9375rem;
   line-height: 1.75;
+  min-width: 0;
+}
+
+/* Search results often include long, unbroken URLs. Keep them inside the
+   message bubble without forcing an unnecessary horizontal scroll. */
+.chat-message-markdown p,
+.chat-message-markdown li,
+.chat-message-markdown a,
+.chat-message-markdown code:not(pre code) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chat-message-markdown p + p,
@@ -129,20 +172,41 @@ html, body, #root {
   overflow: hidden;
 }
 
-/* Settings uses explicit layout rules so its visual hierarchy is stable. */
-.settings-dialog {
-  width: min(680px, calc(100vw - 40px)) !important;
-  max-width: none !important;
-  max-height: min(720px, calc(100vh - 32px)) !important;
+/* Settings is a workspace page, not a modal, so long configuration flows have room to breathe. */
+.settings-page {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 0 !important;
-  overflow: hidden !important;
+  background: #fafafa;
 }
 
-.settings-dialog__header {
-  margin: 0;
-  padding: 24px 56px 18px 24px;
+.settings-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 72px;
+  padding: 12px 28px;
+  border-bottom: 1px solid #e4e4e7;
+  background: #fff;
+}
+
+.settings-page__back {
+  color: #52525b;
+}
+
+.settings-page__title {
+  color: #18181b;
+  font-size: 1.125rem;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.settings-page__description {
+  margin-top: 2px;
+  color: #71717a;
+  font-size: 0.8125rem;
 }
 
 .settings-dialog__tabs {
@@ -153,8 +217,8 @@ html, body, #root {
 .settings-dialog__tabs-list {
   flex-shrink: 0;
   gap: 4px;
-  padding: 0 24px;
-  background: #fafafa;
+  padding: 0 28px;
+  background: #fff;
 }
 
 .settings-dialog__tabs-list [role="tab"] {
@@ -164,34 +228,46 @@ html, body, #root {
 .settings-dialog__content {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px 28px !important;
+  padding: 32px clamp(28px, 5vw, 72px) 40px !important;
   background: #fafafa;
 }
 
-.settings-dialog__card {
-  padding: 20px 22px;
-  border: 1px solid #d4d4d8;
-  border-radius: 8px;
-  background: #ffffff;
-  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.04);
+.settings-page .settings-dialog__card {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-dialog__model-layout {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  width: min(100%, 1060px);
+  margin: 0 auto;
 }
 
 .settings-dialog__general-layout {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  width: min(100%, 860px);
+  margin: 0 auto;
 }
 
 .settings-dialog__model-card {
   display: flex;
   flex-direction: column;
   gap: 20px;
+}
+
+.settings-dialog__model-card--flat {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-dialog__field {
@@ -251,6 +327,192 @@ html, body, #root {
   gap: 16px;
 }
 
+.settings-dialog__model-label-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.settings-dialog__saved-provider-row {
+  display: flex;
+  gap: 10px;
+}
+
+.settings-dialog__provider-library {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-dialog__provider-library-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-dialog__provider-library-header p {
+  margin-top: 4px;
+  color: #71717a;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.settings-dialog__provider-library-list {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-dialog__provider-library-empty {
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  padding: 0 12px;
+  border: 1px dashed #d4d4d8;
+  border-radius: 6px;
+  color: #71717a;
+  font-size: 0.8125rem;
+}
+
+.settings-dialog__provider-library-item {
+  display: flex;
+  min-height: 62px;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.settings-dialog__provider-library-item.is-selected {
+  border-color: #c4b5fd;
+  background: #faf9ff;
+}
+
+.settings-dialog__provider-library-edit {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.settings-dialog__provider-library-edit:hover {
+  background: #fafafa;
+}
+
+.settings-dialog__provider-library-name {
+  display: grid;
+  min-width: 112px;
+  gap: 2px;
+}
+
+.settings-dialog__provider-library-name strong {
+  overflow: hidden;
+  color: #27272a;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-dialog__provider-library-name small {
+  color: #71717a;
+  font-size: 0.6875rem;
+}
+
+.settings-dialog__provider-library-models {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.settings-dialog__provider-library-models span {
+  max-width: 140px;
+  overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #f4f4f5;
+  color: #52525b;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-dialog__provider-library-actions {
+  display: flex;
+  align-items: center;
+  border-left: 1px solid #e4e4e7;
+}
+
+.settings-dialog__provider-library-switch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 86px;
+  padding: 0 10px;
+  color: #71717a;
+  font-size: 0.6875rem;
+}
+
+.settings-dialog__provider-library-switch input {
+  width: 14px;
+  height: 14px;
+  accent-color: #7c3aed;
+}
+
+.settings-dialog__provider-delete,
+.settings-dialog__provider-delete-confirm button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 5px;
+  color: #a1a1aa;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.settings-dialog__provider-delete {
+  margin-right: 5px;
+}
+
+.settings-dialog__provider-delete:hover {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.settings-dialog__provider-delete-confirm {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 5px;
+}
+
+.settings-dialog__provider-delete-confirm button:first-child:hover {
+  background: #f4f4f5;
+  color: #52525b;
+}
+
+.settings-dialog__provider-delete-confirm button:last-child {
+  color: #dc2626;
+}
+
+.settings-dialog__provider-delete-confirm button:last-child:hover {
+  background: #fef2f2;
+}
+
+.settings-dialog__provider-profile-row {
+  width: 100%;
+}
+
 .settings-dialog__fetch-models {
   flex-shrink: 0;
   gap: 6px;
@@ -265,6 +527,56 @@ html, body, #root {
   border-radius: 6px;
   color: #71717a;
   font-size: 0.8125rem;
+}
+
+.settings-dialog__model-picker {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-dialog__model-options {
+  display: grid;
+  max-height: 190px;
+  overflow-y: auto;
+  border-top: 1px solid #e4e4e7;
+  border-bottom: 1px solid #e4e4e7;
+}
+
+.settings-dialog__model-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 0 10px;
+  color: #3f3f46;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.settings-dialog__model-option + .settings-dialog__model-option {
+  border-top: 1px solid #f0f0f1;
+}
+
+.settings-dialog__model-option:hover {
+  background: #fafafa;
+}
+
+.settings-dialog__model-option input {
+  width: 14px;
+  height: 14px;
+  accent-color: #7c3aed;
+}
+
+.settings-dialog__model-no-results {
+  padding: 14px 10px;
+  color: #71717a;
+  font-size: 0.8125rem;
+}
+
+.settings-dialog__model-selection-summary {
+  color: #71717a;
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .settings-dialog__actions {
@@ -301,6 +613,8 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  width: min(100%, 860px);
+  margin: 0 auto;
 }
 
 .settings-dialog__plugin-layout {
@@ -405,13 +719,10 @@ html, body, #root {
 }
 
 @media (max-width: 640px) {
-  .settings-dialog {
-    width: calc(100vw - 24px) !important;
-    max-height: calc(100vh - 24px) !important;
-  }
-
-  .settings-dialog__header {
-    padding: 20px 48px 16px 20px;
+  .settings-page__header {
+    gap: 12px;
+    min-height: 64px;
+    padding: 10px 16px;
   }
 
   .settings-dialog__tabs-list {
@@ -427,14 +738,36 @@ html, body, #root {
     padding: 20px !important;
   }
 
-  .settings-dialog__card {
-    padding: 18px;
+  .settings-page .settings-dialog__card {
+    padding: 0;
+  }
+
+  .settings-dialog__model-card--flat {
+    padding: 0;
   }
 
   .settings-dialog__model-label-row {
     align-items: flex-start;
     flex-direction: column;
     gap: 10px;
+  }
+
+  .settings-dialog__model-label-actions {
+    width: 100%;
+  }
+
+  .settings-dialog__provider-library-header {
+    flex-direction: column;
+  }
+
+  .settings-dialog__provider-library-edit {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+  }
+
+  .settings-dialog__provider-library-models {
+    justify-content: flex-start;
   }
 
   .settings-dialog__access-header {

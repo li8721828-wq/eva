@@ -11,6 +11,9 @@ export interface Conversation {
   workspaceId?: string
   /** External message channel that owns this conversation. */
   channel?: 'qq'
+  /** Internal team conversations are scoped to the task that created them. */
+  parentConversationId?: string
+  teamTaskId?: string
   /** Full access is an explicit choice for conversations created outside a project. */
   accessScope?: 'workspace' | 'full'
   permissionLevel?: ConversationPermissionLevel

@@ -77,8 +77,12 @@ export function AgentSelector({ onSelect, onNew, onEdit, onDelete, className }: 
     >
       {getRoleIcon(agent.role)}
       <div className="flex-1 min-w-0">
-        <div className="font-medium text-sm truncate">{agent.name}</div>
-        <div className="text-xs text-zinc-500 truncate">{agent.description}</div>
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 truncate text-sm font-medium">{agent.name}</span>
+          <span className="shrink-0 text-[10px] text-violet-600">{AGENT_ROLES[agent.role]?.label || agent.role}</span>
+        </div>
+        <div className="text-xs text-zinc-500 truncate">{agent.description || `${agent.providerId} / ${agent.model}`}</div>
+        <div className="mt-0.5 truncate text-[10px] text-zinc-400">{agent.modelCandidates?.length ? agent.modelCandidates.map((candidate) => `${candidate.providerId}/${candidate.model}`).join(' / ') : `${agent.providerId}/${agent.model}`}</div>
       </div>
       {agent.isBuiltIn && (
         <Badge variant="default" className="shrink-0 text-xs">
