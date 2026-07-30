@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
 import { useAgentStore } from './use-agent-store'
 import { useWorkspaceStore } from './use-workspace-store'
+import { useTaskStore } from './use-task-store'
 
 interface ChatState {
   conversations: Conversation[]
@@ -134,6 +135,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const result = await window.eva.conversation.load(id)
       if (get().currentConversationId === id) {
         set({ messages: result.messages })
+        const snapshot = await window.eva.task.getSnapshot(id)
+        if (get().currentConversationId === id) useTaskStore.getState().hydrateSnapshot(snapshot)
       }
     } catch (err) {
       console.error('Failed to load conversation:', err)

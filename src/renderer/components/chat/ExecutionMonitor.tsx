@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Activity, BrainCircuit, CheckCircle2, ChevronDown, Circle, Clock3, ListTree, Loader2, Wrench, XCircle } from 'lucide-react'
+import { BrainCircuit, CheckCircle2, ChevronDown, Circle, Clock3, ListTree, Loader2, Trash2, XCircle } from 'lucide-react'
 import type { TaskStatus } from '../../../shared/types/task'
 import { useChatStore } from '@/stores/use-chat-store'
 import { EMPTY_EXPERT_TASK, EMPTY_GOAL_TASK, useTaskStore } from '@/stores/use-task-store'
 import { cn } from '@/lib/utils'
+
+const SMOOTH_SPIN_CLASS = 'animate-spin'
 
 type MonitorItem = { id: string; label: string; status: TaskStatus | 'running'; detail?: string }
 
@@ -23,7 +25,11 @@ function elapsedLabel(startedAt: number | null, now: number): string {
   return `${Math.floor(seconds / 60)}m ${seconds % 60}s elapsed`
 }
 
-/** A conversation-scoped monitor kept above the composer while work is running. */
+/**
+ * Goal and Team runs have a plan that benefits from a compact progress view.
+ * Ordinary chat tool calls are already represented beside their message, so a
+ * second activity list here would only duplicate information and consume space.
+ */
 export function ExecutionMonitor() {
   const {
     currentConversationId,
@@ -35,6 +41,8 @@ export function ExecutionMonitor() {
   } = useChatStore()
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
   const goalTask = useTaskStore((state) => state.goalTasks[currentConversationId || ''] || EMPTY_GOAL_TASK)
+  const clearPlan = useTaskStore((state) => state.clearPlan)
+  const clearGoalProgress = useTaskStore((state) => state.clearGoalProgress)
   const [now, setNow] = useState(Date.now())
   const [expanded, setExpanded] = useState(true)
 
@@ -66,29 +74,29 @@ export function ExecutionMonitor() {
     }))
   }, [expertTask.currentPlan, goalTask.progress, streamingToolCalls])
 
-  if (!active && !hasPlan) return null
-
   const source = expertTask.currentPlan || expertTask.isRunning
     ? 'team'
     : goalTask.progress || goalTask.isRunning
       ? 'goal'
       : 'chat'
-  const startedAt = source === 'chat' ? streamingStartedAt : source === 'goal' ? goalTask.progress?.startedAt || null : expertTask.currentPlan?.createdAt || null
+
+  // Routine tool activity belongs in the conversation stream. This footer is
+  // reserved for structured work that needs a persistent plan/checklist view.
+  // GoalExecutionCard is the single source of truth for Goal progress. Showing
+  // this monitor as well duplicates the plan, steps, and tool activity.
+  if (source === 'chat' || source === 'goal' || (!active && !hasPlan)) return null
+  const startedAt = expertTask.currentPlan?.createdAt || null
   const idleSeconds = streamingLastActivityAt ? Math.floor((now - streamingLastActivityAt) / 1000) : 0
-  const phase = source === 'team'
-    ? expertTask.currentPlan ? 'Executing the approved plan' : 'Creating an execution plan'
-    : source === 'goal'
-      ? goalTask.progress ? 'Executing the goal plan' : 'Creating an execution plan'
-      : streamingStatus || 'Preparing the request'
-  const waiting = source === 'chat' && isStreaming && idleSeconds >= 12 && !streamingToolCalls.some((toolCall) => !toolCall.result)
-  const planLabel = hasPlan ? 'Execution plan' : items.length > 0 ? 'Live activity' : 'Execution status'
+  const phase = expertTask.currentPlan ? 'Executing the approved plan' : 'Creating an execution plan'
+  const waiting = false
+  const planLabel = 'Execution plan'
   const visibleItems = expanded ? items.slice(0, 6) : []
 
   return (
     <section className="shrink-0 border-t border-zinc-200 bg-zinc-50" aria-label="Execution status" aria-live="polite">
       <div className="flex min-h-11 items-center gap-3 px-5 py-2.5">
         <div className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-md', active ? 'bg-violet-100 text-violet-700' : 'bg-zinc-200 text-zinc-600')}>
-          {active ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+          {active ? <Loader2 className={cn('h-4 w-4', SMOOTH_SPIN_CLASS)} /> : <CheckCircle2 className="h-4 w-4" />}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 text-sm">
@@ -108,10 +116,20 @@ export function ExecutionMonitor() {
           aria-expanded={expanded}
           aria-controls="execution-monitor-details"
         >
-          {hasPlan ? <ListTree className="h-3.5 w-3.5" /> : <Activity className="h-3.5 w-3.5" />}
+          <ListTree className="h-3.5 w-3.5" />
           {planLabel}
           <ChevronDown className={cn('h-3.5 w-3.5 transition-transform duration-150', expanded && 'rotate-180')} />
         </button>
+        {!active && hasPlan && (
+          <button
+            type="button"
+            onClick={() => source === 'team' ? clearPlan(currentConversationId || undefined) : clearGoalProgress(currentConversationId || undefined)}
+            className="flex shrink-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium text-zinc-500 hover:bg-zinc-200 hover:text-zinc-900"
+            title="Remove this completed execution panel; its task record remains in the task center"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Remove
+          </button>
+        )}
       </div>
 
       {expanded && (
@@ -123,7 +141,7 @@ export function ExecutionMonitor() {
                 const Icon = style.icon
                 return (
                   <li key={item.id} className="flex min-w-0 items-center gap-2 py-1 text-xs">
-                    <Icon className={cn('h-3.5 w-3.5 shrink-0', style.className, item.status === 'in_progress' || item.status === 'running' ? 'animate-spin' : '')} />
+                    <Icon className={cn('h-3.5 w-3.5 shrink-0', style.className, item.status === 'in_progress' || item.status === 'running' ? SMOOTH_SPIN_CLASS : '')} />
                     <span className="min-w-0 flex-1 truncate text-zinc-700" title={item.label}>{item.label}</span>
                     <span className="shrink-0 text-zinc-500">{item.detail || style.label}</span>
                   </li>
@@ -131,11 +149,9 @@ export function ExecutionMonitor() {
               })}
               {items.length > visibleItems.length && <li className="pl-5 text-xs text-zinc-500">+{items.length - visibleItems.length} more steps</li>}
             </ol>
-          ) : source === 'team' || source === 'goal' ? (
+          ) : source === 'team' ? (
             <div className="flex items-center gap-2 py-1 text-xs text-zinc-600"><BrainCircuit className="h-3.5 w-3.5 text-violet-600" /> The agent is drafting the plan before it starts work.</div>
-          ) : (
-            <div className="flex items-center gap-2 py-1 text-xs text-zinc-600"><Wrench className="h-3.5 w-3.5 text-violet-600" /> Model response and tool activity will appear here.</div>
-          )}
+          ) : null}
         </div>
       )}
     </section>

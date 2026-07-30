@@ -7,6 +7,7 @@ import { useStreaming } from '@/hooks/use-streaming'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
 import { Separator } from '@/components/ui/Separator'
@@ -32,13 +33,13 @@ const App: React.FC = () => {
     toggleRightPanel,
     setRightPanelVisible,
     terminalVisible,
-    toggleTerminal,
     currentFile,
     workspacePath,
     loadConfig,
     agentManagerOpen,
     setAgentManagerOpen,
     settingsOpen,
+    currentView,
   } = useAppStore()
 
   const { loadConversations, currentConversationId, selectConversation } = useChatStore()
@@ -55,8 +56,6 @@ const App: React.FC = () => {
     loadAgents()
     loadWorkspaces()
   }, [])
-
-  useEffect(() => window.eva.menu.onToggleTerminal(toggleTerminal), [toggleTerminal])
 
   useEffect(() => window.eva.conversation.onChanged((_event, conversationId) => {
     void loadConversations()
@@ -89,7 +88,7 @@ const App: React.FC = () => {
           <>
         <div className="flex flex-1 min-h-0">
           <div className="flex-1 min-w-0">
-            <ChatPanel className="h-full" />
+            {currentView === 'artifacts' ? <TaskArtifactCenter /> : <ChatPanel className="h-full" />}
           </div>
 
           {/* Right Panel Toggle */}

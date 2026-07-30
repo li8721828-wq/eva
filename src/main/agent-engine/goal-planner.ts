@@ -43,12 +43,13 @@ export class GoalPlanner {
   private isRunning: boolean = false
   private currentRunner: AgentRunner | null = null
   private isPaused: boolean = false
+  private feedback: Array<{ content: string; createdAt: number }> = []
 
   constructor(config: GoalPlannerConfig) {
     this.config = config
   }
 
-  async *run(goalConfig: GoalConfig): AsyncGenerator<GoalEvent> {
+  async *run(goalConfig: GoalConfig, resumeProgress?: GoalProgress): AsyncGenerator<GoalEvent> {
     this.isRunning = true
     this.abortController = new AbortController()
     this.isPaused = false
@@ -56,28 +57,41 @@ export class GoalPlanner {
     const maxSteps = this.config.maxSteps ?? 15
     const timeout = this.config.timeout ?? 10 * 60 * 1000
     const startTime = Date.now()
+    // A long-running goal should not fail merely because its total elapsed time
+    // exceeds the configured budget. The budget guards against a goal making no
+    // measurable progress between steps instead.
+    let lastProgressAt = startTime
 
-    const progress: GoalProgress = {
-      goal: goalConfig.goal,
-      steps: [],
-      currentStepIndex: 0,
-      totalSteps: 0,
-      status: 'in_progress',
-      startedAt: startTime,
-    }
+    const progress: GoalProgress = resumeProgress
+      ? {
+          ...resumeProgress,
+          steps: resumeProgress.steps.map((step) => ({ ...step, toolCalls: step.toolCalls ? [...step.toolCalls] : undefined })),
+          status: 'in_progress',
+          completedAt: undefined,
+        }
+      : {
+          goal: goalConfig.goal,
+          steps: [],
+          currentStepIndex: 0,
+          totalSteps: 0,
+          status: 'in_progress',
+          startedAt: startTime,
+        }
 
     try {
       yield { type: 'goal_started', goal: goalConfig.goal }
       // 1. Generate execution plan
-      let steps: GoalStep[]
-      try {
-        steps = await this.createPlan(goalConfig.goal)
-      } catch (err) {
-        yield { type: 'error', error: `Failed to create plan: ${(err as Error).message}` }
-        progress.status = 'failed'
-        progress.completedAt = Date.now()
-        yield { type: 'done', progress }
-        return
+      let steps: GoalStep[] = progress.steps
+      if (!resumeProgress || steps.length === 0) {
+        try {
+          steps = await this.createPlan(goalConfig.goal)
+        } catch (err) {
+          yield { type: 'error', error: `Failed to create plan: ${(err as Error).message}` }
+          progress.status = 'failed'
+          progress.completedAt = Date.now()
+          yield { type: 'done', progress }
+          return
+        }
       }
 
       if (steps.length > maxSteps) {
@@ -86,10 +100,11 @@ export class GoalPlanner {
 
       progress.steps = steps
       progress.totalSteps = steps.length
+      lastProgressAt = Date.now()
       yield { type: 'plan_created', steps }
 
       // 2. Execute steps sequentially
-      const completedSteps: GoalStep[] = []
+      const completedSteps: GoalStep[] = steps.filter((step) => step.status === 'completed')
 
       for (let i = 0; i < steps.length; i++) {
         // Check abort
@@ -112,16 +127,18 @@ export class GoalPlanner {
           return
         }
 
-        // Check timeout
-        if (Date.now() - startTime > timeout) {
+        // Check for an inactive goal rather than a long but productive one.
+        if (Date.now() - lastProgressAt > timeout) {
           progress.status = 'failed'
           progress.completedAt = Date.now()
-          yield { type: 'error', error: 'Goal execution timed out' }
+          yield { type: 'error', error: `Goal execution stalled: no step finished for ${Math.ceil(timeout / 60_000)} minutes` }
           yield { type: 'done', progress }
           return
         }
 
         const step = steps[i]
+        if (step.status === 'completed') continue
+        if (step.status === 'failed' || step.status === 'cancelled') step.status = 'pending'
         progress.currentStepIndex = i
         step.status = 'in_progress'
         step.startedAt = Date.now()
@@ -149,6 +166,7 @@ export class GoalPlanner {
         step.status = stepFailed ? 'failed' : 'completed'
         step.result = stepResult
         step.completedAt = Date.now()
+        lastProgressAt = step.completedAt
 
         completedSteps.push(step)
 
@@ -166,6 +184,9 @@ export class GoalPlanner {
       }
 
       // 3. Generate summary
+      while (this.isPaused && !this.abortController?.signal.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 200))
+      }
       progress.status = 'completed'
       progress.completedAt = Date.now()
       const summary = await this.generateSummary(goalConfig.goal, completedSteps)
@@ -202,6 +223,13 @@ export class GoalPlanner {
     this.isPaused = false
   }
 
+  /** User guidance is preserved and supplied to every remaining goal step. */
+  addFeedback(content: string): void {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    this.feedback = [...this.feedback.slice(-7), { content: trimmed, createdAt: Date.now() }]
+  }
+
   get running(): boolean {
     return this.isRunning
   }
@@ -211,6 +239,54 @@ export class GoalPlanner {
   }
 
   // === Internal Methods ===
+
+  /**
+   * Planning and review calls do not stream, so a provider stall would otherwise
+   * leave the whole Goal looking alive with no observable progress. Bound each
+   * request independently and retry one transient failure; the Goal itself can
+   * still run for much longer as long as it continues completing steps.
+   */
+  private async completeWithResilience(
+    params: Parameters<LLMProvider['chatComplete']>[0],
+    label: string,
+  ): Promise<Awaited<ReturnType<LLMProvider['chatComplete']>>> {
+    const goalTimeout = this.config.timeout ?? 30 * 60 * 1000
+    const requestTimeout = Math.max(30_000, Math.min(3 * 60 * 1000, Math.floor(goalTimeout / 4)))
+    let lastError: unknown
+
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (this.abortController?.signal.aborted) throw new Error('Goal execution cancelled')
+
+      const controller = new AbortController()
+      const abortFromGoal = () => controller.abort()
+      this.abortController?.signal.addEventListener('abort', abortFromGoal, { once: true })
+
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          this.config.provider.chatComplete(params, controller.signal),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              controller.abort()
+              reject(new Error(`${label} did not respond within ${Math.ceil(requestTimeout / 60_000)} minutes.`))
+            }, requestTimeout)
+          }),
+        ])
+      } catch (error) {
+        lastError = error
+        if (this.abortController?.signal.aborted) throw new Error('Goal execution cancelled')
+        const message = error instanceof Error ? error.message : String(error)
+        const retryable = /timeout|timed out|rate.?limit|too many|429|network|fetch failed|econn/i.test(message)
+        if (!retryable || attempt === 2) break
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt))
+      } finally {
+        if (timer) clearTimeout(timer)
+        this.abortController?.signal.removeEventListener('abort', abortFromGoal)
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+  }
 
   private async createPlan(goal: string): Promise<GoalStep[]> {
     const messages: ChatMessageInput[] = [
@@ -245,14 +321,14 @@ Rules:
       },
     ]
 
-    const response = await this.config.provider.chatComplete(
+    const response = await this.completeWithResilience(
       {
         model: this.config.agentConfig.model,
         messages,
         temperature: 0.3,
         maxTokens: 4096,
       },
-      this.abortController?.signal
+      'Goal planning request'
     )
 
     const content = response.content
@@ -296,6 +372,9 @@ Rules:
 
     // Build step context message
     let contextMsg = `[Goal Step ${step.index + 1}] ${step.description}`
+    if (this.feedback.length > 0) {
+      contextMsg += `\n\nUser guidance received after the plan was created:\n${this.feedback.map((item) => `- ${item.content}`).join('\n')}\nApply this guidance where it affects the remaining work.`
+    }
     if (previousResults.length > 0) {
       contextMsg += '\n\nPrevious steps completed:\n'
       for (const prev of previousResults) {
@@ -325,9 +404,6 @@ Rules:
           }
           step.toolCalls = [...(step.toolCalls || []), toolCall]
           yield { type: 'step_tool_call', stepId: step.id, toolCall }
-          const toolInfo = `\n[Tool: ${event.toolCall.name}]\n`
-          lastContent += toolInfo
-          yield { type: 'step_progress', stepId: step.id, content: toolInfo }
         } else if (event.type === 'tool_result' && event.toolResult) {
           step.toolCalls = (step.toolCalls || []).map((toolCall) =>
             toolCall.id === event.toolResult!.toolCallId
@@ -341,10 +417,6 @@ Rules:
             result: event.toolResult.result,
             isError: event.toolResult.isError,
           }
-          const resultSnippet = event.toolResult.result.slice(0, 500)
-          const resultInfo = `\n[Result: ${resultSnippet}]\n`
-          lastContent += resultInfo
-          yield { type: 'step_progress', stepId: step.id, content: resultInfo }
         } else if (event.type === 'done') {
           yield { type: 'step_completed', stepId: step.id, result: lastContent || 'Step completed successfully' }
           return
@@ -410,14 +482,14 @@ Respond with JSON:
     ]
 
     try {
-      const response = await this.config.provider.chatComplete(
+      const response = await this.completeWithResilience(
         {
           model: this.config.agentConfig.model,
           messages,
           temperature: 0.2,
           maxTokens: 4096,
         },
-        this.abortController?.signal
+        'Goal plan review request'
       )
 
       const content = response.content
@@ -467,14 +539,14 @@ Please provide a summary of what was accomplished, any issues encountered, and a
     ]
 
     try {
-      const response = await this.config.provider.chatComplete(
+      const response = await this.completeWithResilience(
         {
           model: this.config.agentConfig.model,
           messages,
           temperature: 0.3,
           maxTokens: 2048,
         },
-        this.abortController?.signal
+        'Goal summary request'
       )
 
       return response.content

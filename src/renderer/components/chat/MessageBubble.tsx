@@ -2,12 +2,12 @@ import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import type { ChatMessage, ToolCall } from '../../../shared/types'
+import type { ChatMessage } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
-import { ToolCallView } from './ToolCallView'
+import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { User, Bot, Wrench, Copy, Check } from 'lucide-react'
+import { Bot, Wrench, Copy, Check } from 'lucide-react'
 import { useState } from 'react'
 
 function CopyButton({ text }: { text: string }) {
@@ -34,9 +34,34 @@ function CopyButton({ text }: { text: string }) {
 export interface MessageBubbleProps {
   message: ChatMessage
   className?: string
+  isStreaming?: boolean
 }
 
-export function MessageBubble({ message, className }: MessageBubbleProps) {
+export function MarkdownMessageContent({ content, className }: { content: string; className?: string }) {
+  return (
+    <div className={cn('chat-message-markdown prose prose-sm max-w-none text-zinc-900 prose-pre:bg-white prose-pre:border prose-pre:border-zinc-200 prose-code:text-zinc-800 prose-headings:text-zinc-900 prose-a:text-violet-600', className)}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+        components={{
+          pre({ children, ...props }) {
+            return <div className="relative group"><pre {...props}>{children}</pre></div>
+          },
+          code({ children, className: codeClassName, ...props }) {
+            if (!codeClassName) {
+              return <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs" {...props}>{children}</code>
+            }
+            return <code className={codeClassName} {...props}>{children}</code>
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  )
+}
+
+export function MessageBubble({ message, className, isStreaming = false }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
 
@@ -46,7 +71,7 @@ export function MessageBubble({ message, className }: MessageBubbleProps) {
         className={cn('flex justify-end', className)}
         style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
       >
-        <div className="chat-user-message group relative ml-auto flex min-h-12 max-w-[72%] flex-col rounded-2xl rounded-br-sm border border-[#d5def4] bg-[#eef4ff] px-5 py-3.5 pr-12 text-[#203150] shadow-sm">
+        <div className="chat-message-surface chat-user-message group relative ml-auto flex min-h-12 max-w-[72%] flex-col px-5 py-3.5 pr-12">
           {/* Agent name label */}
           {message.agentName && (
             <Badge variant="primary" className="mb-1">
@@ -75,9 +100,7 @@ export function MessageBubble({ message, className }: MessageBubbleProps) {
             </div>
           ) : null}
           {/* Tool calls */}
-          {message.toolCalls?.map((tc: ToolCall) => (
-            <ToolCallView key={tc.id} toolCall={tc} />
-          ))}
+          {message.toolCalls?.length ? <ToolCallGroupView toolCalls={message.toolCalls} className="mt-3" /> : null}
         </div>
       </article>
     )
@@ -87,6 +110,7 @@ export function MessageBubble({ message, className }: MessageBubbleProps) {
     <article className={cn('flex items-start gap-3', className)}>
       {/* Avatar */}
       <div
+        aria-busy={isStreaming || undefined}
         className={cn(
           'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium',
           isTool
@@ -98,54 +122,21 @@ export function MessageBubble({ message, className }: MessageBubbleProps) {
       </div>
 
       {/* Content */}
-      <div className="min-w-0 max-w-[78%]">
-        {/* Agent name label */}
-        {message.agentName && (
-          <Badge variant="primary" className="mb-2">
-            {message.agentName}
-          </Badge>
-        )}
-
-        {/* Message content */}
-        <div className="rounded-2xl rounded-tl-sm border border-zinc-200 bg-zinc-50 px-5 py-4 shadow-sm">
-          <div className="chat-message-markdown prose prose-sm max-w-none text-zinc-900 prose-pre:bg-white prose-pre:border prose-pre:border-zinc-200 prose-code:text-zinc-800 prose-headings:text-zinc-900 prose-a:text-violet-600">
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeHighlight]}
-            components={{
-              pre({ children, ...props }) {
-                return (
-                  <div className="relative group">
-                    <pre {...props}>{children}</pre>
-                  </div>
-                )
-              },
-              code({ children, className: codeClassName, ...props }) {
-                const isInline = !codeClassName
-                if (isInline) {
-                  return (
-                    <code className="bg-zinc-100 rounded px-1.5 py-0.5 text-xs" {...props}>
-                      {children}
-                    </code>
-                  )
-                }
-                return (
-                  <code className={codeClassName} {...props}>
-                    {children}
-                  </code>
-                )
-              },
-            }}
-          >
-            {message.content}
-          </ReactMarkdown>
-          </div>
+      <div className="min-w-0 max-w-[52rem]">
+        <div className="chat-message-surface chat-assistant-message px-5 py-4">
+          {message.agentName && (
+            <div className="mb-2.5 flex items-center gap-2">
+              <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
+              <Badge variant="primary" className="px-1.5 py-0 text-[11px] leading-5">
+                {message.agentName}
+              </Badge>
+            </div>
+          )}
+          <MarkdownMessageContent content={message.content} />
         </div>
 
         {/* Tool calls */}
-        {message.toolCalls?.map((tc: ToolCall) => (
-          <ToolCallView key={tc.id} toolCall={tc} />
-        ))}
+        {message.toolCalls?.length ? <ToolCallGroupView toolCalls={message.toolCalls} className="mt-3" /> : null}
       </div>
     </article>
   )

@@ -759,7 +759,7 @@ export function SettingsDialog() {
                     {capability.id === 'goal' && (
                       <>
                         <label className="space-y-1 text-xs text-zinc-500"><span>Maximum steps</span><Input type="number" min={2} max={30} value={automation.goal.maxSteps} onChange={(event) => void updateAutomation('goal', { maxSteps: Math.max(2, Math.min(30, Number(event.target.value) || 12)) })} /></label>
-                        <label className="space-y-1 text-xs text-zinc-500"><span>Timeout (minutes)</span><Input type="number" min={1} max={60} value={automation.goal.timeoutMinutes} onChange={(event) => void updateAutomation('goal', { timeoutMinutes: Math.max(1, Math.min(60, Number(event.target.value) || 10)) })} /></label>
+                        <label className="space-y-1 text-xs text-zinc-500"><span>Timeout (minutes)</span><Input type="number" min={1} max={120} value={automation.goal.timeoutMinutes} onChange={(event) => void updateAutomation('goal', { timeoutMinutes: Math.max(1, Math.min(120, Number(event.target.value) || 30)) })} /></label>
                       </>
                     )}
                   </div>

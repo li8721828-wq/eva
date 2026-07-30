@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { createApplicationMenu, createMainWindow } from './window'
 import { registerAllIpcHandlers } from './ipc'
+import { recoverQueuedTasks } from './ipc/task'
 import { initializeStorage, getStorage } from './storage'
 import { FileServiceImpl } from './services/file-service'
 import { TerminalServiceImpl } from './services/terminal-service'
@@ -18,6 +19,10 @@ let mainWindow: BrowserWindow | null = null
 app.whenReady().then(async () => {
   // 1. Initialize persistent storage (creates dirs, seeds built-in agents)
   await initializeStorage()
+  // A planner cannot survive a desktop restart. Preserve its checkpoint but
+  // make the state honest and let the user explicitly continue it in Task
+  // Center instead of rendering a stale task as still running.
+  await getStorage().taskRuns.markRunningAsInterrupted()
 
   // 2. Instantiate core services
   const fileService = new FileServiceImpl()
@@ -64,6 +69,13 @@ app.whenReady().then(async () => {
 
   // 7. Create the main window
   mainWindow = createMainWindow()
+
+  // Start work that was queued before execution began after the renderer has
+  // had a chance to subscribe to task streams. Interrupted work remains in
+  // Task Center for an explicit checkpointed continuation.
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed()) void recoverQueuedTasks(mainWindow)
+  }, 700)
 
   if (getStorage().qqRemote.getConfig().enabled) {
     void qqRemoteBridge.start()

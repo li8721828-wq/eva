@@ -44,6 +44,8 @@ export interface SubTask {
   attempt?: number
   dependencies: string[]
   result?: string
+  /** Tool activity retained for project-level task artifacts. */
+  toolCalls?: ToolCall[]
   startedAt?: number
   completedAt?: number
 }
@@ -59,6 +61,8 @@ export interface TeamEvent {
   result?: string
   summary?: string
   error?: string
+  /** The execution was deliberately stopped before the plan finished. */
+  cancelled?: boolean
 }
 
 export interface GoalConfig {
@@ -91,4 +95,83 @@ export interface GoalProgress {
   summary?: string
   /** The chat that owns this goal, used to keep progress scoped on conversation switches. */
   conversationId?: string
+}
+
+export interface TaskFeedback {
+  id: string
+  content: string
+  createdAt: number
+  checkpointId?: string
+}
+
+export interface TaskCheckpoint {
+  id: string
+  title: string
+  description?: string
+  status: 'recorded' | 'completed' | 'needs_attention'
+  createdAt: number
+  stepId?: string
+  feedback: TaskFeedback[]
+}
+
+export type TaskRunStatus = 'queued' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
+
+/** Scheduler metadata retained alongside the execution plan and checkpoints. */
+export interface TaskExecutionState {
+  state: 'queued' | 'running' | 'retrying' | 'completed' | 'failed' | 'cancelled'
+  attempt: number
+  maxAttempts: number
+  queuedAt: number
+  startedAt?: number
+  lastActivityAt?: number
+  nextRetryAt?: number
+}
+
+export interface TaskRunSnapshot {
+  conversationId: string
+  kind: 'expert' | 'goal'
+  status: TaskRunStatus
+  /** Original request data allows queued work to resume after an app restart. */
+  goal?: string
+  agentId?: string
+  execution?: TaskExecutionState
+  plan?: TaskPlan
+  progress?: GoalProgress
+  summary?: string
+  error?: string
+  checkpoints?: TaskCheckpoint[]
+  updatedAt: number
+}
+
+/** A project-level, concise view of one persisted Goal or Team execution. */
+export interface TaskArtifactItem {
+  id: string
+  kind: 'step' | 'source' | 'file' | 'tool'
+  title: string
+  detail?: string
+  status?: TaskStatus
+  result?: string
+  url?: string
+  path?: string
+  isError?: boolean
+  /** Repeated actions against the same logical target are summarized once. */
+  count?: number
+}
+
+export interface TaskArtifactRun {
+  conversationId: string
+  conversationTitle: string
+  agentId: string
+  workspaceId?: string
+  kind: TaskRunSnapshot['kind']
+  status: TaskRunSnapshot['status']
+  goal: string
+  summary?: string
+  error?: string
+  updatedAt: number
+  steps: TaskArtifactItem[]
+  sources: TaskArtifactItem[]
+  files: TaskArtifactItem[]
+  tools: TaskArtifactItem[]
+  checkpoints: TaskCheckpoint[]
 }

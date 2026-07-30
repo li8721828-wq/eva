@@ -10,13 +10,36 @@ function isWithinRoot(candidate: string, root: string): boolean {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
 }
 
-function normalizeAndValidate(
+/**
+ * Resolve an existing path, or resolve the closest existing parent and append
+ * the missing segments. This makes authorization checks follow junctions and
+ * symlinks instead of trusting a lexical path prefix.
+ */
+async function canonicalizePath(candidate: string): Promise<string> {
+  let current = path.resolve(candidate)
+  const missingSegments: string[] = []
+
+  while (true) {
+    try {
+      const real = await fs.promises.realpath(current)
+      return path.join(real, ...missingSegments)
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error
+      const parent = path.dirname(current)
+      if (parent === current) throw error
+      missingSegments.unshift(path.basename(current))
+      current = parent
+    }
+  }
+}
+
+async function normalizeAndValidate(
   filePath: string,
   workspacePath: string,
   grants: FileAccessGrant[] = [],
   requiresWrite = false,
   fullFilesystemAccess = false
-): string {
+): Promise<string> {
   if (!filePath) throw new Error('A file path is required')
   if (!path.isAbsolute(filePath) && !workspacePath && !fullFilesystemAccess) {
     throw new Error('No workspace is configured for relative file paths')
@@ -31,11 +54,15 @@ function normalizeAndValidate(
     ...(workspacePath ? [{ path: workspacePath, access: 'read-write' as const }] : []),
     ...grants,
   ]
-  const matchingGrant = roots.find((grant) => isWithinRoot(resolved, path.resolve(grant.path)))
+  const [canonicalCandidate, canonicalRoots] = await Promise.all([
+    canonicalizePath(resolved),
+    Promise.all(roots.map(async (grant) => ({ ...grant, path: await canonicalizePath(grant.path) }))),
+  ])
+  const matchingGrant = canonicalRoots.find((grant) => isWithinRoot(canonicalCandidate, grant.path))
   if (!matchingGrant || (requiresWrite && matchingGrant.access !== 'read-write')) {
     throw new Error(`Access denied: ${filePath} is not within an authorized folder`)
   }
-  return resolved
+  return canonicalCandidate
 }
 
 function isBinaryBuffer(buffer: Buffer): boolean {
@@ -49,7 +76,7 @@ function isBinaryBuffer(buffer: Buffer): boolean {
 
 export class FileServiceImpl implements FileService {
   async readFile(filePath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<string> {
-    const resolved = normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
+    const resolved = await normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
 
     const stat = await fs.promises.stat(resolved)
     if (stat.size > MAX_FILE_SIZE) {
@@ -65,14 +92,17 @@ export class FileServiceImpl implements FileService {
   }
 
   async writeFile(filePath: string, content: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<void> {
-    const resolved = normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
+    let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
     const dir = path.dirname(resolved)
     await fs.promises.mkdir(dir, { recursive: true })
+    // Re-check after directory creation so a newly created or pre-existing
+    // reparse point cannot redirect the final write outside an authorized root.
+    resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
     await fs.promises.writeFile(resolved, content, 'utf-8')
   }
 
   async listDirectory(dirPath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<FileEntry[]> {
-    const resolved = normalizeAndValidate(dirPath, workspacePath, grants, false, fullFilesystemAccess)
+    const resolved = await normalizeAndValidate(dirPath, workspacePath, grants, false, fullFilesystemAccess)
 
     const entries = await fs.promises.readdir(resolved, { withFileTypes: true })
     const results: FileEntry[] = []
@@ -145,14 +175,14 @@ export class FileServiceImpl implements FileService {
       }
     }
 
-    const root = normalizeAndValidate(searchPath, workspacePath, grants, false, fullFilesystemAccess)
+    const root = await normalizeAndValidate(searchPath, workspacePath, grants, false, fullFilesystemAccess)
     await search(root)
     return results
   }
 
   async fileExists(filePath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<boolean> {
     try {
-      const resolved = normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
+      const resolved = await normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
       await fs.promises.access(resolved)
       return true
     } catch {
@@ -166,7 +196,7 @@ export class FileServiceImpl implements FileService {
     grants: FileAccessGrant[] = [],
     fullFilesystemAccess = false
   ): Promise<{ size: number; modified: Date; isDirectory: boolean }> {
-    const resolved = normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
+    const resolved = await normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
     const stat = await fs.promises.stat(resolved)
     return {
       size: stat.size,

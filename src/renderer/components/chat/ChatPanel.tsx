@@ -9,7 +9,8 @@ import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { TeamCollaborationPanel } from './TeamCollaborationPanel'
 import { ExecutionMonitor } from './ExecutionMonitor'
-import { Bot, AlertCircle, ShieldAlert, X } from 'lucide-react'
+import { Bot, AlertCircle, ShieldAlert, Terminal, X } from 'lucide-react'
+import { Button } from '@/components/ui/Button'
 
 export interface ChatPanelProps {
   className?: string
@@ -17,10 +18,10 @@ export interface ChatPanelProps {
 
 export function ChatPanel({ className }: ChatPanelProps) {
   const { conversations, currentConversationId, error, setError } = useChatStore()
-  const { workMode } = useAppStore()
+  const { workMode, terminalVisible, toggleTerminal } = useAppStore()
   const { agents, getSelectedAgent } = useAgentStore()
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
-  const { currentPlan, isRunning: isTaskRunning } = expertTask
+  const { currentPlan, isRunning: isTaskRunning, recoveryStatus, summary: expertSummary } = expertTask
 
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId) || getSelectedAgent()
@@ -43,6 +44,18 @@ export function ChatPanel({ className }: ChatPanelProps) {
           <span className="text-sm text-zinc-500">{agent?.name || 'Coding Assistant'}</span>
         </div>
         <div className="flex items-center gap-2">
+          {currentConversationId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={toggleTerminal}
+              title={terminalVisible ? 'Hide terminal' : 'Open terminal for this conversation workspace'}
+              aria-label={terminalVisible ? 'Hide terminal' : 'Open terminal for this conversation workspace'}
+            >
+              <Terminal className="h-4 w-4" />
+            </Button>
+          )}
           {(currentConversation?.permissionLevel === 'full-access' || (!currentConversation?.permissionLevel && currentConversation?.accessScope === 'full')) && (
             <Badge variant="warning" className="gap-1" title="This conversation can access the full local filesystem">
               <ShieldAlert className="h-3 w-3" />
@@ -64,6 +77,13 @@ export function ChatPanel({ className }: ChatPanelProps) {
               ? `Working on ${currentPlan?.subtasks.filter((task) => task.status === 'in_progress').length || 0} task(s)`
               : `${currentPlan?.subtasks.filter((task) => task.status === 'completed').length || 0}/${currentPlan?.subtasks.length || 0} tasks completed`}
           </span>
+        </div>
+      )}
+
+      {workMode === 'expert' && recoveryStatus === 'interrupted' && (
+        <div className="flex items-center gap-3 border-b border-amber-100 bg-amber-50/60 px-6 py-2 text-xs text-amber-800">
+          <AlertCircle className="h-3.5 w-3.5" />
+          <span className="truncate">{expertSummary || 'Eva was closed before the team task finished. Completed subtasks are retained.'}</span>
         </div>
       )}
 

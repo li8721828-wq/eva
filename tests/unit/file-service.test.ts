@@ -53,4 +53,20 @@ describe('FileServiceImpl access grants', () => {
       service.readFile(path.join(readOnlyFolder, 'notes.txt'), workspace, [], true)
     ).resolves.toBe('private notes')
   })
+
+  it('rejects a workspace link that resolves outside the authorized root', async () => {
+    const linkedOutside = path.join(workspace, 'linked-outside')
+    try {
+      fs.symlinkSync(readOnlyFolder, linkedOutside, process.platform === 'win32' ? 'junction' : 'dir')
+    } catch (error: any) {
+      // Some locked-down Windows policies disallow creating links. The actual
+      // authorization behavior is covered on platforms where a link is allowed.
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') return
+      throw error
+    }
+
+    await expect(
+      service.readFile(path.join(linkedOutside, 'notes.txt'), workspace)
+    ).rejects.toThrow('Access denied')
+  })
 })

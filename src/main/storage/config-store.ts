@@ -8,6 +8,7 @@ import type { ProviderConfigEntry } from '../../shared/types/provider'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
+import { CredentialStore } from './credential-store'
 
 export type { ProviderConfigEntry }
 
@@ -77,12 +78,14 @@ const DEFAULTS: AppConfig = {
 
 export class ConfigStore {
   private store: Store<AppConfig>
+  private credentials = new CredentialStore()
 
   constructor() {
     this.store = new Store<AppConfig>({
       name: 'config',
       defaults: DEFAULTS,
     })
+    this.migrateProviderCredentials()
   }
 
   get<K extends keyof AppConfig>(key: K): AppConfig[K] {
@@ -94,7 +97,12 @@ export class ConfigStore {
   }
 
   getAll(): AppConfig {
-    return this.store.store
+    // Generic configuration reads never need credential material. The explicit
+    // provider API hydrates keys only for the Settings editor and provider setup.
+    return {
+      ...this.store.store,
+      providers: this.store.get('providers').map((provider) => ({ ...provider, apiKey: '' })),
+    }
   }
 
   setAll(config: Partial<AppConfig>): void {
@@ -103,21 +111,26 @@ export class ConfigStore {
 
   // Provider configuration management
   getProviders(): ProviderConfigEntry[] {
-    return this.store.get('providers')
+    return this.store.get('providers').map((provider) => ({
+      ...provider,
+      apiKey: this.credentials.get(this.providerCredentialKey(provider.id)),
+    }))
   }
 
   getProvider(id: string): ProviderConfigEntry | undefined {
-    const providers = this.store.get('providers')
-    return providers.find((p) => p.id === id)
+    return this.getProviders().find((provider) => provider.id === id)
   }
 
   saveProvider(provider: ProviderConfigEntry): void {
     const providers = this.store.get('providers')
+    const apiKey = provider.apiKey.trim()
+    if (apiKey) this.credentials.set(this.providerCredentialKey(provider.id), apiKey)
+    const storedProvider = { ...provider, apiKey: '' }
     const index = providers.findIndex((p) => p.id === provider.id)
     if (index >= 0) {
-      providers[index] = provider
+      providers[index] = storedProvider
     } else {
-      providers.push(provider)
+      providers.push(storedProvider)
     }
     this.store.set('providers', providers)
   }
@@ -126,6 +139,7 @@ export class ConfigStore {
     const providers = this.store.get('providers')
     const filtered = providers.filter((p) => p.id !== id)
     this.store.set('providers', filtered)
+    this.credentials.delete(this.providerCredentialKey(id))
   }
 
   getActiveProvider(): ProviderConfigEntry | undefined {
@@ -135,5 +149,21 @@ export class ConfigStore {
 
   getActiveModel(): string {
     return this.store.get('activeModel')
+  }
+
+  private providerCredentialKey(id: string): string {
+    return `provider:${id}`
+  }
+
+  private migrateProviderCredentials(): void {
+    const providers = this.store.get('providers')
+    if (!this.credentials.isAvailable() || !providers.some((provider) => provider.apiKey)) return
+
+    const migrated = providers.map((provider) => {
+      if (!provider.apiKey) return provider
+      this.credentials.set(this.providerCredentialKey(provider.id), provider.apiKey)
+      return { ...provider, apiKey: '' }
+    })
+    this.store.set('providers', migrated)
   }
 }

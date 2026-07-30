@@ -16,7 +16,7 @@ export interface AutomationConfig {
 export const DEFAULT_AUTOMATION_CONFIG: AutomationConfig = {
   team: { enabled: true, autoInvoke: true },
   task: { enabled: true, autoInvoke: true },
-  goal: { enabled: true, autoInvoke: true, maxSteps: 12, timeoutMinutes: 10 },
+  goal: { enabled: true, autoInvoke: true, maxSteps: 12, timeoutMinutes: 30 },
   plan: { enabled: true, autoInvoke: true },
   spec: { enabled: true, autoInvoke: false },
 }

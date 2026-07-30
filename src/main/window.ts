@@ -1,60 +1,9 @@
-import { BrowserWindow, Menu, shell, type MenuItemConstructorOptions } from 'electron'
+import { BrowserWindow, Menu, shell } from 'electron'
 import path from 'path'
 import { is } from '@electron-toolkit/utils'
-import { IPC } from '../shared/ipc-channels'
 
 export function createApplicationMenu(): void {
-  const toggleTerminal = () => {
-    BrowserWindow.getFocusedWindow()?.webContents.send(IPC.MENU_TOGGLE_TERMINAL)
-  }
-
-  const template: MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [{ role: 'close' }],
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'forceReload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'resetZoom' },
-        { role: 'zoomIn' },
-        { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
-      ],
-    },
-    {
-      label: 'Window',
-      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }],
-    },
-    {
-      label: 'Terminal',
-      accelerator: 'Ctrl+`',
-      click: toggleTerminal,
-    },
-    {
-      role: 'help',
-      submenu: [],
-    },
-  ]
-
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  Menu.setApplicationMenu(null)
 }
 
 export function createMainWindow(): BrowserWindow {

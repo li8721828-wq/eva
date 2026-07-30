@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { WorkMode } from '../../shared/types'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
-export type AppView = 'chat' | 'editor' | 'settings'
+export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts'
 export type Theme = 'dark' | 'light'
 
 interface CurrentFile {
@@ -19,6 +19,7 @@ interface AppState {
   workspacePath: string
   fileAccessGrants: FileAccessGrant[]
   currentView: AppView
+  artifactWorkspaceId: string | null
   rightPanelVisible: boolean
   rightPanelTab: 'files' | 'editor'
   terminalVisible: boolean
@@ -36,6 +37,8 @@ interface AppState {
   setWorkspacePath: (path: string) => void
   setFileAccessGrants: (grants: FileAccessGrant[]) => void
   setCurrentView: (view: AppView) => void
+  openTaskArtifacts: (workspaceId: string) => void
+  closeTaskArtifacts: () => void
   toggleRightPanel: () => void
   setRightPanelVisible: (visible: boolean) => void
   setRightPanelTab: (tab: 'files' | 'editor') => void
@@ -61,6 +64,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   workspacePath: '',
   fileAccessGrants: [],
   currentView: 'chat',
+  artifactWorkspaceId: null,
   rightPanelVisible: true,
   rightPanelTab: 'files',
   terminalVisible: false,
@@ -91,6 +95,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.eva.config.set('fileAccessGrants', fileAccessGrants).catch(console.error)
   },
   setCurrentView: (view) => set({ currentView: view }),
+  openTaskArtifacts: (workspaceId) => set({ currentView: 'artifacts', artifactWorkspaceId: workspaceId }),
+  closeTaskArtifacts: () => set({ currentView: 'chat', artifactWorkspaceId: null }),
   toggleRightPanel: () => set((s) => {
     const visible = !s.rightPanelVisible
     window.eva.config.set('rightPanelVisible', visible).catch(console.error)

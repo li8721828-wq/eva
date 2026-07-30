@@ -30,6 +30,12 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 
 # electron-builder output
 build/

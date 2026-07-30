@@ -28,6 +28,13 @@ const executeCommandTool: ToolExecutor = {
     },
   },
   async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+    // A shell cannot be constrained to a directory by its working directory alone:
+    // commands can still read, write, or execute outside it. Do not present
+    // workspace-only access as a sandbox when it is not one.
+    if (!context.fullFilesystemAccess) {
+      return 'Command execution requires Full filesystem access. Workspace-only and authorized-folder conversations can use file tools, but cannot run an unrestricted local shell.'
+    }
+
     const command = params.command as string
     const timeout = Math.min((params.timeout as number) ?? 30_000, 120_000)
 

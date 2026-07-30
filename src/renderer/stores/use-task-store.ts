@@ -1,4 +1,4 @@
-import type { GoalConfig, GoalProgress, SubTask, TaskPlan, TeamEvent } from '../../shared/types'
+import type { GoalConfig, GoalProgress, SubTask, TaskPlan, TeamEvent, TaskRunSnapshot } from '../../shared/types'
 import type { GoalEvent } from '../lib/goal-event'
 import { create } from 'zustand'
 
@@ -6,6 +6,7 @@ export interface ExpertTaskState {
   currentPlan: TaskPlan | null
   isRunning: boolean
   summary: string | null
+  recoveryStatus?: TaskRunSnapshot['status']
 }
 
 export interface GoalTaskState {
@@ -13,6 +14,7 @@ export interface GoalTaskState {
   streamingContent: string
   isRunning: boolean
   isPaused: boolean
+  recoveryStatus?: TaskRunSnapshot['status']
 }
 
 export const EMPTY_EXPERT_TASK: ExpertTaskState = { currentPlan: null, isRunning: false, summary: null }
@@ -35,6 +37,7 @@ interface TaskState {
   resumeGoal: (conversationId: string) => void
   clearGoalProgress: (conversationId?: string) => void
   handleGoalEvent: (event: GoalEvent) => void
+  hydrateSnapshot: (snapshot: TaskRunSnapshot | null) => void
 }
 
 function updateTask<T>(
@@ -157,7 +160,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (!conversationId) return
     window.eva.goal.abort(conversationId)
     set((state) => ({
-      goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({ ...task, isRunning: false, isPaused: false }), EMPTY_GOAL_TASK),
+      goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({
+        ...task,
+        progress: task.progress ? { ...task.progress, status: 'cancelled', completedAt: Date.now() } : null,
+        isRunning: false,
+        isPaused: false,
+      }), EMPTY_GOAL_TASK),
     }))
   },
 
@@ -196,6 +204,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
       switch (event.type) {
         case 'goal_started':
+          // A checkpointed continuation announces a new start event, but its
+          // stored plan is still authoritative until the matching plan_created
+          // event arrives. Clearing it here made resumed Goals look empty.
+          if (progress?.steps.length) {
+            next = {
+              ...current,
+              progress: { ...progress, goal: event.goal, status: 'in_progress', completedAt: undefined, conversationId },
+              streamingContent: '', isRunning: true, isPaused: false,
+            }
+            break
+          }
           next = {
             progress: { goal: event.goal, steps: [], currentStepIndex: 0, totalSteps: 0, status: 'in_progress', startedAt: Date.now(), conversationId },
             streamingContent: '', isRunning: true, isPaused: false,
@@ -250,6 +269,48 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
 
       return { goalTasks: { ...state.goalTasks, [conversationId]: next } }
+    })
+  },
+
+  hydrateSnapshot: (snapshot) => {
+    if (!snapshot) return
+    set((state) => {
+      const isActive = snapshot.status === 'queued' || snapshot.status === 'running'
+      const isPaused = snapshot.status === 'paused'
+      if (snapshot.kind === 'expert') {
+        return {
+          expertTasks: {
+            ...state.expertTasks,
+            [snapshot.conversationId]: {
+              currentPlan: snapshot.plan || null,
+              isRunning: isActive,
+              summary: snapshot.summary || snapshot.error || null,
+              recoveryStatus: isActive ? undefined : snapshot.status,
+            },
+          },
+        }
+      }
+      return {
+        goalTasks: {
+          ...state.goalTasks,
+          [snapshot.conversationId]: {
+            progress: snapshot.progress
+              ? {
+                  ...snapshot.progress,
+                  // The durable scheduler state is authoritative after a
+                  // conversation is re-opened. A saved in-progress plan must
+                  // never be rendered as a failed Goal merely because the UI
+                  // was remounted.
+                  status: isActive || isPaused ? 'in_progress' : snapshot.progress.status,
+                }
+              : null,
+            streamingContent: '',
+            isRunning: isActive,
+            isPaused,
+            recoveryStatus: isActive || isPaused ? undefined : snapshot.status,
+          },
+        },
+      }
     })
   },
 }))

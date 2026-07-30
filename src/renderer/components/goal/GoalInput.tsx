@@ -22,7 +22,7 @@ export function GoalInput({ className }: GoalInputProps) {
   const [goal, setGoal] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [maxSteps, setMaxSteps] = useState('15')
-  const [timeout, setTimeout_] = useState('10')
+  const [timeout, setTimeout_] = useState('30')
 
   const currentConversation = conversations.find((c) => c.id === currentConversationId)
   const agentId = selectedAgentId || currentConversation?.agentId || agents[0]?.id || ''
@@ -32,7 +32,7 @@ export function GoalInput({ className }: GoalInputProps) {
     if (!goal.trim()) return
     startGoal(goal.trim(), agentId, conversationId, {
       maxSteps: parseInt(maxSteps) || 15,
-      timeout: (parseInt(timeout) || 10) * 60 * 1000,
+      timeout: (parseInt(timeout) || 30) * 60 * 1000,
       autoAdjust: true,
     })
     setGoal('')

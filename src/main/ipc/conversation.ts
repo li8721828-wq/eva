@@ -9,6 +9,7 @@ import { AgentRunner } from '../agent-engine/agent-runner'
 import { ContextManager } from '../agent-engine/context'
 import { TeamOrchestrator } from '../agent-engine/team-orchestrator'
 import { GoalPlanner } from '../agent-engine/goal-planner'
+import type { GoalEvent } from '../agent-engine/goal-planner'
 import { getStorage } from '../storage'
 import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
@@ -17,6 +18,8 @@ import { SpecService } from '../services/spec-service'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
+import type { GoalProgress } from '../../shared/types/task'
+import { controlForegroundGoal } from './task'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -28,6 +31,46 @@ export interface ChatServices {
 // Each conversation owns its runner. A model connection may be shared, but the
 // prompt history, cancellation handle, and lifecycle must stay conversation-scoped.
 const activeRunners = new Map<string, AgentRunner>()
+// `run_task` creates a nested runner under the active chat runner. Keep its
+// handle separately so cancellation and replacement cannot leave it orphaned.
+const activeTaskRunners = new Map<string, AgentRunner>()
+// Auto conversations can launch a Goal as an internal tool. Keep those planners
+// separately from the visible Goal screen so they remain cancellable after the
+// chat turn that started them has completed.
+const activeBackgroundGoalPlanners = new Map<string, GoalPlanner>()
+const MAX_PERSISTED_TOOL_RESULT_CHARS = 12_000
+const INTERNAL_TASK_TIMEOUT_MS = 3 * 60 * 1000
+
+function compactToolResult(result: string): string {
+  if (result.length <= MAX_PERSISTED_TOOL_RESULT_CHARS) return result
+  return `${result.slice(0, MAX_PERSISTED_TOOL_RESULT_CHARS)}\n\n[Tool output truncated for conversation storage: ${result.length} characters total]`
+}
+
+function applyGoalProgress(current: GoalProgress | null, event: GoalEvent, conversationId: string): GoalProgress | null {
+  switch (event.type) {
+    case 'goal_started':
+      return current || { goal: event.goal, steps: [], currentStepIndex: 0, totalSteps: 0, status: 'in_progress', startedAt: Date.now(), conversationId }
+    case 'plan_created':
+      return current ? { ...current, steps: event.steps, totalSteps: event.steps.length } : current
+    case 'step_started':
+      return current ? { ...current, currentStepIndex: event.stepIndex, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', startedAt: Date.now() } : step) } : current
+    case 'step_tool_call':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: [...(step.toolCalls || []), event.toolCall] } : step) } : current
+    case 'step_tool_result':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: (step.toolCalls || []).map((toolCall) => toolCall.id === event.toolCallId ? { ...toolCall, result: event.result, isError: event.isError } : toolCall) } : step) } : current
+    case 'step_completed':
+    case 'step_failed':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error, completedAt: Date.now() } : step) } : current
+    case 'plan_adjusted':
+      return current ? { ...current, steps: [...current.steps.filter((step) => step.status === 'completed' || step.status === 'failed'), ...event.steps], totalSteps: current.steps.filter((step) => step.status === 'completed' || step.status === 'failed').length + event.steps.length } : current
+    case 'summary':
+      return current ? { ...current, summary: event.content } : current
+    case 'done':
+      return { ...event.progress, conversationId }
+    default:
+      return current
+  }
+}
 const MAX_REFERENCE_IMAGES = 4
 const MAX_REFERENCE_IMAGE_BYTES = 12 * 1024 * 1024
 const IMAGE_MEDIA_TYPES = new Set<ChatImageAttachment['mediaType']>(['image/jpeg', 'image/png', 'image/webp'])
@@ -409,6 +452,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const runnerWorkspacePath = conversation.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const runTask = automation.task.enabled && automation.task.autoInvoke
           ? async (task: string): Promise<string> => {
+              // A new nested task supersedes an older one for this conversation.
+              activeTaskRunners.get(conversationId)?.abort()
               const worker = new AgentRunner({
                 agentConfig: effectiveAgentConfig,
                 provider,
@@ -424,16 +469,48 @@ export function registerConversationHandlers(services?: ChatServices): void {
               const taskMessage: ChatMessage = {
                 id: uuidv4(), conversationId, role: 'user', content: `Complete this bounded internal task and report the concrete result:\n${task}`, timestamp: Date.now(),
               }
-              for await (const event of worker.run({ messages: [], newMessage: taskMessage })) {
-                if (event.type === 'text' && event.content) output += event.content
-                if (event.type === 'tool_result' && event.toolResult) output += `\n[${event.toolResult.name}] ${event.toolResult.result}`
-                if (event.type === 'error') throw new Error(event.error)
+              activeTaskRunners.set(conversationId, worker)
+
+              let timeout: ReturnType<typeof setTimeout> | undefined
+              try {
+                const execution = (async () => {
+                  for await (const event of worker.run({ messages: [], newMessage: taskMessage })) {
+                    if (event.type === 'text' && event.content) output += event.content
+                    if (event.type === 'tool_result' && event.toolResult) output += `\n[${event.toolResult.name}] ${event.toolResult.result}`
+                    if (event.type === 'error') throw new Error(event.error)
+                  }
+                })()
+
+                await Promise.race([
+                  execution,
+                  new Promise<never>((_, reject) => {
+                    timeout = setTimeout(() => {
+                      worker.abort()
+                      reject(new Error('run_task timed out after 3 minutes and was stopped. Use Goal or the task center for longer, recoverable work.'))
+                    }, INTERNAL_TASK_TIMEOUT_MS)
+                  }),
+                ])
+              } finally {
+                if (timeout) clearTimeout(timeout)
+                if (activeTaskRunners.get(conversationId) === worker) {
+                  activeTaskRunners.delete(conversationId)
+                }
               }
               return output.trim() || 'Task execution completed.'
             }
           : undefined
         const runGoal = automation.goal.enabled && automation.goal.autoInvoke
-          ? async (goal: string): Promise<string> => {
+          ? async (goal: string, resumeProgress?: GoalProgress | null): Promise<string> => {
+              // A Goal can outlive the response that requested it. Running it in
+              // the tool-call stack caused provider request limits to terminate
+              // otherwise healthy long jobs, so launch it independently and
+              // retain progress in the task store instead.
+              activeBackgroundGoalPlanners.get(conversationId)?.abort()
+              const previousSnapshot = resumeProgress ? await getStorage().taskRuns.get(conversationId) : null
+              const configuredTimeoutMinutes = automation.goal.timeoutMinutes === 10
+                ? DEFAULT_AUTOMATION_CONFIG.goal.timeoutMinutes
+                : automation.goal.timeoutMinutes
+              const timeout = configuredTimeoutMinutes * 60 * 1000
               const planner = new GoalPlanner({
                 agentConfig: effectiveAgentConfig,
                 provider,
@@ -445,17 +522,113 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 fileService: services.fileService,
                 terminalService: services.terminalService,
                 maxSteps: automation.goal.maxSteps,
-                timeout: automation.goal.timeoutMinutes * 60 * 1000,
+                timeout,
               })
-              let summary = ''
-              for await (const event of planner.run({ goal, maxSteps: automation.goal.maxSteps, timeout: automation.goal.timeoutMinutes * 60 * 1000, autoAdjust: true })) {
-                if (!win.isDestroyed()) {
-                  win.webContents.send(IPC.TASK_GOAL_STREAM, { ...event, conversationId })
+              activeBackgroundGoalPlanners.set(conversationId, planner)
+
+              // Persist the run before the first model/planner event. This
+              // keeps the task center and a remounted chat in agreement about
+              // a Goal that is still starting up.
+              await getStorage().taskRuns.save({
+                conversationId,
+                kind: 'goal',
+                status: 'running',
+                goal,
+                agentId: effectiveAgentConfig.id,
+                progress: resumeProgress
+                  ? { ...resumeProgress, goal, status: 'in_progress', completedAt: undefined, conversationId }
+                  : {
+                      goal,
+                      steps: [],
+                      currentStepIndex: 0,
+                      totalSteps: 0,
+                      status: 'in_progress',
+                      startedAt: Date.now(),
+                      conversationId,
+                    },
+                checkpoints: previousSnapshot?.checkpoints || [],
+                error: undefined,
+              })
+
+              void (async () => {
+                let progress: GoalProgress | null = resumeProgress || null
+                try {
+                  for await (const goalEvent of planner.run({ goal, maxSteps: automation.goal.maxSteps, timeout, autoAdjust: true }, resumeProgress || undefined)) {
+                    progress = applyGoalProgress(progress, goalEvent, conversationId)
+                    await getStorage().taskRuns.save({
+                      conversationId,
+                      kind: 'goal',
+                      status: goalEvent.type === 'done'
+                        ? (goalEvent.progress.status === 'completed' ? 'completed' : goalEvent.progress.status === 'cancelled' ? 'cancelled' : 'failed')
+                        : goalEvent.type === 'error' ? 'failed' : 'running',
+                      progress: progress || undefined,
+                      summary: goalEvent.type === 'summary' ? goalEvent.content : progress?.summary,
+                      error: goalEvent.type === 'error' ? goalEvent.error : undefined,
+                    })
+                    if (!win.isDestroyed()) {
+                      win.webContents.send(IPC.TASK_GOAL_STREAM, { ...goalEvent, conversationId })
+                    }
+                  }
+                } catch (error: any) {
+                  const message = error?.message ?? String(error)
+                  await getStorage().taskRuns.save({ conversationId, kind: 'goal', status: 'failed', progress: progress || undefined, error: message })
+                  if (!win.isDestroyed()) win.webContents.send(IPC.TASK_GOAL_STREAM, { type: 'error', error: message, conversationId })
+                } finally {
+                  if (activeBackgroundGoalPlanners.get(conversationId) === planner) {
+                    activeBackgroundGoalPlanners.delete(conversationId)
+                  }
                 }
-                if (event.type === 'summary') summary = event.content
-                if (event.type === 'error') throw new Error(event.error)
+              })()
+
+              return 'Goal accepted and running in the background. Its execution card and task-center status are authoritative; do not treat this acknowledgement as the final result.'
+            }
+          : undefined
+        const manageGoal = automation.goal.enabled
+          ? async (action: 'status' | 'pause' | 'resume' | 'cancel'): Promise<string> => {
+              const backgroundPlanner = activeBackgroundGoalPlanners.get(conversationId)
+              const foreground = await controlForegroundGoal(conversationId, action)
+              const snapshot = await getStorage().taskRuns.get(conversationId)
+
+              if (action === 'status') {
+                const status = foreground.status || snapshot?.status
+                if (!status) return 'There is no Goal task for this conversation.'
+                const completed = snapshot?.progress?.steps.filter((step) => step.status === 'completed').length || 0
+                const total = snapshot?.progress?.steps.length || 0
+                return `Goal status: ${status}. Progress: ${completed}/${total} steps completed.`
               }
-              return summary || 'Goal execution completed.'
+
+              if (foreground.handled) return `Goal task ${action === 'cancel' ? 'was cancelled' : action === 'pause' ? 'was paused' : 'is running again'}.`
+
+              if (action === 'pause' || action === 'cancel') {
+                if (!backgroundPlanner) return 'There is no active Goal task to control in this conversation.'
+                if (action === 'pause') {
+                  backgroundPlanner.pause()
+                  if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+                  return 'Goal task was paused after its current operation.'
+                }
+                backgroundPlanner.abort()
+                if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'cancelled' })
+                return 'Goal task was cancelled.'
+              }
+
+              if (action === 'resume') {
+                if (backgroundPlanner) {
+                  backgroundPlanner.resume()
+                  if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+                  return 'Goal task is running again.'
+                }
+                if (!snapshot || snapshot.kind !== 'goal' || !snapshot.goal) {
+                  return 'There is no saved Goal task to continue in this conversation.'
+                }
+                if (snapshot.status === 'completed') return 'This Goal has already completed. Start a follow-up Goal for additional work.'
+                if (!runGoal) return 'Goal execution is disabled for this agent.'
+                await runGoal(snapshot.goal, snapshot.progress)
+                return snapshot.progress?.steps.length
+                  ? 'Goal task resumed from its saved checkpoint; completed steps will be skipped.'
+                  : 'This older Goal has no saved plan, so it was restarted from the original request.'
+              }
+
+              return 'Goal control request was not recognized.'
             }
           : undefined
         const createExecutionPlan = automation.plan.enabled && automation.plan.autoInvoke
@@ -496,12 +669,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
           ) : undefined,
           runTask,
           runGoal,
+          manageGoal,
           createExecutionPlan,
           applySpecTemplate,
         })
         // A second send in the same chat replaces the prior run; other chats
         // retain their own runners and continue independently.
         activeRunners.get(conversationId)?.abort()
+        activeTaskRunners.get(conversationId)?.abort()
+        activeTaskRunners.delete(conversationId)
         activeRunners.set(conversationId, runner)
 
         // 6. Execute the ReAct loop and stream events
@@ -560,7 +736,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                   id: tc.id,
                   name: tc.name,
                   arguments: tc.arguments,
-                  result: result?.result,
+                  result: result ? compactToolResult(result.result) : undefined,
                   isError: result?.isError,
                 }
               })
@@ -584,7 +760,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             id: uuidv4(),
             conversationId,
             role: 'tool',
-            content: tr.result,
+            content: compactToolResult(tr.result),
             toolCallId: tr.toolCallId,
             agentId: agentConfig.id,
             agentName: agentConfig.name,
@@ -625,6 +801,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
   ipcMain.on(IPC.CHAT_ABORT, (_event, conversationId?: string) => {
     if (conversationId) {
       activeRunners.get(conversationId)?.abort()
+      activeTaskRunners.get(conversationId)?.abort()
+      activeBackgroundGoalPlanners.get(conversationId)?.abort()
+      activeTaskRunners.delete(conversationId)
     }
+  })
+
+  ipcMain.on(IPC.TASK_GOAL_ABORT, (_event, conversationId: string) => {
+    activeBackgroundGoalPlanners.get(conversationId)?.abort()
   })
 }

@@ -174,6 +174,7 @@ export class ContextManager {
     if (tools.some((tool) => tool.name === 'delegate_to_team')) internalCapabilities.push('Team orchestration: for complex work, call delegate_to_team directly. The team leader may compose task-scoped custom specialists when the saved agents do not fit; each gets isolated context, an appropriate configured model, and only allowed tools. Do not ask the user to switch modes.')
     if (tools.some((tool) => tool.name === 'run_task')) internalCapabilities.push('Task execution: call run_task for a bounded implementation or investigation that can be carried out by an isolated worker with the current permissions.')
     if (tools.some((tool) => tool.name === 'run_goal')) internalCapabilities.push('Goal execution: call run_goal for long-lived, measurable multi-step work that needs progress evaluation.')
+    if (tools.some((tool) => tool.name === 'manage_goal')) internalCapabilities.push('Goal control: call manage_goal to inspect, pause, continue, or cancel this conversation\'s Goal. Use it whenever the user asks to control Goal work; do not redirect them to Task Center as a substitute.')
     if (tools.some((tool) => tool.name === 'create_execution_plan')) internalCapabilities.push('Execution planning: call create_execution_plan when a structured plan is needed before work.')
     if (tools.some((tool) => tool.name === 'apply_spec_template')) internalCapabilities.push('Specification templates: call apply_spec_template when an existing template provides useful structure.')
     if (internalCapabilities.length) {

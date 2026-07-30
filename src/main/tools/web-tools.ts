@@ -12,6 +12,8 @@ const USER_AGENT = 'Eva AI Coding Agent/0.1'
 const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000
 const SEARCH_MIN_INTERVAL_MS = 250
 const SEARCH_MAX_RETRIES = 2
+const WEB_REQUEST_TIMEOUT_MS = 15_000
+const MAX_RESPONSE_BYTES = 2_000_000
 
 interface SearchResult {
   title: string
@@ -229,10 +231,21 @@ async function fetchPublicTextOnce(input: string, accept: string): Promise<strin
   let url = new URL(input)
   for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect += 1) {
     await validatePublicUrl(url)
-    const response = await net.fetch(url.toString(), {
-      redirect: 'manual',
-      headers: { Accept: accept, 'User-Agent': USER_AGENT },
-    })
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), WEB_REQUEST_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await net.fetch(url.toString(), {
+        redirect: 'manual',
+        headers: { Accept: accept, 'User-Agent': USER_AGENT },
+        signal: controller.signal,
+      })
+    } catch (error: any) {
+      if (controller.signal.aborted) throw new Error(`Web request timed out after ${WEB_REQUEST_TIMEOUT_MS / 1000} seconds.`)
+      throw error
+    } finally {
+      clearTimeout(timer)
+    }
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location')
       if (!location) throw new Error('The webpage redirected without a destination.')
@@ -246,9 +259,43 @@ async function fetchPublicTextOnce(input: string, accept: string): Promise<strin
         Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : undefined,
       )
     }
-    return (await response.text()).slice(0, 2_000_000)
+    return readResponseText(response, MAX_RESPONSE_BYTES)
   }
   throw new Error('The webpage redirected too many times.')
+}
+
+async function readResponseText(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new Error(`Web response is too large (max ${maxBytes} bytes).`)
+  }
+  if (!response.body) return ''
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    void reader.cancel()
+  }, WEB_REQUEST_TIMEOUT_MS)
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (timedOut) throw new Error(`Web request timed out after ${WEB_REQUEST_TIMEOUT_MS / 1000} seconds.`)
+      if (done) break
+      totalBytes += value.byteLength
+      if (totalBytes > maxBytes) {
+        await reader.cancel()
+        throw new Error(`Web response is too large (max ${maxBytes} bytes).`)
+      }
+      chunks.push(value)
+    }
+  } finally {
+    clearTimeout(timer)
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf-8')
 }
 
 class WebRequestError extends Error {

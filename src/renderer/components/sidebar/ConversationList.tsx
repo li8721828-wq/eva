@@ -4,7 +4,8 @@ import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
-import { AlertTriangle, Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, MessageSquare, Plus, Radio, Trash2 } from 'lucide-react'
+import { AlertTriangle, Archive, ArchiveRestore, FolderKanban, MessageSquare, Plus, Trash2 } from 'lucide-react'
+import { useAppStore } from '@/stores/use-app-store'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
@@ -28,8 +29,8 @@ function ConversationRow({ conversation, isSelected, archived = false, onSelect,
   return (
     <div
       className={cn(
-        'group flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-        isSelected ? 'bg-violet-100 text-violet-900' : 'text-zinc-600 hover:bg-zinc-200/70',
+        'group flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium leading-5 transition-colors',
+        isSelected ? 'bg-zinc-200/80 text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200/70',
         archived && 'text-zinc-500'
       )}
     >
@@ -70,11 +71,14 @@ export function ConversationList({ className }: ConversationListProps) {
   const { conversations, currentConversationId, createConversation, deleteConversation, archiveConversation, restoreConversation, selectConversation } = useChatStore()
   const {
     workspaces,
-    activeWorkspaceId,
     setActiveWorkspaceId,
   } = useWorkspaceStore()
+  const openTaskArtifacts = useAppStore((state) => state.openTaskArtifacts)
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
-  const [archivedOpen, setArchivedOpen] = useState(false)
+  const [channelsOpen, setChannelsOpen] = useState(true)
+  const [projectsOpen, setProjectsOpen] = useState(true)
+  const [globalTasksOpen, setGlobalTasksOpen] = useState(true)
+  const [archivedOpen, setArchivedOpen] = useState(true)
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null)
   const [qqStatus, setQqStatus] = useState<QqRemoteStatus>({ state: 'disabled', message: 'QQ remote control is disabled.' })
 
@@ -122,60 +126,72 @@ export function ConversationList({ className }: ConversationListProps) {
       <ScrollArea className={cn('flex-1', className)}>
       <div className="flex flex-col gap-3 px-4 py-4">
         <div>
-          <div className="flex items-center justify-between px-2 py-1 text-xs font-medium uppercase tracking-wider text-zinc-500">
+          <button
+            type="button"
+            onClick={() => setChannelsOpen((open) => !open)}
+            className="flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
+            aria-expanded={channelsOpen}
+          >
             <span>Channels</span>
             <span className={qqStatus.state === 'connected' ? 'text-emerald-600' : qqStatus.state === 'error' ? 'text-red-600' : 'text-zinc-400'}>
               {qqStatus.state === 'connected' ? 'Online' : qqStatus.state === 'connecting' ? 'Connecting' : 'Offline'}
             </span>
-          </div>
-          <div className="mt-1 rounded-lg bg-violet-50/60 p-1.5">
-            <div className="flex items-center gap-2 px-2.5 py-2 text-sm text-zinc-700">
-              <Radio className={`h-4 w-4 shrink-0 ${qqStatus.state === 'connected' ? 'text-violet-600' : 'text-zinc-400'}`} />
-              <span className="font-medium">QQ Remote</span>
-              <span className="ml-auto text-xs text-zinc-400">{channelConversations.length}</span>
+          </button>
+          {channelsOpen && (channelConversations.length > 0 ? (
+            <div className="mt-1 space-y-1">
+              {channelConversations.map((conversation) => (
+                <ConversationRow
+                  key={conversation.id}
+                  conversation={conversation}
+                  isSelected={currentConversationId === conversation.id}
+                  onSelect={(id) => void selectConversation(id)}
+                  onArchive={(id) => void archiveConversation(id)}
+                  onRestore={(id) => void restoreConversation(id)}
+                  onDelete={setConversationToDelete}
+                />
+              ))}
             </div>
-            {channelConversations.length > 0 ? (
-              <div className="space-y-1 px-1 pb-1">
-                {channelConversations.map((conversation) => (
-                  <ConversationRow
-                    key={conversation.id}
-                    conversation={conversation}
-                    isSelected={currentConversationId === conversation.id}
-                    onSelect={(id) => void selectConversation(id)}
-                    onArchive={(id) => void archiveConversation(id)}
-                    onRestore={(id) => void restoreConversation(id)}
-                    onDelete={setConversationToDelete}
-                  />
-                ))}
-              </div>
-            ) : (
-              <p className="px-9 pb-2 text-xs leading-5 text-zinc-400">
-                {qqStatus.state === 'connected' ? 'Waiting for a QQ message.' : 'Connect QQ Remote in Settings to receive messages.'}
-              </p>
-            )}
-          </div>
+          ) : (
+            <p className="px-3 py-1 text-xs leading-5 text-zinc-400">
+              {qqStatus.state === 'connected' ? 'Waiting for a QQ message.' : 'Connect QQ Remote in Settings to receive messages.'}
+            </p>
+          ))}
         </div>
 
-        <div className="px-2 text-xs font-medium uppercase tracking-wider text-zinc-500">Projects</div>
+        <button
+          type="button"
+          onClick={() => setProjectsOpen((open) => !open)}
+          className="w-full rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
+          aria-expanded={projectsOpen}
+        >
+          Projects
+        </button>
 
-        {workspaces.map((workspace) => {
+        {projectsOpen && workspaces.map((workspace) => {
           const workspaceConversations = projectConversations.filter((conversation) => belongsToWorkspace(conversation, workspace))
-          const isActive = activeWorkspaceId === workspace.id
           const isCollapsed = collapsedProjects.has(workspace.id)
 
           return (
-            <div key={workspace.id} className={cn('rounded-lg', isActive && 'bg-violet-50/70')}>
-              <div className="flex items-center gap-1 px-1 py-1.5">
+            <div key={workspace.id} className="rounded-lg">
+              <div className="flex h-9 items-center gap-1">
                 <button
                   type="button"
                   onClick={() => toggleProject(workspace.id)}
-                  className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-200/70"
+                  className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-md px-3 text-left text-sm font-medium leading-5 text-zinc-600 transition-colors hover:bg-zinc-200/70"
                 >
-                  {isCollapsed ? <ChevronRight className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
-                  <Folder className="h-4 w-4 shrink-0 text-violet-500" />
-                  <span className="truncate font-medium">{workspace.name}</span>
-                  <span className="ml-auto text-xs text-zinc-400">{workspaceConversations.length}</span>
+                  <span className="truncate">{workspace.name}</span>
+                  <span className="ml-auto text-xs leading-5 text-zinc-400">{workspaceConversations.length}</span>
                 </button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  onClick={() => openTaskArtifacts(workspace.id)}
+                  title={`View task artifacts for ${workspace.name}`}
+                  aria-label={`View task artifacts for ${workspace.name}`}
+                >
+                  <FolderKanban className="h-3.5 w-3.5" />
+                </Button>
                 <Button
                   variant="ghost"
                   size="icon"
@@ -189,7 +205,7 @@ export function ConversationList({ className }: ConversationListProps) {
               </div>
 
               {!isCollapsed && (
-                <div className="mb-2 space-y-1 px-3">
+                <div className="mb-2 ml-5 space-y-1">
                   {workspaceConversations.map((conversation) => (
                     <ConversationRow
                       key={conversation.id}
@@ -208,14 +224,21 @@ export function ConversationList({ className }: ConversationListProps) {
           )
         })}
 
-        {workspaces.length === 0 && (
+        {projectsOpen && workspaces.length === 0 && (
           <div className="px-3 py-6 text-sm leading-6 text-zinc-400">Add a project folder to organize conversations and permissions.</div>
         )}
 
         {unassigned.length > 0 && (
-          <div className="mt-2">
-            <div className="px-2 py-1 text-xs font-medium uppercase tracking-wider text-zinc-400">Global & Unassigned</div>
-            <div className="space-y-1">
+          <div>
+            <button
+              type="button"
+              onClick={() => setGlobalTasksOpen((open) => !open)}
+              className="w-full rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
+              aria-expanded={globalTasksOpen}
+            >
+              Global tasks
+            </button>
+            {globalTasksOpen && <div className="space-y-1">
               {unassigned.map((conversation) => (
                 <ConversationRow
                   key={conversation.id}
@@ -227,14 +250,18 @@ export function ConversationList({ className }: ConversationListProps) {
                   onDelete={setConversationToDelete}
                 />
               ))}
-            </div>
+            </div>}
           </div>
         )}
 
         {archivedConversations.length > 0 && (
-          <div className="mt-2 border-t border-zinc-200 pt-2">
-            <button type="button" onClick={() => setArchivedOpen((open) => !open)} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100">
-              {archivedOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <div>
+            <button
+              type="button"
+              onClick={() => setArchivedOpen((open) => !open)}
+              className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
+              aria-expanded={archivedOpen}
+            >
               Archived
               <span className="ml-auto text-zinc-400">{archivedConversations.length}</span>
             </button>

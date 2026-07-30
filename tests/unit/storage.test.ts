@@ -26,6 +26,7 @@ vi.mock('electron-store', () => {
 import { ConversationStore } from '../../src/main/storage/conversation-store'
 import { ActivityLogStore } from '../../src/main/storage/activity-log-store'
 import { AgentStore } from '../../src/main/storage/agent-store'
+import { TaskRunStore } from '../../src/main/storage/task-run-store'
 import { BUILT_IN_AGENTS } from '../../src/shared/constants'
 
 describe('ConversationStore', () => {
@@ -221,6 +222,29 @@ describe('ConversationStore', () => {
     expect(remaining.length).toBe(2)
     expect(remaining[0].content).toBe('Message 0')
     expect(remaining[1].content).toBe('Message 1')
+  })
+})
+
+describe('TaskRunStore', () => {
+  let store: TaskRunStore
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'eva-test-task-runs-'))
+    store = new TaskRunStore(tmpDir)
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('marks an unfinished run as interrupted after restart recovery', async () => {
+    await store.save({ conversationId: 'conversation-1', kind: 'goal', status: 'running' })
+    await store.markRunningAsInterrupted()
+
+    const snapshot = await store.get('conversation-1')
+    expect(snapshot?.status).toBe('interrupted')
+    expect(snapshot?.error).toContain('Eva was closed')
   })
 })
 

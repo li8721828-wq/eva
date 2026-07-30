@@ -33,6 +33,8 @@ export interface TeamOrchestratorConfig {
 export interface TeamRunParams {
   goal: string
   messages?: ChatMessage[]
+  /** Reuse the persisted plan so completed subtasks are never run again. */
+  plan?: TaskPlan
 }
 
 export class TeamOrchestrator {
@@ -42,6 +44,8 @@ export class TeamOrchestrator {
   private currentRunners: Map<string, AgentRunner> = new Map()
   private assignmentCursor: Map<string, number> = new Map()
   private dynamicWorkers: Map<string, AgentConfig> = new Map()
+  private feedback: Array<{ content: string; createdAt: number }> = []
+  private isPaused = false
 
   private static readonly MUTATING_TOOLS = new Set([
     'write_file',
@@ -80,9 +84,15 @@ export class TeamOrchestrator {
       // Step 1: Leader creates task plan
       yield { type: 'task_created', subtaskId: '' }
 
-      const plan = await this.createTaskPlan(params.goal, params.messages)
+      const plan = params.plan
+        ? {
+            ...params.plan,
+            status: 'in_progress' as TaskStatus,
+            subtasks: params.plan.subtasks.map((subtask) => ({ ...subtask, toolCalls: subtask.toolCalls ? [...subtask.toolCalls] : undefined })),
+          }
+        : await this.createTaskPlan(params.goal, params.messages)
       if (signal.aborted) {
-        yield { type: 'done' }
+        yield { type: 'done', cancelled: true }
         return
       }
 
@@ -90,12 +100,24 @@ export class TeamOrchestrator {
       this.registerDynamicWorkers(plan.dynamicAgents || [])
 
       // Step 2: Assign workers & execute
-      const completedResults = new Map<string, string>()
+      const completedResults = new Map(
+        plan.subtasks
+          .filter((subtask) => subtask.status === 'completed' && subtask.result)
+          .map((subtask) => [subtask.id, subtask.result!] as const)
+      )
 
       // Get execution order (batches based on dependencies)
-      const batches = this.getExecutionOrder(plan.subtasks)
+      const completedIds = plan.subtasks
+        .filter((subtask) => subtask.status === 'completed')
+        .map((subtask) => subtask.id)
+      const batches = this.getExecutionOrder(
+        plan.subtasks.filter((subtask) => subtask.status !== 'completed'),
+        completedIds,
+      )
 
       for (const batch of batches) {
+        if (signal.aborted) break
+        await this.waitForResume(signal)
         if (signal.aborted) break
 
         // Assign independently named workers and resolve the model that will
@@ -108,7 +130,7 @@ export class TeamOrchestrator {
           subtask.assignedProviderId = worker.providerId
           subtask.assignedModel = worker.model
           subtask.isDynamicAgent = Boolean(worker.taskScoped)
-          if (this.config.createWorkerConversation) {
+          if (this.config.createWorkerConversation && !subtask.agentConversationId) {
             subtask.agentConversationId = await this.config.createWorkerConversation(subtask, worker)
           }
           subtask.status = 'pending'
@@ -148,14 +170,20 @@ export class TeamOrchestrator {
       }
 
       if (signal.aborted) {
-        yield { type: 'done' }
+        yield { type: 'done', cancelled: true }
+        return
+      }
+
+      await this.waitForResume(signal)
+      if (signal.aborted) {
+        yield { type: 'done', cancelled: true }
         return
       }
 
       // Step 3: Leader summarizes
       const summary = await this.summarizeResults(plan, completedResults)
       if (signal.aborted) {
-        yield { type: 'done' }
+        yield { type: 'done', cancelled: true }
         return
       }
 
@@ -164,13 +192,14 @@ export class TeamOrchestrator {
       yield { type: 'done' }
     } catch (err: any) {
       if (signal.aborted) {
-        yield { type: 'done' }
+        yield { type: 'done', cancelled: true }
       } else {
         yield { type: 'error', error: err?.message ?? String(err) }
         yield { type: 'done' }
       }
     } finally {
       this.isRunning = false
+      this.isPaused = false
       this.abortController = null
       this.currentRunners.clear()
     }
@@ -188,6 +217,31 @@ export class TeamOrchestrator {
 
   get running(): boolean {
     return this.isRunning
+  }
+
+  /** Human guidance is shared with work that has not started yet. */
+  addFeedback(content: string): void {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    this.feedback = [...this.feedback.slice(-7), { content: trimmed, createdAt: Date.now() }]
+  }
+
+  pause(): void {
+    this.isPaused = true
+  }
+
+  resume(): void {
+    this.isPaused = false
+  }
+
+  get paused(): boolean {
+    return this.isPaused
+  }
+
+  private async waitForResume(signal: AbortSignal): Promise<void> {
+    while (this.isPaused && !signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+    }
   }
 
   private isReadOnlyWorker(worker: AgentConfig): boolean {
@@ -650,6 +704,8 @@ Rules:
 
 ${dependencyContext ? `**Dependency Results:**\n${dependencyContext}` : ''}
 
+${this.feedback.length > 0 ? `**User guidance received after the plan was created:**\n${this.feedback.map((item) => `- ${item.content}`).join('\n')}\nApply it where it affects your assigned work.` : ''}
+
 Please complete this task. Use the available tools as needed. When done, provide a clear summary of what was accomplished.
 
 **Important:** Focus only on this task. Do not modify files that are not related to this task.`
@@ -781,12 +837,11 @@ Provide a concise but comprehensive summary of what was accomplished, any issues
    * Topological sort: returns batches of subtasks that can run in parallel.
    * Each batch must wait for the previous batch to complete.
    */
-  private getExecutionOrder(subtasks: SubTask[]): SubTask[][] {
-    const subtaskMap = new Map(subtasks.map((s) => [s.id, s]))
-    const visited = new Set<string>()
+  private getExecutionOrder(subtasks: SubTask[], completedIds: Iterable<string> = []): SubTask[][] {
+    const visited = new Set<string>(completedIds)
     const batches: SubTask[][] = []
 
-    while (visited.size < subtasks.length) {
+    while (subtasks.some((subtask) => !visited.has(subtask.id))) {
       const batch: SubTask[] = []
 
       for (const subtask of subtasks) {

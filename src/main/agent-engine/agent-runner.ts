@@ -25,6 +25,7 @@ export interface AgentRunnerConfig {
   delegateToTeam?: (goal: string) => Promise<string>
   runTask?: (task: string) => Promise<string>
   runGoal?: (goal: string) => Promise<string>
+  manageGoal?: (action: 'status' | 'pause' | 'resume' | 'cancel') => Promise<string>
   createExecutionPlan?: (goal: string) => Promise<string>
   applySpecTemplate?: (templateId: string, parameters: Record<string, string>) => Promise<string>
 }
@@ -77,6 +78,17 @@ const GOAL_TOOL: ToolDefinition = {
   name: 'run_goal',
   description: 'Run a long-lived goal through Eva\'s internal goal planner. Use when the task requires a measurable multi-step outcome with progress evaluation and adaptation.',
   parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Concrete outcome to achieve.' } }, required: ['goal'] },
+}
+const GOAL_CONTROL_TOOL: ToolDefinition = {
+  name: 'manage_goal',
+  description: 'Inspect or control the current conversation\'s Goal task. Use this when the user asks to check progress, pause, continue, or stop a Goal. Never claim a Goal was controlled without using this tool.',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: { type: 'string', enum: ['status', 'pause', 'resume', 'cancel'], description: 'The Goal control action to perform.' },
+    },
+    required: ['action'],
+  },
 }
 const TASK_TOOL: ToolDefinition = {
   name: 'run_task',
@@ -133,6 +145,7 @@ export class AgentRunner {
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
         ...(this.config.runTask ? [TASK_TOOL] : []),
         ...(this.config.runGoal ? [GOAL_TOOL] : []),
+        ...(this.config.manageGoal ? [GOAL_CONTROL_TOOL] : []),
         ...(this.config.createExecutionPlan ? [PLAN_TOOL] : []),
         ...(this.config.applySpecTemplate ? [SPEC_TOOL] : []),
       ]
@@ -158,6 +171,10 @@ export class AgentRunner {
           }
       const allHistory = [...params.messages, userMessage]
       const hasImageInput = allHistory.some((message) => message.images?.some((image) => Boolean(image.dataUrl)))
+      // Repeated read-only requests are common when a model re-evaluates a tool
+      // result. Reuse the result during one ReAct run instead of re-reading the
+      // same file/page/search result over and over.
+      const readOnlyToolCache = new Map<string, CompletedToolResult>()
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -230,7 +247,11 @@ export class AgentRunner {
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
           }
-          const result = await this.executeTool(toolCall, toolContext)
+          const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
+          const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
+          const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
+          const result = cached || await this.executeTool(toolCall, toolContext)
+          if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           toolResults.set(toolCall.id, result)
 
           // Emit tool_result event
@@ -407,6 +428,18 @@ export class AgentRunner {
       const goal = typeof toolCall.arguments.goal === 'string' ? toolCall.arguments.goal.trim() : ''
       if (!goal) return { result: 'Error: run_goal requires a non-empty goal.', isError: true }
       try { return { result: await this.config.runGoal(goal), isError: false } } catch (error: any) { return { result: `Error: Goal execution failed: ${error?.message ?? String(error)}`, isError: true } }
+    }
+
+    if (toolCall.name === GOAL_CONTROL_TOOL.name && this.config.manageGoal) {
+      const action = typeof toolCall.arguments.action === 'string' ? toolCall.arguments.action : ''
+      if (action !== 'status' && action !== 'pause' && action !== 'resume' && action !== 'cancel') {
+        return { result: 'Error: manage_goal requires action to be status, pause, resume, or cancel.', isError: true }
+      }
+      try {
+        return { result: await this.config.manageGoal(action), isError: false }
+      } catch (error: any) {
+        return { result: `Error: Goal control failed: ${error?.message ?? String(error)}`, isError: true }
+      }
     }
 
     if (toolCall.name === PLAN_TOOL.name && this.config.createExecutionPlan) {

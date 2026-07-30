@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
+import { useChatStore } from '@/stores/use-chat-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Plus, X, Terminal, PanelBottomClose, ListTree } from 'lucide-react'
@@ -8,6 +9,7 @@ import { ActivityPanel } from '@/components/activity/ActivityPanel'
 interface TerminalTab {
   id: string
   title: string
+  cwd: string
 }
 
 export interface TerminalPanelProps {
@@ -16,20 +18,28 @@ export interface TerminalPanelProps {
 
 export function TerminalPanel({ className }: TerminalPanelProps) {
   const { workspacePath, toggleTerminal } = useAppStore()
+  const { conversations, currentConversationId } = useChatStore()
+  const conversationWorkspacePath = conversations.find((conversation) => conversation.id === currentConversationId)?.workspacePath
+  const terminalWorkspacePath = conversationWorkspacePath || workspacePath || process.cwd?.() || '.'
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeTab, setActiveTab] = useState<string>('')
   const [output, setOutput] = useState<Record<string, string[]>>({})
   const [activeView, setActiveView] = useState<'terminal' | 'activity'>('terminal')
   const outputRef = useRef<HTMLDivElement>(null)
-  const initializedRef = useRef(false)
 
-  // Create initial terminal tag
+  // A terminal belongs to the selected conversation's workspace. Switching
+  // conversations activates an existing matching tab or opens one for it.
   useEffect(() => {
-    if (tabs.length === 0 && !initializedRef.current) {
-      initializedRef.current = true
-      createTerminal()
+    const matchingTab = tabs.find((tab) => tab.cwd === terminalWorkspacePath)
+    if (matchingTab) {
+      setActiveTab(matchingTab.id)
+    } else {
+      void createTerminal()
     }
-  }, [])
+    // tabs are intentionally read from the render that saw the workspace
+    // change; adding a tab must not trigger another terminal creation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalWorkspacePath])
 
   // Listen for terminal output
   useEffect(() => {
@@ -52,11 +62,12 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
 
   const createTerminal = async () => {
     const id = `term-${Date.now()}`
-    const title = `Terminal ${tabs.length + 1}`
-    setTabs((prev) => [...prev, { id, title }])
+    const workspaceName = terminalWorkspacePath.split(/[\\/]/).filter(Boolean).pop() || 'Terminal'
+    const title = `${workspaceName} ${tabs.length + 1}`
+    setTabs((prev) => [...prev, { id, title, cwd: terminalWorkspacePath }])
     setActiveTab(id)
     try {
-      await window.eva.terminal.create(id, workspacePath || process.cwd?.() || '.')
+      await window.eva.terminal.create(id, terminalWorkspacePath)
     } catch (err) {
       console.error('Failed to create terminal:', err)
     }

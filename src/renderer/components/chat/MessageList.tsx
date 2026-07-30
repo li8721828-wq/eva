@@ -12,6 +12,20 @@ import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
 
 const PAGE_SIZE = 100
+const conversationScrollOffsets = new Map<string, number>()
+const SCROLL_FOLLOW_THRESHOLD = 72
+const SMOOTH_SPIN_CLASS = 'animate-spin'
+
+function GoalMark() {
+  return (
+    <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-600" aria-hidden="true">
+      <span className="absolute h-5 w-5 rounded-full border border-violet-300/90" />
+      <span className="relative z-10 h-2.5 w-2.5 rounded-full bg-violet-600 shadow-[0_0_0_2px_rgba(221,214,254,0.9)]" />
+      <span className="absolute left-[5px] top-[7px] h-1.5 w-1.5 rounded-full border border-violet-300 bg-white shadow-sm" />
+      <span className="absolute bottom-[5px] right-[6px] h-1.5 w-1.5 rounded-full border border-violet-300 bg-white shadow-sm" />
+    </div>
+  )
+}
 
 export interface MessageListProps {
   className?: string
@@ -21,9 +35,13 @@ export function MessageList({ className }: MessageListProps) {
   const { messages, currentConversationId, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
   const { rightPanelVisible } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
+  const goalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] : undefined)
+  const hasGoalProgress = Boolean(goalTask?.progress?.conversationId === currentConversationId)
+  const isGoalRunning = Boolean(goalTask?.isRunning)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const previousMessagesRef = useRef(messages)
-  const pendingConversationScrollRef = useRef(true)
+  const pendingRestoreRef = useRef<string | null>(currentConversationId)
+  const followStreamRef = useRef(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   const scrollToBottom = (behavior: ScrollBehavior) => {
@@ -33,6 +51,20 @@ export function MessageList({ className }: MessageListProps) {
     return true
   }
 
+  const saveScrollPosition = () => {
+    const scrollArea = scrollAreaRef.current
+    if (!currentConversationId || !scrollArea) return
+    conversationScrollOffsets.set(currentConversationId, scrollArea.scrollTop)
+  }
+
+  const handleScroll = () => {
+    const scrollArea = scrollAreaRef.current
+    if (!scrollArea) return
+
+    saveScrollPosition()
+    followStreamRef.current = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight <= SCROLL_FOLLOW_THRESHOLD
+  }
+
   // Reset visible count when conversation changes (message count drops)
   useEffect(() => {
     if (messages.length < visibleCount) {
@@ -40,42 +72,92 @@ export function MessageList({ className }: MessageListProps) {
     }
   }, [messages.length])
 
-  // Only render the most recent messages for performance
+  // Tool-role messages are retained for a valid model tool-call history, but
+  // their full output is already available from the preceding tool card.
+  // Rendering them as chat bubbles duplicates large search/page results.
   const visibleMessages = useMemo(() => {
-    if (messages.length <= visibleCount) return messages
-    return messages.slice(messages.length - visibleCount)
+    const recentMessages = messages.length <= visibleCount
+      ? messages
+      : messages.slice(messages.length - visibleCount)
+    return recentMessages.filter((message) => message.role !== 'tool')
   }, [messages, visibleCount])
 
   const hasMore = messages.length > visibleCount
+  const goalInsertAfterIndex = useMemo(() => {
+    if (!hasGoalProgress || !goalTask?.progress) return -1
+
+    let index = -1
+    for (let messageIndex = 0; messageIndex < visibleMessages.length; messageIndex += 1) {
+      if (visibleMessages[messageIndex].timestamp <= goalTask.progress.startedAt) {
+        index = messageIndex
+      }
+    }
+    return index
+  }, [goalTask?.progress, hasGoalProgress, visibleMessages])
+
+  const goalCard = hasGoalProgress ? (
+    <article className="flex items-start gap-3">
+      <GoalMark />
+      <GoalExecutionCard conversationId={currentConversationId} />
+    </article>
+  ) : null
 
   useLayoutEffect(() => {
-    // A selected conversation loads asynchronously. Its first message render
-    // must jump straight to the saved position rather than replay a scroll.
-    pendingConversationScrollRef.current = true
-    scrollAreaRef.current?.scrollTo({ top: 0, behavior: 'auto' })
+    // Capture the outgoing conversation before its scroll area unmounts.
+    return () => saveScrollPosition()
   }, [currentConversationId])
+
+  useLayoutEffect(() => {
+    pendingRestoreRef.current = currentConversationId
+  }, [currentConversationId])
+
+  useLayoutEffect(() => {
+    const conversationId = pendingRestoreRef.current
+    const scrollArea = scrollAreaRef.current
+    if (!conversationId || conversationId !== currentConversationId || !scrollArea) return
+
+    // Conversation messages arrive asynchronously. Wait until the scrollable
+    // surface exists, then restore the saved reading position in one frame.
+    const savedOffset = conversationScrollOffsets.get(conversationId)
+    const frame = requestAnimationFrame(() => {
+      const area = scrollAreaRef.current
+      if (!area || pendingRestoreRef.current !== conversationId) return
+
+      if (savedOffset === undefined) {
+        area.scrollTop = area.scrollHeight
+      } else {
+        area.scrollTop = Math.min(savedOffset, Math.max(0, area.scrollHeight - area.clientHeight))
+      }
+
+      followStreamRef.current = area.scrollHeight - area.scrollTop - area.clientHeight <= SCROLL_FOLLOW_THRESHOLD
+      previousMessagesRef.current = messages
+      pendingRestoreRef.current = null
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [currentConversationId, messages])
 
   useLayoutEffect(() => {
     if (previousMessagesRef.current === messages) return
 
-    if (!scrollToBottom(pendingConversationScrollRef.current ? 'auto' : 'smooth')) return
-    pendingConversationScrollRef.current = false
     previousMessagesRef.current = messages
+    if (pendingRestoreRef.current === currentConversationId || !followStreamRef.current) return
+    scrollToBottom('smooth')
   }, [messages])
 
   useEffect(() => {
-    if (isStreaming) scrollToBottom('smooth')
+    if (isStreaming && followStreamRef.current) scrollToBottom('smooth')
   }, [isStreaming, streamingContent, streamingToolCalls])
 
-  if (messages.length === 0 && !isStreaming && !isTeamRunning) {
+  if (messages.length === 0 && !isStreaming && !isTeamRunning && !hasGoalProgress) {
     return <WelcomeScreen className={className} />
   }
 
   return (
-    <ScrollArea ref={scrollAreaRef} className={cn('flex-1', className)}>
+    <ScrollArea ref={scrollAreaRef} onScroll={handleScroll} className={cn('flex-1', className)}>
       <div
         className={cn(
-          'flex w-full flex-col space-y-7 px-12 py-8',
+          'flex w-full flex-col space-y-9 px-12 py-10',
           rightPanelVisible && 'mx-auto max-w-4xl'
         )}
       >
@@ -91,20 +173,25 @@ export function MessageList({ className }: MessageListProps) {
           </div>
         )}
 
-        {visibleMessages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
+        {goalCard && goalInsertAfterIndex === -1 && goalCard}
+
+        {visibleMessages.map((msg, index) => (
+          <React.Fragment key={msg.id}>
+            <MessageBubble message={msg} />
+            {goalCard && index === goalInsertAfterIndex && goalCard}
+          </React.Fragment>
         ))}
 
         {isStreaming && (
           <div className="flex items-center gap-2 px-0 py-1 text-sm text-zinc-500">
-            <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+            <Loader2 className={cn('h-4 w-4 text-violet-500', SMOOTH_SPIN_CLASS)} />
             <span>{streamingStatus || 'Working...'}</span>
           </div>
         )}
 
         {isTeamRunning && (
           <div className="flex items-center gap-2 px-0 py-1 text-sm text-zinc-500">
-            <Loader2 className="h-4 w-4 animate-spin text-violet-500" />
+            <Loader2 className={cn('h-4 w-4 text-violet-500', SMOOTH_SPIN_CLASS)} />
             <span>Expert Team is planning and assigning work...</span>
           </div>
         )}
@@ -118,18 +205,20 @@ export function MessageList({ className }: MessageListProps) {
           </div>
         )}
 
-        <GoalExecutionCard conversationId={currentConversationId} />
-
-        {/* Streaming text indicator */}
+        {/* Render the in-flight Markdown through the same assistant-message surface.
+            ReactMarkdown tolerates incomplete syntax and progressively settles as
+            subsequent chunks arrive. */}
         {isStreaming && streamingContent && (
-          <div className="flex items-start gap-3">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600 text-xs">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            </div>
-            <div className="max-w-[78%] rounded-2xl rounded-tl-sm border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm leading-relaxed text-zinc-700 whitespace-pre-wrap shadow-sm">
-              {streamingContent}
-            </div>
-          </div>
+          <MessageBubble
+            isStreaming
+            message={{
+              id: `streaming-${currentConversationId || 'message'}`,
+              conversationId: currentConversationId || '',
+              role: 'assistant',
+              content: streamingContent,
+              timestamp: Date.now(),
+            }}
+          />
         )}
       </div>
     </ScrollArea>

@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
 import type { Conversation, ChatImageAttachment, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
-import type { TeamEvent, GoalConfig, GoalProgress } from '../shared/types/task'
+import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
@@ -58,15 +58,21 @@ export interface EvaAPI {
 
   // 任务（Expert 模式）
   task: {
-    start(conversationId: string, goal: string): Promise<void>
+    start(conversationId: string, goal: string, resume?: boolean): Promise<void>
     onStream(callback: EventCallback<TeamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
     getStatus(conversationId: string): Promise<string>
+    getSnapshot(conversationId: string): Promise<TaskRunSnapshot | null>
+    listArtifacts(workspaceId: string): Promise<TaskArtifactRun[]>
+    addFeedback(conversationId: string, content: string, checkpointId?: string, pauseAfterCurrentOperation?: boolean): Promise<TaskFeedback>
+    /** True when an already-running planner was resumed in this process. */
+    resumeFromCheckpoint(conversationId: string): Promise<boolean>
+    resume(run: Pick<TaskArtifactRun, 'conversationId' | 'kind' | 'goal' | 'agentId'>): Promise<void>
   }
 
   // Goal 模式
   goal: {
-    start(payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string }): void
+    start(payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string; resume?: boolean }): void
     onStream(callback: EventCallback<GoalEvent>): Unsubscribe
     abort(conversationId: string): void
     pause(conversationId: string): void
@@ -187,8 +193,8 @@ const evaAPI: EvaAPI = {
 
   // 任务（Expert 模式）
   task: {
-    start: (conversationId, goal) => {
-      ipcRenderer.send(IPC.TASK_START, { conversationId, goal })
+    start: (conversationId, goal, resume) => {
+      ipcRenderer.send(IPC.TASK_START, { conversationId, goal, resume })
       return Promise.resolve()
     },
     onStream: (callback) => onStream(IPC.TASK_STREAM, callback),
@@ -197,6 +203,18 @@ const evaAPI: EvaAPI = {
       return Promise.resolve()
     },
     getStatus: (conversationId) => ipcRenderer.invoke(IPC.TASK_STATUS, conversationId),
+    getSnapshot: (conversationId) => ipcRenderer.invoke(IPC.TASK_SNAPSHOT, conversationId),
+    listArtifacts: (workspaceId) => ipcRenderer.invoke(IPC.TASK_ARTIFACTS_LIST, workspaceId),
+    addFeedback: (conversationId, content, checkpointId, pauseAfterCurrentOperation) => ipcRenderer.invoke(IPC.TASK_FEEDBACK_ADD, { conversationId, content, checkpointId, pauseAfterCurrentOperation }),
+    resumeFromCheckpoint: (conversationId) => ipcRenderer.invoke(IPC.TASK_CHECKPOINT_RESUME, conversationId),
+    resume: (run) => {
+      if (run.kind === 'expert') {
+        ipcRenderer.send(IPC.TASK_START, { conversationId: run.conversationId, goal: run.goal, resume: true })
+      } else {
+        ipcRenderer.send(IPC.TASK_GOAL_START, { goal: run.goal, conversationId: run.conversationId, agentId: run.agentId, resume: true })
+      }
+      return Promise.resolve()
+    },
   },
 
   // Goal 模式

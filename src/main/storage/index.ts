@@ -8,6 +8,7 @@ import { WorkspaceStore } from './workspace-store'
 import { ActivityLogStore } from './activity-log-store'
 import { QqRemoteStore } from './qq-remote-store'
 import { PluginStore } from './plugin-store'
+import { TaskRunStore } from './task-run-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -17,6 +18,7 @@ export class StorageManager {
   activity: ActivityLogStore
   qqRemote: QqRemoteStore
   plugins: PluginStore
+  taskRuns: TaskRunStore
 
   private userDataPath: string
 
@@ -31,6 +33,7 @@ export class StorageManager {
     this.activity = new ActivityLogStore(this.userDataPath)
     this.qqRemote = new QqRemoteStore()
     this.plugins = new PluginStore()
+    this.taskRuns = new TaskRunStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {
@@ -47,6 +50,7 @@ export class StorageManager {
 
     // Initialize built-in agents on first launch
     await this.agents.initializeBuiltInAgents()
+    await this.taskRuns.markRunningAsInterrupted()
 
     // Preserve the pre-project single workspace as the first project workspace.
     const legacyWorkspacePath = this.config.get('workspacePath')

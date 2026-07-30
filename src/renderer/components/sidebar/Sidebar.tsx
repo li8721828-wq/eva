@@ -4,10 +4,9 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
-import { Separator } from '@/components/ui/Separator'
 import { ConversationList } from './ConversationList'
 import { ModeSelector } from './ModeSelector'
-import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus, ShieldAlert } from 'lucide-react'
+import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus } from 'lucide-react'
 import evaMark from '@/assets/eva-mark.svg'
 
 export interface SidebarProps {
@@ -18,12 +17,10 @@ export function Sidebar({ className }: SidebarProps) {
   const { sidebarCollapsed, toggleSidebar, setSettingsOpen, agentManagerOpen, setAgentManagerOpen } =
     useAppStore()
   const { createConversation } = useChatStore()
-  const { addWorkspace, addWorkspaceAtPath, activeWorkspaceId, workspaces } = useWorkspaceStore()
+  const { addWorkspace, addWorkspaceAtPath } = useWorkspaceStore()
   const [isDraggingFolder, setIsDraggingFolder] = useState(false)
   const [dropMessage, setDropMessage] = useState<string | null>(null)
   const dragDepth = useRef(0)
-
-  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
 
   const isFileDrag = (event: React.DragEvent) => Array.from(event.dataTransfer.types).includes('Files')
 
@@ -103,11 +100,8 @@ export function Sidebar({ className }: SidebarProps) {
         <Button variant="ghost" size="icon" onClick={toggleSidebar} title="Expand sidebar">
           <PanelLeft className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="New conversation" onClick={() => createConversation()}>
+        <Button variant="ghost" size="icon" title="New global task" onClick={() => createConversation(undefined, 'normal', null)}>
           <Plus className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" title="New global conversation (full filesystem access)" onClick={() => createConversation(undefined, 'normal', null)}>
-          <ShieldAlert className="h-4 w-4 text-amber-600" />
         </Button>
         <Button variant="ghost" size="icon" title="Add project folder" onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />
@@ -163,24 +157,16 @@ export function Sidebar({ className }: SidebarProps) {
         </div>
       </div>
 
-      {/* Workspace actions */}
+      {/* Global actions. Workspace conversations are created from each project's + button. */}
       <div className="space-y-2 px-4 py-4">
-        <Button
-          variant="outline"
-          className="h-10 w-full justify-start gap-2.5 px-3"
-          onClick={() => createConversation()}
-        >
-          <Plus className="h-4 w-4" />
-          <span className="truncate">{activeWorkspace ? `New: ${activeWorkspace.name}` : 'New Conversation'}</span>
-        </Button>
         <Button
           variant="ghost"
           size="sm"
-          className="h-9 w-full justify-start gap-2.5 px-3 text-amber-700 hover:text-amber-800"
+          className="h-9 w-full justify-start gap-2.5 px-3"
           onClick={() => createConversation(undefined, 'normal', null)}
         >
-          <ShieldAlert className="h-4 w-4" />
-          New Global Conversation
+          <Plus className="h-4 w-4" />
+          <span>New global task</span>
         </Button>
         <Button variant="ghost" size="sm" className="h-9 w-full justify-start gap-2.5 px-3" onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />
@@ -189,22 +175,16 @@ export function Sidebar({ className }: SidebarProps) {
         {dropMessage && <p className="px-3 pt-1 text-xs leading-5 text-zinc-500">{dropMessage}</p>}
       </div>
 
-      <Separator />
-
       {/* Conversation list */}
       <ConversationList className="flex-1" />
 
-      <Separator />
-
       {/* Bottom section: Mode + Settings */}
-      <div className="p-3">
+      <div className="px-3 pb-2 pt-4">
         <div className="px-3 pb-2 text-xs font-medium text-zinc-500 uppercase tracking-wider">Mode</div>
         <ModeSelector />
       </div>
 
-      <Separator />
-
-      <div className="p-3">
+      <div className="px-3 pb-3 pt-1">
         <Button
           variant="ghost"
           size="sm"
