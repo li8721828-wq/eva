@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
 export interface TeamOrchestratorConfig {
+  conversationId?: string
   leader: AgentConfig
   workers: AgentConfig[]
   /** Resolves each agent's saved model connection at execution time. */
@@ -668,6 +669,7 @@ Rules:
     }
 
     const runner = new AgentRunner({
+      conversationId: this.config.conversationId,
       agentConfig: worker,
       provider,
       toolRegistry: this.config.toolRegistry,

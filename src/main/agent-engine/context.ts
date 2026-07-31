@@ -184,6 +184,7 @@ export class ContextManager {
     parts.push('Each agent can have its own permitted tools and candidate model connections. The runtime chooses only from that agent\'s configured candidates; a connection hidden from the chat picker can still be assigned to an agent.')
     parts.push('Never claim that Eva lacks a capability without checking the tools and permissions listed below. State only the capabilities currently available to this agent.')
     parts.push('Report tool failures and unavailable capabilities plainly. Never claim to have searched the web, read or written files, executed a command, or completed delegated work unless the corresponding tool result confirms it.')
+    parts.push('Tools are atomic operations, not workflow controllers. Choose the tool sequence yourself from the task and previous evidence. Use project metadata only as an optional candidate locator; use search_code for exact or broad occurrence coverage and read_file for source evidence. Do not treat any index result as a conclusion.')
     parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
     if (agentConfig.modelCandidates?.length) {
       parts.push(`Candidate models for delegated work: ${agentConfig.modelCandidates.map((candidate) => `${candidate.providerId}/${candidate.model}`).join(', ')}`)

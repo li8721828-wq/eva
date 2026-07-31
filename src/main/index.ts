@@ -10,6 +10,7 @@ import { providerRegistry } from './providers'
 import { setupGlobalErrorHandlers } from './utils/error-handler'
 import { QqRemoteBridge } from './services/qq-remote-bridge'
 import { registerQqRemoteHandlers } from './ipc/qq-remote'
+import { ProjectIndexService } from './services/project-index-service'
 
 // Set up global error handlers before anything else
 setupGlobalErrorHandlers()
@@ -27,9 +28,10 @@ app.whenReady().then(async () => {
   // 2. Instantiate core services
   const fileService = new FileServiceImpl()
   const terminalService = new TerminalServiceImpl()
+  const projectIndexService = new ProjectIndexService(getStorage().projectIndexes, getStorage().workspaces)
 
   // 3. Create and populate tool registry
-  const toolRegistry = createToolRegistry()
+  const toolRegistry = createToolRegistry(projectIndexService)
 
   // 4. Load provider configs and register providers
   const providerConfigs = getStorage().config.getProviders()
@@ -54,6 +56,7 @@ app.whenReady().then(async () => {
     terminalService,
     toolRegistry,
     providerRegistry,
+    projectIndexService,
   })
 
   const qqRemoteBridge = new QqRemoteBridge({
@@ -69,6 +72,9 @@ app.whenReady().then(async () => {
 
   // 7. Create the main window
   mainWindow = createMainWindow()
+
+  // Index metadata in the background. Subsequent edits update only changed files.
+  void projectIndexService.bootstrap(await getStorage().workspaces.list())
 
   // Start work that was queued before execution began after the renderer has
   // had a chance to subscribe to task streams. Interrupted work remains in

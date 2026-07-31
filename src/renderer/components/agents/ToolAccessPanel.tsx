@@ -1,5 +1,7 @@
-import { Boxes, Globe2, HardDrive, Search, TerminalSquare } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Boxes, CheckCircle2, Globe2, HardDrive, Search, TerminalSquare, TriangleAlert } from 'lucide-react'
 import { TOOL_CATALOG, type ToolCatalogEntry } from '../../../shared/tool-catalog'
+import { isSearchProviderPluginId, type InstalledPlugin } from '../../../shared/types/plugin'
 import { cn } from '@/lib/utils'
 
 const categoryIcons = {
@@ -31,6 +33,17 @@ export interface ToolAccessPanelProps {
 }
 
 export function ToolAccessPanel({ tools, onChange, disabled = false }: ToolAccessPanelProps) {
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([])
+
+  useEffect(() => {
+    void window.eva.plugins.list().then(setPlugins).catch((error) => console.error('Failed to load search service status:', error))
+  }, [])
+
+  const searchProvider = useMemo(
+    () => plugins.find((plugin) => plugin.enabled && isSearchProviderPluginId(plugin.id)) ?? null,
+    [plugins]
+  )
+
   const toggle = (toolId: string) => {
     if (disabled) return
     onChange(tools.includes(toolId) ? tools.filter((tool) => tool !== toolId) : [...tools, toolId])
@@ -79,6 +92,17 @@ export function ToolAccessPanel({ tools, onChange, disabled = false }: ToolAcces
                         <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', riskStyles[tool.risk])}>{riskLabels[tool.risk]}</span>
                       </span>
                       <span className="mt-1 block text-xs leading-4 text-zinc-500">{tool.description}</span>
+                      {tool.id === 'web_search' && (
+                        <span className={cn(
+                          'mt-2 flex items-center gap-1.5 text-[11px] leading-4',
+                          searchProvider ? 'text-emerald-700' : 'text-amber-700'
+                        )}>
+                          {searchProvider ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <TriangleAlert className="h-3.5 w-3.5 shrink-0" />}
+                          {searchProvider
+                            ? `Search service ready: ${searchProvider.name}`
+                            : 'No search service is active. Configure Brave, Tavily, or SearXNG in Settings > Plugins.'}
+                        </span>
+                      )}
                     </span>
                   </label>
                 )

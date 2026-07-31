@@ -39,7 +39,7 @@ export function MessageList({ className }: MessageListProps) {
   const hasGoalProgress = Boolean(goalTask?.progress?.conversationId === currentConversationId)
   const isGoalRunning = Boolean(goalTask?.isRunning)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
-  const previousMessagesRef = useRef(messages)
+  const previousMessageCountRef = useRef(messages.length)
   const pendingRestoreRef = useRef<string | null>(currentConversationId)
   const followStreamRef = useRef(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -109,6 +109,7 @@ export function MessageList({ className }: MessageListProps) {
 
   useLayoutEffect(() => {
     pendingRestoreRef.current = currentConversationId
+    previousMessageCountRef.current = 0
   }, [currentConversationId])
 
   useLayoutEffect(() => {
@@ -130,23 +131,33 @@ export function MessageList({ className }: MessageListProps) {
       }
 
       followStreamRef.current = area.scrollHeight - area.scrollTop - area.clientHeight <= SCROLL_FOLLOW_THRESHOLD
-      previousMessagesRef.current = messages
+      previousMessageCountRef.current = messages.length
       pendingRestoreRef.current = null
     })
 
     return () => cancelAnimationFrame(frame)
-  }, [currentConversationId, messages])
+  }, [currentConversationId, messages.length])
 
   useLayoutEffect(() => {
-    if (previousMessagesRef.current === messages) return
+    const previousMessageCount = previousMessageCountRef.current
+    previousMessageCountRef.current = messages.length
 
-    previousMessagesRef.current = messages
-    if (pendingRestoreRef.current === currentConversationId || !followStreamRef.current) return
-    scrollToBottom('smooth')
-  }, [messages])
+    // Persisted conversation refreshes replace the array even when no message
+    // was added. Only follow genuine new messages, and never pull a reader
+    // away from the position they intentionally scrolled to.
+    if (
+      pendingRestoreRef.current === currentConversationId ||
+      messages.length <= previousMessageCount ||
+      !followStreamRef.current
+    ) return
+
+    scrollToBottom('auto')
+  }, [currentConversationId, messages])
 
   useEffect(() => {
-    if (isStreaming && followStreamRef.current) scrollToBottom('smooth')
+    // Streaming updates can arrive many times per second. An immediate follow
+    // keeps the newest content visible without replaying a long smooth scroll.
+    if (isStreaming && followStreamRef.current) scrollToBottom('auto')
   }, [isStreaming, streamingContent, streamingToolCalls])
 
   if (messages.length === 0 && !isStreaming && !isTeamRunning && !hasGoalProgress) {

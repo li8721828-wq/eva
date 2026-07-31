@@ -40,7 +40,8 @@ interface PendingTaskJob extends TaskQueueJob {
 export class TaskExecutionQueue {
   private readonly pending: PendingTaskJob[] = []
   private readonly running = new Map<string, PendingTaskJob>()
-  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly retryTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; job: PendingTaskJob }>()
+  private readonly cancellationRequested = new Set<string>()
 
   constructor(
     private readonly maxConcurrent = 2,
@@ -79,10 +80,20 @@ export class TaskExecutionQueue {
         cancelled = true
       }
     }
-    for (const [timerId, timer] of this.retryTimers) {
+    for (const [timerId, entry] of this.retryTimers) {
       if (!id || timerId === id) {
-        clearTimeout(timer)
+        clearTimeout(entry.timer)
         this.retryTimers.delete(timerId)
+        void this.notify(entry.job, 'cancelled')
+        cancelled = true
+      }
+    }
+    for (const [runningId] of this.running) {
+      if (!id || runningId === id) {
+        // The task owner is responsible for aborting its planner. Keeping this
+        // marker prevents a late successful return from reviving a task the
+        // user has explicitly stopped.
+        this.cancellationRequested.add(runningId)
         cancelled = true
       }
     }
@@ -118,6 +129,10 @@ export class TaskExecutionQueue {
       this.running.delete(job.id)
     }
 
+    if (this.cancellationRequested.delete(job.id)) {
+      result = { status: 'cancelled' }
+    }
+
     if (result.status === 'failed' && result.retryable !== false && job.attempt < (job.maxAttempts ?? 2)) {
       const delay = this.retryDelayMs(job.attempt)
       const nextRetryAt = Date.now() + delay
@@ -126,7 +141,7 @@ export class TaskExecutionQueue {
         this.retryTimers.delete(job.id)
         void this.requeue(job)
       }, delay)
-      this.retryTimers.set(job.id, timer)
+      this.retryTimers.set(job.id, { timer, job })
     } else {
       await this.notify(job, result.status, { error: result.error })
     }

@@ -15,7 +15,7 @@ const searchCodeTool: ToolExecutor = {
   definition: {
     name: 'search_code',
     description:
-      'Search for a text string in file contents within the workspace. Returns matching lines with context.',
+      'Search literal text across authorized workspace file contents. Returns every matching line with local context, up to maxResults. Use for exact definitions, usages, and references; it does not infer meaning.',
     parameters: {
       type: 'object',
       properties: {
@@ -52,7 +52,7 @@ const searchByRegexTool: ToolExecutor = {
   definition: {
     name: 'search_by_regex',
     description:
-      'Search for a regular expression pattern in file contents within the workspace. Returns matching lines with context.',
+      'Search a regular-expression pattern across authorized workspace file contents. Returns matching lines with context; it does not infer meaning.',
     parameters: {
       type: 'object',
       properties: {

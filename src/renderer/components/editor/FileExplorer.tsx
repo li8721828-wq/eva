@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
+import { useWorkspaceStore } from '@/stores/use-workspace-store'
+import { useChatStore } from '@/stores/use-chat-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { Folder, FolderOpen, File, ChevronRight, RefreshCw, FolderPlus } from 'lucide-react'
+import { ProjectNavigator } from './ProjectNavigator'
 
 interface FileNode {
   name: string
@@ -93,17 +96,23 @@ function TreeNode({
 
 export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
   const { workspacePath, setCurrentFile } = useAppStore()
+  const { workspaces, activeWorkspaceId } = useWorkspaceStore()
+  const { conversations, currentConversationId, setConversations } = useChatStore()
   const [rootNodes, setRootNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
+  const [view, setView] = useState<'files' | 'code'>('files')
+  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null
+  const activeConversation = conversations.find((conversation) => conversation.id === currentConversationId) || null
+  const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
 
   const loadRootTree = useCallback(async () => {
-    if (!workspacePath) {
+    if (!resolvedWorkspacePath) {
       setRootNodes([])
       return
     }
     setLoading(true)
     try {
-      const entries = await window.eva.file.tree(workspacePath, workspacePath)
+      const entries = await window.eva.file.tree(resolvedWorkspacePath, resolvedWorkspacePath)
       const nodes: FileNode[] = (entries as any[]).map((e: any) => ({
         name: e.name,
         path: e.path,
@@ -115,7 +124,7 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
     } finally {
       setLoading(false)
     }
-  }, [workspacePath])
+  }, [resolvedWorkspacePath])
 
   useEffect(() => {
     loadRootTree()
@@ -123,7 +132,7 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
 
   const handleFileSelect = async (filePath: string) => {
     try {
-      const content = await window.eva.file.read(filePath, workspacePath)
+      const content = await window.eva.file.read(filePath, resolvedWorkspacePath)
       const ext = filePath.split('.').pop()?.toLowerCase() || ''
       setCurrentFile({ path: filePath, content, language: ext })
       onFileSelect?.(filePath)
@@ -146,26 +155,41 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
   return (
     <div className={cn('flex flex-col h-full bg-white', className)}>
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-        <span className="text-sm font-medium text-zinc-700">Files</span>
-        <div className="flex gap-1">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-2">
+        <div className="flex items-center gap-1" role="tablist" aria-label="Explorer view">
+          <button type="button" role="tab" aria-selected={view === 'files'} onClick={() => setView('files')} className={cn('rounded-md px-2 py-1 text-xs font-medium transition-colors', view === 'files' ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-400 hover:text-zinc-700')}>Files</button>
+          <button type="button" role="tab" aria-selected={view === 'code'} onClick={() => setView('code')} className={cn('rounded-md px-2 py-1 text-xs font-medium transition-colors', view === 'code' ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-400 hover:text-zinc-700')}>Code</button>
+        </div>
+        {view === 'files' && <div className="flex gap-1">
           <Button variant="ghost" size="icon" className="h-8 w-8" title="Open folder" onClick={handleBrowseFolder}>
             <FolderPlus className="h-4 w-4" />
           </Button>
-          <Button variant="ghost" size="icon" className="h-8 w-8" title="Refresh" onClick={loadRootTree} disabled={loading}>
+          <Button variant="ghost" size="icon" className="h-8 w-8" title="Refresh files" onClick={loadRootTree} disabled={loading}>
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
           </Button>
-        </div>
+        </div>}
       </div>
 
-      {/* Tree */}
-      <ScrollArea className="flex-1">
+      {view === 'code' ? <ProjectNavigator
+        workspace={activeWorkspace}
+        conversation={activeConversation}
+        onFileSelect={handleFileSelect}
+        onMultiDimensionalEnabledChange={async (enabled) => {
+          if (!activeConversation) return
+          await window.eva.conversation.update(activeConversation.id, { multiDimensionalIndexEnabled: enabled })
+          setConversations(conversations.map((conversation) => (
+            conversation.id === activeConversation.id
+              ? { ...conversation, multiDimensionalIndexEnabled: enabled }
+              : conversation
+          )))
+        }}
+      /> : <ScrollArea className="flex-1">
         <div className="py-1">
           {rootNodes.length === 0 && !loading && (
             <div className="flex flex-col items-center gap-2 py-8 px-4 text-zinc-400 text-sm">
               <Folder className="h-6 w-6 opacity-50" />
-              <span>{workspacePath ? 'Empty directory' : 'No workspace selected'}</span>
-              {!workspacePath && (
+              <span>{resolvedWorkspacePath ? 'Empty directory' : 'No workspace selected'}</span>
+              {!resolvedWorkspacePath && (
                 <Button variant="outline" size="sm" onClick={handleBrowseFolder}>
                   Open Folder
                 </Button>
@@ -178,11 +202,11 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
               node={node}
               depth={0}
               onFileSelect={handleFileSelect}
-              workspacePath={workspacePath}
+              workspacePath={resolvedWorkspacePath}
             />
           ))}
         </div>
-      </ScrollArea>
+      </ScrollArea>}
     </div>
   )
 }

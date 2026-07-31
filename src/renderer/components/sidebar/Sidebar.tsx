@@ -6,15 +6,16 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { ConversationList } from './ConversationList'
 import { ModeSelector } from './ModeSelector'
-import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus } from 'lucide-react'
+import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus, UsersRound } from 'lucide-react'
 import evaMark from '@/assets/eva-mark.svg'
 
 export interface SidebarProps {
   className?: string
+  style?: React.CSSProperties
 }
 
-export function Sidebar({ className }: SidebarProps) {
-  const { sidebarCollapsed, toggleSidebar, setSettingsOpen, agentManagerOpen, setAgentManagerOpen } =
+export function Sidebar({ className, style }: SidebarProps) {
+  const { sidebarCollapsed, toggleSidebar, setSettingsOpen, agentManagerOpen, setAgentManagerOpen, setCurrentView } =
     useAppStore()
   const { createConversation } = useChatStore()
   const { addWorkspace, addWorkspaceAtPath } = useWorkspaceStore()
@@ -106,6 +107,9 @@ export function Sidebar({ className }: SidebarProps) {
         <Button variant="ghost" size="icon" title="Add project folder" onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />
         </Button>
+        <Button variant="ghost" size="icon" title="Agent Symposium" onClick={() => setCurrentView('symposium')}>
+          <UsersRound className="h-4 w-4" />
+        </Button>
         <Button
           variant="ghost"
           size="icon"
@@ -131,9 +135,10 @@ export function Sidebar({ className }: SidebarProps) {
   return (
     <div
       className={cn(
-        'relative flex w-[304px] shrink-0 flex-col border-r border-zinc-200 bg-[#f8f9fa]',
+        'relative flex shrink-0 flex-col bg-[#f8f9fa]',
         className
       )}
+      style={style}
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -167,6 +172,15 @@ export function Sidebar({ className }: SidebarProps) {
         >
           <Plus className="h-4 w-4" />
           <span>New global task</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 w-full justify-start gap-2.5 px-3"
+          onClick={() => setCurrentView('symposium')}
+        >
+          <UsersRound className="h-4 w-4" />
+          <span>Agent Symposium</span>
         </Button>
         <Button variant="ghost" size="sm" className="h-9 w-full justify-start gap-2.5 px-3" onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />

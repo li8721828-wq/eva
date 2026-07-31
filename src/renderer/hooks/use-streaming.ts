@@ -4,6 +4,8 @@ import { useTaskStore } from '@/stores/use-task-store'
 import type { ChatStreamEvent } from '../../shared/types'
 import type { TeamEvent } from '../../shared/types'
 import type { GoalEvent } from '@/lib/goal-event'
+import type { SymposiumStreamEvent } from '../../shared/types/symposium'
+import { useSymposiumStore } from '@/stores/use-symposium-store'
 
 /**
  * Hook to set up streaming event listeners from the main process.
@@ -35,10 +37,15 @@ export function useStreaming(): void {
       useTaskStore.getState().handleGoalEvent(goalEvent)
     })
 
+    const cleanupSymposium = window.eva.symposium.onStream((_event, data) => {
+      useSymposiumStore.getState().handleEvent(data as SymposiumStreamEvent)
+    })
+
     return () => {
       cleanupChat()
       cleanupTask()
       cleanupGoal()
+      cleanupSymposium()
     }
   }, [])
 }

@@ -19,6 +19,7 @@ import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { GoalProgress } from '../../shared/types/task'
+import type { SymposiumContinueInput, SymposiumModelParticipant, SymposiumStartInput, SymposiumStreamEvent } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
 
 export interface ChatServices {
@@ -38,6 +39,8 @@ const activeTaskRunners = new Map<string, AgentRunner>()
 // separately from the visible Goal screen so they remain cancellable after the
 // chat turn that started them has completed.
 const activeBackgroundGoalPlanners = new Map<string, GoalPlanner>()
+const activeSymposiumRunners = new Map<string, Set<AgentRunner>>()
+const activeSymposiumAborters = new Map<string, () => void>()
 const MAX_PERSISTED_TOOL_RESULT_CHARS = 12_000
 const INTERNAL_TASK_TIMEOUT_MS = 3 * 60 * 1000
 
@@ -74,6 +77,204 @@ function applyGoalProgress(current: GoalProgress | null, event: GoalEvent, conve
 const MAX_REFERENCE_IMAGES = 4
 const MAX_REFERENCE_IMAGE_BYTES = 12 * 1024 * 1024
 const IMAGE_MEDIA_TYPES = new Set<ChatImageAttachment['mediaType']>(['image/jpeg', 'image/png', 'image/webp'])
+
+function symposiumTranscript(messages: ChatMessage[]): string {
+  const visibleMessages = messages
+    .filter((message) => message.role === 'user' || message.role === 'assistant')
+    .slice(-24)
+    .map((message) => `${message.role === 'user' ? 'User' : message.agentName || 'Participant'}: ${message.content}`)
+    .join('\n\n')
+  return visibleMessages || '(The discussion has just started.)'
+}
+
+function getSymposiumHandle(participant: SymposiumModelParticipant): string {
+  return participant.handle || participant.modelName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || participant.id
+}
+
+function mentionedSymposiumParticipants(content: string, participants: SymposiumModelParticipant[]): SymposiumModelParticipant[] {
+  const normalized = content.toLowerCase()
+  return participants.filter((participant) => normalized.includes(`@${getSymposiumHandle(participant).toLowerCase()}`))
+}
+
+async function runAgentSymposium(
+  services: ChatServices,
+  input: SymposiumStartInput | SymposiumContinueInput,
+  win: BrowserWindow,
+): Promise<void> {
+  const conversation = await getStorage().conversations.getConversation(input.conversationId)
+  if (!conversation) throw new Error('The Symposium conversation no longer exists.')
+
+  const isStarting = 'participants' in input
+  const existing = conversation.symposium
+  const topic = isStarting ? input.topic.trim() : existing?.topic
+  const userContribution = isStarting ? input.topic.trim() : input.content.trim()
+  if (!topic || !userContribution) throw new Error('A Symposium needs a discussion topic or contribution.')
+
+  const agents = await getStorage().agents.listAgents()
+  // Conversations created before model seats are preserved. They keep their
+  // original agents, while every newly created Symposium binds its own model.
+  const legacyParticipantIds = existing?.participantIds || []
+  const legacyParticipants = legacyParticipantIds
+    .map((id) => agents.find((agent: AgentConfig) => agent.id === id))
+    .filter(Boolean) as AgentConfig[]
+  const participants: SymposiumModelParticipant[] = isStarting
+    ? input.participants
+    : existing?.participants || legacyParticipants.map((agent) => ({
+      id: `legacy:${agent.id}`,
+      handle: agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || agent.id,
+      providerId: agent.providerId,
+      providerName: agent.name,
+      model: agent.model,
+      modelName: agent.model,
+    }))
+  const uniqueParticipants = Array.from(new Map(participants.map((participant) => [participant.id, participant])).values())
+  if (uniqueParticipants.length < 2) throw new Error('Choose at least two models for a Symposium.')
+
+  const emit = (event: Omit<SymposiumStreamEvent, 'conversationId'>): void => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.SYMPOSIUM_STREAM, { ...event, conversationId: input.conversationId })
+  }
+  const startedAt = existing?.startedAt || Date.now()
+  const cycle = (existing?.responseCycles || 0) + 1
+  let cancelled = false
+  activeSymposiumAborters.set(input.conversationId, () => {
+    cancelled = true
+    activeSymposiumRunners.get(input.conversationId)?.forEach((runner) => runner.abort())
+  })
+
+  await getStorage().conversations.updateConversation(input.conversationId, {
+    symposium: { topic, participants: uniqueParticipants, status: 'running', startedAt, lastActivityAt: Date.now(), responseCycles: cycle },
+  })
+  emit({ type: 'started', cycle, participantCount: uniqueParticipants.length })
+
+  try {
+    const priorMessages = await getStorage().conversations.getMessages(input.conversationId)
+    const duplicateOpening = isStarting && priorMessages.some((message) => message.role === 'user' && message.content === userContribution)
+    if (!duplicateOpening) {
+      await getStorage().conversations.addMessage(input.conversationId, {
+        id: uuidv4(),
+        role: 'user',
+        content: userContribution,
+        timestamp: Date.now(),
+      })
+      if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, input.conversationId)
+    }
+
+    const access = await getConversationAccess(conversation)
+    const workspacePath = conversation.workspacePath || (access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
+    const runnerSet = new Set<AgentRunner>()
+    activeSymposiumRunners.set(input.conversationId, runnerSet)
+    const runParticipant = async (participant: SymposiumModelParticipant): Promise<{ participant: SymposiumModelParticipant; content: string; error?: string }> => {
+      const provider = services.providerRegistry.get(participant.providerId)
+      if (!provider) throw new Error(`${participant.providerName} / ${participant.modelName} is not an enabled model connection.`)
+      const seatName = `${participant.providerName} / ${participant.modelName}`
+      const effectiveAgent: AgentConfig = {
+        id: `symposium:${participant.id}`,
+        name: seatName,
+        description: 'Independent model participant in a shared discussion.',
+        role: 'custom',
+        systemPrompt: 'You are an independent model participant in Eva\'s shared discussion. Give a concise, evidence-aware contribution that advances the discussion. You do not have tools in this discussion.',
+        providerId: participant.providerId,
+        model: participant.model,
+        tools: [],
+        maxIterations: 1,
+        temperature: 0.55,
+        isBuiltIn: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+
+      emit({ type: 'speaker_started', agentId: participant.id, agentName: seatName, cycle, participantCount: uniqueParticipants.length })
+      const history = sanitizeToolHistory(await getStorage().conversations.getMessages(input.conversationId))
+      const handles = uniqueParticipants.map((candidate) => `@${getSymposiumHandle(candidate)} (${candidate.providerName} / ${candidate.modelName})`).join(', ')
+      const discussionPrompt: ChatMessage = {
+        id: uuidv4(),
+        conversationId: input.conversationId,
+        role: 'user',
+        content: `You are participating in Eva's shared model group chat.\n\nTopic: ${topic}\n\nAll participants, including the user, share this transcript:\n${symposiumTranscript(history)}\n\nYou are the ${seatName} model seat, addressed in chat as @${getSymposiumHandle(participant)}. Available model mentions: ${handles}. You may address the user as @user, or mention another model when a focused follow-up from it would be useful. Directly address the latest relevant message, build on or challenge prior points, and keep your contribution concrete and concise (up to three short paragraphs). Do not call tools or claim to have changed files.`,
+        timestamp: Date.now(),
+      }
+      const runner = new AgentRunner({
+        conversationId: input.conversationId,
+        agentConfig: effectiveAgent,
+        provider,
+        toolRegistry: services.toolRegistry,
+        contextManager: new ContextManager(),
+        workspacePath,
+        fileAccessGrants: access.fileAccessGrants,
+        fullFilesystemAccess: access.fullFilesystemAccess,
+        fileService: services.fileService,
+        terminalService: services.terminalService,
+      })
+      runnerSet.add(runner)
+      let content = ''
+      let error: string | undefined
+      try {
+        for await (const agentEvent of runner.run({ messages: history, newMessage: discussionPrompt })) {
+          if (agentEvent.type === 'text' && agentEvent.content) content += agentEvent.content
+          if (agentEvent.type === 'done' && agentEvent.content) content = agentEvent.content
+          if (agentEvent.type === 'error') error = agentEvent.error || 'The participant could not respond.'
+        }
+      } finally {
+        runnerSet.delete(runner)
+      }
+      if (cancelled) return { participant, content, error: 'The discussion was stopped.' }
+      await getStorage().conversations.addMessage(input.conversationId, {
+        id: uuidv4(),
+        role: 'assistant',
+        content: content.trim() || `_${seatName} could not contribute: ${error || 'empty response'}_`,
+        agentId: participant.id,
+        agentName: seatName,
+        timestamp: Date.now(),
+      })
+      if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, input.conversationId)
+      emit({ type: 'speaker_completed', agentId: participant.id, agentName: seatName, cycle, participantCount: uniqueParticipants.length })
+      return { participant, content, error }
+    }
+
+    const initialTargets = mentionedSymposiumParticipants(userContribution, uniqueParticipants)
+    let pendingParticipants = initialTargets.length ? initialTargets : uniqueParticipants
+    const alreadyResponded = new Set<string>()
+    // A mention starts the next concurrent wave. A model may reply at most once
+    // per user contribution, so two models cannot keep recursively pinging each other.
+    while (pendingParticipants.length && !cancelled) {
+      const batch = pendingParticipants.filter((participant) => !alreadyResponded.has(participant.id))
+      if (!batch.length) break
+      batch.forEach((participant) => alreadyResponded.add(participant.id))
+      const results = await Promise.all(batch.map((participant) => runParticipant(participant)))
+      if (cancelled) break
+      const nextIds = new Set<string>()
+      for (const result of results) {
+        for (const mentioned of mentionedSymposiumParticipants(result.content, uniqueParticipants)) {
+          if (!alreadyResponded.has(mentioned.id) && mentioned.id !== result.participant.id) nextIds.add(mentioned.id)
+        }
+      }
+      pendingParticipants = uniqueParticipants.filter((participant) => nextIds.has(participant.id))
+    }
+
+    await getStorage().conversations.updateConversation(input.conversationId, {
+      symposium: { topic, participants: uniqueParticipants, status: 'idle', startedAt, lastActivityAt: Date.now(), responseCycles: cycle },
+    })
+    emit({ type: cancelled ? 'cancelled' : 'completed', cycle, participantCount: uniqueParticipants.length })
+    void recordActivity({
+      category: 'agent',
+      action: cancelled ? 'symposium.cancelled' : 'symposium.responded',
+      status: cancelled ? 'info' : 'success',
+      summary: cancelled ? 'Model Symposium response cycle was stopped.' : `Model Symposium completed one response cycle with ${uniqueParticipants.length} model seats.`,
+      conversationId: input.conversationId,
+      workspaceId: conversation.workspaceId,
+    }, win)
+  } catch (error: any) {
+    const message = error?.message ?? String(error)
+    await getStorage().conversations.updateConversation(input.conversationId, {
+      symposium: { topic, participants: uniqueParticipants, status: 'failed', startedAt, lastActivityAt: Date.now(), responseCycles: cycle, error: message },
+    })
+    emit({ type: 'error', error: message })
+    if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, input.conversationId)
+  } finally {
+    activeSymposiumRunners.delete(input.conversationId)
+    activeSymposiumAborters.delete(input.conversationId)
+  }
+}
 
 function loadReferenceImages(images: ChatImageAttachment[] | undefined, strict: boolean): ChatImageAttachment[] | undefined {
   if (!images?.length) return undefined
@@ -173,6 +374,7 @@ async function runInternalTeamDelegation(
     }
   }
   const orchestrator = new TeamOrchestrator({
+    conversationId: conversation.id,
     leader,
     workers,
     providerForAgent: (agent) => services.providerRegistry.get(agent.providerId),
@@ -254,7 +456,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
     IPC.CONVERSATION_CREATE,
     async (
       _event,
-      data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope']; permissionLevel?: Conversation['permissionLevel']; fileAccessGrants?: Conversation['fileAccessGrants'] }
+      data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope']; permissionLevel?: Conversation['permissionLevel']; fileAccessGrants?: Conversation['fileAccessGrants']; symposium?: Conversation['symposium'] }
     ): Promise<Conversation> => {
       const workspace = data.workspaceId ? await getStorage().workspaces.get(data.workspaceId) : null
       const conversation = await getStorage().conversations.createConversation({
@@ -265,6 +467,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         accessScope: workspace ? 'workspace' : data.accessScope,
         permissionLevel: data.permissionLevel || (workspace ? 'workspace' : 'full-access'),
         fileAccessGrants: data.fileAccessGrants || [],
+        symposium: data.symposium,
         workspacePath: data.workspacePath ?? workspace?.path ?? getStorage().config.get('workspacePath'),
       })
       void recordActivity({
@@ -312,7 +515,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
     async (
       event,
       id: string,
-      data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>
+      data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>
     ): Promise<void> => {
       const conversation = await getStorage().conversations.getConversation(id)
       await getStorage().conversations.updateConversation(id, data)
@@ -455,6 +658,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               // A new nested task supersedes an older one for this conversation.
               activeTaskRunners.get(conversationId)?.abort()
               const worker = new AgentRunner({
+                conversationId,
                 agentConfig: effectiveAgentConfig,
                 provider,
                 toolRegistry: services.toolRegistry,
@@ -512,6 +716,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 : automation.goal.timeoutMinutes
               const timeout = configuredTimeoutMinutes * 60 * 1000
               const planner = new GoalPlanner({
+                conversationId,
                 agentConfig: effectiveAgentConfig,
                 provider,
                 toolRegistry: services.toolRegistry,
@@ -651,6 +856,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             }
           : undefined
         runner = new AgentRunner({
+          conversationId,
           agentConfig: effectiveAgentConfig,
           provider,
           toolRegistry: services.toolRegistry,
@@ -803,8 +1009,27 @@ export function registerConversationHandlers(services?: ChatServices): void {
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
       activeBackgroundGoalPlanners.get(conversationId)?.abort()
+      activeSymposiumAborters.get(conversationId)?.()
       activeTaskRunners.delete(conversationId)
     }
+  })
+
+  ipcMain.on(IPC.SYMPOSIUM_START, (event, input: SymposiumStartInput) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!services || !win) return
+    activeSymposiumAborters.get(input.conversationId)?.()
+    void runAgentSymposium(services, input, win)
+  })
+
+  ipcMain.on(IPC.SYMPOSIUM_CONTINUE, (event, input: SymposiumContinueInput) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (!services || !win) return
+    if (activeSymposiumAborters.has(input.conversationId)) return
+    void runAgentSymposium(services, input, win)
+  })
+
+  ipcMain.on(IPC.SYMPOSIUM_ABORT, (_event, conversationId: string) => {
+    activeSymposiumAborters.get(conversationId)?.()
   })
 
   ipcMain.on(IPC.TASK_GOAL_ABORT, (_event, conversationId: string) => {

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
-import { PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type MarketplacePluginView, type PluginConfigField } from '../../../shared/types/plugin'
+import { isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type MarketplacePluginView, type PluginConfigField } from '../../../shared/types/plugin'
 
 function PermissionPills({ plugin }: { plugin: Pick<InstalledPlugin, 'permissions'> }) {
   return (
@@ -16,6 +16,10 @@ function PermissionPills({ plugin }: { plugin: Pick<InstalledPlugin, 'permission
       ))}
     </div>
   )
+}
+
+function hasRequiredSettings(plugin: InstalledPlugin): boolean {
+  return !(plugin.configuration || []).some((field) => field.required && !String(plugin.settings[field.key] ?? '').trim())
 }
 
 export function PluginCenter() {
@@ -131,6 +135,9 @@ export function PluginCenter() {
   }
 
   const installedCount = useMemo(() => installed.filter((plugin) => plugin.enabled).length, [installed])
+  const searchProviders = useMemo(() => installed.filter((plugin) => isSearchProviderPluginId(plugin.id)), [installed])
+  const activeSearchProvider = useMemo(() => searchProviders.find((plugin) => plugin.enabled) ?? null, [searchProviders])
+  const searchServiceReady = Boolean(activeSearchProvider && hasRequiredSettings(activeSearchProvider))
 
   return (
     <div className="settings-dialog__plugin-layout">
@@ -139,7 +146,7 @@ export function PluginCenter() {
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600"><PlugZap className="h-5 w-5" /></span>
           <div>
             <h3 className="text-sm font-semibold text-zinc-900">Plugin center</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Install integrations and reusable workflows, then manage each plugin&apos;s state and requested capabilities.</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">Install integrations and reusable workflows. Search providers supply the backend used by the separate Web search Agent tool.</p>
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={() => void importPlugin()} disabled={workingId !== null} className="shrink-0 gap-1.5">
@@ -154,6 +161,20 @@ export function PluginCenter() {
           {notice.message}
         </div>
       )}
+
+      <section className="flex flex-wrap items-center justify-between gap-4 border-y border-zinc-200 py-4" aria-label="Web search service">
+        <div>
+          <p className="text-sm font-semibold text-zinc-900">Web search service</p>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">Agent permission is configured in Agents. Choose one provider here to decide where permitted web searches are sent.</p>
+        </div>
+        <div className={cn('rounded-full px-3 py-1.5 text-xs font-medium', searchServiceReady ? 'bg-emerald-50 text-emerald-700' : activeSearchProvider ? 'bg-amber-50 text-amber-700' : 'bg-zinc-100 text-zinc-600')}>
+          {searchServiceReady
+            ? `Active: ${activeSearchProvider?.name}`
+            : activeSearchProvider
+              ? `${activeSearchProvider.name} needs configuration`
+              : 'No active search service'}
+        </div>
+      </section>
 
       <Tabs defaultValue="installed" className="settings-dialog__plugin-tabs">
         <TabsList className="settings-dialog__plugin-tabs-list">
@@ -173,6 +194,7 @@ export function PluginCenter() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-sm font-semibold text-zinc-900">{plugin.name}</h4>
+                      {isSearchProviderPluginId(plugin.id) && <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Search provider</span>}
                       <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', plugin.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-100 text-zinc-500')}>
                         {plugin.enabled ? 'Enabled' : 'Disabled'}
                       </span>
@@ -239,7 +261,7 @@ export function PluginCenter() {
         </TabsContent>
 
         <TabsContent value="marketplace" className="settings-dialog__plugin-tab-content">
-          <div className="settings-dialog__plugin-marketplace-note"><ShieldCheck className="h-4 w-4 text-violet-600" /> Curated entries are verified by Eva Labs. Search providers are alternatives: enabling one automatically disables the other search providers.</div>
+          <div className="settings-dialog__plugin-marketplace-note"><ShieldCheck className="h-4 w-4 text-violet-600" /> Curated entries are verified by Eva Labs. Search providers are alternatives: one enabled provider becomes the backend for the Web search Agent tool.</div>
           <div className="settings-dialog__plugin-marketplace-grid">
             {marketplace.map((plugin) => {
               const installedPlugin = plugin.installedPlugin

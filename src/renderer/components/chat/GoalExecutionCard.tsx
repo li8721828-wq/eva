@@ -115,7 +115,7 @@ export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
               </span>
               <button
                 type="button"
-                onClick={() => conversationId && abortGoal(conversationId)}
+                onClick={() => conversationId && void abortGoal(conversationId)}
                 className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-red-700 transition-colors hover:bg-red-50"
                 title="Stop this Goal task"
               >

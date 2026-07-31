@@ -32,7 +32,7 @@ interface TaskState {
   abortExpertTask: (conversationId?: string) => Promise<void>
   clearPlan: (conversationId?: string) => void
   startGoal: (goal: string, agentId: string, conversationId: string, config?: Partial<GoalConfig>) => void
-  abortGoal: (conversationId: string) => void
+  abortGoal: (conversationId: string) => Promise<void>
   pauseGoal: (conversationId: string) => void
   resumeGoal: (conversationId: string) => void
   clearGoalProgress: (conversationId?: string) => void
@@ -156,17 +156,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     window.eva.goal.start({ goal, config, conversationId, agentId })
   },
 
-  abortGoal: (conversationId) => {
+  abortGoal: async (conversationId) => {
     if (!conversationId) return
-    window.eva.goal.abort(conversationId)
-    set((state) => ({
-      goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({
-        ...task,
-        progress: task.progress ? { ...task.progress, status: 'cancelled', completedAt: Date.now() } : null,
-        isRunning: false,
-        isPaused: false,
-      }), EMPTY_GOAL_TASK),
-    }))
+    try {
+      await window.eva.task.cancel(conversationId)
+      set((state) => ({
+        goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({
+          ...task,
+          progress: task.progress ? { ...task.progress, status: 'cancelled', completedAt: Date.now() } : null,
+          isRunning: false,
+          isPaused: false,
+          recoveryStatus: 'cancelled',
+        }), EMPTY_GOAL_TASK),
+      }))
+    } catch (error) {
+      console.error('Failed to stop goal task:', error)
+    }
   },
 
   pauseGoal: (conversationId) => {

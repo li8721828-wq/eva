@@ -7,12 +7,14 @@ import { registerActivityHandlers } from './activity'
 import { registerPluginHandlers } from './plugin'
 import type { FileService, TerminalService, ToolRegistry } from '../tools'
 import type { ProviderRegistry } from '../providers'
+import type { ProjectIndexService } from '../services/project-index-service'
 
 export interface Services {
   fileService: FileService
   terminalService: TerminalService
   toolRegistry: ToolRegistry
   providerRegistry: ProviderRegistry
+  projectIndexService?: ProjectIndexService
 }
 
 export function registerAllIpcHandlers(services?: Services): void {
@@ -26,7 +28,7 @@ export function registerAllIpcHandlers(services?: Services): void {
     : undefined
 
   registerConversationHandlers(chatServices)
-  registerWorkspaceHandlers()
+  registerWorkspaceHandlers(services?.projectIndexService)
   registerActivityHandlers()
   registerAgentHandlers()
   registerPluginHandlers()

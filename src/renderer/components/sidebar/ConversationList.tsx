@@ -4,7 +4,7 @@ import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
-import { AlertTriangle, Archive, ArchiveRestore, FolderKanban, MessageSquare, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, Archive, ArchiveRestore, FolderKanban, MessageSquare, Plus, Trash2, UsersRound } from 'lucide-react'
 import { useAppStore } from '@/stores/use-app-store'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
@@ -41,7 +41,9 @@ function ConversationRow({ conversation, isSelected, archived = false, onSelect,
         </div>
       ) : (
         <button type="button" onClick={() => onSelect(conversation.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-          <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+          {conversation.symposium
+            ? <UsersRound className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+            : <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
           <span className="min-w-0 flex-1 truncate">{conversation.title || 'Untitled'}</span>
         </button>
       )}

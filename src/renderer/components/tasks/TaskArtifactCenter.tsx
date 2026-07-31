@@ -117,7 +117,7 @@ export function TaskArtifactCenter() {
 
   useEffect(() => { void refresh() }, [artifactWorkspaceId])
 
-  const hasActiveRun = runs.some((run) => run.status === 'queued' || run.status === 'running' || run.status === 'paused')
+  const hasActiveRun = runs.some((run) => run.status === 'queued' || run.status === 'running')
 
   useEffect(() => {
     if (!hasActiveRun) return
@@ -188,12 +188,16 @@ export function TaskArtifactCenter() {
 
   const stopTask = async () => {
     if (!selectedRun) return
-    if (selectedRun.kind === 'goal') window.eva.goal.abort(selectedRun.conversationId)
-    else await window.eva.task.abort(selectedRun.conversationId)
-    setRuns((current) => current.map((run) => run.conversationId === selectedRun.conversationId
-      ? { ...run, status: 'cancelled' }
-      : run
-    ))
+    setReplyError(null)
+    try {
+      await window.eva.task.cancel(selectedRun.conversationId)
+      setRuns((current) => current.map((run) => run.conversationId === selectedRun.conversationId
+        ? { ...run, status: 'cancelled', error: undefined }
+        : run
+      ))
+    } catch (error) {
+      setReplyError(error instanceof Error ? error.message : 'Could not stop this task.')
+    }
   }
 
   return (
@@ -273,7 +277,7 @@ export function TaskArtifactCenter() {
                   <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-600">{selectedRun.goal}</p>
                 </div>
                 <Button variant="outline" size="sm" onClick={() => openConversation(selectedRun.conversationId)}>Open conversation</Button>
-                {selectedRun.status === 'running' && (
+                {(selectedRun.status === 'running' || selectedRun.status === 'queued') && (
                   <Button variant="ghost" size="sm" className="gap-1.5 text-red-700 hover:bg-red-50 hover:text-red-800" onClick={() => void stopTask()}>
                     <StopCircle className="h-3.5 w-3.5" /> Stop task
                   </Button>

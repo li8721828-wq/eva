@@ -1,5 +1,6 @@
 import type { AgentConfig } from './agent'
 import type { FileAccessGrant } from './file-access'
+import type { AgentSymposium } from './symposium'
 
 export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
 
@@ -18,6 +19,10 @@ export interface Conversation {
   accessScope?: 'workspace' | 'full'
   permissionLevel?: ConversationPermissionLevel
   fileAccessGrants?: FileAccessGrant[]
+  /** Controls whether this conversation may use the project's semantic index dimensions. */
+  multiDimensionalIndexEnabled?: boolean
+  /** Optional shared deliberation that belongs to this conversation. */
+  symposium?: AgentSymposium
   archived?: boolean
   workspacePath: string
   createdAt: number

@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { useTaskStore } from '@/stores/use-task-store'
+import { useSymposiumStore } from '@/stores/use-symposium-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
@@ -28,20 +29,51 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, isStreaming, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage } = useChatStore()
+  const { conversations, createConversation, currentConversationId, isStreaming, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage, setError } = useChatStore()
   const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore()
   const { agents, selectedAgentId, selectAgent } = useAgentStore()
   const isTaskRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
+  const isSymposiumRunning = useSymposiumStore((state) => Boolean(currentConversationId && state.runtimes[currentConversationId]?.status === 'running'))
   const { startExpertTask, abortExpertTask } = useTaskStore()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDraggingImages, setIsDraggingImages] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
+  const [caretPosition, setCaretPosition] = useState(0)
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
+  const isSymposiumConversation = Boolean(currentConversation?.symposium)
+  const symposiumMentionOptions = currentConversation?.symposium?.participants || []
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
   const fileAccessGrants = currentConversation?.fileAccessGrants || []
   const activeAgentId = currentConversation?.agentId || selectedAgentId || ''
+
+  const symposiumMention = useMemo(() => {
+    if (!isSymposiumConversation) return null
+    const cursor = Math.min(caretPosition, inputText.length)
+    const beforeCursor = inputText.slice(0, cursor)
+    const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/)
+    if (!match) return null
+    return {
+      query: match[2].toLowerCase(),
+      start: cursor - match[0].length + match[1].length,
+      cursor,
+    }
+  }, [caretPosition, inputText, isSymposiumConversation])
+
+  const filteredSymposiumMentionOptions = useMemo(() => {
+    if (!symposiumMention) return []
+    return symposiumMentionOptions.filter((participant) => {
+      const handle = participant.handle || participant.modelName || participant.model || participant.providerName || participant.id
+      const searchable = `${handle} ${participant.providerName} ${participant.modelName} ${participant.model}`.toLowerCase()
+      return searchable.includes(symposiumMention.query)
+    })
+  }, [symposiumMention, symposiumMentionOptions])
+
+  useEffect(() => {
+    setActiveMentionIndex(0)
+  }, [symposiumMention?.query, currentConversationId])
 
   const connectionOptions = useMemo(() => {
     const enabled = savedProviders.filter((provider) => provider.isEnabled && provider.apiKey)
@@ -76,7 +108,21 @@ export function InputBar({ className }: InputBarProps) {
   }, [activeProviderId, activeModel, settingsOpen])
 
   const handleSend = useCallback(async () => {
-    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming || isTaskRunning) return
+    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming || isTaskRunning || isSymposiumRunning) return
+    if (currentConversation?.symposium) {
+      if (referenceImages.length > 0) {
+        setError('Reference images are not supported inside Agent Symposium yet.')
+        return
+      }
+      try {
+        await window.eva.symposium.continue({ conversationId: currentConversation.id, content: inputText.trim() })
+        setInputText('')
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Could not continue the Symposium.')
+      }
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
     const useTeam = workMode === 'expert'
     if (useTeam) {
       const goal = inputText.trim()
@@ -98,9 +144,39 @@ export function InputBar({ className }: InputBarProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [activeAgentId, addMessage, createConversation, currentConversation, inputText, isStreaming, isTaskRunning, referenceImages.length, sendMessage, setInputText, setReferenceImages, startExpertTask, workMode])
+  }, [activeAgentId, addMessage, createConversation, currentConversation, inputText, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setError, setInputText, setReferenceImages, startExpertTask, workMode])
+
+  const insertSymposiumMention = useCallback((participant: typeof symposiumMentionOptions[number]) => {
+    if (!symposiumMention) return
+    const handle = participant.handle || participant.modelName || participant.model || participant.providerName || participant.id
+    const nextInput = `${inputText.slice(0, symposiumMention.start)}@${handle} ${inputText.slice(symposiumMention.cursor)}`
+    const nextCaretPosition = symposiumMention.start + handle.length + 2
+    setInputText(nextInput)
+    setCaretPosition(nextCaretPosition)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(nextCaretPosition, nextCaretPosition)
+    })
+  }, [inputText, setInputText, symposiumMention, symposiumMentionOptions])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (filteredSymposiumMentionOptions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveMentionIndex((index) => (index + 1) % filteredSymposiumMentionOptions.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveMentionIndex((index) => (index - 1 + filteredSymposiumMentionOptions.length) % filteredSymposiumMentionOptions.length)
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        insertSymposiumMention(filteredSymposiumMentionOptions[activeMentionIndex] || filteredSymposiumMentionOptions[0])
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -109,6 +185,7 @@ export function InputBar({ className }: InputBarProps) {
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInputText(e.target.value)
+    setCaretPosition(e.target.selectionStart ?? e.target.value.length)
     // Auto-resize
     const el = e.target
     el.style.height = 'auto'
@@ -250,7 +327,7 @@ export function InputBar({ className }: InputBarProps) {
     <div className={cn('border-t border-zinc-200 bg-zinc-50/80 px-8 py-5', className)}>
       <div className="w-full">
         <div
-          className={cn('chat-composer overflow-hidden rounded-lg border bg-white shadow-sm transition-colors duration-200 focus-within:border-zinc-400 focus-within:shadow-md', isDraggingImages ? 'border-violet-500 bg-violet-50/30' : 'border-zinc-300')}
+          className={cn('chat-composer relative overflow-visible rounded-lg border bg-white shadow-sm transition-colors duration-200 focus-within:border-zinc-400 focus-within:shadow-md', isDraggingImages ? 'border-violet-500 bg-violet-50/30' : 'border-zinc-300')}
           onDragOver={(event) => { event.preventDefault(); setIsDraggingImages(true) }}
           onDragLeave={() => setIsDraggingImages(false)}
           onDrop={handleImageDrop}
@@ -280,6 +357,7 @@ export function InputBar({ className }: InputBarProps) {
               title="Attach file"
               aria-label="Attach reference images"
               onClick={() => imageInputRef.current?.click()}
+              disabled={isSymposiumRunning || isSymposiumConversation}
             >
             {referenceImages.length ? <ImagePlus className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
             </Button>
@@ -289,9 +367,12 @@ export function InputBar({ className }: InputBarProps) {
               value={inputText}
               onChange={handleInput}
               onKeyDown={handleKeyDown}
+              onClick={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
+              onKeyUp={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
               onPaste={handlePaste}
-              placeholder="Ask Eva to write, debug, or explain code"
+              placeholder={isSymposiumRunning ? 'Participants are responding to the shared discussion...' : currentConversation?.symposium ? 'Add your perspective to the shared discussion' : 'Ask Eva to write, debug, or explain code'}
               rows={1}
+              disabled={isSymposiumRunning}
               className="chat-composer__textarea max-h-[200px] min-h-[32px] flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-zinc-900 placeholder:text-zinc-400 focus:outline-none"
             />
 
@@ -313,53 +394,89 @@ export function InputBar({ className }: InputBarProps) {
                     : 'bg-zinc-100 text-zinc-400'
                 )}
                 onClick={handleSend}
-                disabled={!inputText.trim() && referenceImages.length === 0}
-                title="Send"
-                aria-label="Send message"
+                disabled={isSymposiumRunning || (!inputText.trim() && referenceImages.length === 0)}
+                title={currentConversation?.symposium ? 'Send to all discussion participants' : 'Send'}
+                aria-label={currentConversation?.symposium ? 'Send to all discussion participants' : 'Send message'}
               >
                 <Send className="h-4 w-4" />
               </button>
             )}
           </div>
 
+          {symposiumMention && !isSymposiumRunning && filteredSymposiumMentionOptions.length > 0 && (
+            <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(360px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
+              <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Mention a discussion member</div>
+              {filteredSymposiumMentionOptions.map((participant, index) => {
+                const handle = participant.handle || participant.modelName || participant.model || participant.providerName || participant.id
+                return (
+                  <button
+                    key={participant.id}
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertSymposiumMention(participant)}
+                    className={cn(
+                      'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
+                      index === activeMentionIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50'
+                    )}
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100 font-medium text-violet-700">@</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium">{handle}</span>
+                      <span className="block truncate text-xs text-zinc-500">{participant.providerName} / {participant.modelName || participant.model}</span>
+                    </span>
+                  </button>
+                )
+              })}
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">Arrow keys to navigate. Enter or Tab to mention.</div>
+            </div>
+          )}
+
           {attachmentError && <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">{attachmentError}</div>}
 
           <div className="flex min-h-11 items-center justify-between gap-4 border-t border-zinc-100 bg-zinc-50 px-4 py-2.5 text-xs text-zinc-500">
             <div className="flex min-w-0 items-center gap-2">
-              <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-              <div className="w-[176px]">
-                <Select
-                  value={activeAgentId}
-                  onChange={(event) => void handleAgentChange(event.target.value)}
-                  options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
-                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                  aria-label="Select agent"
-                  title={currentConversation ? 'Agent for this conversation' : 'Select an agent to create a draft conversation'}
-                />
-              </div>
-              <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
-              <div className="w-[144px]">
-                <Select
-                  value={activeProviderId}
-                  onChange={(event) => void handleConnectionChange(event.target.value)}
-                  options={connectionOptions}
-                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                  aria-label="Select model connection"
-                  title="Select model connection"
-                />
-              </div>
-              <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
-              <div className="w-[170px]">
-                <Select
-                  value={activeModel}
-                  onChange={(event) => void handleModelChange(event.target.value)}
-                  options={activeConnectionModels}
-                  disabled={activeConnectionModels.length === 1 && !activeConnectionModels[0].value}
-                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                  aria-label="Select model from connection"
-                  title="Select model in this connection"
-                />
-              </div>
+              {isSymposiumConversation ? (
+                <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-700"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
+              ) : (
+                <>
+                  <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
+                  <div className="w-[176px]">
+                    <Select
+                      value={activeAgentId}
+                      onChange={(event) => void handleAgentChange(event.target.value)}
+                      options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+                      disabled={isSymposiumRunning}
+                      className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
+                      aria-label="Select agent"
+                      title={currentConversation ? 'Agent for this conversation' : 'Select an agent to create a draft conversation'}
+                    />
+                  </div>
+                  <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
+                  <div className="w-[144px]">
+                    <Select
+                      value={activeProviderId}
+                      onChange={(event) => void handleConnectionChange(event.target.value)}
+                      options={connectionOptions}
+                      disabled={isSymposiumRunning}
+                      className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
+                      aria-label="Select model connection"
+                      title="Select model connection"
+                    />
+                  </div>
+                  <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
+                  <div className="w-[170px]">
+                    <Select
+                      value={activeModel}
+                      onChange={(event) => void handleModelChange(event.target.value)}
+                      options={activeConnectionModels}
+                      disabled={isSymposiumRunning || (activeConnectionModels.length === 1 && !activeConnectionModels[0].value)}
+                      className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
+                      aria-label="Select model from connection"
+                      title="Select model in this connection"
+                    />
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex min-w-0 items-center gap-2">
               <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
@@ -372,6 +489,7 @@ export function InputBar({ className }: InputBarProps) {
                     { value: 'granted-folders', label: 'Authorized folders' },
                     { value: 'full-access', label: 'Full filesystem access' },
                   ]}
+                  disabled={isSymposiumRunning}
                   className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
                   aria-label="Conversation file permission"
                   title={currentConversation ? 'File access for this conversation' : 'Select a permission to create a draft conversation'}

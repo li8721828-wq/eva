@@ -10,6 +10,7 @@ import { DEFAULT_MAX_ITERATIONS } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
 export interface AgentRunnerConfig {
+  conversationId?: string
   agentConfig: AgentConfig
   provider: LLMProvider
   toolRegistry: ToolRegistry
@@ -241,6 +242,7 @@ export class AgentRunner {
 
           // Execute the tool
           const toolContext: ToolContext = {
+            conversationId: this.config.conversationId,
             workspacePath,
             fileAccessGrants,
             fullFilesystemAccess,

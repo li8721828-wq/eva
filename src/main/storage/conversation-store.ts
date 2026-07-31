@@ -106,6 +106,8 @@ export class ConversationStore {
     accessScope?: 'workspace' | 'full'
     permissionLevel?: Conversation['permissionLevel']
     fileAccessGrants?: Conversation['fileAccessGrants']
+    multiDimensionalIndexEnabled?: boolean
+    symposium?: Conversation['symposium']
     workspacePath: string
   }): Promise<Conversation> {
     return this.enqueue(() => {
@@ -122,6 +124,8 @@ export class ConversationStore {
         accessScope: params.accessScope,
         permissionLevel: params.permissionLevel,
         fileAccessGrants: params.fileAccessGrants || [],
+        multiDimensionalIndexEnabled: params.multiDimensionalIndexEnabled !== false,
+        symposium: params.symposium,
         archived: false,
         workspacePath: params.workspacePath,
         createdAt: now,
@@ -153,7 +157,7 @@ export class ConversationStore {
 
   async updateConversation(
     id: string,
-    updates: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'updatedAt'>>
+    updates: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'updatedAt'>>
   ): Promise<void> {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)

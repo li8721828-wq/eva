@@ -65,6 +65,26 @@ describe('ConversationStore', () => {
     expect(list[0].id).toBe(conv.id)
   })
 
+  it('stores the multi-dimensional index preference per conversation', async () => {
+    const first = await store.createConversation({
+      title: 'First',
+      agentId: 'agent-1',
+      mode: 'normal',
+      workspacePath: '/workspace',
+    })
+    const second = await store.createConversation({
+      title: 'Second',
+      agentId: 'agent-1',
+      mode: 'normal',
+      workspacePath: '/workspace',
+    })
+
+    await store.updateConversation(first.id, { multiDimensionalIndexEnabled: false })
+
+    expect((await store.getConversation(first.id))?.multiDimensionalIndexEnabled).toBe(false)
+    expect((await store.getConversation(second.id))?.multiDimensionalIndexEnabled).toBe(true)
+  })
+
   it('should get a conversation by ID', async () => {
     const conv = await store.createConversation({
       title: 'Get Test',

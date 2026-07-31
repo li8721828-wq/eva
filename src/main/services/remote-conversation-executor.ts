@@ -58,6 +58,7 @@ export async function executeRemoteConversationMessage(
 
   const access = getConversationAccess(conversation)
   const runner = new AgentRunner({
+    conversationId,
     agentConfig: effectiveAgent,
     provider,
     toolRegistry: services.toolRegistry,

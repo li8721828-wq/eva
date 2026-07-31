@@ -51,4 +51,25 @@ describe('TaskExecutionQueue', () => {
     release?.()
     await vi.waitFor(() => expect(queue.activeCount).toBe(0))
   })
+
+  it('settles a running task as cancelled after the user stops it', async () => {
+    let release: (() => void) | undefined
+    const pending = new Promise<void>((resolve) => { release = resolve })
+    const updates: string[] = []
+    const queue = new TaskExecutionQueue(1)
+
+    queue.enqueue({
+      conversationId: 'cancelled-run',
+      kind: 'goal',
+      run: async () => { await pending; return { status: 'completed' } },
+      onUpdate: (update) => { updates.push(update.state) },
+    })
+
+    await vi.waitFor(() => expect(updates).toContain('running'))
+    expect(queue.cancel('cancelled-run', 'goal')).toBe(true)
+    release?.()
+
+    await vi.waitFor(() => expect(updates).toContain('cancelled'))
+    expect(updates).not.toContain('completed')
+  })
 })

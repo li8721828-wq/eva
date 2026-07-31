@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import type { WorkMode } from '../../shared/types'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
-export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts'
+export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts' | 'symposium'
 export type Theme = 'dark' | 'light'
 
 interface CurrentFile {
@@ -15,6 +15,8 @@ interface AppState {
   theme: Theme
   sidebarCollapsed: boolean
   sidebarWidth: number
+  rightPanelWidth: number
+  explorerHeight: number
   workMode: WorkMode
   workspacePath: string
   fileAccessGrants: FileAccessGrant[]
@@ -33,6 +35,8 @@ interface AppState {
   setTheme: (theme: Theme) => void
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
+  setRightPanelWidth: (width: number) => void
+  setExplorerHeight: (height: number) => void
   setWorkMode: (mode: WorkMode) => void
   setWorkspacePath: (path: string) => void
   setFileAccessGrants: (grants: FileAccessGrant[]) => void
@@ -59,7 +63,9 @@ interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   theme: 'light',
   sidebarCollapsed: false,
-  sidebarWidth: 260,
+  sidebarWidth: 304,
+  rightPanelWidth: 360,
+  explorerHeight: 380,
   workMode: 'normal',
   workspacePath: '',
   fileAccessGrants: [],
@@ -84,7 +90,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.eva.config.set('sidebarCollapsed', collapsed).catch(console.error)
     return { sidebarCollapsed: collapsed }
   }),
-  setSidebarWidth: (width) => set({ sidebarWidth: width }),
+  setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
+  setRightPanelWidth: (rightPanelWidth) => set({ rightPanelWidth }),
+  setExplorerHeight: (explorerHeight) => set({ explorerHeight }),
   setWorkMode: (mode) => set({ workMode: mode }),
   setWorkspacePath: (path) => {
     set({ workspacePath: path })
@@ -124,6 +132,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         theme: (config.theme as Theme) || 'light',
         sidebarCollapsed: (config.sidebarCollapsed as boolean) ?? false,
+        sidebarWidth: Math.max(240, Math.min(440, Number(config.sidebarWidth) || 304)),
+        rightPanelWidth: Math.max(300, Math.min(640, Number(config.rightPanelWidth) || 360)),
+        explorerHeight: Math.max(180, Number(config.explorerHeight) || 380),
         workspacePath: (config.workspacePath as string) || '',
         fileAccessGrants: (config.fileAccessGrants as FileAccessGrant[]) || [],
         rightPanelVisible: (config.rightPanelVisible as boolean) ?? true,

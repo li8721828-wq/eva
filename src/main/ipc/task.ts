@@ -30,6 +30,31 @@ const activeGoalPlanners = new Map<string, GoalPlanner>()
 const taskExecutionQueue = new TaskExecutionQueue(2)
 let taskServices: TaskServices | null = null
 
+/** Persist a user-requested stop before the planner has a chance to emit again. */
+export async function cancelTaskRun(
+  conversationId: string,
+  kind?: 'expert' | 'goal',
+): Promise<boolean> {
+  const queueCancelled = taskExecutionQueue.cancel(conversationId, kind)
+  const goalPlanner = kind === 'expert' ? undefined : activeGoalPlanners.get(conversationId)
+  const teamOrchestrator = kind === 'goal' ? undefined : activeOrchestrators.get(conversationId)
+  goalPlanner?.abort()
+  teamOrchestrator?.abort()
+
+  const snapshot = await getStorage().taskRuns.get(conversationId)
+  if (snapshot && (!kind || snapshot.kind === kind)) {
+    await getStorage().taskRuns.save({
+      ...snapshot,
+      status: 'cancelled',
+      error: undefined,
+      execution: snapshot.execution
+        ? { ...snapshot.execution, state: 'cancelled', lastActivityAt: Date.now(), nextRetryAt: undefined }
+        : undefined,
+    })
+  }
+  return queueCancelled || Boolean(goalPlanner || teamOrchestrator || snapshot)
+}
+
 /** Allows the chat agent to control a Goal launched from the visible Goal UI. */
 export async function controlForegroundGoal(
   conversationId: string,
@@ -40,7 +65,7 @@ export async function controlForegroundGoal(
   const snapshot = await getStorage().taskRuns.get(conversationId)
 
   if (action === 'status') {
-    return { handled: Boolean(planner || queued), status: snapshot?.status }
+    return { handled: Boolean(planner || queued || snapshot), status: snapshot?.status }
   }
   if (action === 'pause' && planner) {
     planner.pause()
@@ -52,10 +77,8 @@ export async function controlForegroundGoal(
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
     return { handled: true, status: 'running' }
   }
-  if (action === 'cancel' && (planner || queued)) {
-    taskExecutionQueue.cancel(conversationId, 'goal')
-    planner?.abort()
-    if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'cancelled' })
+  if (action === 'cancel' && (planner || queued || snapshot)) {
+    await cancelTaskRun(conversationId, 'goal')
     return { handled: true, status: 'cancelled' }
   }
   return { handled: false, status: snapshot?.status }
@@ -69,14 +92,18 @@ async function persistQueueUpdate(update: TaskQueueUpdate): Promise<void> {
     ? 'queued'
     : update.state === 'running'
       ? 'running'
-      : update.state === 'cancelled'
-        ? 'cancelled'
-        : snapshot.status
+      : update.state === 'completed'
+        ? 'completed'
+        : update.state === 'failed'
+          ? 'failed'
+          : 'cancelled'
   const error = update.state === 'retrying'
     ? `${update.error || 'Task failed'} Retrying automatically.`
     : update.state === 'queued' || update.state === 'running'
       ? undefined
-      : update.error || snapshot.error
+      : update.state === 'failed'
+        ? update.error || snapshot.error
+        : undefined
 
   await getStorage().taskRuns.save({
     ...snapshot,
@@ -459,6 +486,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
         // 4. Create TeamOrchestrator
         orchestrator = new TeamOrchestrator({
+          conversationId,
           leader,
           workers,
           providerForAgent: (agent) => taskServices?.providerRegistry.get(agent.providerId),
@@ -572,9 +600,11 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
   // Expert mode - abort
   ipcMain.on(IPC.TASK_ABORT, (_event, conversationId: string) => {
-    taskExecutionQueue.cancel(conversationId, 'expert')
-    activeOrchestrators.get(conversationId)?.abort()
-    void getStorage().taskRuns.get(conversationId).then((snapshot) => snapshot && getStorage().taskRuns.save({ ...snapshot, status: 'cancelled' }))
+    void cancelTaskRun(conversationId, 'expert')
+  })
+
+  ipcMain.handle(IPC.TASK_CANCEL, async (_event, conversationId: string): Promise<boolean> => {
+    return cancelTaskRun(conversationId)
   })
 
   // Expert mode - status
@@ -740,6 +770,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         planner = new GoalPlanner({
+          conversationId: payload.conversationId,
           agentConfig,
           provider,
           toolRegistry: activeTaskServices.toolRegistry,
@@ -823,9 +854,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
   // Goal mode - abort
   ipcMain.on(IPC.TASK_GOAL_ABORT, (_event, conversationId: string) => {
-    taskExecutionQueue.cancel(conversationId, 'goal')
-    activeGoalPlanners.get(conversationId)?.abort()
-    void getStorage().taskRuns.get(conversationId).then((snapshot) => snapshot && getStorage().taskRuns.save({ ...snapshot, status: 'cancelled' }))
+    void cancelTaskRun(conversationId, 'goal')
   })
 
   // Goal mode - pause

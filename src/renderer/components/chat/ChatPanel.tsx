@@ -9,8 +9,9 @@ import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { TeamCollaborationPanel } from './TeamCollaborationPanel'
 import { ExecutionMonitor } from './ExecutionMonitor'
-import { Bot, AlertCircle, ShieldAlert, Terminal, X } from 'lucide-react'
+import { Bot, AlertCircle, ShieldAlert, Terminal, X, UsersRound, Square } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { useSymposiumStore } from '@/stores/use-symposium-store'
 
 export interface ChatPanelProps {
   className?: string
@@ -25,6 +26,14 @@ export function ChatPanel({ className }: ChatPanelProps) {
 
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId) || getSelectedAgent()
+  const symposiumRuntime = useSymposiumStore((state) => currentConversationId ? state.runtimes[currentConversationId] : undefined)
+  const symposium = currentConversation?.symposium
+  const symposiumRunning = symposiumRuntime?.status === 'running'
+  const symposiumParticipants = symposium?.participants?.map((participant) => `${participant.providerName} / ${participant.modelName} @${participant.handle}`) || []
+  const legacySymposiumParticipants = symposium?.participantIds
+    ?.map((id) => agents.find((candidate) => candidate.id === id)?.name)
+    .filter((name): name is string => Boolean(name)) || []
+  const displayedSymposiumParticipants = symposiumParticipants.length ? symposiumParticipants : legacySymposiumParticipants
 
   const modeLabels: Record<string, string> = {
     normal: 'Auto',
@@ -41,7 +50,8 @@ export function ChatPanel({ className }: ChatPanelProps) {
           <span className="text-base font-medium text-zinc-800">
             {currentConversationId ? 'Conversation' : 'New Chat'}
           </span>
-          <span className="text-sm text-zinc-500">{agent?.name || 'Coding Assistant'}</span>
+          <span className="text-sm text-zinc-500">{symposium ? 'Model Symposium' : agent?.name || 'Coding Assistant'}</span>
+          {symposium && <span className="inline-flex items-center gap-1 text-xs text-violet-600"><UsersRound className="h-3.5 w-3.5" />Symposium</span>}
         </div>
         <div className="flex items-center gap-2">
           {currentConversationId && (
@@ -67,6 +77,13 @@ export function ChatPanel({ className }: ChatPanelProps) {
           </Badge>
         </div>
       </div>
+
+      {symposium && (
+        <div className="flex items-center justify-between gap-4 border-b border-violet-100 bg-violet-50/45 px-6 py-2.5 text-xs text-zinc-600">
+          <div className="min-w-0 truncate"><span className="font-medium text-violet-800">Shared model discussion</span><span className="ml-2">{displayedSymposiumParticipants.join(' / ') || 'Model seats'}</span>{symposiumRunning && symposiumRuntime?.agentName ? <span className="ml-2 text-violet-600">{symposiumRuntime.agentName} is responding</span> : <span className="ml-2 text-zinc-500">Your next message invites every model to respond.</span>}</div>
+          {symposiumRunning && currentConversationId && <Button variant="ghost" size="sm" className="h-7 shrink-0 gap-1.5 text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => void window.eva.symposium.abort(currentConversationId)}><Square className="h-3.5 w-3.5" />Stop discussion</Button>}
+        </div>
+      )}
 
       {workMode === 'expert' && (isTaskRunning || currentPlan) && (
         <div className="flex items-center gap-3 border-b border-violet-100 bg-violet-50/60 px-6 py-2 text-xs text-zinc-600">

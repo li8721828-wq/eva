@@ -49,6 +49,14 @@ export interface MarketplacePluginView extends MarketplacePlugin {
   installedPlugin?: InstalledPlugin
 }
 
+/** Plugins that implement the backend used by the web_search tool. */
+export const SEARCH_PROVIDER_PLUGIN_IDS = ['brave-search', 'tavily-search', 'searxng-search'] as const
+export type SearchProviderPluginId = (typeof SEARCH_PROVIDER_PLUGIN_IDS)[number]
+
+export function isSearchProviderPluginId(id: string): id is SearchProviderPluginId {
+  return (SEARCH_PROVIDER_PLUGIN_IDS as readonly string[]).includes(id)
+}
+
 export const PLUGIN_CATEGORIES: Record<PluginCategory, string> = {
   integration: 'Integrations',
   automation: 'Automation',

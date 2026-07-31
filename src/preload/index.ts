@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
 import type { Conversation, ChatImageAttachment, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
+import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { SpecTemplate } from '../shared/types/spec'
@@ -9,6 +10,7 @@ import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
 import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
 import type { InstalledPlugin, MarketplacePluginView } from '../shared/types/plugin'
+import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -36,7 +38,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants'>>): Promise<void>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>): Promise<void>
     onChanged(callback: EventCallback<string>): Unsubscribe
   }
 
@@ -61,6 +63,8 @@ export interface EvaAPI {
     start(conversationId: string, goal: string, resume?: boolean): Promise<void>
     onStream(callback: EventCallback<TeamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
+    /** Cancels either a Goal or Team task and waits until its durable state is updated. */
+    cancel(conversationId: string): Promise<boolean>
     getStatus(conversationId: string): Promise<string>
     getSnapshot(conversationId: string): Promise<TaskRunSnapshot | null>
     listArtifacts(workspaceId: string): Promise<TaskArtifactRun[]>
@@ -115,6 +119,20 @@ export interface EvaAPI {
     create(path: string, name?: string): Promise<Workspace>
     update(id: string, updates: Partial<Workspace>): Promise<Workspace>
     delete(id: string): Promise<void>
+  }
+
+  symposium: {
+    start(input: SymposiumStartInput): Promise<void>
+    continue(input: SymposiumContinueInput): Promise<void>
+    abort(conversationId: string): Promise<void>
+    onStream(callback: EventCallback<SymposiumStreamEvent>): Unsubscribe
+  }
+
+  projectIndex: {
+    status(workspaceId: string): Promise<ProjectIndexStatus>
+    search(workspaceId: string, query: string, maxResults?: number, scope?: ProjectIndexScope): Promise<ProjectIndexSearchResult[]>
+    browse(workspaceId: string, scope?: ProjectIndexScope, query?: string, offset?: number, limit?: number): Promise<ProjectIndexCatalogPage>
+    refresh(workspaceId: string): Promise<ProjectIndexSnapshot>
   }
 
   menu: {
@@ -202,6 +220,7 @@ const evaAPI: EvaAPI = {
       ipcRenderer.send(IPC.TASK_ABORT, conversationId)
       return Promise.resolve()
     },
+    cancel: (conversationId) => ipcRenderer.invoke(IPC.TASK_CANCEL, conversationId),
     getStatus: (conversationId) => ipcRenderer.invoke(IPC.TASK_STATUS, conversationId),
     getSnapshot: (conversationId) => ipcRenderer.invoke(IPC.TASK_SNAPSHOT, conversationId),
     listArtifacts: (workspaceId) => ipcRenderer.invoke(IPC.TASK_ARTIFACTS_LIST, workspaceId),
@@ -276,6 +295,29 @@ const evaAPI: EvaAPI = {
     create: (path, name) => ipcRenderer.invoke(IPC.WORKSPACE_CREATE, path, name),
     update: (id, updates) => ipcRenderer.invoke(IPC.WORKSPACE_UPDATE, id, updates),
     delete: (id) => ipcRenderer.invoke(IPC.WORKSPACE_DELETE, id),
+  },
+
+  symposium: {
+    start: (input) => {
+      ipcRenderer.send(IPC.SYMPOSIUM_START, input)
+      return Promise.resolve()
+    },
+    continue: (input) => {
+      ipcRenderer.send(IPC.SYMPOSIUM_CONTINUE, input)
+      return Promise.resolve()
+    },
+    abort: (conversationId) => {
+      ipcRenderer.send(IPC.SYMPOSIUM_ABORT, conversationId)
+      return Promise.resolve()
+    },
+    onStream: (callback) => onStream(IPC.SYMPOSIUM_STREAM, callback),
+  },
+
+  projectIndex: {
+    status: (workspaceId) => ipcRenderer.invoke(IPC.PROJECT_INDEX_STATUS, workspaceId),
+    search: (workspaceId, query, maxResults, scope) => ipcRenderer.invoke(IPC.PROJECT_INDEX_SEARCH, workspaceId, query, maxResults, scope),
+    browse: (workspaceId, scope, query, offset, limit) => ipcRenderer.invoke(IPC.PROJECT_INDEX_BROWSE, workspaceId, scope, query, offset, limit),
+    refresh: (workspaceId) => ipcRenderer.invoke(IPC.PROJECT_INDEX_REFRESH, workspaceId),
   },
 
   menu: {

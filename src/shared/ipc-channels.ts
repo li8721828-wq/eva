@@ -16,6 +16,10 @@ export const IPC = {
   WORKSPACE_CREATE: 'workspace:create',
   WORKSPACE_UPDATE: 'workspace:update',
   WORKSPACE_DELETE: 'workspace:delete',
+  PROJECT_INDEX_STATUS: 'project-index:status',
+  PROJECT_INDEX_SEARCH: 'project-index:search',
+  PROJECT_INDEX_BROWSE: 'project-index:browse',
+  PROJECT_INDEX_REFRESH: 'project-index:refresh',
 
   // Plugin management
   PLUGIN_LIST: 'plugin:list',
@@ -32,6 +36,12 @@ export const IPC = {
   CHAT_STREAM: 'chat:stream',
   CHAT_ABORT: 'chat:abort',
 
+  // Shared multi-agent discussion
+  SYMPOSIUM_START: 'symposium:start',
+  SYMPOSIUM_CONTINUE: 'symposium:continue',
+  SYMPOSIUM_ABORT: 'symposium:abort',
+  SYMPOSIUM_STREAM: 'symposium:stream',
+
   // 智能体管理
   AGENT_LIST: 'agent:list',
   AGENT_GET: 'agent:get',
@@ -43,6 +53,7 @@ export const IPC = {
   TASK_START: 'task:start',
   TASK_STREAM: 'task:stream',
   TASK_ABORT: 'task:abort',
+  TASK_CANCEL: 'task:cancel',
   TASK_STATUS: 'task:status',
   TASK_SNAPSHOT: 'task:snapshot',
   TASK_ARTIFACTS_LIST: 'task:artifacts:list',

@@ -4,6 +4,7 @@ import { load } from 'cheerio'
 import type { ToolExecutor, ToolContext } from './index'
 import { isBlockedWebHostname, isPrivateNetworkAddress } from './web-url-policy'
 import { getStorage } from '../storage'
+import { isSearchProviderPluginId } from '../../shared/types/plugin'
 
 const MAX_RESULTS = 8
 const MAX_PAGE_CHARACTERS = 20_000
@@ -108,8 +109,8 @@ async function fetchSearchResults(query: string): Promise<SearchResult[]> {
 }
 
 function getConfiguredSearchProvider(): SearchProvider {
-  const plugin = getStorage().plugins.list().find((entry) => entry.enabled && ['brave-search', 'tavily-search', 'searxng-search'].includes(entry.id))
-  if (!plugin) throw new Error('No web search plugin is enabled. Install and configure Brave Search, Tavily Search, or SearXNG Search in Settings > Plugins.')
+  const plugin = getStorage().plugins.list().find((entry) => entry.enabled && isSearchProviderPluginId(entry.id))
+  if (!plugin) throw new Error('Web search is allowed, but no search service is active. Enable and configure Brave Search, Tavily Search, or SearXNG Search in Settings > Plugins.')
 
   if (plugin.id === 'brave-search' || plugin.id === 'tavily-search') {
     const apiKey = String(plugin.settings.apiKey || '').trim()

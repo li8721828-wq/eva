@@ -1,4 +1,4 @@
-import React, { useEffect, lazy, Suspense } from 'react'
+import React, { useCallback, useEffect, lazy, Suspense, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAgentStore } from '@/stores/use-agent-store'
@@ -8,9 +8,9 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
+import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
-import { Separator } from '@/components/ui/Separator'
 import { Button } from '@/components/ui/Button'
 import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
 
@@ -18,6 +18,30 @@ import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
 const CodeEditor = lazy(() => import('@/components/editor/CodeEditor').then(m => ({ default: m.CodeEditor })))
 const TerminalPanel = lazy(() => import('@/components/terminal/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
 const FileExplorer = lazy(() => import('@/components/editor/FileExplorer').then(m => ({ default: m.FileExplorer })))
+
+type ResizeTarget = 'sidebar' | 'right-panel' | 'explorer'
+
+const SIDEBAR_MIN_WIDTH = 240
+const SIDEBAR_MAX_WIDTH = 440
+const RIGHT_PANEL_MIN_WIDTH = 300
+const RIGHT_PANEL_MAX_WIDTH = 640
+const EXPLORER_MIN_HEIGHT = 180
+const EDITOR_MIN_HEIGHT = 180
+
+function ResizeHandle({ target, onPointerDown }: { target: ResizeTarget; onPointerDown: (target: ResizeTarget, event: React.PointerEvent<HTMLDivElement>) => void }) {
+  const vertical = target === 'explorer'
+  return (
+    <div
+      role="separator"
+      aria-orientation={vertical ? 'horizontal' : 'vertical'}
+      aria-label={vertical ? 'Resize explorer and editor' : target === 'sidebar' ? 'Resize sidebar' : 'Resize explorer panel'}
+      onPointerDown={(event) => onPointerDown(target, event)}
+      className={vertical
+        ? 'relative z-10 h-px shrink-0 cursor-row-resize touch-none bg-zinc-100 transition-colors hover:bg-violet-300 active:bg-violet-500 after:absolute after:-inset-x-2 after:-inset-y-2'
+        : 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-zinc-100 transition-colors hover:bg-violet-300 active:bg-violet-500 after:absolute after:-inset-x-2 after:-inset-y-2'}
+    />
+  )
+}
 
 function LazyFallback({ className }: { className?: string }) {
   return (
@@ -40,11 +64,70 @@ const App: React.FC = () => {
     setAgentManagerOpen,
     settingsOpen,
     currentView,
+    sidebarCollapsed,
+    sidebarWidth,
+    rightPanelWidth,
+    explorerHeight,
+    setSidebarWidth,
+    setRightPanelWidth,
+    setExplorerHeight,
   } = useAppStore()
 
   const { loadConversations, currentConversationId, selectConversation } = useChatStore()
   const { loadAgents } = useAgentStore()
   const { loadWorkspaces } = useWorkspaceStore()
+  const [activeResize, setActiveResize] = useState<ResizeTarget | null>(null)
+  const resizeCleanupRef = useRef<(() => void) | null>(null)
+  const sidebarWidthRef = useRef(sidebarWidth)
+  const rightPanelWidthRef = useRef(rightPanelWidth)
+
+  useEffect(() => { sidebarWidthRef.current = sidebarWidth }, [sidebarWidth])
+  useEffect(() => { rightPanelWidthRef.current = rightPanelWidth }, [rightPanelWidth])
+  useEffect(() => () => resizeCleanupRef.current?.(), [])
+
+  const startResize = useCallback((target: ResizeTarget, event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    resizeCleanupRef.current?.()
+    const startX = event.clientX
+    const startY = event.clientY
+    const startSidebarWidth = sidebarWidthRef.current
+    const startRightPanelWidth = rightPanelWidthRef.current
+    const startExplorerHeight = explorerHeight
+    setActiveResize(target)
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = target === 'explorer' ? 'row-resize' : 'col-resize'
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (target === 'sidebar') {
+        const available = window.innerWidth - (rightPanelVisible ? rightPanelWidthRef.current : 0) - 480
+        setSidebarWidth(Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, available, startSidebarWidth + moveEvent.clientX - startX)))
+      } else if (target === 'right-panel') {
+        const available = window.innerWidth - sidebarWidthRef.current - 480
+        setRightPanelWidth(Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, available, startRightPanelWidth - (moveEvent.clientX - startX))))
+      } else {
+        const maxHeight = Math.max(EXPLORER_MIN_HEIGHT, window.innerHeight - EDITOR_MIN_HEIGHT - 120)
+        setExplorerHeight(Math.max(EXPLORER_MIN_HEIGHT, Math.min(maxHeight, startExplorerHeight + moveEvent.clientY - startY)))
+      }
+    }
+    const onUp = () => {
+      document.removeEventListener('pointermove', onMove)
+      document.removeEventListener('pointerup', onUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      resizeCleanupRef.current = null
+      setActiveResize(null)
+      const state = useAppStore.getState()
+      const [key, value] = target === 'sidebar'
+        ? ['sidebarWidth', state.sidebarWidth]
+        : target === 'right-panel'
+          ? ['rightPanelWidth', state.rightPanelWidth]
+          : ['explorerHeight', state.explorerHeight]
+      void window.eva.config.set(key, value).catch(console.error)
+    }
+    document.addEventListener('pointermove', onMove)
+    document.addEventListener('pointerup', onUp)
+    resizeCleanupRef.current = onUp
+  }, [explorerHeight, rightPanelVisible, setExplorerHeight, setRightPanelWidth, setSidebarWidth])
 
   // Initialize streaming listeners
   useStreaming()
@@ -76,9 +159,10 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-    <div className="flex h-screen w-screen overflow-hidden bg-white text-zinc-900">
+    <div className="flex h-screen w-screen overflow-hidden bg-white text-zinc-900" data-resizing={activeResize || undefined}>
       {/* Left Sidebar */}
-      <Sidebar />
+      <Sidebar style={!sidebarCollapsed ? { width: sidebarWidth } : undefined} />
+      {!sidebarCollapsed && <ResizeHandle target="sidebar" onPointerDown={startResize} />}
 
       {/* Main Workspace */}
       <div className="flex flex-1 flex-col min-w-0">
@@ -86,9 +170,9 @@ const App: React.FC = () => {
           <SettingsDialog />
         ) : (
           <>
-        <div className="flex flex-1 min-h-0">
+          <div className="flex flex-1 min-h-0">
           <div className="flex-1 min-w-0">
-            {currentView === 'artifacts' ? <TaskArtifactCenter /> : <ChatPanel className="h-full" />}
+            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : <ChatPanel className="h-full" />}
           </div>
 
           {/* Right Panel Toggle */}
@@ -102,7 +186,9 @@ const App: React.FC = () => {
 
           {/* Right Panel (File Explorer + Editor) */}
           {rightPanelVisible && (
-            <div className="flex w-[320px] shrink-0 flex-col border-l border-zinc-200">
+            <>
+            <ResizeHandle target="right-panel" onPointerDown={startResize} />
+            <div className="flex shrink-0 flex-col" style={{ width: rightPanelWidth }}>
               {/* Panel header */}
               <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
                 <span className="text-xs font-medium text-zinc-500">Explorer</span>
@@ -112,16 +198,16 @@ const App: React.FC = () => {
               </div>
 
               {/* File Explorer (top half) */}
-              <div className="h-1/2 min-h-0">
+              <div className="min-h-0 shrink-0" style={{ height: explorerHeight }}>
                 <Suspense fallback={<LazyFallback className="h-full" />}>
                   <FileExplorer className="h-full" />
                 </Suspense>
               </div>
 
-              <Separator />
+              <ResizeHandle target="explorer" onPointerDown={startResize} />
 
               {/* Code Editor (bottom half) */}
-              <div className="h-1/2 min-h-0">
+              <div className="min-h-0 flex-1">
                 <Suspense fallback={<LazyFallback className="h-full" />}>
                   <CodeEditor
                     className="h-full"
@@ -132,6 +218,7 @@ const App: React.FC = () => {
                 </Suspense>
               </div>
             </div>
+            </>
           )}
         </div>
 

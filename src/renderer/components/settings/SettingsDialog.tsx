@@ -36,6 +36,7 @@ import type { AutomationConfig, HiddenCapabilityId } from '../../../shared/types
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
+import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 
 type ProviderType = ProviderConfigEntry['type']
 
@@ -74,7 +75,6 @@ export function SettingsDialog() {
     setActiveProvider,
     activeModel,
     setActiveModel,
-    setAgentManagerOpen,
   } = useAppStore()
 
   const [providerType, setProviderType] = useState<ProviderType>('openai')
@@ -769,29 +769,8 @@ export function SettingsDialog() {
           </section>
         </TabsContent>
 
-        <TabsContent value="agents" className="settings-dialog__content">
-          <div className="settings-dialog__card settings-dialog__agents-card">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-sm text-zinc-700">
-                <Bot className="h-4 w-4" />
-                Manage Agents
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setSettingsOpen(false)
-                  setAgentManagerOpen(true)
-                }}
-              >
-                Manage
-              </Button>
-            </div>
-            <Separator />
-            <div className="py-4 text-center text-sm text-zinc-500">
-              Open Agent Manager to create, edit, and remove custom agents.
-            </div>
-          </div>
+        <TabsContent value="agents" className="settings-dialog__content settings-dialog__content--agents">
+          <AgentManagementWorkspace />
         </TabsContent>
 
         <TabsContent value="plugins" className="settings-dialog__content">

@@ -469,6 +469,11 @@ a.tool-call-source__title:hover {
   background: #fafafa;
 }
 
+.settings-dialog__content--agents {
+  padding: 0 !important;
+  background: #fff;
+}
+
 .settings-page .settings-dialog__card {
   padding: 0;
   border: 0;

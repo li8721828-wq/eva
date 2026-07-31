@@ -9,6 +9,7 @@ import { ActivityLogStore } from './activity-log-store'
 import { QqRemoteStore } from './qq-remote-store'
 import { PluginStore } from './plugin-store'
 import { TaskRunStore } from './task-run-store'
+import { ProjectIndexStore } from './project-index-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -19,6 +20,7 @@ export class StorageManager {
   qqRemote: QqRemoteStore
   plugins: PluginStore
   taskRuns: TaskRunStore
+  projectIndexes: ProjectIndexStore
 
   private userDataPath: string
 
@@ -34,6 +36,7 @@ export class StorageManager {
     this.qqRemote = new QqRemoteStore()
     this.plugins = new PluginStore()
     this.taskRuns = new TaskRunStore(this.userDataPath)
+    this.projectIndexes = new ProjectIndexStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {

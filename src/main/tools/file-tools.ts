@@ -8,7 +8,7 @@ export function createFileTools(): ToolExecutor[] {
 const readFileTool: ToolExecutor = {
   definition: {
     name: 'read_file',
-    description: 'Read the contents of a file at the given path.',
+    description: 'Read source or document content from one authorized file. Optional line bounds return only that exact range. It does not summarize, classify, or modify the file.',
     parameters: {
       type: 'object',
       properties: {

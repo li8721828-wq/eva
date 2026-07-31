@@ -24,6 +24,7 @@ export type GoalEvent =
   | { type: 'error'; error: string }
 
 export interface GoalPlannerConfig {
+  conversationId?: string
   agentConfig: AgentConfig
   provider: LLMProvider
   toolRegistry: ToolRegistry
@@ -358,6 +359,7 @@ Rules:
     previousResults: GoalStep[]
   ): AsyncGenerator<GoalEvent> {
     const runner = new AgentRunner({
+      conversationId: this.config.conversationId,
       agentConfig: this.config.agentConfig,
       provider: this.config.provider,
       toolRegistry: this.config.toolRegistry,
