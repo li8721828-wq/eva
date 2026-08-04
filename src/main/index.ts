@@ -11,6 +11,7 @@ import { setupGlobalErrorHandlers } from './utils/error-handler'
 import { QqRemoteBridge } from './services/qq-remote-bridge'
 import { registerQqRemoteHandlers } from './ipc/qq-remote'
 import { ProjectIndexService } from './services/project-index-service'
+import { LocalSearxngService } from './services/local-searxng-service'
 
 // Set up global error handlers before anything else
 setupGlobalErrorHandlers()
@@ -58,6 +59,20 @@ app.whenReady().then(async () => {
     providerRegistry,
     projectIndexService,
   })
+
+  // NSIS invokes this once after the application files are copied to disk.
+  // Failure is deliberately isolated from normal Eva startup because Docker
+  // Desktop is an optional prerequisite for the local search service.
+  if (process.argv.includes('--install-local-search')) {
+    try {
+      await new LocalSearxngService().installAndStart()
+      app.exit(0)
+    } catch (error) {
+      console.error('Eva Local Search setup did not complete:', error)
+      app.exit(1)
+    }
+    return
+  }
 
   const qqRemoteBridge = new QqRemoteBridge({
     fileService,

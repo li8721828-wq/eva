@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
 import { useAgentStore } from './use-agent-store'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
@@ -8,6 +8,7 @@ interface ChatState {
   conversations: Conversation[]
   currentConversationId: string | null
   messages: ChatMessage[]
+  isConversationLoading: boolean
   isStreaming: boolean
   streamingContent: string
   streamingToolCalls: ToolCall[]
@@ -34,11 +35,14 @@ interface ChatState {
   loadConversations: () => Promise<void>
   createConversation: (agentId?: string, mode?: 'normal' | 'expert' | 'goal', workspaceId?: string | null) => Promise<Conversation>
   selectConversation: (id: string) => Promise<void>
+  refreshConversation: (id: string) => Promise<void>
   deleteConversation: (id: string) => Promise<void>
   archiveConversation: (id: string) => Promise<void>
   restoreConversation: (id: string) => Promise<void>
   setConversationAgent: (id: string, agentId: string) => Promise<void>
   setConversationPermissions: (id: string, permissionLevel: ConversationPermissionLevel, fileAccessGrants?: FileAccessGrant[]) => Promise<void>
+  setConversationSymposium: (id: string, symposium: AgentSymposium) => Promise<void>
+  setConversationGitBranch: (id: string, branch: string) => Promise<void>
   sendMessage: () => Promise<void>
   abortStream: () => void
   appendStreamEvent: (event: ChatStreamEvent) => void
@@ -63,6 +67,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
   messages: [],
+  isConversationLoading: false,
   isStreaming: false,
   streamingContent: '',
   streamingToolCalls: [],
@@ -115,6 +120,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         conversations: [conv, ...s.conversations],
         currentConversationId: conv.id,
         messages: [],
+        isConversationLoading: false,
         streamingContent: '',
         streamingToolCalls: [],
         streamingStatus: '',
@@ -131,15 +137,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   selectConversation: async (id) => {
     try {
-      set({ currentConversationId: id, messages: [], isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null, error: null })
+      set({ currentConversationId: id, messages: [], isConversationLoading: true, isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null, error: null })
       const result = await window.eva.conversation.load(id)
       if (get().currentConversationId === id) {
-        set({ messages: result.messages })
+        set({ messages: result.messages, isConversationLoading: false })
         const snapshot = await window.eva.task.getSnapshot(id)
         if (get().currentConversationId === id) useTaskStore.getState().hydrateSnapshot(snapshot)
       }
     } catch (err) {
       console.error('Failed to load conversation:', err)
+      if (get().currentConversationId === id) set({ isConversationLoading: false })
+    }
+  },
+
+  refreshConversation: async (id) => {
+    try {
+      const result = await window.eva.conversation.load(id)
+      if (get().currentConversationId !== id) return
+      set({ messages: result.messages })
+      const snapshot = await window.eva.task.getSnapshot(id)
+      if (get().currentConversationId === id) useTaskStore.getState().hydrateSnapshot(snapshot)
+    } catch (err) {
+      console.error('Failed to refresh conversation:', err)
     }
   },
 
@@ -248,6 +267,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }))
     } catch (err) {
       console.error('Failed to update conversation permissions:', err)
+    }
+  },
+
+  setConversationSymposium: async (id, symposium) => {
+    try {
+      await window.eva.conversation.update(id, { symposium })
+      set((state) => ({
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === id ? { ...conversation, symposium } : conversation
+        ),
+      }))
+    } catch (err) {
+      console.error('Failed to update Symposium capabilities:', err)
+      throw err
+    }
+  },
+
+  setConversationGitBranch: async (id, branch) => {
+    try {
+      const updated = await window.eva.git.switchBranch(id, branch)
+      if (!updated) return
+      set((state) => ({
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === id ? updated : conversation
+        ),
+      }))
+    } catch (err) {
+      console.error('Failed to switch conversation Git branch:', err)
+      throw err
     }
   },
 

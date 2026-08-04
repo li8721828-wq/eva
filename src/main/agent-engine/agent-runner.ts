@@ -22,6 +22,8 @@ export interface AgentRunnerConfig {
   fileService: FileService
   terminalService: TerminalService
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
+  /** Optional exact paths an otherwise permitted write_file call may modify. */
+  allowedWritePaths?: string[]
   /** Internal orchestration capability available in Auto conversations. */
   delegateToTeam?: (goal: string) => Promise<string>
   runTask?: (task: string) => Promise<string>
@@ -469,6 +471,22 @@ export class AgentRunner {
       return {
         result: `Error: Tool '${toolCall.name}' is not permitted for this agent.`,
         isError: true,
+      }
+    }
+
+    if (toolCall.name === 'write_file' && this.config.allowedWritePaths?.length) {
+      const requestedPath = typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : ''
+      const resolvedRequested = requestedPath
+        ? path.resolve(path.isAbsolute(requestedPath) ? requestedPath : toolContext.workspacePath, requestedPath)
+        : ''
+      const isAllowed = this.config.allowedWritePaths.some((allowedPath) =>
+        path.resolve(allowedPath).toLowerCase() === resolvedRequested.toLowerCase()
+      )
+      if (!isAllowed) {
+        return {
+          result: 'Error: Symposium participants may only write to the designated shared document.',
+          isError: true,
+        }
       }
     }
 

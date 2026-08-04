@@ -21,6 +21,10 @@ export const IPC = {
   PROJECT_INDEX_BROWSE: 'project-index:browse',
   PROJECT_INDEX_REFRESH: 'project-index:refresh',
 
+  // Per-conversation Git worktrees
+  GIT_STATUS: 'git:status',
+  GIT_SWITCH_BRANCH: 'git:switch-branch',
+
   // Plugin management
   PLUGIN_LIST: 'plugin:list',
   PLUGIN_MARKETPLACE: 'plugin:marketplace',
@@ -30,6 +34,9 @@ export const IPC = {
   PLUGIN_DELETE: 'plugin:delete',
   PLUGIN_UPDATE_SETTINGS: 'plugin:update-settings',
   PLUGIN_SELECT_PATH: 'plugin:select-path',
+  PLUGIN_LOCAL_SEARXNG_STATUS: 'plugin:local-searxng-status',
+  PLUGIN_LOCAL_SEARXNG_INSTALL: 'plugin:local-searxng-install',
+  PLUGIN_LOCAL_SEARXNG_STOP: 'plugin:local-searxng-stop',
 
   // 聊天（流式）
   CHAT_SEND: 'chat:send',

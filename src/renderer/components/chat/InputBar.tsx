@@ -495,8 +495,8 @@ export function InputBar({ className }: InputBarProps) {
                   title={currentConversation ? 'File access for this conversation' : 'Select a permission to create a draft conversation'}
                 />
               </div>
+              <span className="shrink-0 text-zinc-400">Shift+Enter for a new line</span>
             </div>
-            <span className="shrink-0 text-zinc-400">Shift+Enter for a new line</span>
           </div>
 
           {currentConversation && permissionLevel === 'granted-folders' && (

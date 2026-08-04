@@ -3,10 +3,13 @@ import { dialog, ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { InstalledPlugin, MarketplacePluginView } from '../../shared/types/plugin'
 import { getStorage } from '../storage'
+import { LocalSearxngService } from '../services/local-searxng-service'
 
 const MAX_MANIFEST_SIZE = 512 * 1024
 
 export function registerPluginHandlers(): void {
+  const localSearxng = new LocalSearxngService()
+
   ipcMain.handle(IPC.PLUGIN_LIST, async (): Promise<InstalledPlugin[]> => getStorage().plugins.list())
 
   ipcMain.handle(IPC.PLUGIN_MARKETPLACE, async (): Promise<MarketplacePluginView[]> => getStorage().plugins.marketplace())
@@ -56,4 +59,8 @@ export function registerPluginHandlers(): void {
     })
     return selection.canceled ? null : selection.filePaths[0] || null
   })
+
+  ipcMain.handle(IPC.PLUGIN_LOCAL_SEARXNG_STATUS, async () => localSearxng.getStatus())
+  ipcMain.handle(IPC.PLUGIN_LOCAL_SEARXNG_INSTALL, async () => localSearxng.installAndStart())
+  ipcMain.handle(IPC.PLUGIN_LOCAL_SEARXNG_STOP, async () => localSearxng.stop())
 }

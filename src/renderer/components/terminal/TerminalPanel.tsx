@@ -20,7 +20,10 @@ export function TerminalPanel({ className }: TerminalPanelProps) {
   const { workspacePath, toggleTerminal } = useAppStore()
   const { conversations, currentConversationId } = useChatStore()
   const conversationWorkspacePath = conversations.find((conversation) => conversation.id === currentConversationId)?.workspacePath
-  const terminalWorkspacePath = conversationWorkspacePath || workspacePath || process.cwd?.() || '.'
+  // The renderer runs with Node integration disabled in packaged builds, so
+  // `process.cwd()` is not available here. The main process resolves this
+  // fallback when a conversation has not selected a workspace yet.
+  const terminalWorkspacePath = conversationWorkspacePath || workspacePath || '.'
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeTab, setActiveTab] = useState<string>('')
   const [output, setOutput] = useState<Record<string, string[]>>({})

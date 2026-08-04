@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, Download, Eye, EyeOff, FolderOpen, FolderUp, Loader2, PackageCheck, PlugZap, Power, Settings2, ShieldCheck, Trash2, X } from 'lucide-react'
+import { CheckCircle2, Download, Eye, EyeOff, FolderOpen, FolderUp, Loader2, PackageCheck, PlugZap, Power, RefreshCw, Server, Settings2, ShieldCheck, Square, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
-import { isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type MarketplacePluginView, type PluginConfigField } from '../../../shared/types/plugin'
+import { isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type LocalSearxngStatus, type MarketplacePluginView, type PluginConfigField } from '../../../shared/types/plugin'
 
 function PermissionPills({ plugin }: { plugin: Pick<InstalledPlugin, 'permissions'> }) {
   return (
@@ -31,6 +31,8 @@ export function PluginCenter() {
   const [configuringId, setConfiguringId] = useState<string | null>(null)
   const [configValues, setConfigValues] = useState<Record<string, string>>({})
   const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({})
+  const [localSearxngStatus, setLocalSearxngStatus] = useState<LocalSearxngStatus | null>(null)
+  const [localSearxngWorking, setLocalSearxngWorking] = useState(false)
 
   const refresh = useCallback(async () => {
     const [nextInstalled, nextMarketplace] = await Promise.all([
@@ -107,6 +109,52 @@ export function PluginCenter() {
     setConfigValues(initial)
     setVisibleSecrets({})
     setNotice(null)
+    if (plugin.id === 'searxng-search') {
+      void window.eva.plugins.getLocalSearxngStatus()
+        .then(setLocalSearxngStatus)
+        .catch((error) => setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to inspect Local Search.' }))
+    } else {
+      setLocalSearxngStatus(null)
+    }
+  }
+
+  const installLocalSearxng = async () => {
+    setLocalSearxngWorking(true)
+    setNotice(null)
+    try {
+      const status = await window.eva.plugins.installLocalSearxng()
+      setLocalSearxngStatus(status)
+      setConfigValues((values) => ({ ...values, endpoint: status.endpoint }))
+      await refresh()
+      setNotice({ kind: 'success', message: 'Eva Local Search is running and is now the active web-search service.' })
+    } catch (error) {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to set up Local Search.' })
+    } finally {
+      setLocalSearxngWorking(false)
+    }
+  }
+
+  const refreshLocalSearxng = async () => {
+    setLocalSearxngWorking(true)
+    try {
+      setLocalSearxngStatus(await window.eva.plugins.getLocalSearxngStatus())
+    } catch (error) {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to inspect Local Search.' })
+    } finally {
+      setLocalSearxngWorking(false)
+    }
+  }
+
+  const stopLocalSearxng = async () => {
+    setLocalSearxngWorking(true)
+    try {
+      setLocalSearxngStatus(await window.eva.plugins.stopLocalSearxng())
+      setNotice({ kind: 'success', message: 'Eva Local Search was stopped. Its settings are retained.' })
+    } catch (error) {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to stop Local Search.' })
+    } finally {
+      setLocalSearxngWorking(false)
+    }
   }
 
   const browseConfigurationPath = async (field: PluginConfigField) => {
@@ -253,6 +301,32 @@ export function PluginCenter() {
                     </label>
                   ))}
                 </div>
+                {plugin.id === 'searxng-search' ? (
+                  <section className="mt-6 border-t border-zinc-200 pt-5" aria-label="Eva Local Search">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="flex min-w-0 gap-3">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600"><Server className="h-4 w-4" /></span>
+                        <div>
+                          <h5 className="text-sm font-semibold text-zinc-900">Eva Local Search</h5>
+                          <p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500">Set up a private SearXNG service on this computer. Eva downloads the official container image through Docker Desktop and keeps it bound to <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-700">127.0.0.1:8080</code>.</p>
+                        </div>
+                      </div>
+                      <Button variant="ghost" size="icon" onClick={() => void refreshLocalSearxng()} disabled={localSearxngWorking} title="Refresh Local Search status" aria-label="Refresh Local Search status"><RefreshCw className={cn('h-4 w-4', localSearxngWorking && 'animate-spin')} /></Button>
+                    </div>
+                    <div className={cn('mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-xs', localSearxngStatus?.running ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-50 text-zinc-600')}>
+                      <span>{localSearxngStatus?.message || 'Checking whether Local Search is available...'}</span>
+                      {localSearxngStatus?.running ? <span className="font-medium">{localSearxngStatus.endpoint}</span> : null}
+                    </div>
+                    <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      {localSearxngStatus?.running ? <Button variant="outline" size="sm" onClick={() => void stopLocalSearxng()} disabled={localSearxngWorking}><Square className="mr-1.5 h-3.5 w-3.5" />Stop service</Button> : null}
+                      <Button size="sm" onClick={() => void installLocalSearxng()} disabled={localSearxngWorking || localSearxngStatus?.dockerAvailable === false}>
+                        {localSearxngWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1.5 h-3.5 w-3.5" />}
+                        {localSearxngStatus?.installed ? 'Start Local Search' : 'Install Local Search'}
+                      </Button>
+                    </div>
+                    {localSearxngStatus?.dockerAvailable === false ? <p className="mt-3 text-xs leading-5 text-amber-700">Docker Desktop must be installed and running before Eva can install Local Search.</p> : null}
+                  </section>
+                ) : null}
                 <div className="mt-5 flex justify-end gap-2"><Button variant="outline" onClick={() => setConfiguringId(null)}>Cancel</Button><Button onClick={() => void saveConfiguration(plugin)} disabled={workingId !== null}>{workingId === plugin.id ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}Save settings</Button></div>
               </section>
             )

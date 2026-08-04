@@ -32,7 +32,7 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, currentConversationId, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
+  const { messages, currentConversationId, isConversationLoading, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
   const { rightPanelVisible } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const goalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] : undefined)
@@ -119,6 +119,10 @@ export function MessageList({ className }: MessageListProps) {
 
     // Conversation messages arrive asynchronously. Wait until the scrollable
     // surface exists, then restore the saved reading position in one frame.
+    // Conversation selection clears the old message list while IPC loads the
+    // next one. Restoring against that empty surface would lock it at the top.
+    if (isConversationLoading) return
+
     const savedOffset = conversationScrollOffsets.get(conversationId)
     const frame = requestAnimationFrame(() => {
       const area = scrollAreaRef.current
@@ -136,7 +140,7 @@ export function MessageList({ className }: MessageListProps) {
     })
 
     return () => cancelAnimationFrame(frame)
-  }, [currentConversationId, messages.length])
+  }, [currentConversationId, isConversationLoading, messages.length])
 
   useLayoutEffect(() => {
     const previousMessageCount = previousMessageCountRef.current
@@ -160,7 +164,7 @@ export function MessageList({ className }: MessageListProps) {
     if (isStreaming && followStreamRef.current) scrollToBottom('auto')
   }, [isStreaming, streamingContent, streamingToolCalls])
 
-  if (messages.length === 0 && !isStreaming && !isTeamRunning && !hasGoalProgress) {
+  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !hasGoalProgress) {
     return <WelcomeScreen className={className} />
   }
 

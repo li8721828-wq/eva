@@ -1,0 +1,16 @@
+use_default_settings: true
+
+general:
+  instance_name: Eva Local Search
+  enable_metrics: false
+
+search:
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: __EVA_SEARXNG_SECRET__
+  bind_address: 0.0.0.0
+  port: 8080
+  public_instance: false

@@ -1,5 +1,6 @@
 export * from './agent'
 export * from './conversation'
+export * from './git'
 export * from './qq'
 export * from './task'
 export * from './provider'

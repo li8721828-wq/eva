@@ -73,7 +73,7 @@ const App: React.FC = () => {
     setExplorerHeight,
   } = useAppStore()
 
-  const { loadConversations, currentConversationId, selectConversation } = useChatStore()
+  const { loadConversations, currentConversationId, refreshConversation } = useChatStore()
   const { loadAgents } = useAgentStore()
   const { loadWorkspaces } = useWorkspaceStore()
   const [activeResize, setActiveResize] = useState<ResizeTarget | null>(null)
@@ -142,8 +142,10 @@ const App: React.FC = () => {
 
   useEffect(() => window.eva.conversation.onChanged((_event, conversationId) => {
     void loadConversations()
-    if (conversationId === currentConversationId) void selectConversation(conversationId)
-  }), [currentConversationId, loadConversations, selectConversation])
+    // Symposium replies are background updates, not navigation. Keep the
+    // reader's current position while refreshing their visible conversation.
+    if (conversationId === currentConversationId) void refreshConversation(conversationId)
+  }), [currentConversationId, loadConversations, refreshConversation])
 
   // Responsive: auto-hide right panel on small windows
   useEffect(() => {

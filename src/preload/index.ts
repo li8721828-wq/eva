@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
 import type { Conversation, ChatImageAttachment, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
+import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
@@ -9,7 +10,7 @@ import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
 import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
-import type { InstalledPlugin, MarketplacePluginView } from '../shared/types/plugin'
+import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from '../shared/types/plugin'
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 
 // GoalEvent type - defined locally to avoid importing from main process
@@ -135,6 +136,11 @@ export interface EvaAPI {
     refresh(workspaceId: string): Promise<ProjectIndexSnapshot>
   }
 
+  git: {
+    status(conversationId: string): Promise<GitRepositoryStatus>
+    switchBranch(conversationId: string, branch: string): Promise<Conversation>
+  }
+
   menu: {
     onToggleTerminal(callback: () => void): Unsubscribe
   }
@@ -173,6 +179,9 @@ export interface EvaAPI {
     remove(id: string): Promise<void>
     updateSettings(id: string, settings: Record<string, string | number | boolean>): Promise<InstalledPlugin>
     selectPath(kind: 'file' | 'directory'): Promise<string | null>
+    getLocalSearxngStatus(): Promise<LocalSearxngStatus>
+    installLocalSearxng(): Promise<LocalSearxngStatus>
+    stopLocalSearxng(): Promise<LocalSearxngStatus>
   }
 }
 
@@ -320,6 +329,11 @@ const evaAPI: EvaAPI = {
     refresh: (workspaceId) => ipcRenderer.invoke(IPC.PROJECT_INDEX_REFRESH, workspaceId),
   },
 
+  git: {
+    status: (conversationId) => ipcRenderer.invoke(IPC.GIT_STATUS, conversationId),
+    switchBranch: (conversationId, branch) => ipcRenderer.invoke(IPC.GIT_SWITCH_BRANCH, conversationId, branch),
+  },
+
   menu: {
     onToggleTerminal: (callback) => onStream<void>(IPC.MENU_TOGGLE_TERMINAL, () => callback()),
   },
@@ -358,6 +372,9 @@ const evaAPI: EvaAPI = {
     remove: (id) => ipcRenderer.invoke(IPC.PLUGIN_DELETE, id),
     updateSettings: (id, settings) => ipcRenderer.invoke(IPC.PLUGIN_UPDATE_SETTINGS, id, settings),
     selectPath: (kind) => ipcRenderer.invoke(IPC.PLUGIN_SELECT_PATH, kind),
+    getLocalSearxngStatus: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STATUS),
+    installLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_INSTALL),
+    stopLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STOP),
   },
 }
 

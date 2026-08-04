@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Check, ChevronLeft, MessageCircleMore, Play, UsersRound } from 'lucide-react'
+import { Check, ChevronLeft, MessageCircleMore, Play, ShieldCheck, UsersRound } from 'lucide-react'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
@@ -7,7 +7,7 @@ import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
-import type { SymposiumModelParticipant } from '../../../shared/types/symposium'
+import { SYMPOSIUM_TOOL_OPTIONS, type SymposiumModelParticipant } from '../../../shared/types/symposium'
 
 function titleFromTopic(topic: string): string {
   const value = topic.replace(/\s+/g, ' ').trim()
@@ -31,6 +31,7 @@ export function SymposiumWorkspace() {
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [participantIds, setParticipantIds] = useState<string[]>([])
   const [topic, setTopic] = useState('')
+  const [selectedTools, setSelectedTools] = useState<string[]>(['list_directory', 'search_files', 'read_file', 'search_code'])
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const workspace = workspaces.find((item) => item.id === activeWorkspaceId)
@@ -82,6 +83,18 @@ export function SymposiumWorkspace() {
     )
   }
 
+  const toggleTool = (toolId: string) => {
+    setSelectedTools((current) => {
+      if (current.includes(toolId)) {
+        const next = current.filter((id) => id !== toolId)
+        return toolId === 'read_file' ? next.filter((id) => id !== 'write_file') : next
+      }
+      return toolId === 'write_file' && !current.includes('read_file')
+        ? [...current, 'read_file', toolId]
+        : [...current, toolId]
+    })
+  }
+
   const start = async () => {
     const normalizedTopic = topic.trim()
     if (!normalizedTopic) {
@@ -103,12 +116,12 @@ export function SymposiumWorkspace() {
         workspacePath: workspace?.path || '',
         accessScope: workspace ? 'workspace' : 'full',
         permissionLevel: workspace ? 'workspace' : 'full-access',
-        symposium: { topic: normalizedTopic, participants, status: 'idle' },
+        symposium: { topic: normalizedTopic, participants, tools: selectedTools, status: 'idle' },
       })
       setConversations([conversation, ...useChatStore.getState().conversations])
       await selectConversation(conversation.id)
       setCurrentView('chat')
-      await window.eva.symposium.start({ conversationId: conversation.id, topic: normalizedTopic, participants })
+      await window.eva.symposium.start({ conversationId: conversation.id, topic: normalizedTopic, participants, tools: selectedTools })
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Could not start the Symposium.')
       setStarting(false)
@@ -141,10 +154,30 @@ export function SymposiumWorkspace() {
               className="mt-3 min-h-36 w-full resize-y rounded-lg border border-zinc-200 bg-white px-4 py-3 text-[15px] leading-7 text-zinc-800 outline-none transition focus:border-violet-300 focus:ring-2 focus:ring-violet-100"
             />
             <p className="mt-6 text-sm leading-6 text-zinc-500">Send a normal message to invite all models. Mention a handle such as <span className="font-mono text-violet-700">@deepseek-v4-pro</span> to address one model only; models can mention each other or you in the same room.</p>
+            <div className="mt-7 border-t border-zinc-200 pt-5">
+              <div className="flex items-start gap-2.5">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+                <div>
+                  <h2 className="text-sm font-semibold text-zinc-900">Model capabilities</h2>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">Grant the selected models atomic tools for this discussion. File access still follows this conversation&apos;s workspace permission; command execution additionally requires full filesystem access.</p>
+                </div>
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                {SYMPOSIUM_TOOL_OPTIONS.map((tool) => {
+                  const selected = selectedTools.includes(tool.id)
+                  return (
+                    <label key={tool.id} className={cn('flex cursor-pointer gap-3 rounded-lg border px-3 py-2.5 transition-colors', selected ? 'border-violet-200 bg-violet-50/70' : 'border-zinc-200 hover:border-zinc-300')}>
+                      <input type="checkbox" checked={selected} onChange={() => toggleTool(tool.id)} className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-violet-600 focus:ring-violet-500" />
+                      <span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium text-zinc-800">{tool.label}<span className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">{tool.group}</span></span><span className="mt-0.5 block text-xs leading-5 text-zinc-500">{tool.description}</span></span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
             {error && <p className="mt-5 text-sm text-red-600">{error}</p>}
             <div className="mt-9 flex items-center gap-3">
               <Button disabled={starting || participantIds.length < 2 || !topic.trim()} className="gap-2" onClick={() => void start()}><Play className="h-4 w-4" />{starting ? 'Starting...' : 'Start Symposium'}</Button>
-              <span className="text-xs leading-5 text-zinc-500">Discussion turns are read-only. Models do not run file, terminal, or web tools here.</span>
+              <span className="text-xs leading-5 text-zinc-500">{selectedTools.length ? `${selectedTools.length} capabilities are granted to every selected model.` : 'No tools are granted; models will discuss using their model context only.'}</span>
             </div>
           </div>
 
@@ -162,7 +195,7 @@ export function SymposiumWorkspace() {
               })}
             </div>
             {modelParticipants.length === 0 && <p className="mt-4 text-sm leading-6 text-zinc-500">No enabled models are available. Add a saved model connection and select one or more models in Settings.</p>}
-            {participants.length > 0 && <div className="mt-6 border-t border-zinc-200 pt-5 text-xs leading-5 text-zinc-500"><MessageCircleMore className="mr-1 inline h-3.5 w-3.5 text-violet-500" />Every message is visible to the whole group. Models reply concurrently, and a model mention is routed to that model in the next exchange.</div>}
+            {participants.length > 0 && <div className="mt-6 border-t border-zinc-200 pt-5 text-xs leading-5 text-zinc-500"><MessageCircleMore className="mr-1 inline h-3.5 w-3.5 text-violet-500" />Every message is visible to the whole group. Models reply concurrently unless file writing is enabled, in which case Eva serializes seats to prevent edit conflicts.</div>}
           </aside>
         </section>
       </div>

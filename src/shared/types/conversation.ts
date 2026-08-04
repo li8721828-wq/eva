@@ -21,6 +21,12 @@ export interface Conversation {
   fileAccessGrants?: FileAccessGrant[]
   /** Controls whether this conversation may use the project's semantic index dimensions. */
   multiDimensionalIndexEnabled?: boolean
+  /** Base Git repository used by this conversation, when its workspace is a Git project. */
+  gitRepositoryPath?: string
+  /** Branch selected for this conversation. Each non-default branch uses an isolated Git worktree. */
+  gitBranch?: string
+  /** Generated worktree path for the selected branch. */
+  gitWorktreePath?: string
   /** Optional shared deliberation that belongs to this conversation. */
   symposium?: AgentSymposium
   archived?: boolean
