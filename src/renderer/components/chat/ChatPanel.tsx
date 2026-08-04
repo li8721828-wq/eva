@@ -9,7 +9,7 @@ import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { TeamCollaborationPanel } from './TeamCollaborationPanel'
 import { ExecutionMonitor } from './ExecutionMonitor'
-import { Bot, AlertCircle, ShieldAlert, Terminal, X, UsersRound, Square, GitBranch, ShieldCheck } from 'lucide-react'
+import { Bot, AlertCircle, ShieldAlert, Terminal, X, UsersRound, Square, GitBranch, ShieldCheck, Pin } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
@@ -32,7 +32,8 @@ export function ChatPanel({ className }: ChatPanelProps) {
   const symposiumRuntime = useSymposiumStore((state) => currentConversationId ? state.runtimes[currentConversationId] : undefined)
   const symposium = currentConversation?.symposium
   const symposiumRunning = symposiumRuntime?.status === 'running'
-  const symposiumParticipants = symposium?.participants?.map((participant) => `${participant.providerName} / ${participant.modelName} @${participant.handle}`) || []
+  const symposiumSeats = symposium?.participants || []
+  const symposiumParticipants = symposiumSeats.map((participant) => `${participant.providerName} / ${participant.modelName} @${participant.handle}`)
   const legacySymposiumParticipants = symposium?.participantIds
     ?.map((id) => agents.find((candidate) => candidate.id === id)?.name)
     .filter((name): name is string => Boolean(name)) || []
@@ -40,13 +41,22 @@ export function ChatPanel({ className }: ChatPanelProps) {
   const [gitStatus, setGitStatus] = useState<GitRepositoryStatus | null>(null)
   const [isSwitchingGitBranch, setIsSwitchingGitBranch] = useState(false)
   const [symposiumCapabilitiesOpen, setSymposiumCapabilitiesOpen] = useState(false)
-  const [symposiumToolDraft, setSymposiumToolDraft] = useState<string[]>([])
+  const [symposiumToolDrafts, setSymposiumToolDrafts] = useState<Record<string, string[]>>({})
+  const [symposiumMemoryDraft, setSymposiumMemoryDraft] = useState({ objective: '', agreements: '', openQuestions: '', actionItems: '', pinned: true })
   const [savingSymposiumCapabilities, setSavingSymposiumCapabilities] = useState(false)
 
   useEffect(() => {
     setSymposiumCapabilitiesOpen(false)
-    setSymposiumToolDraft(currentConversation?.symposium?.tools || [])
-  }, [currentConversationId, currentConversation?.symposium?.tools])
+    const nextSymposium = currentConversation?.symposium
+    setSymposiumToolDrafts(Object.fromEntries((nextSymposium?.participants || []).map((participant) => [participant.id, participant.tools ?? nextSymposium?.tools ?? []])))
+    setSymposiumMemoryDraft({
+      objective: nextSymposium?.memory?.objective || nextSymposium?.topic || '',
+      agreements: (nextSymposium?.memory?.agreements || []).join('\n'),
+      openQuestions: (nextSymposium?.memory?.openQuestions || []).join('\n'),
+      actionItems: (nextSymposium?.memory?.actionItems || []).join('\n'),
+      pinned: nextSymposium?.memory?.pinned ?? true,
+    })
+  }, [currentConversationId, currentConversation?.symposium])
 
   useEffect(() => {
     let cancelled = false
@@ -87,23 +97,47 @@ export function ChatPanel({ className }: ChatPanelProps) {
     }
   }
 
-  const toggleSymposiumTool = (toolId: string) => {
-    setSymposiumToolDraft((current) => {
-      if (current.includes(toolId)) {
-        const next = current.filter((id) => id !== toolId)
+  const toggleSymposiumTool = (participantId: string, toolId: string) => {
+    setSymposiumToolDrafts((current) => {
+      const currentTools = current[participantId] || []
+      const next = (() => {
+      if (currentTools.includes(toolId)) {
+        const next = currentTools.filter((id) => id !== toolId)
         return toolId === 'read_file' ? next.filter((id) => id !== 'write_file') : next
       }
-      return toolId === 'write_file' && !current.includes('read_file')
-        ? [...current, 'read_file', toolId]
-        : [...current, toolId]
+      return toolId === 'write_file' && !currentTools.includes('read_file')
+        ? [...currentTools, 'read_file', toolId]
+        : [...currentTools, toolId]
+      })()
+      return { ...current, [participantId]: next }
     })
   }
+
+  const memoryItems = (value: string) => value.split('\n').map((item) => item.trim()).filter(Boolean)
 
   const saveSymposiumCapabilities = async () => {
     if (!currentConversation?.symposium) return
     setSavingSymposiumCapabilities(true)
     try {
-      await setConversationSymposium(currentConversation.id, { ...currentConversation.symposium, tools: symposiumToolDraft })
+      const participants = (currentConversation.symposium.participants || []).map((participant) => ({
+        ...participant,
+        tools: symposiumToolDrafts[participant.id] || [],
+      }))
+      const hasWriter = participants.some((participant) => participant.tools?.includes('write_file'))
+      if (hasWriter && !currentConversation.workspacePath) throw new Error('File editing requires this Symposium to belong to a workspace.')
+      await setConversationSymposium(currentConversation.id, {
+        ...currentConversation.symposium,
+        participants,
+        sharedDocument: undefined,
+        memory: {
+          objective: symposiumMemoryDraft.objective.trim() || currentConversation.symposium.topic,
+          agreements: memoryItems(symposiumMemoryDraft.agreements),
+          openQuestions: memoryItems(symposiumMemoryDraft.openQuestions),
+          actionItems: memoryItems(symposiumMemoryDraft.actionItems),
+          pinned: symposiumMemoryDraft.pinned,
+          updatedAt: Date.now(),
+        },
+      })
       setSymposiumCapabilitiesOpen(false)
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Could not save Symposium capabilities.')
@@ -175,8 +209,8 @@ export function ChatPanel({ className }: ChatPanelProps) {
 
       {symposium && (
         <>
-            <div className="flex items-center justify-between gap-4 border-b border-violet-100 bg-violet-50/45 px-6 py-2.5 text-xs text-zinc-600">
-              <div className="min-w-0 truncate"><span className="font-medium text-violet-800">Shared model discussion</span><span className="ml-2">{displayedSymposiumParticipants.join(' / ') || 'Model seats'}</span><span className="ml-2 text-zinc-500">{symposium.tools?.length ? `${symposium.tools.length} capabilities granted` : 'No model tools granted'}</span>{symposiumRunning && symposiumRuntime?.agentName ? <span className="ml-2 text-violet-600">{symposiumRuntime.agentName} is responding</span> : <span className="ml-2 text-zinc-500">Your next message invites every model to respond.</span>}</div>
+              <div className="flex items-center justify-between gap-4 border-b border-violet-100 bg-violet-50/45 px-6 py-2.5 text-xs text-zinc-600">
+              <div className="min-w-0 truncate"><span className="font-medium text-violet-800">Shared model discussion</span><span className="ml-2">{displayedSymposiumParticipants.join(' / ') || 'Model seats'}</span><span className="ml-2 text-zinc-500">Independent seat permissions</span>{symposiumRunning && symposiumRuntime?.agentName ? <span className="ml-2 text-violet-600">{symposiumRuntime.agentName} is responding</span> : <span className="ml-2 text-zinc-500">Your next message invites every model to respond.</span>}</div>
               <div className="flex shrink-0 items-center gap-1">
                 <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-violet-700 hover:bg-violet-100 hover:text-violet-800" onClick={() => setSymposiumCapabilitiesOpen((open) => !open)} title="Choose which tools every model can use"><ShieldCheck className="h-3.5 w-3.5" />Model capabilities</Button>
                 {symposiumRunning && currentConversationId && <Button variant="ghost" size="sm" className="h-7 gap-1.5 text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => void window.eva.symposium.abort(currentConversationId)}><Square className="h-3.5 w-3.5" />Stop discussion</Button>}
@@ -184,13 +218,12 @@ export function ChatPanel({ className }: ChatPanelProps) {
             </div>
             {symposiumCapabilitiesOpen && (
               <div className="border-b border-zinc-200 bg-white px-6 py-4">
-                <div className="flex items-start justify-between gap-5"><div><p className="text-sm font-medium text-zinc-900">Model capabilities</p><p className="mt-1 text-xs leading-5 text-zinc-500">Applies to every model in this discussion. While a response is running, changes take effect from the next message. Conversation file permissions remain in force.</p></div><div className="flex items-center gap-2"><Button variant="ghost" size="sm" onClick={() => setSymposiumCapabilitiesOpen(false)}>Cancel</Button><Button size="sm" disabled={savingSymposiumCapabilities} onClick={() => void saveSymposiumCapabilities()}>{savingSymposiumCapabilities ? 'Saving...' : 'Save capabilities'}</Button></div></div>
-              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {SYMPOSIUM_TOOL_OPTIONS.map((tool) => {
-                  const selected = symposiumToolDraft.includes(tool.id)
-                  return <label key={tool.id} className={cn('flex cursor-pointer gap-2.5 rounded-md border px-3 py-2.5', selected ? 'border-violet-200 bg-violet-50/70' : 'border-zinc-200 hover:border-zinc-300')}><input type="checkbox" checked={selected} onChange={() => toggleSymposiumTool(tool.id)} className="mt-0.5 h-4 w-4 rounded border-zinc-300 text-violet-600 focus:ring-violet-500" /><span className="min-w-0"><span className="text-xs font-medium text-zinc-800">{tool.label}</span><span className="ml-1.5 text-[10px] uppercase tracking-wide text-zinc-400">{tool.group}</span><span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">{tool.description}</span></span></label>
-                })}
-              </div>
+                <div className="flex items-start justify-between gap-5"><div><p className="text-sm font-medium text-zinc-900">Discussion controls</p><p className="mt-1 text-xs leading-5 text-zinc-500">Each model seat has its own atomic tool grant. Changes made while a response is running apply from the next message.</p></div><div className="flex items-center gap-2"><Button variant="ghost" size="sm" onClick={() => setSymposiumCapabilitiesOpen(false)}>Cancel</Button><Button size="sm" disabled={savingSymposiumCapabilities} onClick={() => void saveSymposiumCapabilities()}>{savingSymposiumCapabilities ? 'Saving...' : 'Save changes'}</Button></div></div>
+                <div className="mt-5 grid gap-3 xl:grid-cols-2">
+                  {symposiumSeats.map((participant) => <section key={participant.id} className="rounded-lg border border-zinc-200 p-3.5"><div className="flex items-baseline justify-between gap-3"><p className="truncate text-sm font-medium text-zinc-900">{participant.modelName}</p><span className="shrink-0 text-[11px] text-zinc-400">{participant.providerName}</span></div><p className="mt-1 truncate font-mono text-[11px] text-violet-700">@{participant.handle}</p><div className="mt-3 flex flex-wrap gap-1.5">{SYMPOSIUM_TOOL_OPTIONS.map((tool) => { const selected = (symposiumToolDrafts[participant.id] || []).includes(tool.id); return <label key={tool.id} className={cn('cursor-pointer rounded-md px-2 py-1 text-[11px] transition-colors', selected ? 'bg-violet-100 text-violet-800' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200')}><input type="checkbox" className="sr-only" checked={selected} onChange={() => toggleSymposiumTool(participant.id, tool.id)} />{tool.label}</label> })}</div></section>)}
+                </div>
+                <div className="mt-5 border-t border-zinc-100 pt-5"><section><div className="flex items-center justify-between gap-3"><div className="flex items-center gap-2"><Pin className="h-4 w-4 text-violet-600" /><p className="text-sm font-medium text-zinc-900">Pinned discussion brief</p></div><label className="flex items-center gap-1.5 text-xs text-zinc-600"><input type="checkbox" checked={symposiumMemoryDraft.pinned} onChange={(event) => setSymposiumMemoryDraft((draft) => ({ ...draft, pinned: event.target.checked }))} className="h-4 w-4 rounded border-zinc-300 text-violet-600" />Pin</label></div><p className="mt-1 text-xs leading-5 text-zinc-500">This durable context is inserted ahead of the discussion transcript for every seat.</p></section></div>
+                <div className="mt-3 grid gap-3 lg:grid-cols-2"><label className="text-xs font-medium text-zinc-700">Objective<textarea value={symposiumMemoryDraft.objective} onChange={(event) => setSymposiumMemoryDraft((draft) => ({ ...draft, objective: event.target.value }))} className="mt-1.5 min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" /></label><label className="text-xs font-medium text-zinc-700">Agreements (one per line)<textarea value={symposiumMemoryDraft.agreements} onChange={(event) => setSymposiumMemoryDraft((draft) => ({ ...draft, agreements: event.target.value }))} className="mt-1.5 min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" /></label><label className="text-xs font-medium text-zinc-700">Open questions (one per line)<textarea value={symposiumMemoryDraft.openQuestions} onChange={(event) => setSymposiumMemoryDraft((draft) => ({ ...draft, openQuestions: event.target.value }))} className="mt-1.5 min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" /></label><label className="text-xs font-medium text-zinc-700">Action items (one per line)<textarea value={symposiumMemoryDraft.actionItems} onChange={(event) => setSymposiumMemoryDraft((draft) => ({ ...draft, actionItems: event.target.value }))} className="mt-1.5 min-h-20 w-full resize-y rounded-md border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-300 focus:ring-2 focus:ring-violet-100" /></label></div>
             </div>
           )}
         </>

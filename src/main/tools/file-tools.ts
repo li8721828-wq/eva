@@ -57,12 +57,8 @@ const writeFileTool: ToolExecutor = {
     const filePath = params.path as string
     const content = params.content as string
 
-    try {
-      await context.fileService.writeFile(filePath, content, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
-      return `Successfully wrote to ${filePath}`
-    } catch (err) {
-      return `Failed to write file: ${(err as Error).message}`
-    }
+    await context.fileService.writeFile(filePath, content, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    return `Successfully wrote to ${filePath}`
   },
 }
 

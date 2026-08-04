@@ -108,7 +108,6 @@ const SPEC_TOOL: ToolDefinition = {
   description: 'Expand a reusable Eva specification template into an implementation brief. Use only when a matching template will add useful structure.',
   parameters: { type: 'object', properties: { templateId: { type: 'string', description: 'Template identifier.' }, parameters: { type: 'object', description: 'Template parameter values.' } }, required: ['templateId'] },
 }
-
 export class AgentRunner {
   private config: AgentRunnerConfig
   private abortController: AbortController | null = null
@@ -178,6 +177,7 @@ export class AgentRunner {
       // result. Reuse the result during one ReAct run instead of re-reading the
       // same file/page/search result over and over.
       const readOnlyToolCache = new Map<string, CompletedToolResult>()
+      const pendingWriteVerifications = new Set<string>()
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -205,13 +205,6 @@ export class AgentRunner {
 
         const hasToolCalls = response.toolCalls.length > 0
 
-        // If the assistant produced text AND is about to call tools,
-        // emit the full reasoning text so the renderer has a stable snapshot
-        // before potentially long-running tool executions.
-        if (hasToolCalls && response.content) {
-          yield { type: 'text', content: response.content }
-        }
-
         // No tool calls → the model is done reasoning
         if (!hasToolCalls) {
           if (!response.content.trim()) {
@@ -223,6 +216,14 @@ export class AgentRunner {
               error: `Model ${agentConfig.model} returned an empty response.${imageHint}`,
             }
             return
+          }
+          if (pendingWriteVerifications.size > 0 && toolDefs.some((tool) => tool.name === 'read_file') && iteration < maxIter - 1) {
+            messages.push({ role: 'assistant', content: response.content })
+            messages.push({
+              role: 'user',
+              content: `You wrote ${this.formatPaths(pendingWriteVerifications)} in this run but have not verified the saved contents. Before finalizing, call read_file for each changed path. Do not claim the file is correct or complete until that verification succeeds.`,
+            })
+            continue
           }
           yield { type: 'done', content: response.content }
           return
@@ -254,9 +255,14 @@ export class AgentRunner {
           const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
           const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
           const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
-          const result = cached || await this.executeTool(toolCall, toolContext)
+          const rawResult = cached || await this.executeTool(toolCall, toolContext)
+          const result = this.normalizeToolResult(rawResult)
           if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           toolResults.set(toolCall.id, result)
+
+          const targetPath = this.resolveWorkspacePath(toolCall.arguments.path, workspacePath)
+          if (!result.isError && toolCall.name === 'write_file' && targetPath) pendingWriteVerifications.add(targetPath)
+          if (!result.isError && toolCall.name === 'read_file' && targetPath) pendingWriteVerifications.delete(targetPath)
 
           // Emit tool_result event
           yield {
@@ -273,6 +279,9 @@ export class AgentRunner {
         // Append assistant tool_calls + tool results to message history
         messages = this.appendToolMessages(messages, response.toolCalls, toolResults)
 
+        const integrityReminder = this.buildToolIntegrityReminder(response.toolCalls, toolResults)
+        if (integrityReminder) messages.push({ role: 'user', content: integrityReminder })
+
         // Tool-role messages cannot safely carry multimodal content for every
         // provider. Add generated renders as a new user turn so the next model
         // iteration can visually compare them with the original references.
@@ -286,8 +295,25 @@ export class AgentRunner {
         }
       }
 
-      // Exceeded max iterations
-      yield { type: 'error', error: `Maximum iterations (${maxIter}) reached` }
+      // Tool calls can legitimately take several passes, but a model must not
+      // lose all of its collected evidence merely because it did not stop
+      // calling tools by the iteration limit. Give it one final, tool-free
+      // synthesis turn so the result can be delivered without another action.
+      const finalVerificationNotice = pendingWriteVerifications.size > 0
+        ? ` The following file writes remain unverified: ${this.formatPaths(pendingWriteVerifications)}. Do not call them correct, complete, or successfully verified; state that verification is still required.`
+        : ''
+      messages.push({
+        role: 'user',
+        content: `You have reached the ${maxIter}-iteration tool-use limit. Do not call any more tools. Using only the results already available in this conversation, provide your concise final answer now. If the evidence is incomplete, state that clearly rather than retrying a tool.${finalVerificationNotice}`,
+      })
+      yield { type: 'thinking', content: 'Synthesizing the available results...' }
+      const finalResponse = yield* this.executeLLMCall(messages, [])
+      if (finalResponse.content.trim()) {
+        yield { type: 'done', content: finalResponse.content }
+        return
+      }
+
+      yield { type: 'error', error: `Tool-use limit (${maxIter}) reached before the model produced a final response. Completed tool results are retained.` }
       yield { type: 'done', content: '' }
     } catch (err: any) {
       if (this.abortController?.signal.aborted) {
@@ -484,7 +510,7 @@ export class AgentRunner {
       )
       if (!isAllowed) {
         return {
-          result: 'Error: Symposium participants may only write to the designated shared document.',
+          result: 'Error: This agent may write only to its explicitly authorized paths.',
           isError: true,
         }
       }
@@ -550,6 +576,46 @@ export class AgentRunner {
     }
 
     return updated
+  }
+
+  private normalizeToolResult(result: CompletedToolResult): CompletedToolResult {
+    if (result.isError) return result
+    // Some legacy executors return a textual failure instead of throwing. Do
+    // not let that be mistaken for evidence that the requested action worked.
+    return /^(?:error|failed|failure)\b/i.test(result.result.trim())
+      ? { ...result, isError: true }
+      : result
+  }
+
+  private resolveWorkspacePath(value: unknown, workspacePath: string): string | undefined {
+    if (typeof value !== 'string' || !value.trim()) return undefined
+    const requestedPath = value.trim()
+    return path.resolve(path.isAbsolute(requestedPath) ? requestedPath : workspacePath, requestedPath).toLowerCase()
+  }
+
+  private formatPaths(paths: Set<string>): string {
+    return Array.from(paths).map((filePath) => `"${filePath}"`).join(', ')
+  }
+
+  private buildToolIntegrityReminder(
+    toolCalls: CompletedToolCall[],
+    toolResults: Map<string, CompletedToolResult>
+  ): string | undefined {
+    const failures = toolCalls
+      .map((toolCall) => ({ toolCall, result: toolResults.get(toolCall.id) }))
+      .filter((entry) => entry.result?.isError)
+
+    if (failures.length > 0) {
+      const names = failures.map(({ toolCall }) => toolCall.name).join(', ')
+      return `Execution integrity notice: ${names} did not complete successfully. Do not claim any requested outcome from those calls succeeded, and do not fabricate the missing data. State the limitation plainly and identify the next concrete requirement (permission, service configuration, source, or user approval).`
+    }
+
+    const successfulSearch = toolCalls.some((toolCall) => toolCall.name === 'web_search' && !toolResults.get(toolCall.id)?.isError)
+    if (successfulSearch) {
+      return 'Research integrity notice: base current-information claims only on the returned search results or pages read in this execution. Include the relevant returned source URLs or explicitly distinguish your own inference from sourced facts.'
+    }
+
+    return undefined
   }
 
   private async loadToolReviewImages(toolResults: Map<string, CompletedToolResult>): Promise<NonNullable<ChatMessageInput['images']>> {

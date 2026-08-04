@@ -63,6 +63,7 @@
   "build": {
     "appId": "com.eva.agent",
     "productName": "Eva",
+    "npmRebuild": false,
     "directories": {
       "buildResources": "resources",
       "output": "dist"
@@ -164,7 +165,8 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "resources/icon.ico"
+      "icon": "resources/icon.ico",
+      "signAndEditExecutable": false
     },
     "mac": {
       "target": "dmg",

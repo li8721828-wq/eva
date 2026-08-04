@@ -1,4 +1,5 @@
 import fs from 'fs'
+import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { Conversation, ChatImageAttachment, ChatMessage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
@@ -19,7 +20,7 @@ import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { GoalProgress } from '../../shared/types/task'
-import { SYMPOSIUM_TOOL_OPTIONS, type SymposiumContinueInput, type SymposiumModelParticipant, type SymposiumStartInput, type SymposiumStreamEvent } from '../../shared/types/symposium'
+import { SYMPOSIUM_TOOL_OPTIONS, type AgentSymposium, type SymposiumContinueInput, type SymposiumDiscussionMemory, type SymposiumModelParticipant, type SymposiumStartInput, type SymposiumStreamEvent } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
 
 export interface ChatServices {
@@ -96,6 +97,21 @@ function mentionedSymposiumParticipants(content: string, participants: Symposium
   return participants.filter((participant) => normalized.includes(`@${getSymposiumHandle(participant).toLowerCase()}`))
 }
 
+function toolsForSymposiumParticipant(participant: SymposiumModelParticipant, legacyTools: string[], availableToolIds: Set<string>): string[] {
+  return (participant.tools ?? legacyTools).filter((tool): tool is string => typeof tool === 'string' && availableToolIds.has(tool))
+}
+
+function symposiumMemoryBlock(memory: SymposiumDiscussionMemory | undefined): string {
+  if (!memory) return 'No durable discussion brief has been saved yet.'
+  const lines = [
+    `Objective: ${memory.objective || '(not set)'}`,
+    `Agreements: ${memory.agreements.length ? memory.agreements.map((item) => `- ${item}`).join('\n') : '(none)'}`,
+    `Open questions: ${memory.openQuestions.length ? memory.openQuestions.map((item) => `- ${item}`).join('\n') : '(none)'}`,
+    `Action items: ${memory.actionItems.length ? memory.actionItems.map((item) => `- ${item}`).join('\n') : '(none)'}`,
+  ]
+  return lines.join('\n')
+}
+
 async function runAgentSymposium(
   services: ChatServices,
   input: SymposiumStartInput | SymposiumContinueInput,
@@ -132,6 +148,9 @@ async function runAgentSymposium(
     }))
   const uniqueParticipants = Array.from(new Map(participants.map((participant) => [participant.id, participant])).values())
   if (uniqueParticipants.length < 2) throw new Error('Choose at least two models for a Symposium.')
+  const initialMemory = isStarting
+    ? input.memory || { objective: topic, agreements: [], openQuestions: [], actionItems: [], pinned: true }
+    : existing?.memory || { objective: topic, agreements: [], openQuestions: [], actionItems: [], pinned: true }
 
   const emit = (event: Omit<SymposiumStreamEvent, 'conversationId'>): void => {
     if (!win.isDestroyed()) win.webContents.send(IPC.SYMPOSIUM_STREAM, { ...event, conversationId: input.conversationId })
@@ -144,9 +163,28 @@ async function runAgentSymposium(
     activeSymposiumRunners.get(input.conversationId)?.forEach((runner) => runner.abort())
   })
 
-  await getStorage().conversations.updateConversation(input.conversationId, {
-    symposium: { topic, participants: uniqueParticipants, tools: selectedSymposiumTools, status: 'running', startedAt, lastActivityAt: Date.now(), responseCycles: cycle },
+  const buildSymposium = (status: AgentSymposium['status'], error?: string): AgentSymposium => ({
+    topic,
+    participants: uniqueParticipants,
+    tools: selectedSymposiumTools,
+    memory: initialMemory,
+    status,
+    startedAt,
+    lastActivityAt: Date.now(),
+    responseCycles: cycle,
+    ...(error ? { error } : {}),
   })
+  const persistSymposium = async (status: AgentSymposium['status'], error?: string): Promise<void> => {
+    const latest = await getStorage().conversations.getConversation(input.conversationId)
+    const latestSymposium = latest?.symposium
+    const next = {
+      ...buildSymposium(status, error),
+      memory: latestSymposium?.memory || initialMemory,
+    }
+    await getStorage().conversations.updateConversation(input.conversationId, { symposium: next })
+  }
+
+  await persistSymposium('running')
   emit({ type: 'started', cycle, participantCount: uniqueParticipants.length })
 
   try {
@@ -170,18 +208,23 @@ async function runAgentSymposium(
       const provider = services.providerRegistry.get(participant.providerId)
       if (!provider) throw new Error(`${participant.providerName} / ${participant.modelName} is not an enabled model connection.`)
       const seatName = `${participant.providerName} / ${participant.modelName}`
+      const seatTools = toolsForSymposiumParticipant(participant, selectedSymposiumTools, availableSymposiumToolIds)
+      const runnerTools = seatTools
       const effectiveAgent: AgentConfig = {
         id: `symposium:${participant.id}`,
         name: seatName,
         description: 'Independent model participant in a shared discussion.',
         role: 'custom',
-        systemPrompt: selectedSymposiumTools.length
-          ? 'You are an independent model participant in Eva\'s shared discussion. Use only the tools explicitly available to you when evidence or a concrete workspace change is needed. All filesystem operations are constrained by this conversation\'s configured access. When editing, read the current file first, preserve relevant work, and state the verified outcome in chat.'
+        systemPrompt: runnerTools.length
+          ? `You are an independent model participant in Eva's shared discussion. Use only the tools explicitly available to you when evidence or a concrete workspace change is needed. All filesystem operations are constrained by this conversation's configured access. When editing a file, read its current contents first and state the path and result in your response so other participants can coordinate.`
           : 'You are an independent model participant in Eva\'s shared discussion. Give a concise, evidence-aware contribution that advances the discussion. You do not have tools in this discussion.',
         providerId: participant.providerId,
         model: participant.model,
-        tools: selectedSymposiumTools,
-        maxIterations: selectedSymposiumTools.length ? 6 : 1,
+        tools: runnerTools,
+        // Symposium participants can need several research and verification
+        // passes before replying. Keep tool-free seats single-pass, while
+        // allowing tool-enabled seats enough room to complete real work.
+        maxIterations: runnerTools.length ? 12 : 1,
         temperature: 0.55,
         isBuiltIn: false,
         createdAt: Date.now(),
@@ -195,7 +238,7 @@ async function runAgentSymposium(
         id: uuidv4(),
         conversationId: input.conversationId,
         role: 'user',
-        content: `You are participating in Eva's shared model group chat.\n\nTopic: ${topic}\n\nAll participants, including the user, share this transcript:\n${symposiumTranscript(history)}\n\nYou are the ${seatName} model seat, addressed in chat as @${getSymposiumHandle(participant)}. Available model mentions: ${handles}. You may address the user as @user, or mention another model when a focused follow-up from it would be useful. Directly address the latest relevant message, build on or challenge prior points, and keep your contribution concrete and concise (up to three short paragraphs).${selectedSymposiumTools.length ? ` You may use only these enabled tools when useful: ${selectedSymposiumTools.join(', ')}. Do not claim a tool action unless its result confirms it.` : ' Do not call tools or claim to have changed files.'}`,
+        content: `You are participating in Eva's shared model group chat.\n\nTopic: ${topic}\n\nPinned discussion brief:\n${symposiumMemoryBlock(initialMemory)}\n\nAll participants, including the user, share this transcript:\n${symposiumTranscript(history)}\n\nYou are the ${seatName} model seat, addressed in chat as @${getSymposiumHandle(participant)}. Available model mentions: ${handles}. You may address the user as @user, or mention another model when a focused follow-up from it would be useful. Directly address the latest relevant message, build on or challenge prior points, and keep your contribution concrete and concise (up to three short paragraphs). Do not repeat a sentence, status update, or evidence already present in the transcript or in your own response.${runnerTools.length ? ` You may use only these enabled tools when useful: ${runnerTools.join(', ')}. Do not claim a tool action unless its result confirms it.` : ' Do not call tools or claim to have changed files.'}`,
         timestamp: Date.now(),
       }
       const runner = new AgentRunner({
@@ -223,10 +266,13 @@ async function runAgentSymposium(
         runnerSet.delete(runner)
       }
       if (cancelled) return { participant, content, error: 'The discussion was stopped.' }
+      const fallbackContent = error?.startsWith('Tool-use limit')
+        ? `_${seatName} reached the tool-use limit before producing a final response. Any completed tool results remain available in the activity log._`
+        : `_${seatName} could not contribute: ${error || 'empty response'}_`
       await getStorage().conversations.addMessage(input.conversationId, {
         id: uuidv4(),
         role: 'assistant',
-        content: content.trim() || `_${seatName} could not contribute: ${error || 'empty response'}_`,
+        content: content.trim() || fallbackContent,
         agentId: participant.id,
         agentName: seatName,
         timestamp: Date.now(),
@@ -239,13 +285,13 @@ async function runAgentSymposium(
     const initialTargets = mentionedSymposiumParticipants(userContribution, uniqueParticipants)
     let pendingParticipants = initialTargets.length ? initialTargets : uniqueParticipants
     const alreadyResponded = new Set<string>()
-    // A mention starts the next wave. Writes are serialized so later seats can
-    // read the newest workspace state instead of racing to overwrite a file.
+    // A mention starts the next wave. Writer seats run serially so later seats
+    // can inspect the newest workspace state before modifying the same file.
     while (pendingParticipants.length && !cancelled) {
       const batch = pendingParticipants.filter((participant) => !alreadyResponded.has(participant.id))
       if (!batch.length) break
       batch.forEach((participant) => alreadyResponded.add(participant.id))
-      const results = selectedSymposiumTools.includes('write_file')
+      const results = batch.some((participant) => toolsForSymposiumParticipant(participant, selectedSymposiumTools, availableSymposiumToolIds).includes('write_file'))
         ? await batch.reduce<Promise<Array<{ participant: SymposiumModelParticipant; content: string; error?: string }>>>(
           async (pending, participant) => [...await pending, await runParticipant(participant)],
           Promise.resolve([]),
@@ -261,9 +307,7 @@ async function runAgentSymposium(
       pendingParticipants = uniqueParticipants.filter((participant) => nextIds.has(participant.id))
     }
 
-    await getStorage().conversations.updateConversation(input.conversationId, {
-      symposium: { topic, participants: uniqueParticipants, tools: selectedSymposiumTools, status: 'idle', startedAt, lastActivityAt: Date.now(), responseCycles: cycle },
-    })
+    await persistSymposium('idle')
     emit({ type: cancelled ? 'cancelled' : 'completed', cycle, participantCount: uniqueParticipants.length })
     void recordActivity({
       category: 'agent',
@@ -275,9 +319,7 @@ async function runAgentSymposium(
     }, win)
   } catch (error: any) {
     const message = error?.message ?? String(error)
-    await getStorage().conversations.updateConversation(input.conversationId, {
-      symposium: { topic, participants: uniqueParticipants, tools: selectedSymposiumTools, status: 'failed', startedAt, lastActivityAt: Date.now(), responseCycles: cycle, error: message },
-    })
+    await persistSymposium('failed', message)
     emit({ type: 'error', error: message })
     if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, input.conversationId)
   } finally {
@@ -905,8 +947,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
         for await (const agentEvent of runner.run({ messages: historyMessages, newMessage: userChatMessage })) {
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
-            // 'text' events carry full reasoning content (emitted before tool calls)
-            // text_delta events carry incremental chunks
+            // Text events are streaming deltas. The final done event replaces
+            // this accumulated draft with the canonical response content.
             assistantContent += agentEvent.content
           }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {

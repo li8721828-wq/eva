@@ -13,6 +13,36 @@ export interface SymposiumModelParticipant {
   providerName: string
   model: string
   modelName: string
+  /** Explicit atomic capabilities for this seat. Undefined uses the legacy discussion default. */
+  tools?: string[]
+}
+
+export interface SymposiumSharedDocumentChange {
+  version: number
+  participantId: string
+  participantName: string
+  summary: string
+  updatedAt: number
+}
+
+/** A single collaboration file guarded by an optimistic revision number. */
+export interface SymposiumSharedDocument {
+  /** Workspace-relative path. */
+  path: string
+  version: number
+  updatedAt?: number
+  updatedBy?: string
+  changes?: SymposiumSharedDocumentChange[]
+}
+
+/** Durable, user-editable context supplied to every model response. */
+export interface SymposiumDiscussionMemory {
+  objective: string
+  agreements: string[]
+  openQuestions: string[]
+  actionItems: string[]
+  pinned: boolean
+  updatedAt?: number
 }
 
 /**
@@ -24,6 +54,8 @@ export interface AgentSymposium {
   participants: SymposiumModelParticipant[]
   /** Atomic capabilities explicitly granted to every model seat in this discussion. */
   tools?: string[]
+  sharedDocument?: SymposiumSharedDocument
+  memory?: SymposiumDiscussionMemory
   /** Retained only so discussions created before model seats can still open. */
   participantIds?: string[]
   status: SymposiumStatus
@@ -38,6 +70,8 @@ export interface SymposiumStartInput {
   topic: string
   participants: SymposiumModelParticipant[]
   tools?: string[]
+  sharedDocument?: SymposiumSharedDocument
+  memory?: SymposiumDiscussionMemory
 }
 
 export interface SymposiumToolOption {

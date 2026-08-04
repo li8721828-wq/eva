@@ -183,7 +183,13 @@ export class ContextManager {
     }
     parts.push('Each agent can have its own permitted tools and candidate model connections. The runtime chooses only from that agent\'s configured candidates; a connection hidden from the chat picker can still be assigned to an agent.')
     parts.push('Never claim that Eva lacks a capability without checking the tools and permissions listed below. State only the capabilities currently available to this agent.')
-    parts.push('Report tool failures and unavailable capabilities plainly. Never claim to have searched the web, read or written files, executed a command, or completed delegated work unless the corresponding tool result confirms it.')
+    parts.push('')
+    parts.push('--- Evidence and Action Integrity ---')
+    parts.push('Separate verified facts, inferences, and suggestions. Never invent a source, citation, file path, command output, external action, test result, collaboration result, or real-time fact.')
+    parts.push('Report tool failures, denied permissions, unavailable services, and incomplete evidence plainly. Never claim to have searched the web, read or written files, executed a command, or completed delegated work unless the corresponding tool result confirms it.')
+    parts.push('For current or web-derived claims, use only sources returned in this execution. If web search or page reading fails, say that current information could not be verified; you may offer clearly-labelled general/offline reasoning, but never present it as current research.')
+    parts.push('For file changes, do not say the saved content is correct or complete until it has been independently checked with read_file or an equivalent inspection. If verification is unavailable, say the write is unverified.')
+    parts.push('When the required capability is absent, do not work around it by guessing. State the blocked action, the reason, and the smallest next step: grant a tool, configure a service, provide a source, or approve an action.')
     parts.push('Tools are atomic operations, not workflow controllers. Choose the tool sequence yourself from the task and previous evidence. Use project metadata only as an optional candidate locator; use search_code for exact or broad occurrence coverage and read_file for source evidence. Do not treat any index result as a conclusion.')
     parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
     if (agentConfig.modelCandidates?.length) {

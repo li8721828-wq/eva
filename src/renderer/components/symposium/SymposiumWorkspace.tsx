@@ -32,6 +32,7 @@ export function SymposiumWorkspace() {
   const [participantIds, setParticipantIds] = useState<string[]>([])
   const [topic, setTopic] = useState('')
   const [selectedTools, setSelectedTools] = useState<string[]>(['list_directory', 'search_files', 'read_file', 'search_code'])
+  const [participantTools, setParticipantTools] = useState<Record<string, string[]>>({})
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const workspace = workspaces.find((item) => item.id === activeWorkspaceId)
@@ -60,7 +61,10 @@ export function SymposiumWorkspace() {
         })
       })
   }, [savedProviders])
-  const participants = useMemo(() => modelParticipants.filter((participant) => participantIds.includes(participant.id)), [modelParticipants, participantIds])
+  const participants = useMemo(() => modelParticipants
+    .filter((participant) => participantIds.includes(participant.id))
+    .map((participant) => ({ ...participant, tools: participantTools[participant.id] ?? selectedTools })),
+  [modelParticipants, participantIds, participantTools, selectedTools])
 
   useEffect(() => {
     let disposed = false
@@ -81,6 +85,13 @@ export function SymposiumWorkspace() {
       ? current.filter((id) => id !== participantId)
       : [...current, participantId]
     )
+    setParticipantTools((current) => {
+      if (participantId in current) {
+        const { [participantId]: _, ...rest } = current
+        return rest
+      }
+      return { ...current, [participantId]: [...selectedTools] }
+    })
   }
 
   const toggleTool = (toolId: string) => {
@@ -95,6 +106,23 @@ export function SymposiumWorkspace() {
     })
   }
 
+  const toggleParticipantTool = (participantId: string, toolId: string) => {
+    setParticipantTools((current) => {
+      const currentTools = current[participantId] ?? selectedTools
+      const next = currentTools.includes(toolId)
+        ? currentTools.filter((id) => id !== toolId)
+        : toolId === 'write_file' && !currentTools.includes('read_file')
+          ? [...currentTools, 'read_file', toolId]
+          : [...currentTools, toolId]
+      return {
+        ...current,
+        [participantId]: toolId === 'read_file' && currentTools.includes(toolId)
+          ? next.filter((id) => id !== 'write_file')
+          : next,
+      }
+    })
+  }
+
   const start = async () => {
     const normalizedTopic = topic.trim()
     if (!normalizedTopic) {
@@ -103,6 +131,10 @@ export function SymposiumWorkspace() {
     }
     if (participantIds.length < 2) {
       setError('Choose at least two models.')
+      return
+    }
+    if (participants.some((participant) => participant.tools?.includes('write_file')) && !workspace?.path) {
+      setError('Choose a project workspace before granting file write access.')
       return
     }
     setStarting(true)
@@ -116,12 +148,24 @@ export function SymposiumWorkspace() {
         workspacePath: workspace?.path || '',
         accessScope: workspace ? 'workspace' : 'full',
         permissionLevel: workspace ? 'workspace' : 'full-access',
-        symposium: { topic: normalizedTopic, participants, tools: selectedTools, status: 'idle' },
+        symposium: {
+          topic: normalizedTopic,
+          participants,
+          tools: selectedTools,
+          memory: { objective: normalizedTopic, agreements: [], openQuestions: [], actionItems: [], pinned: true },
+          status: 'idle',
+        },
       })
       setConversations([conversation, ...useChatStore.getState().conversations])
       await selectConversation(conversation.id)
       setCurrentView('chat')
-      await window.eva.symposium.start({ conversationId: conversation.id, topic: normalizedTopic, participants, tools: selectedTools })
+      await window.eva.symposium.start({
+        conversationId: conversation.id,
+        topic: normalizedTopic,
+        participants,
+        tools: selectedTools,
+        memory: { objective: normalizedTopic, agreements: [], openQuestions: [], actionItems: [], pinned: true },
+      })
     } catch (startError) {
       setError(startError instanceof Error ? startError.message : 'Could not start the Symposium.')
       setStarting(false)
@@ -158,8 +202,8 @@ export function SymposiumWorkspace() {
               <div className="flex items-start gap-2.5">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
                 <div>
-                  <h2 className="text-sm font-semibold text-zinc-900">Model capabilities</h2>
-                  <p className="mt-1 text-xs leading-5 text-zinc-500">Grant the selected models atomic tools for this discussion. File access still follows this conversation&apos;s workspace permission; command execution additionally requires full filesystem access.</p>
+                  <h2 className="text-sm font-semibold text-zinc-900">Default capabilities</h2>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">These are copied to a newly selected model seat. You can refine each seat&apos;s permissions on the right. File access still follows this conversation&apos;s workspace permission.</p>
                 </div>
               </div>
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
@@ -177,7 +221,7 @@ export function SymposiumWorkspace() {
             {error && <p className="mt-5 text-sm text-red-600">{error}</p>}
             <div className="mt-9 flex items-center gap-3">
               <Button disabled={starting || participantIds.length < 2 || !topic.trim()} className="gap-2" onClick={() => void start()}><Play className="h-4 w-4" />{starting ? 'Starting...' : 'Start Symposium'}</Button>
-              <span className="text-xs leading-5 text-zinc-500">{selectedTools.length ? `${selectedTools.length} capabilities are granted to every selected model.` : 'No tools are granted; models will discuss using their model context only.'}</span>
+              <span className="text-xs leading-5 text-zinc-500">Each selected model has an independent tool grant. File access follows the conversation workspace permission.</span>
             </div>
           </div>
 
@@ -196,6 +240,13 @@ export function SymposiumWorkspace() {
             </div>
             {modelParticipants.length === 0 && <p className="mt-4 text-sm leading-6 text-zinc-500">No enabled models are available. Add a saved model connection and select one or more models in Settings.</p>}
             {participants.length > 0 && <div className="mt-6 border-t border-zinc-200 pt-5 text-xs leading-5 text-zinc-500"><MessageCircleMore className="mr-1 inline h-3.5 w-3.5 text-violet-500" />Every message is visible to the whole group. Models reply concurrently unless file writing is enabled, in which case Eva serializes seats to prevent edit conflicts.</div>}
+            {participants.length > 0 && <div className="mt-4 space-y-3 border-t border-zinc-200 pt-5">
+              <div><h3 className="text-sm font-semibold text-zinc-900">Per-seat permissions</h3><p className="mt-1 text-xs leading-5 text-zinc-500">A model can reason with different evidence and tools from the other seats.</p></div>
+              {participants.map((participant) => <div key={participant.id} className="rounded-lg border border-zinc-200 p-3">
+                <p className="truncate text-sm font-medium text-zinc-800">{participant.modelName}</p><p className="mt-0.5 truncate text-xs text-zinc-500">{participant.providerName} connection</p>
+                <div className="mt-3 flex flex-wrap gap-1.5">{SYMPOSIUM_TOOL_OPTIONS.map((tool) => <label key={tool.id} className={cn('cursor-pointer rounded-md px-2 py-1 text-[11px] transition-colors', participant.tools?.includes(tool.id) ? 'bg-violet-100 text-violet-800' : 'bg-zinc-100 text-zinc-500 hover:bg-zinc-200')}><input type="checkbox" className="sr-only" checked={Boolean(participant.tools?.includes(tool.id))} onChange={() => toggleParticipantTool(participant.id, tool.id)} />{tool.label}</label>)}</div>
+              </div>)}
+            </div>}
           </aside>
         </section>
       </div>

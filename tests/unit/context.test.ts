@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { ContextManager } from '../../src/main/agent-engine/context'
 import type { ChatMessageInput } from '../../src/shared/types/provider'
+import type { AgentConfig } from '../../src/shared/types/agent'
 
 describe('ContextManager', () => {
   const cm = new ContextManager()
@@ -95,6 +96,33 @@ describe('ContextManager', () => {
       expect(result.length).toBe(1)
       expect(result[0].role).toBe('system')
       expect(result[0].content.length).toBe(40) // 10 tokens * 4 chars
+    })
+  })
+
+  describe('buildSystemPrompt', () => {
+    it('adds evidence and action integrity guardrails for every agent', () => {
+      const agent: AgentConfig = {
+        id: 'test-agent',
+        name: 'Test Agent',
+        description: 'Test agent',
+        role: 'custom',
+        systemPrompt: 'Base instructions.',
+        model: 'test-model',
+        providerId: 'test-provider',
+        tools: ['read_file', 'write_file', 'web_search'],
+        maxIterations: 4,
+        temperature: 0,
+        isBuiltIn: false,
+        createdAt: 0,
+        updatedAt: 0,
+      }
+
+      const prompt = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+
+      expect(prompt).toContain('--- Evidence and Action Integrity ---')
+      expect(prompt).toContain('Never invent a source')
+      expect(prompt).toContain('current information could not be verified')
+      expect(prompt).toContain('checked with read_file')
     })
   })
 })
