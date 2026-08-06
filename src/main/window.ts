@@ -1,4 +1,4 @@
-import { BrowserWindow, Menu, shell } from 'electron'
+import { app, BrowserWindow, Menu, shell } from 'electron'
 import path from 'path'
 import { is } from '@electron-toolkit/utils'
 
@@ -7,13 +7,14 @@ export function createApplicationMenu(): void {
 }
 
 export function createMainWindow(): BrowserWindow {
+  const windowTitle = `Eva - AI Coding Agent v${app.getVersion()}`
   const mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
     minHeight: 600,
     show: false,
-    title: 'Eva',
+    title: windowTitle,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -24,6 +25,11 @@ export function createMainWindow(): BrowserWindow {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
+  })
+
+  // The renderer document title replaces the BrowserWindow title after it loads.
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.setTitle(windowTitle)
   })
 
   // Open external links in default browser

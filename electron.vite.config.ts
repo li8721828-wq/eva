@@ -15,6 +15,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   renderer: {
+    server: {
+      // Do not depend on this machine resolving the localhost hostname.
+      host: '127.0.0.1'
+    },
     resolve: {
       alias: {
         '@': resolve('src/renderer')

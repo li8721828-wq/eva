@@ -21,6 +21,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'web_search', label: 'Web search', description: 'Allow this agent to query the active search service. Requires a configured Brave, Tavily, or SearXNG provider.', category: 'Internet', risk: 'network' },
   { id: 'read_web_page', label: 'Read web page', description: 'Read a public HTTP(S) webpage. Local and private network addresses are blocked.', category: 'Internet', risk: 'network' },
   { id: 'execute_command', label: 'Run command', description: 'Execute a terminal command in the workspace.', category: 'Execution', risk: 'system' },
+  { id: 'mouse_control', label: 'Mouse control', description: 'Move, click, double-click, or scroll only on a recent visible-desktop observation. The foreground window is revalidated and pointer movement is smooth. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
+  { id: 'desktop_observe', label: 'Desktop observer', description: 'Capture the visible foreground Windows surface and its accessible controls as structured names, roles, bounds, and states. Hidden/background windows and password values are never exposed. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'blender_inspect_scene', label: 'Inspect Blender scene', description: 'Read a compact summary of a configured Blender project.', category: 'Integrations', risk: 'read' },
   { id: 'blender_run_script', label: 'Run Blender script', description: 'Run an approved bpy script through the configured Blender Connector.', category: 'Integrations', risk: 'system' },
   { id: 'blender_model_from_reference', label: 'Model from reference images', description: 'Create a new editable .blend model from attached visual references.', category: 'Integrations', risk: 'system' },
@@ -28,4 +30,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'blender_open_gui', label: 'Open Blender interface', description: 'Launch Blender and open an authorized .blend file for interactive viewing or editing.', category: 'Integrations', risk: 'system' },
 ]
 
-export const TOOL_CATALOG_VERSION = 7
+export const TOOL_CATALOG_VERSION = 10

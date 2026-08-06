@@ -13,12 +13,59 @@ import { useSymposiumStore } from '@/stores/use-symposium-store'
  */
 export function useStreaming(): void {
   useEffect(() => {
+    // Providers frequently emit very small token chunks. Rendering Markdown for
+    // every chunk is expensive, especially for longer responses, so coalesce
+    // visual updates to a stable ~30fps without delaying tool/status events.
+    let pendingConversationId: string | null = null
+    let pendingText = ''
+    let flushTimer: number | null = null
+
+    const flushPendingText = () => {
+      if (flushTimer !== null) {
+        window.clearTimeout(flushTimer)
+        flushTimer = null
+      }
+
+      const conversationId = pendingConversationId
+      const content = pendingText
+      pendingConversationId = null
+      pendingText = ''
+
+      if (!conversationId || !content) return
+      if (conversationId !== useChatStore.getState().currentConversationId) return
+
+      useChatStore.getState().appendStreamEvent({
+        type: 'text_delta',
+        conversationId,
+        content,
+      })
+    }
+
+    const scheduleTextFlush = () => {
+      if (flushTimer !== null) return
+      flushTimer = window.setTimeout(flushPendingText, 33)
+    }
+
     // Listen for chat stream events
     const cleanupChat = window.eva.chat.onStream((_event, data) => {
       const streamEvent = data as unknown as ChatStreamEvent
       // The chat surface has one visible stream. Events for a background
       // conversation are persisted by the main process and loaded on return.
       if (streamEvent.conversationId !== useChatStore.getState().currentConversationId) return
+
+      if (streamEvent.type === 'text_delta' && streamEvent.content) {
+        if (pendingConversationId && pendingConversationId !== streamEvent.conversationId) {
+          flushPendingText()
+        }
+        pendingConversationId = streamEvent.conversationId
+        pendingText += streamEvent.content
+        scheduleTextFlush()
+        return
+      }
+
+      // Preserve event ordering: any text preceding a tool call, completion,
+      // or error is committed before that structural event is applied.
+      flushPendingText()
       useChatStore.getState().appendStreamEvent(streamEvent)
     })
 
@@ -42,6 +89,7 @@ export function useStreaming(): void {
     })
 
     return () => {
+      flushPendingText()
       cleanupChat()
       cleanupTask()
       cleanupGoal()

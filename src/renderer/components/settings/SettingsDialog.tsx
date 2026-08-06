@@ -122,6 +122,13 @@ export function SettingsDialog() {
     return null
   }
 
+  const validateProviderConnection = (): string | null => {
+    const config = getProviderTestConfig()
+    if (!config.apiKey) return 'Enter an API key before testing the connection.'
+    if (config.type === 'custom' && !config.baseUrl) return 'Enter a base URL for a custom provider.'
+    return null
+  }
+
   const invalidateModels = () => {
     setAvailableModels([])
     setModelsMessage(null)
@@ -336,7 +343,8 @@ export function SettingsDialog() {
   }
 
   const handleTestConnection = async () => {
-    const validationError = validateProviderConfig()
+    // A model can only be selected after this connection has returned its model list.
+    const validationError = validateProviderConnection()
     if (validationError) {
       setTestResult({ success: false, message: validationError })
       return

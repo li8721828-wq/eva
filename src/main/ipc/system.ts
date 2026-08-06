@@ -220,10 +220,6 @@ export function registerSystemHandlers(
       if (config.type === 'custom' && !config.baseUrl?.trim()) {
         return { success: false, message: 'Enter a base URL for a custom provider.' }
       }
-      if (!config.defaultModel.trim()) {
-        return { success: false, message: 'Choose or enter a default model before testing.' }
-      }
-
       try {
         const provider = createProvider({ ...config, models: [], isEnabled: true })
         const result = await provider.testConnection()

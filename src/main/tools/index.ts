@@ -5,6 +5,8 @@ import { createTerminalTools } from './terminal-tools'
 import { createSearchTools } from './search-tools'
 import { createWebTools } from './web-tools'
 import { createBlenderTools } from './blender-tools'
+import { createMouseTools } from './mouse-tools'
+import { createDesktopMcpTools } from './desktop-mcp-tools'
 import { createProjectIndexTools } from './project-index-tools'
 import type { ProjectIndexService } from '../services/project-index-service'
 
@@ -106,6 +108,8 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService): T
   for (const tool of createSearchTools()) registry.register(tool)
   for (const tool of createWebTools()) registry.register(tool)
   for (const tool of createBlenderTools()) registry.register(tool)
+  for (const tool of createMouseTools()) registry.register(tool)
+  for (const tool of createDesktopMcpTools()) registry.register(tool)
   if (projectIndexService) {
     for (const tool of createProjectIndexTools(projectIndexService)) registry.register(tool)
   }

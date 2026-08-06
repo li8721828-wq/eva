@@ -285,7 +285,7 @@ export class AgentRunner {
         // Tool-role messages cannot safely carry multimodal content for every
         // provider. Add generated renders as a new user turn so the next model
         // iteration can visually compare them with the original references.
-        const reviewImages = await this.loadToolReviewImages(toolResults)
+        const reviewImages = await this.loadBlenderReviewImages(response.toolCalls, toolResults)
         if (reviewImages.length > 0) {
           messages.push({
             role: 'user',
@@ -618,9 +618,20 @@ export class AgentRunner {
     return undefined
   }
 
-  private async loadToolReviewImages(toolResults: Map<string, CompletedToolResult>): Promise<NonNullable<ChatMessageInput['images']>> {
+  /**
+   * Only Blender renders are sent back as multimodal user content. Tool
+   * screenshots (such as desktop_observe) remain execution evidence and must
+   * not be attached to a follow-up model request: many OpenAI-compatible
+   * endpoints accept text-only message parts and reject image_url entirely.
+   */
+  private async loadBlenderReviewImages(
+    toolCalls: CompletedToolCall[],
+    toolResults: Map<string, CompletedToolResult>
+  ): Promise<NonNullable<ChatMessageInput['images']>> {
     const loaded: NonNullable<ChatMessageInput['images']> = []
-    const imageResults = Array.from(toolResults.values()).flatMap((toolResult) => toolResult.images || [])
+    const imageResults = toolCalls
+      .filter((toolCall) => toolCall.name === 'blender_render_review' || toolCall.name === 'blender_model_from_reference')
+      .flatMap((toolCall) => toolResults.get(toolCall.id)?.images || [])
 
     for (const image of imageResults) {
       if (loaded.length >= MAX_TOOL_REVIEW_IMAGES) break

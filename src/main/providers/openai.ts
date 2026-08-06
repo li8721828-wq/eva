@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { net } from 'electron'
 import type { ChatParams, ChatChunk } from '../../shared/types/provider'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
@@ -20,6 +21,23 @@ export class OpenAIProvider implements LLMProvider {
     this.client = new OpenAI({
       apiKey: options.apiKey,
       baseURL: options.baseUrl,
+      // Use Chromium's network stack so model requests follow the same system
+      // proxy and certificate settings as Eva's web tools.
+      fetch: async (input, init) => {
+        const request = typeof input === 'string' || input instanceof URL ? input.toString() : input as never
+        // The OpenAI SDK calculates content-length for Node fetch. Chromium's
+        // net.fetch calculates it independently and rejects the supplied value
+        // for POST bodies with ERR_INVALID_ARGUMENT, which otherwise surfaces
+        // in chat as the unhelpful "Connection error".
+        const headers = new Headers(init?.headers)
+        headers.delete('content-length')
+        return await net.fetch(request, {
+          method: init?.method,
+          headers: Object.fromEntries(headers.entries()),
+          body: init?.body,
+          signal: init?.signal,
+        }) as unknown as Response
+      },
     })
   }
 

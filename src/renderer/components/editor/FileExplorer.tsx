@@ -31,9 +31,9 @@ function TreeNode({
   onFileSelect?: (path: string) => void
   workspacePath: string
 }) {
-  const [expanded, setExpanded] = useState(depth < 1)
+  const [expanded, setExpanded] = useState(false)
   const [children, setChildren] = useState<FileNode[]>(node.children || [])
-  const [loaded, setLoaded] = useState(depth < 1)
+  const [loaded, setLoaded] = useState(Boolean(node.children))
   const isDir = node.type === 'directory'
 
   const loadChildren = async () => {
@@ -100,6 +100,7 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
   const { conversations, currentConversationId, setConversations } = useChatStore()
   const [rootNodes, setRootNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
+  const [treeRevision, setTreeRevision] = useState(0)
   const [view, setView] = useState<'files' | 'code'>('files')
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null
   const activeConversation = conversations.find((conversation) => conversation.id === currentConversationId) || null
@@ -119,6 +120,7 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
         type: e.isDirectory ? 'directory' as const : 'file' as const,
       }))
       setRootNodes(nodes)
+      setTreeRevision((revision) => revision + 1)
     } catch (err) {
       console.error('Failed to load file tree:', err)
     } finally {
@@ -198,7 +200,7 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
           )}
           {rootNodes.map((node) => (
             <TreeNode
-              key={node.path}
+              key={`${treeRevision}:${node.path}`}
               node={node}
               depth={0}
               onFileSelect={handleFileSelect}

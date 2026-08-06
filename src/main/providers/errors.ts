@@ -70,8 +70,10 @@ export function classifyError(err: unknown, providerId: string): ProviderError {
   if (err instanceof ProviderError) return err
 
   const message = err instanceof Error ? err.message : String(err)
+  const cause = (err as { cause?: unknown })?.cause
+  const causeMessage = cause instanceof Error ? cause.message : cause ? String(cause) : ''
   const status = (err as any)?.status ?? (err as any)?.statusCode
-  const lowerMsg = message.toLowerCase()
+  const lowerMsg = `${message} ${causeMessage}`.toLowerCase()
 
   if (status === 401 || status === 403 || lowerMsg.includes('auth') || lowerMsg.includes('api key')) {
     return new AuthenticationError(message, providerId)
@@ -100,7 +102,13 @@ export function classifyError(err: unknown, providerId: string): ProviderError {
     lowerMsg.includes('enotfound') ||
     lowerMsg.includes('fetch failed')
   ) {
-    return new NetworkError(message, providerId)
+    if (lowerMsg.includes('enotfound')) {
+      return new NetworkError(
+        `Cannot resolve the provider host. Check DNS or proxy settings. ${causeMessage || message}`,
+        providerId
+      )
+    }
+    return new NetworkError(causeMessage || message, providerId)
   }
 
   return new ProviderError(message, 'unknown', providerId, false)
