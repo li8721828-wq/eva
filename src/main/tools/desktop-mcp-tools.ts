@@ -4,24 +4,31 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import type { ToolContext, ToolExecutionResult, ToolExecutor } from './index'
-import { storeDesktopObservation } from './desktop-observation-store'
+import type { DesktopBounds, DesktopControl, DesktopDialog } from './desktop-observation-store'
+import { getDesktopControlSession, recordDesktopControlStep, storeDesktopObservation } from './desktop-observation-store'
 
 const execFileAsync = promisify(execFile)
-const MAX_ELEMENTS = 120
+const MAX_ELEMENTS = 240
 
 type ObserveAction = 'active_window' | 'controls'
 
-interface DesktopSnapshot {
+export interface DesktopSnapshot {
   activeWindow: {
     handle: number
     title: string
     process: string
     processId: number
-    bounds: { left: number; top: number; width: number; height: number }
+    bounds: DesktopBounds
   }
   cursor: { x: number; y: number }
   screen: { left: number; top: number; width: number; height: number }
-  controls?: unknown[]
+  controls?: DesktopControl[]
+  priorityControls?: DesktopControl[]
+  dialog?: DesktopDialog
+  taskbar?: {
+    bounds: DesktopBounds
+    controls: DesktopControl[]
+  }
   controlCount?: number
   truncated?: boolean
 }
@@ -37,7 +44,7 @@ export function createDesktopMcpTools(): ToolExecutor[] {
 const desktopObserveTool: ToolExecutor = {
   definition: {
     name: 'desktop_observe',
-    description: 'Observe only the currently visible foreground Windows surface. Returns a screenshot plus structured UI Automation data for that foreground window: controls, names, roles, bounds, and enabled state. It cannot inspect background or occluded windows, and never reads password values.',
+    description: 'Observe only the currently visible foreground Windows surface and visible taskbar. Returns a screenshot plus structured UI Automation data for foreground controls, taskbar launch buttons, names, roles, bounds, enabled state, and prioritized dialog actions. It cannot inspect background or occluded windows, and never reads password values.',
     parameters: {
       type: 'object',
       properties: {
@@ -48,8 +55,9 @@ const desktopObserveTool: ToolExecutor = {
         },
         maxElements: {
           type: 'number',
-          description: `Maximum controls to return for controls (1-${MAX_ELEMENTS}, default 60).`,
+          description: `Maximum controls to return for controls (1-${MAX_ELEMENTS}, default 100). High-priority dialog and confirmation controls are returned first.`,
         },
+        sessionId: { type: 'string', description: 'Optional desktop_session id. When supplied, this visible observation is recorded in that conversation session.' },
       },
       required: ['action'],
     },
@@ -66,14 +74,25 @@ const desktopObserveTool: ToolExecutor = {
     try {
       const action = parseAction(params.action)
       const maxElements = parseMaxElements(params.maxElements)
-      let snapshot = await readDesktopSnapshot(action, maxElements)
-      let imagePath = await captureVisibleDesktop()
-      const confirmation = await readDesktopSnapshot('active_window', 1)
-      if (confirmation.activeWindow.handle !== snapshot.activeWindow.handle) {
-        snapshot = await readDesktopSnapshot(action, maxElements)
-        imagePath = await captureVisibleDesktop()
+      const observed = await observeVisibleDesktop(action, maxElements, true)
+      const { snapshot, imagePath } = observed
+      const observation = storeDesktopObservation({
+        activeWindow: snapshot.activeWindow,
+        controls: snapshot.controls,
+        priorityControls: snapshot.priorityControls,
+        dialog: snapshot.dialog,
+        taskbar: snapshot.taskbar,
+        controlCount: snapshot.controlCount,
+        truncated: snapshot.truncated,
+      })
+      if (typeof params.sessionId === 'string' && params.sessionId) {
+        const session = getDesktopControlSession(params.sessionId, context.conversationId)
+        recordDesktopControlStep(session.id, context.conversationId, {
+          kind: 'observe',
+          summary: `Observed ${snapshot.activeWindow.title || snapshot.activeWindow.process || 'foreground window'}${snapshot.controls ? ` with ${snapshot.controlCount || 0} accessible controls` : ''}.`,
+          observationId: observation.id,
+        })
       }
-      const observation = storeDesktopObservation({ activeWindow: snapshot.activeWindow })
       return {
         content: JSON.stringify({
           observationId: observation.id,
@@ -83,11 +102,21 @@ const desktopObserveTool: ToolExecutor = {
           cursor: snapshot.cursor,
           screen: snapshot.screen,
           controls: snapshot.controls,
+          priorityControls: snapshot.priorityControls,
+          dialog: snapshot.dialog,
+          taskbar: snapshot.taskbar,
           controlCount: snapshot.controlCount,
           truncated: snapshot.truncated,
-          guidance: 'This observation represents only the visible foreground window. To reach a hidden application, first use a visible control such as minimize or close, then call desktop_observe again.',
+          visualInput: {
+            screenshotCaptured: Boolean(imagePath),
+            suppliedToModel: Boolean(imagePath && context.supportsVisionInput),
+            detail: context.supportsVisionInput
+              ? 'The screenshot is supplied only to this vision-capable model on the next turn.'
+              : 'This connection accepts text-only model input. The screenshot remains a local audit artifact; rely on the visible UI Automation controls and do not claim pixel-level text was read.',
+          },
+          guidance: 'This observation represents only the visible foreground window and taskbar. To open another application, prefer an observed taskbar button; do not close or rearrange unrelated applications.',
         }),
-        images: [{ path: imagePath, name: 'visible-desktop.png', mediaType: 'image/png' }],
+        images: imagePath ? [{ path: imagePath, name: 'visible-desktop.png', mediaType: 'image/png' }] : undefined,
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -96,13 +125,33 @@ const desktopObserveTool: ToolExecutor = {
   },
 }
 
+/**
+ * Takes a consistent snapshot of only the foreground window. Consumers use
+ * this after pointer actions to verify visible state instead of assuming that
+ * a click succeeded.
+ */
+export async function observeVisibleDesktop(
+  action: ObserveAction = 'controls',
+  maxElements = 100,
+  includeScreenshot = false,
+): Promise<{ snapshot: DesktopSnapshot; imagePath?: string }> {
+  let snapshot = await readDesktopSnapshot(action, maxElements)
+  let imagePath = includeScreenshot ? await captureVisibleDesktop() : undefined
+  const confirmation = await readDesktopSnapshot('active_window', 1)
+  if (confirmation.activeWindow.handle !== snapshot.activeWindow.handle) {
+    snapshot = await readDesktopSnapshot(action, maxElements)
+    imagePath = includeScreenshot ? await captureVisibleDesktop() : undefined
+  }
+  return { snapshot, imagePath }
+}
+
 function parseAction(value: unknown): ObserveAction {
   if (value === 'active_window' || value === 'controls') return value
   throw new Error('action must be active_window or controls')
 }
 
 function parseMaxElements(value: unknown): number {
-  if (value === undefined || value === null) return 60
+  if (value === undefined || value === null) return 100
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) throw new Error('maxElements must be a number')
   return Math.max(1, Math.min(MAX_ELEMENTS, Math.round(parsed)))
@@ -121,13 +170,23 @@ public static class EvaDesktopMcp {
   [StructLayout(LayoutKind.Sequential)] public struct Point { public int X; public int Y; }
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string className, string windowName);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr handle, StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point point);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessDPIAware();
 }
 '@
+try {
+  if (-not [EvaDesktopMcp]::SetProcessDpiAwarenessContext([IntPtr](-4))) {
+    [EvaDesktopMcp]::SetProcessDPIAware() | Out-Null
+  }
+} catch {
+  try { [EvaDesktopMcp]::SetProcessDPIAware() | Out-Null } catch { }
+}
 $handle = [EvaDesktopMcp]::GetForegroundWindow()
 if ($handle -eq [IntPtr]::Zero) { throw 'No foreground window is available.' }
 $titleBuilder = New-Object System.Text.StringBuilder 1024
@@ -155,31 +214,151 @@ if ($payload.action -eq 'controls') {
   Add-Type -AssemblyName UIAutomationClient
   $window = [Windows.Automation.AutomationElement]::FromHandle($handle)
   $nodes = $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-  $controls = New-Object System.Collections.Generic.List[object]
+  $allControls = New-Object System.Collections.Generic.List[object]
+
+  function Test-EvaDialogLabel([string]$label) {
+    $normalized = $label.Trim().ToLowerInvariant()
+    foreach ($candidate in @('cancel', 'close', 'exit', 'ok', 'yes', 'no', 'continue', 'allow', 'deny', 'retry')) {
+      if ($normalized -eq $candidate -or $normalized.Contains($candidate)) { return $true }
+    }
+    return $false
+  }
+
+  function Get-EvaControlPriority([object]$control) {
+    $score = 0
+    if ($control.modal) { $score += 400 }
+    if ($control.focused) { $score += 120 }
+    if ($control.role -eq 'ControlType.Button') { $score += 90 }
+    if ($control.role -eq 'ControlType.Edit' -or $control.role -eq 'ControlType.ComboBox') { $score += 55 }
+    if ($control.role -eq 'ControlType.Window') { $score += 45 }
+    if (Test-EvaDialogLabel ([string]$control.name)) { $score += 220 }
+    if (-not [string]::IsNullOrWhiteSpace([string]$control.automationId)) { $score += 12 }
+    return $score
+  }
+
+  function Limit-EvaControlText([string]$value, [int]$limit = 160) {
+    $normalized = ($value -replace '\\s+', ' ').Trim()
+    if ($normalized.Length -le $limit) { return $normalized }
+    return $normalized.Substring(0, $limit - 3) + '...'
+  }
+
+  function ConvertTo-EvaPublicControl([object]$control) {
+    return [ordered]@{
+      name = [string]$control.name
+      role = [string]$control.role
+      automationId = [string]$control.automationId
+      surface = [string]$control.surface
+      enabled = [bool]$control.enabled
+      focused = [bool]$control.focused
+      password = [bool]$control.password
+      bounds = $control.bounds
+    }
+  }
+
   foreach ($node in $nodes) {
-    if ($controls.Count -ge [int]$payload.maxElements) { break }
     try {
       $current = $node.Current
       $name = [string]$current.Name
       $automationId = [string]$current.AutomationId
       $role = [string]$current.ControlType.ProgrammaticName
       $bounds = $current.BoundingRectangle
-      if ([string]::IsNullOrWhiteSpace($name) -and [string]::IsNullOrWhiteSpace($automationId)) { continue }
       if ($bounds.Width -le 0 -or $bounds.Height -le 0) { continue }
-      $controls.Add([ordered]@{
+      $helpText = [string]$current.HelpText
+      if ([string]::IsNullOrWhiteSpace($name) -and -not [string]::IsNullOrWhiteSpace($helpText)) { $name = $helpText }
+      if ([string]::IsNullOrWhiteSpace($name) -and [string]::IsNullOrWhiteSpace($automationId) -and $role -ne 'ControlType.Button') { continue }
+      if ([string]::IsNullOrWhiteSpace($name) -and $role -eq 'ControlType.Button') { $name = 'Unlabeled button' }
+      $name = Limit-EvaControlText $name
+      $automationId = Limit-EvaControlText $automationId
+      $isModal = $false
+      try { $isModal = [bool]$current.IsModal } catch { }
+      $candidate = [ordered]@{
         name = $name
         role = $role
         automationId = $automationId
         enabled = [bool]$current.IsEnabled
         focused = [bool]$current.HasKeyboardFocus
         password = [bool]$current.IsPassword
+        modal = $isModal
+        surface = 'foreground'
+        priority = 0
         bounds = @{ left = [Math]::Round($bounds.X); top = [Math]::Round($bounds.Y); width = [Math]::Round($bounds.Width); height = [Math]::Round($bounds.Height) }
-      })
+      }
+      $candidate['priority'] = Get-EvaControlPriority $candidate
+      $allControls.Add($candidate)
     } catch { }
   }
-  $result.controls = $controls
-  $result.controlCount = $controls.Count
-  $result.truncated = ($nodes.Count -gt $controls.Count)
+  $taskbarHandle = [EvaDesktopMcp]::FindWindow('Shell_TrayWnd', $null)
+  if ($taskbarHandle -ne [IntPtr]::Zero) {
+    try {
+      $taskbarRect = New-Object EvaDesktopMcp+Rect
+      [EvaDesktopMcp]::GetWindowRect($taskbarHandle, [ref]$taskbarRect) | Out-Null
+      $taskbarBounds = @{ left = $taskbarRect.Left; top = $taskbarRect.Top; width = ($taskbarRect.Right - $taskbarRect.Left); height = ($taskbarRect.Bottom - $taskbarRect.Top) }
+      if ($taskbarBounds.width -gt 0 -and $taskbarBounds.height -gt 0) {
+        $taskbarElement = [Windows.Automation.AutomationElement]::FromHandle($taskbarHandle)
+        $taskbarNodes = $taskbarElement.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+        $taskbarCandidates = New-Object System.Collections.Generic.List[object]
+        foreach ($node in $taskbarNodes) {
+          try {
+            $current = $node.Current
+            $name = [string]$current.Name
+            $automationId = [string]$current.AutomationId
+            $role = [string]$current.ControlType.ProgrammaticName
+            $bounds = $current.BoundingRectangle
+            if ($bounds.Width -le 0 -or $bounds.Height -le 0) { continue }
+            if ($role -ne 'ControlType.Button' -and $role -ne 'ControlType.ListItem' -and $role -ne 'ControlType.MenuItem') { continue }
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+            if ($automationId -eq 'NotifyItemIcon' -or $automationId -eq 'SystemTrayIcon') { continue }
+            $name = Limit-EvaControlText $name
+            $automationId = Limit-EvaControlText $automationId
+            $candidate = [ordered]@{
+              name = $name
+              role = $role
+              automationId = $automationId
+              enabled = [bool]$current.IsEnabled
+              focused = [bool]$current.HasKeyboardFocus
+              password = $false
+              modal = $false
+              surface = 'taskbar'
+              priority = 0
+              bounds = @{ left = [Math]::Round($bounds.X); top = [Math]::Round($bounds.Y); width = [Math]::Round($bounds.Width); height = [Math]::Round($bounds.Height) }
+            }
+            $candidate['priority'] = (Get-EvaControlPriority $candidate) + 80
+            $taskbarCandidates.Add($candidate)
+            $allControls.Add($candidate)
+          } catch { }
+        }
+        $result.taskbar = [ordered]@{
+          bounds = $taskbarBounds
+          controls = @($taskbarCandidates | Sort-Object @{ Expression = { $_.priority }; Descending = $true }, @{ Expression = { $_.bounds.left }; Descending = $false } | Select-Object -First 24 | ForEach-Object { ConvertTo-EvaPublicControl $_ })
+        }
+      }
+    } catch { }
+  }
+  $orderedControls = @($allControls | Sort-Object @{ Expression = { $_.priority }; Descending = $true }, @{ Expression = { $_.focused }; Descending = $true }, @{ Expression = { $_.bounds.top }; Descending = $false }, @{ Expression = { $_.bounds.left }; Descending = $false })
+  $visibleControls = @($orderedControls | Select-Object -First ([int]$payload.maxElements) | ForEach-Object { ConvertTo-EvaPublicControl $_ })
+  $priorityControls = @($orderedControls | Where-Object { $_.priority -ge 90 } | Select-Object -First 12 | ForEach-Object { ConvertTo-EvaPublicControl $_ })
+  $modalWindow = @($orderedControls | Where-Object { $_.modal -and $_.role -eq 'ControlType.Window' } | Select-Object -First 1)
+  $result.controls = $visibleControls
+  $result.priorityControls = $priorityControls
+  $result.controlCount = $allControls.Count
+  $result.truncated = ($allControls.Count -gt $visibleControls.Count)
+  if ($modalWindow.Count -gt 0) {
+    $modal = $modalWindow[0]
+    $modalLeft = [int]$modal.bounds.left
+    $modalTop = [int]$modal.bounds.top
+    $modalRight = $modalLeft + [int]$modal.bounds.width
+    $modalBottom = $modalTop + [int]$modal.bounds.height
+    $modalControls = @($orderedControls | Where-Object {
+      $_.role -eq 'ControlType.Button' -and
+      $_.bounds.left -ge $modalLeft -and $_.bounds.top -ge $modalTop -and
+      ($_.bounds.left + $_.bounds.width) -le $modalRight -and ($_.bounds.top + $_.bounds.height) -le $modalBottom
+    } | Select-Object -First 12 | ForEach-Object { ConvertTo-EvaPublicControl $_ })
+    $result.dialog = [ordered]@{
+      title = [string]$modal.name
+      bounds = $modal.bounds
+      controls = $modalControls
+    }
+  }
 }
 [PSCustomObject]$result | ConvertTo-Json -Depth 6 -Compress
 `

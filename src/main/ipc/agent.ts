@@ -28,7 +28,7 @@ export function registerAgentHandlers(): void {
         providerId: data.providerId || 'openai',
         modelCandidates: data.modelCandidates || [],
         tools: data.tools || [],
-        maxIterations: data.maxIterations || 20,
+        maxIterations: data.maxIterations || 100,
         temperature: data.temperature ?? 0.7,
         isBuiltIn: false,
       })

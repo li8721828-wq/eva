@@ -43,7 +43,7 @@ export function AgentEditor({
   const [providerId, setProviderId] = useState(agent?.providerId || defaultProviderId)
   const [model, setModel] = useState(agent?.model || defaultModel)
   const [temperature, setTemperature] = useState(agent?.temperature ?? 0.7)
-  const [maxIterations, setMaxIterations] = useState(agent?.maxIterations ?? 20)
+  const [maxIterations, setMaxIterations] = useState(agent?.maxIterations ?? 100)
   const [tools, setTools] = useState<string[]>(agent?.tools || [])
   const [nameError, setNameError] = useState('')
 
@@ -222,8 +222,8 @@ export function AgentEditor({
             min={1}
             max={100}
             value={maxIterations}
-            onChange={(e) => setMaxIterations(parseInt(e.target.value, 10) || 20)}
-            placeholder="20"
+            onChange={(e) => setMaxIterations(parseInt(e.target.value, 10) || 100)}
+            placeholder="100"
           />
         </div>
       </div>

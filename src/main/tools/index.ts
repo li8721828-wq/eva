@@ -7,6 +7,8 @@ import { createWebTools } from './web-tools'
 import { createBlenderTools } from './blender-tools'
 import { createMouseTools } from './mouse-tools'
 import { createDesktopMcpTools } from './desktop-mcp-tools'
+import { createDesktopSessionTools } from './desktop-session-tools'
+import { createKeyboardTools } from './keyboard-tools'
 import { createProjectIndexTools } from './project-index-tools'
 import type { ProjectIndexService } from '../services/project-index-service'
 
@@ -15,6 +17,7 @@ export interface ToolContext {
   workspacePath: string
   fileAccessGrants?: FileAccessGrant[]
   fullFilesystemAccess?: boolean
+  supportsVisionInput?: boolean
   fileService: FileService
   terminalService: TerminalService
 }
@@ -110,6 +113,8 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService): T
   for (const tool of createBlenderTools()) registry.register(tool)
   for (const tool of createMouseTools()) registry.register(tool)
   for (const tool of createDesktopMcpTools()) registry.register(tool)
+  for (const tool of createDesktopSessionTools()) registry.register(tool)
+  for (const tool of createKeyboardTools()) registry.register(tool)
   if (projectIndexService) {
     for (const tool of createProjectIndexTools(projectIndexService)) registry.register(tool)
   }

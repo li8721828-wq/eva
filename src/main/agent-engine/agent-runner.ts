@@ -249,6 +249,7 @@ export class AgentRunner {
             workspacePath,
             fileAccessGrants,
             fullFilesystemAccess,
+            supportsVisionInput: this.supportsVisionInput(),
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
           }
@@ -291,6 +292,17 @@ export class AgentRunner {
             role: 'user',
             content: 'Blender generated these review renders of the current model. Compare them directly with the original reference image(s) still in this conversation. Identify visible mismatches in silhouette, proportions, colors, materials, hair, facial features, clothing, and accessories. Continue by correcting the same .blend file, then render another review before you finish.',
             images: reviewImages,
+          })
+        }
+
+        const desktopImages = this.supportsVisionInput()
+          ? await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe'])
+          : []
+        if (desktopImages.length > 0) {
+          messages.push({
+            role: 'user',
+            content: 'A desktop_observe call supplied this screenshot of the visible foreground desktop. Use it only as visual evidence for the currently visible surface. Do not infer or access anything hidden behind another window. Before interacting, use the returned observationId with mouse_control or keyboard_control; observe again after each meaningful action.',
+            images: desktopImages,
           })
         }
       }
@@ -582,7 +594,7 @@ export class AgentRunner {
     if (result.isError) return result
     // Some legacy executors return a textual failure instead of throwing. Do
     // not let that be mistaken for evidence that the requested action worked.
-    return /^(?:error|failed|failure)\b/i.test(result.result.trim())
+    return /^(?:error|failed|failure|mouse control failed)\b/i.test(result.result.trim())
       ? { ...result, isError: true }
       : result
   }
@@ -628,9 +640,23 @@ export class AgentRunner {
     toolCalls: CompletedToolCall[],
     toolResults: Map<string, CompletedToolResult>
   ): Promise<NonNullable<ChatMessageInput['images']>> {
+    return this.loadToolImages(toolCalls, toolResults, ['blender_render_review', 'blender_model_from_reference'])
+  }
+
+  private supportsVisionInput(): boolean {
+    if (this.config.provider.type === 'anthropic') return true
+    if (this.config.provider.type !== 'openai') return false
+    return /(?:gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4-mini)/i.test(this.config.agentConfig.model)
+  }
+
+  private async loadToolImages(
+    toolCalls: CompletedToolCall[],
+    toolResults: Map<string, CompletedToolResult>,
+    toolNames: string[],
+  ): Promise<NonNullable<ChatMessageInput['images']>> {
     const loaded: NonNullable<ChatMessageInput['images']> = []
     const imageResults = toolCalls
-      .filter((toolCall) => toolCall.name === 'blender_render_review' || toolCall.name === 'blender_model_from_reference')
+      .filter((toolCall) => toolNames.includes(toolCall.name))
       .flatMap((toolCall) => toolResults.get(toolCall.id)?.images || [])
 
     for (const image of imageResults) {

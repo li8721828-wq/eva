@@ -114,6 +114,11 @@ export class AgentStore {
         existingBuiltIn.updatedAt = now
       }
 
+      if (existingBuiltIn && existingBuiltIn.maxIterations !== builtIn.maxIterations) {
+        existingBuiltIn.maxIterations = builtIn.maxIterations
+        existingBuiltIn.updatedAt = now
+      }
+
       if (existingBuiltIn && existingBuiltIn.toolCatalogVersion !== TOOL_CATALOG_VERSION) {
         existingBuiltIn.tools = [...new Set([...existingBuiltIn.tools, ...builtIn.tools])]
         existingBuiltIn.toolCatalogVersion = TOOL_CATALOG_VERSION
