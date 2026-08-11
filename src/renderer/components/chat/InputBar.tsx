@@ -399,7 +399,7 @@ export function InputBar({ className }: InputBarProps) {
   return (
     <div
       className={cn(
-        'relative z-20 shrink-0 overflow-visible bg-[#f7f8fc] px-8 py-5',
+        'relative z-20 shrink-0 overflow-visible bg-transparent px-8 py-5',
         className,
       )}
     >

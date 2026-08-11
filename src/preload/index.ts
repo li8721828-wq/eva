@@ -47,7 +47,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>): Promise<void>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt'>>): Promise<void>
     onChanged(callback: EventCallback<string>): Unsubscribe
   }
 

@@ -159,15 +159,19 @@ export class ConversationStore {
 
   async updateConversation(
     id: string,
-    updates: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'gitRepositoryPath' | 'gitBranch' | 'gitWorktreePath' | 'workspacePath' | 'symposium' | 'executionStatus' | 'executionUpdatedAt' | 'updatedAt'>>
+    updates: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'gitRepositoryPath' | 'gitBranch' | 'gitWorktreePath' | 'workspacePath' | 'symposium' | 'executionStatus' | 'executionUpdatedAt' | 'executionStatusAcknowledgedAt' | 'updatedAt'>>
   ): Promise<void> {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)
       if (!meta) throw new Error(`Conversation ${id} not found`)
 
+      const hasNewTerminalState = updates.executionStatus !== undefined
+        && updates.executionStatus !== meta.executionStatus
+        && updates.executionStatus !== 'running'
       const updated = {
         ...meta,
         ...updates,
+        ...(hasNewTerminalState ? { executionStatusAcknowledgedAt: undefined } : {}),
         updatedAt: Date.now(),
       }
       fs.writeFileSync(this.metaPath(id), JSON.stringify(updated, null, 2), 'utf-8')

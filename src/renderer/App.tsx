@@ -8,6 +8,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
+import { TaskWorkspacePanel } from '@/components/tasks/TaskWorkspacePanel'
 import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
@@ -17,31 +18,30 @@ import { Button } from '@/components/ui/Button'
 import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
 
 // Lazy-loaded heavy components
-const CodeEditor = lazy(() => import('@/components/editor/CodeEditor').then(m => ({ default: m.CodeEditor })))
 const TerminalPanel = lazy(() => import('@/components/terminal/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
-const FileExplorer = lazy(() => import('@/components/editor/FileExplorer').then(m => ({ default: m.FileExplorer })))
 
-type ResizeTarget = 'sidebar' | 'right-panel' | 'explorer'
+type ResizeTarget = 'sidebar' | 'right-panel' | 'task-note'
 
 const SIDEBAR_MIN_WIDTH = 240
 const SIDEBAR_MAX_WIDTH = 440
 const RIGHT_PANEL_MIN_WIDTH = 300
 const RIGHT_PANEL_MAX_WIDTH = 640
-const EXPLORER_MIN_HEIGHT = 180
-const EDITOR_MIN_HEIGHT = 180
-
 function ResizeHandle({ target, onPointerDown }: { target: ResizeTarget; onPointerDown: (target: ResizeTarget, event: React.PointerEvent<HTMLDivElement>) => void }) {
-  const vertical = target === 'explorer'
+  const isVertical = target === 'task-note'
   return (
     <div
       role="separator"
-      aria-orientation={vertical ? 'horizontal' : 'vertical'}
-      aria-label={vertical ? 'Resize explorer and editor' : target === 'sidebar' ? 'Resize sidebar' : 'Resize explorer panel'}
+      aria-orientation={isVertical ? 'horizontal' : 'vertical'}
+      aria-label={isVertical ? 'Resize task workspace height' : target === 'sidebar' ? 'Resize sidebar' : 'Resize task workspace width'}
       onPointerDown={(event) => onPointerDown(target, event)}
-      className={vertical
-        ? 'relative z-10 h-px shrink-0 cursor-row-resize touch-none bg-zinc-100 transition-colors hover:bg-violet-300 active:bg-violet-500 after:absolute after:-inset-x-2 after:-inset-y-2'
+      className={isVertical
+        ? 'relative z-10 mx-auto h-3 w-12 shrink-0 cursor-row-resize touch-none after:absolute after:-inset-x-3 after:-inset-y-2'
+        : target === 'right-panel'
+        ? 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-violet-200/60 active:bg-violet-400 after:absolute after:-inset-x-2 after:-inset-y-2'
         : 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-zinc-100 transition-colors hover:bg-violet-300 active:bg-violet-500 after:absolute after:-inset-x-2 after:-inset-y-2'}
-    />
+    >
+      {isVertical && <span className="task-workspace-resize-grip" />}
+    </div>
   )
 }
 
@@ -59,7 +59,6 @@ const App: React.FC = () => {
     toggleRightPanel,
     setRightPanelVisible,
     terminalVisible,
-    currentFile,
     workspacePath,
     loadConfig,
     agentManagerOpen,
@@ -70,10 +69,10 @@ const App: React.FC = () => {
     sidebarCollapsed,
     sidebarWidth,
     rightPanelWidth,
-    explorerHeight,
+    taskNoteHeight,
     setSidebarWidth,
     setRightPanelWidth,
-    setExplorerHeight,
+    setTaskNoteHeight,
   } = useAppStore()
 
   const { loadConversations, currentConversationId, refreshConversation } = useChatStore()
@@ -95,10 +94,11 @@ const App: React.FC = () => {
     const startY = event.clientY
     const startSidebarWidth = sidebarWidthRef.current
     const startRightPanelWidth = rightPanelWidthRef.current
-    const startExplorerHeight = explorerHeight
+    const defaultTaskNoteHeight = Math.round((rightPanelWidthRef.current - 26) * 1.618)
+    const startTaskNoteHeight = taskNoteHeight || defaultTaskNoteHeight
     setActiveResize(target)
     document.body.style.userSelect = 'none'
-    document.body.style.cursor = target === 'explorer' ? 'row-resize' : 'col-resize'
+    document.body.style.cursor = target === 'task-note' ? 'row-resize' : 'col-resize'
 
     const onMove = (moveEvent: PointerEvent) => {
       if (target === 'sidebar') {
@@ -108,8 +108,8 @@ const App: React.FC = () => {
         const available = window.innerWidth - sidebarWidthRef.current - 480
         setRightPanelWidth(Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, available, startRightPanelWidth - (moveEvent.clientX - startX))))
       } else {
-        const maxHeight = Math.max(EXPLORER_MIN_HEIGHT, window.innerHeight - EDITOR_MIN_HEIGHT - 120)
-        setExplorerHeight(Math.max(EXPLORER_MIN_HEIGHT, Math.min(maxHeight, startExplorerHeight + moveEvent.clientY - startY)))
+        const maxHeight = Math.max(340, window.innerHeight - 84)
+        setTaskNoteHeight(Math.max(340, Math.min(maxHeight, startTaskNoteHeight + moveEvent.clientY - startY)))
       }
     }
     const onUp = () => {
@@ -124,13 +124,13 @@ const App: React.FC = () => {
         ? ['sidebarWidth', state.sidebarWidth]
         : target === 'right-panel'
           ? ['rightPanelWidth', state.rightPanelWidth]
-          : ['explorerHeight', state.explorerHeight]
+          : ['taskNoteHeight', state.taskNoteHeight]
       void window.eva.config.set(key, value).catch(console.error)
     }
     document.addEventListener('pointermove', onMove)
     document.addEventListener('pointerup', onUp)
     resizeCleanupRef.current = onUp
-  }, [explorerHeight, rightPanelVisible, setExplorerHeight, setRightPanelWidth, setSidebarWidth])
+  }, [rightPanelVisible, setRightPanelWidth, setSidebarWidth, setTaskNoteHeight, taskNoteHeight])
 
   // Initialize streaming listeners
   useStreaming()
@@ -178,9 +178,9 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-white text-zinc-900" data-resizing={activeResize || undefined}>
+    <div className="eva-app-shell flex h-screen w-screen flex-col overflow-hidden text-zinc-900" data-resizing={activeResize || undefined}>
       <AppTitlebar />
-      <div className="flex min-h-0 flex-1">
+      <div className="eva-workspace flex min-h-0 flex-1">
       {/* Left Sidebar */}
       <Sidebar style={!sidebarCollapsed ? { width: sidebarWidth } : undefined} />
       {!sidebarCollapsed && <ResizeHandle target="sidebar" onPointerDown={startResize} />}
@@ -198,47 +198,43 @@ const App: React.FC = () => {
 
           {/* Right Panel Toggle */}
           {currentView === 'chat' && !rightPanelVisible && (
-            <div className="flex flex-col items-center border-l border-zinc-200 bg-white py-2 px-1">
-              <Button variant="ghost" size="icon" onClick={toggleRightPanel} title="Show panel" aria-label="Toggle file panel">
+            <div className="flex flex-col items-center border-l border-indigo-100 bg-white/70 py-2 px-1 backdrop-blur-sm">
+              <Button variant="ghost" size="icon" onClick={toggleRightPanel} title="Show task workspace" aria-label="Toggle task workspace">
                 <PanelRight className="h-4 w-4" />
               </Button>
             </div>
           )}
 
-          {/* Right Panel (File Explorer + Editor) */}
+          {/* Right Panel (conversation task workspace) */}
           {showRightPanel && (
             <>
-            <ResizeHandle target="right-panel" onPointerDown={startResize} />
-            <div className="flex shrink-0 flex-col" style={{ width: rightPanelWidth }}>
-              {/* Panel header */}
-              <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
-                <span className="text-xs font-medium text-zinc-500">Explorer</span>
-                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleRightPanel} title="Hide panel" aria-label="Toggle file panel">
-                  <PanelRightClose className="h-4 w-4" />
-                </Button>
-              </div>
+            <aside className="eva-utility-rail flex min-h-0 shrink-0 flex-col" style={{ width: rightPanelWidth }} aria-label="Task workspace">
+              <div className="task-workspace-note flex min-h-0 shrink-0 flex-col" style={taskNoteHeight ? { height: taskNoteHeight } : undefined}>
+                {/* Panel header */}
+                <div className="task-workspace-note__header flex items-center justify-between px-4 py-3">
+                  <span className="text-xs font-semibold text-zinc-600">Workspace</span>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleRightPanel} title="Hide task workspace" aria-label="Toggle task workspace">
+                    <PanelRightClose className="h-4 w-4" />
+                  </Button>
+                </div>
 
-              {/* File Explorer (top half) */}
-              <div className="min-h-0 shrink-0" style={{ height: explorerHeight }}>
-                <Suspense fallback={<LazyFallback className="h-full" />}>
-                  <FileExplorer className="h-full" />
-                </Suspense>
+                <TaskWorkspacePanel />
+                <div
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize task workspace height"
+                  className="task-workspace-note__resize-edge task-workspace-note__resize-edge--bottom"
+                  onPointerDown={(event) => startResize('task-note', event)}
+                />
+                <div
+                  role="separator"
+                  aria-orientation="vertical"
+                  aria-label="Resize task workspace width"
+                  className="task-workspace-note__resize-edge task-workspace-note__resize-edge--left"
+                  onPointerDown={(event) => startResize('right-panel', event)}
+                />
               </div>
-
-              <ResizeHandle target="explorer" onPointerDown={startResize} />
-
-              {/* Code Editor (bottom half) */}
-              <div className="min-h-0 flex-1">
-                <Suspense fallback={<LazyFallback className="h-full" />}>
-                  <CodeEditor
-                    className="h-full"
-                    filePath={currentFile?.path}
-                    content={currentFile?.content}
-                    language={currentFile?.language}
-                  />
-                </Suspense>
-              </div>
-            </div>
+            </aside>
             </>
           )}
         </div>

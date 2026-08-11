@@ -96,7 +96,7 @@ export function Sidebar({ className, style }: SidebarProps) {
 
   if (sidebarCollapsed) {
     return (
-      <div className="flex flex-col items-center gap-2 w-12 border-r border-zinc-200 bg-[#f8f9fa] py-3">
+      <div className="eva-sidebar flex w-12 flex-col items-center gap-2 border-r py-3">
         <Button variant="ghost" size="icon" onClick={toggleSidebar} title="Expand sidebar">
           <PanelLeft className="h-4 w-4" />
         </Button>
@@ -134,7 +134,7 @@ export function Sidebar({ className, style }: SidebarProps) {
   return (
     <div
       className={cn(
-        'relative flex shrink-0 flex-col bg-[#f8f9fa]',
+        'eva-sidebar relative flex shrink-0 flex-col',
         className
       )}
       style={style}
@@ -149,7 +149,7 @@ export function Sidebar({ className, style }: SidebarProps) {
         </div>
       )}
       {/* Header */}
-      <div className="flex h-12 items-center justify-between border-b border-zinc-200/90 px-4">
+      <div className="flex h-12 items-center justify-between border-b border-indigo-100/90 px-4">
         <span className="text-sm font-semibold text-zinc-800">Workspace</span>
         <div className="flex items-center">
           <Button

@@ -25,11 +25,12 @@ interface ConversationRowProps {
 }
 
 function ConversationRow({ conversation, isSelected, archived = false, onSelect, onArchive, onRestore, onDelete }: ConversationRowProps) {
+  const hasUnreadTerminalStatus = !conversation.executionStatusAcknowledgedAt
   const executionIndicator = conversation.executionStatus === 'running'
     ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-600" aria-label="Running" />
-    : conversation.executionStatus === 'completed'
+    : hasUnreadTerminalStatus && conversation.executionStatus === 'completed'
       ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-label="Completed" />
-      : conversation.executionStatus === 'failed' || conversation.executionStatus === 'cancelled'
+      : hasUnreadTerminalStatus && (conversation.executionStatus === 'failed' || conversation.executionStatus === 'cancelled')
         ? <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label={conversation.executionStatus === 'failed' ? 'Failed' : 'Stopped'} />
         : null
   const executionLabel = conversation.executionStatus === 'running'
@@ -45,7 +46,7 @@ function ConversationRow({ conversation, isSelected, archived = false, onSelect,
     <div
       className={cn(
         'group flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium leading-5 transition-colors',
-        isSelected ? 'bg-zinc-200/80 text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200/70',
+        isSelected ? 'bg-gradient-to-r from-violet-100/90 via-indigo-50 to-cyan-50 text-indigo-950 shadow-[0_7px_15px_-14px_rgba(79,70,229,0.8)] ring-1 ring-violet-100/90' : 'text-zinc-600 hover:bg-violet-50/70 hover:text-indigo-900',
         archived && 'text-zinc-500'
       )}
     >
@@ -204,7 +205,7 @@ export function ConversationList({ className }: ConversationListProps) {
                 <button
                   type="button"
                   onClick={() => toggleProject(workspace.id)}
-                  className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-md px-3 text-left text-sm font-medium leading-5 text-zinc-600 transition-colors hover:bg-zinc-200/70"
+                  className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-md border border-transparent bg-white/28 px-3 text-left text-sm font-medium leading-5 text-zinc-600 transition-all hover:border-indigo-100/90 hover:bg-white/72 hover:text-indigo-900 hover:shadow-[0_7px_16px_-15px_rgba(79,70,229,0.75)]"
                 >
                   <span className="truncate">{workspace.name}</span>
                   <span className="ml-auto text-xs leading-5 text-zinc-400">{workspaceConversations.length}</span>

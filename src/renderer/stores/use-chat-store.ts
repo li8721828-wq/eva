@@ -129,6 +129,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const result = await window.eva.conversation.load(id)
       if (get().currentConversationId === id) {
         set({ messages: result.messages, isConversationLoading: false })
+        const terminalStatus = result.conversation.executionStatus
+        if ((terminalStatus === 'completed' || terminalStatus === 'failed' || terminalStatus === 'cancelled') && !result.conversation.executionStatusAcknowledgedAt) {
+          const acknowledgedAt = Date.now()
+          await window.eva.conversation.update(id, { executionStatusAcknowledgedAt: acknowledgedAt })
+          set((state) => ({
+            conversations: state.conversations.map((conversation) =>
+              conversation.id === id ? { ...conversation, executionStatusAcknowledgedAt: acknowledgedAt } : conversation
+            ),
+          }))
+        }
         const snapshot = await window.eva.task.getSnapshot(id)
         if (get().currentConversationId === id) useTaskStore.getState().hydrateSnapshot(snapshot)
       }

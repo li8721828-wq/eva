@@ -36,6 +36,8 @@ export interface Conversation {
   /** Most recent agent execution state, retained for conversation navigation. */
   executionStatus?: ConversationExecutionStatus
   executionUpdatedAt?: number
+  /** Terminal execution state acknowledgement used by the sidebar reminder. */
+  executionStatusAcknowledgedAt?: number
   archived?: boolean
   workspacePath: string
   createdAt: number

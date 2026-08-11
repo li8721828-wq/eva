@@ -18,6 +18,7 @@ interface AppState {
   sidebarCollapsed: boolean
   sidebarWidth: number
   rightPanelWidth: number
+  taskNoteHeight: number | null
   explorerHeight: number
   workMode: WorkMode
   workspacePath: string
@@ -25,7 +26,7 @@ interface AppState {
   currentView: AppView
   artifactWorkspaceId: string | null
   rightPanelVisible: boolean
-  rightPanelTab: 'files' | 'editor'
+  rightPanelTab: 'tasks' | 'files' | 'editor'
   terminalVisible: boolean
   settingsOpen: boolean
   agentManagerOpen: boolean
@@ -39,6 +40,7 @@ interface AppState {
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
   setRightPanelWidth: (width: number) => void
+  setTaskNoteHeight: (height: number | null) => void
   setExplorerHeight: (height: number) => void
   setWorkMode: (mode: WorkMode) => void
   setWorkspacePath: (path: string) => void
@@ -48,7 +50,7 @@ interface AppState {
   closeTaskArtifacts: () => void
   toggleRightPanel: () => void
   setRightPanelVisible: (visible: boolean) => void
-  setRightPanelTab: (tab: 'files' | 'editor') => void
+  setRightPanelTab: (tab: 'tasks' | 'files' | 'editor') => void
   toggleTerminal: () => void
   setSettingsOpen: (open: boolean) => void
   setAgentManagerOpen: (open: boolean) => void
@@ -69,6 +71,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: false,
   sidebarWidth: 304,
   rightPanelWidth: 360,
+  taskNoteHeight: null,
   explorerHeight: 380,
   workMode: 'normal',
   workspacePath: '',
@@ -76,7 +79,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentView: 'chat',
   artifactWorkspaceId: null,
   rightPanelVisible: true,
-  rightPanelTab: 'files',
+  rightPanelTab: 'tasks',
   terminalVisible: false,
   settingsOpen: false,
   agentManagerOpen: false,
@@ -96,6 +99,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
   setRightPanelWidth: (rightPanelWidth) => set({ rightPanelWidth }),
+  setTaskNoteHeight: (taskNoteHeight) => set({ taskNoteHeight }),
   setExplorerHeight: (explorerHeight) => set({ explorerHeight }),
   setWorkMode: (mode) => set({ workMode: mode }),
   setWorkspacePath: (path) => {
@@ -143,6 +147,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         sidebarCollapsed: (config.sidebarCollapsed as boolean) ?? false,
         sidebarWidth: Math.max(240, Math.min(440, Number(config.sidebarWidth) || 304)),
         rightPanelWidth: Math.max(300, Math.min(640, Number(config.rightPanelWidth) || 360)),
+        taskNoteHeight: Number.isFinite(Number(config.taskNoteHeight)) && Number(config.taskNoteHeight) > 0
+          ? Math.max(340, Number(config.taskNoteHeight))
+          : null,
         explorerHeight: Math.max(180, Number(config.explorerHeight) || 380),
         workspacePath: (config.workspacePath as string) || '',
         fileAccessGrants: (config.fileAccessGrants as FileAccessGrant[]) || [],

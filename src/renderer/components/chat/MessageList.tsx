@@ -4,7 +4,6 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MessageBubble } from './MessageBubble'
 import { ToolCallView } from './ToolCallView'
-import { GoalExecutionCard } from './GoalExecutionCard'
 import { WelcomeScreen } from './WelcomeScreen'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -20,9 +19,7 @@ const SMOOTH_SPIN_CLASS = 'animate-spin'
 const ESTIMATED_MESSAGE_HEIGHT = 180
 const VIRTUAL_OVERSCAN = 900
 
-type RenderItem =
-  | { id: string; kind: 'message'; message: ChatMessage }
-  | { id: string; kind: 'goal' }
+type RenderItem = { id: string; kind: 'message'; message: ChatMessage }
 
 function loadSavedScrollPositions() {
   if (typeof window === 'undefined') return
@@ -77,17 +74,6 @@ function sumConversationUsage(messages: ChatMessage[]): ChatUsage | undefined {
   }, { promptTokens: 0, completionTokens: 0 })
 }
 
-function GoalMark() {
-  return (
-    <div className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-600" aria-hidden="true">
-      <span className="absolute h-5 w-5 rounded-full border border-violet-300/90" />
-      <span className="relative z-10 h-2.5 w-2.5 rounded-full bg-violet-600 shadow-[0_0_0_2px_rgba(221,214,254,0.9)]" />
-      <span className="absolute left-[5px] top-[7px] h-1.5 w-1.5 rounded-full border border-violet-300 bg-white shadow-sm" />
-      <span className="absolute bottom-[5px] right-[6px] h-1.5 w-1.5 rounded-full border border-violet-300 bg-white shadow-sm" />
-    </div>
-  )
-}
-
 export interface MessageListProps {
   className?: string
 }
@@ -101,9 +87,6 @@ export function MessageList({ className }: MessageListProps) {
   const streamingStatus = stream?.status || ''
   const { rightPanelVisible } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
-  const goalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] : undefined)
-  const hasGoalProgress = Boolean(goalTask?.progress?.conversationId === currentConversationId)
-  const isGoalRunning = Boolean(goalTask?.isRunning)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const activeConversationIdRef = useRef<string | null>(currentConversationId)
   const previousMessageCountRef = useRef(messages.length)
@@ -182,32 +165,13 @@ export function MessageList({ className }: MessageListProps) {
   }, [renderableMessages, visibleCount])
 
   const hasMore = renderableMessages.length > visibleCount
-  const goalInsertAfterIndex = useMemo(() => {
-    if (!hasGoalProgress || !goalTask?.progress) return -1
-
-    let index = -1
-    for (let messageIndex = 0; messageIndex < visibleMessages.length; messageIndex += 1) {
-      if (visibleMessages[messageIndex].timestamp <= goalTask.progress.startedAt) {
-        index = messageIndex
-      }
-    }
-    return index
-  }, [goalTask?.progress, hasGoalProgress, visibleMessages])
-
   const renderItems = useMemo<RenderItem[]>(() => {
-    const items: RenderItem[] = visibleMessages.map((message) => ({
+    return visibleMessages.map((message) => ({
       id: `message-${message.id}`,
       kind: 'message',
       message,
     }))
-
-    if (!hasGoalProgress) return items
-
-    const goalItem: RenderItem = { id: `goal-${currentConversationId || 'current'}`, kind: 'goal' }
-    const insertAt = goalInsertAfterIndex < 0 ? 0 : goalInsertAfterIndex + 1
-    items.splice(insertAt, 0, goalItem)
-    return items
-  }, [currentConversationId, goalInsertAfterIndex, hasGoalProgress, visibleMessages])
+  }, [visibleMessages])
 
   const itemLayout = useMemo(() => {
     const offsets: number[] = []
@@ -416,7 +380,7 @@ export function MessageList({ className }: MessageListProps) {
     }
   }, [isStreaming, streamingContent, streamingToolCalls])
 
-  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !hasGoalProgress) {
+  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning) {
     return <WelcomeScreen className={className} />
   }
 
@@ -454,17 +418,10 @@ export function MessageList({ className }: MessageListProps) {
             data-message-item-id={item.id}
             className="pb-9"
           >
-            {item.kind === 'message' ? (
-              <MessageBubble
-                message={item.message}
-                conversationUsage={item.message.id === latestUsageMessageId ? conversationUsage : undefined}
-              />
-            ) : (
-              <article className="flex items-start gap-3">
-                <GoalMark />
-                <GoalExecutionCard conversationId={currentConversationId} />
-              </article>
-            )}
+            <MessageBubble
+              message={item.message}
+              conversationUsage={item.message.id === latestUsageMessageId ? conversationUsage : undefined}
+            />
           </div>
         ))}
 

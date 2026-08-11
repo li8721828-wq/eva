@@ -85,6 +85,23 @@ describe('ConversationStore', () => {
     expect((await store.getConversation(second.id))?.multiDimensionalIndexEnabled).toBe(true)
   })
 
+  it('acknowledges terminal execution status until the next execution completes', async () => {
+    const conversation = await store.createConversation({
+      title: 'Execution status',
+      agentId: 'agent-1',
+      mode: 'normal',
+      workspacePath: '/workspace',
+    })
+
+    await store.updateConversation(conversation.id, { executionStatus: 'completed' })
+    await store.updateConversation(conversation.id, { executionStatusAcknowledgedAt: 123 })
+    expect((await store.getConversation(conversation.id))?.executionStatusAcknowledgedAt).toBe(123)
+
+    await store.updateConversation(conversation.id, { executionStatus: 'running' })
+    await store.updateConversation(conversation.id, { executionStatus: 'failed' })
+    expect((await store.getConversation(conversation.id))?.executionStatusAcknowledgedAt).toBeUndefined()
+  })
+
   it('should get a conversation by ID', async () => {
     const conv = await store.createConversation({
       title: 'Get Test',

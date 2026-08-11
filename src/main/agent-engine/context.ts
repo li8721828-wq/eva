@@ -243,6 +243,9 @@ export class ContextManager {
     if (internalCapabilities.length) {
       parts.push('Internal capabilities available to this conversation:')
       internalCapabilities.forEach((capability) => parts.push(`- ${capability}`))
+      if (tools.some((tool) => tool.name === 'run_goal')) {
+        parts.push('Execution policy: for any request with two or more substantive actions, research plus synthesis, file changes plus verification, or an outcome that cannot be completed in one atomic action, call run_goal before beginning work. Do not place a duplicate detailed plan in the chat response; the task workspace presents the plan and live checklist. Work directly only for a genuinely atomic request.')
+      }
     }
     parts.push('Each agent can have its own permitted tools and candidate model connections. The runtime chooses only from that agent\'s configured candidates; a connection hidden from the chat picker can still be assigned to an agent.')
     parts.push('Never claim that Eva lacks a capability without checking the tools and permissions listed below. State only the capabilities currently available to this agent.')

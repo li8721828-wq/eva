@@ -618,7 +618,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
     async (
       event,
       id: string,
-      data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>
+      data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt'>>
     ): Promise<void> => {
       const conversation = await getStorage().conversations.getConversation(id)
       await getStorage().conversations.updateConversation(id, {

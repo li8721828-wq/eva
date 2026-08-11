@@ -3,6 +3,7 @@ import { useAppStore } from '@/stores/use-app-store'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { FileCode, Eye, Edit3, Save } from 'lucide-react'
+import { MarkdownMessageContent } from '@/components/chat/MessageBubble'
 
 export interface CodeEditorProps {
   filePath?: string
@@ -23,6 +24,7 @@ export function CodeEditor({ filePath, content = '', language, className }: Code
   }, [filePath, content])
 
   const detectedLanguage = language || detectLanguage(filePath || '')
+  const isMarkdown = detectedLanguage === 'Markdown'
 
   const handleSave = async () => {
     if (!filePath || !workspacePath) return
@@ -62,7 +64,7 @@ export function CodeEditor({ filePath, content = '', language, className }: Code
             size="icon"
             className="h-8 w-8 shrink-0"
             onClick={() => setReadOnly(!readOnly)}
-            title={readOnly ? 'Edit' : 'Read only'}
+            title={readOnly ? (isMarkdown ? 'Edit Markdown' : 'Edit') : (isMarkdown ? 'Preview Markdown' : 'Read only')}
           >
             {readOnly ? <Eye className="h-4 w-4" /> : <Edit3 className="h-4 w-4" />}
           </Button>
@@ -71,7 +73,11 @@ export function CodeEditor({ filePath, content = '', language, className }: Code
 
       {/* Code content - placeholder for Monaco Editor */}
       <div className="flex-1 overflow-auto">
-        {readOnly ? (
+        {readOnly && isMarkdown ? (
+          <div className="h-full overflow-auto px-5 py-4">
+            <MarkdownMessageContent content={editedContent || '# Empty document'} className="file-markdown-preview" />
+          </div>
+        ) : readOnly ? (
           <pre className="p-4 text-sm text-zinc-800 font-mono leading-relaxed whitespace-pre-wrap">
             {editedContent || '// Select a file to view its contents'}
           </pre>

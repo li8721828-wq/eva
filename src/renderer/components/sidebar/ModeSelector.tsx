@@ -29,7 +29,7 @@ export function ModeSelector({ className }: ModeSelectorProps) {
       value={workMode}
       onChange={(event) => setWorkMode(event.target.value as WorkMode)}
       options={modes.map((mode) => ({ value: mode.value, label: mode.label }))}
-      className={cn('h-9 border-transparent bg-transparent text-sm font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0', className)}
+      className={cn('h-9 rounded-md border border-transparent bg-transparent text-sm font-medium text-zinc-700 shadow-none hover:border-indigo-100/70 hover:bg-white/30 hover:text-indigo-900 focus:border-indigo-100/80 focus:bg-white/38 focus:shadow-none focus:ring-0 focus-visible:border-indigo-100/80 focus-visible:ring-0', className)}
       aria-label="Select work mode"
       title={currentMode?.description}
     />
