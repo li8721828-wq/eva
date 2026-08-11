@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatImageAttachment, ChatMessage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
+import type { Conversation, ChatImageAttachment, ChatMessage, ChatUsage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -48,6 +48,22 @@ const INTERNAL_TASK_TIMEOUT_MS = 3 * 60 * 1000
 function compactToolResult(result: string): string {
   if (result.length <= MAX_PERSISTED_TOOL_RESULT_CHARS) return result
   return `${result.slice(0, MAX_PERSISTED_TOOL_RESULT_CHARS)}\n\n[Tool output truncated for conversation storage: ${result.length} characters total]`
+}
+
+function selectAutoAgent(agents: AgentConfig[], content: string): AgentConfig | null {
+  const byRole = (role: AgentConfig['role']) => agents.find((agent) => agent.role === role)
+
+  if (/(multi[- ]?agent|team|collaborat|orchestrat|拆分任务|协作|编排|执行计划|目标分解|\bgoal\b)/i.test(content)) {
+    return byRole('leader') || byRole('coder') || agents[0] || null
+  }
+  if (/(code review|security|audit|漏洞|审查|评审|\breview\b)/i.test(content)) {
+    return byRole('reviewer') || byRole('coder') || agents[0] || null
+  }
+  if (/(research|investigat|analysis|architecture|调研|研究|分析|资料|报告|趋势|论文|搜索)/i.test(content)) {
+    return byRole('researcher') || byRole('coder') || agents[0] || null
+  }
+
+  return byRole('coder') || agents[0] || null
 }
 
 function applyGoalProgress(current: GoalProgress | null, event: GoalEvent, conversationId: string): GoalProgress | null {
@@ -469,7 +485,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
     case 'error':
       return { type: 'error', error: event.error }
     case 'done':
-      return { type: 'done', content: event.content }
+      return { type: 'done', content: event.content, usage: event.usage }
   }
 }
 
@@ -642,12 +658,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
         }))
 
         // 2. Load agent config — prefer payload agentId, fallback to conversation.agentId, then first available
-        let agentId = payload.agentId || conversation.agentId
+        const isAutoRoutedChat =
+          payload.agentId === '__auto__' || !payload.agentId || payload.agentId === '__direct__'
+        const allAgents = await getStorage().agents.listAgents()
+        const agentId = isAutoRoutedChat ? '' : (payload.agentId || conversation.agentId)
         let agentConfig = agentId ? await getStorage().agents.getAgent(agentId) : null
         if (!agentConfig) {
-          // Fallback to first available agent
-          const allAgents = await getStorage().agents.listAgents()
-          agentConfig = allAgents.length > 0 ? allAgents[0] : null
+          agentConfig = isAutoRoutedChat
+            ? selectAutoAgent(allAgents, message)
+            : allAgents[0] || null
         }
         if (!agentConfig) {
           send({ type: 'error', error: 'No agent available. Please configure an agent first.' })
@@ -942,6 +961,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
         const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean }> = []
         let assistantContent = ''
+        let assistantUsage: ChatUsage | undefined
         let runError: string | null = null
 
         for await (const agentEvent of runner.run({ messages: historyMessages, newMessage: userChatMessage })) {
@@ -973,8 +993,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
               workspaceId: conversation.workspaceId,
             }, win)
           }
-          if (agentEvent.type === 'done' && agentEvent.content) {
-            assistantContent = agentEvent.content
+          if (agentEvent.type === 'done') {
+            if (agentEvent.content) assistantContent = agentEvent.content
+            assistantUsage = agentEvent.usage
           }
           if (agentEvent.type === 'error') {
             runError = agentEvent.error || 'The model response failed.'
@@ -1006,8 +1027,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
           role: 'assistant',
           content: runError && !assistantContent && allToolCalls.length === 0 ? `Error: ${runError}` : assistantContent,
           toolCalls: toolCallsForMessage,
-          agentId: agentConfig.id,
-          agentName: agentConfig.name,
+          agentId: effectiveAgentConfig.id,
+          agentName: effectiveAgentConfig.name,
+          usage: assistantUsage,
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, assistantChatMessage)
@@ -1020,8 +1042,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
             role: 'tool',
             content: compactToolResult(tr.result),
             toolCallId: tr.toolCallId,
-            agentId: agentConfig.id,
-            agentName: agentConfig.name,
+            agentId: effectiveAgentConfig.id,
+            agentName: effectiveAgentConfig.name,
             timestamp: Date.now(),
           }
           await convStore.addMessage(conversationId, toolMessage)

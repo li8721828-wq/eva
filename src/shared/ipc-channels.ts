@@ -92,6 +92,11 @@ export const IPC = {
   TERMINAL_DESTROY: 'terminal:destroy',
   MENU_TOGGLE_TERMINAL: 'menu:toggle-terminal',
 
+  WINDOW_MINIMIZE: 'window:minimize',
+  WINDOW_TOGGLE_MAXIMIZE: 'window:toggle-maximize',
+  WINDOW_CLOSE: 'window:close',
+  WINDOW_GET_VERSION: 'window:get-version',
+
   // 配置
   CONFIG_GET: 'config:get',
   CONFIG_SET: 'config:set',

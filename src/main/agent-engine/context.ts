@@ -4,6 +4,22 @@ import type { ChatMessage } from '../../shared/types/conversation'
 import { CONTEXT_WINDOW_TOKENS } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
+const RECENT_RAW_MESSAGE_LIMIT = 14
+const COMPRESSED_HISTORY_MAX_CHARS = 8_000
+const OLD_MESSAGE_MAX_CHARS = 520
+const OLD_TOOL_RESULT_MAX_CHARS = 300
+const RECENT_TOOL_RESULT_MAX_CHARS = 3_500
+const CONTEXT_SAFETY_TOKENS = 2_048
+
+function compactText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxChars) return normalized
+
+  const headLength = Math.floor(maxChars * 0.72)
+  const tailLength = maxChars - headLength
+  return `${normalized.slice(0, headLength)} … ${normalized.slice(-tailLength)}`
+}
+
 export interface ContextOptions {
   agentConfig: AgentConfig
   messages: ChatMessage[]
@@ -17,13 +33,13 @@ export interface ContextOptions {
 /**
  * Convert a stored ChatMessage to the LLM input format.
  */
-function chatMessageToInput(msg: ChatMessage): ChatMessageInput {
+function chatMessageToInput(msg: ChatMessage, maxToolResultChars?: number): ChatMessageInput {
   const imageNotice = msg.images?.length
     ? `\n\nAttached reference images (use these exact paths when calling Blender tools):\n${msg.images.map((image) => `- ${image.path}`).join('\n')}`
     : ''
   const input: ChatMessageInput = {
     role: msg.role,
-    content: `${msg.content || ''}${imageNotice}`,
+    content: `${msg.role === 'tool' && maxToolResultChars ? compactText(msg.content || '', maxToolResultChars) : msg.content || ''}${imageNotice}`,
     images: msg.images?.map((image) => ({
       mediaType: image.mediaType,
       dataUrl: image.dataUrl,
@@ -44,6 +60,50 @@ function chatMessageToInput(msg: ChatMessage): ChatMessageInput {
 }
 
 export class ContextManager {
+  private compressHistory(messages: ChatMessage[], rawHistoryBudget: number): { memory: string; recent: ChatMessage[] } {
+    const historyTokens = messages.reduce((total, message) => {
+      const toolCalls = message.toolCalls?.length ? JSON.stringify(message.toolCalls) : ''
+      return total + this.estimateTokens(`${message.content || ''}${toolCalls}`)
+    }, 0)
+
+    // A long-context model should retain all available turns while they still
+    // fit. The old fixed 14-message rule prevented DeepSeek V4's 1M context
+    // window from being used even for modest, text-heavy conversations.
+    if (historyTokens <= rawHistoryBudget) return { memory: '', recent: messages }
+
+    if (messages.length <= RECENT_RAW_MESSAGE_LIMIT) return { memory: '', recent: messages }
+
+    let recentStart = Math.max(0, messages.length - RECENT_RAW_MESSAGE_LIMIT)
+    // Do not start a retained window halfway through a tool-call exchange.
+    while (recentStart > 0 && messages[recentStart].role === 'tool') recentStart -= 1
+    while (recentStart > 0 && messages[recentStart - 1].role === 'assistant' && messages[recentStart - 1].toolCalls?.length) {
+      recentStart -= 1
+    }
+
+    const olderMessages = messages.slice(0, recentStart)
+    const lines = olderMessages.map((message) => {
+      if (message.role === 'tool') {
+        return `Tool ${message.toolCallId || 'result'}: ${compactText(message.content || '', OLD_TOOL_RESULT_MAX_CHARS)}`
+      }
+      if (message.role === 'assistant' && message.toolCalls?.length) {
+        return `Assistant tool calls: ${message.toolCalls.map((toolCall) => toolCall.name).join(', ')}`
+      }
+      const label = message.role === 'user' ? 'User' : message.role === 'assistant' ? 'Assistant' : 'System'
+      return `${label}: ${compactText(message.content || '', OLD_MESSAGE_MAX_CHARS)}`
+    })
+
+    const body = compactText(lines.join('\n'), COMPRESSED_HISTORY_MAX_CHARS)
+    return {
+      memory: [
+        '--- Compressed prior conversation ---',
+        'This deterministic memory summarizes earlier turns. Treat it as context, not as newly verified evidence. Full tool outputs remain available in Tool activity when the user needs to inspect them.',
+        body,
+        '--- End compressed prior conversation ---',
+      ].join('\n'),
+      recent: messages.slice(recentStart),
+    }
+  }
+
   /**
    * Build the complete message list to send to the LLM.
    * 1. Inject system prompt (agent config + workspace info + tools)
@@ -54,14 +114,17 @@ export class ContextManager {
     const { agentConfig, messages, workspacePath, fileAccessGrants, fullFilesystemAccess, tools } = options
     const maxTokens = options.maxContextTokens ?? CONTEXT_WINDOW_TOKENS
 
-    const systemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools)
+    const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools)
+    const rawHistoryBudget = Math.max(0, maxTokens - this.estimateTokens(baseSystemPrompt) - CONTEXT_SAFETY_TOKENS)
+    const history = this.compressHistory(messages, rawHistoryBudget)
+    const systemPrompt = history.memory ? `${baseSystemPrompt}\n\n${history.memory}` : baseSystemPrompt
 
     const systemMessage: ChatMessageInput = {
       role: 'system',
       content: systemPrompt,
     }
 
-    const historyMessages: ChatMessageInput[] = messages.map(chatMessageToInput)
+    const historyMessages: ChatMessageInput[] = history.recent.map((message) => chatMessageToInput(message, RECENT_TOOL_RESULT_MAX_CHARS))
 
     const allMessages: ChatMessageInput[] = [systemMessage, ...historyMessages]
 
@@ -191,6 +254,13 @@ export class ContextManager {
     parts.push('For file changes, do not say the saved content is correct or complete until it has been independently checked with read_file or an equivalent inspection. If verification is unavailable, say the write is unverified.')
     parts.push('When the required capability is absent, do not work around it by guessing. State the blocked action, the reason, and the smallest next step: grant a tool, configure a service, provide a source, or approve an action.')
     parts.push('Tools are atomic operations, not workflow controllers. Choose the tool sequence yourself from the task and previous evidence. Use project metadata only as an optional candidate locator; use search_code for exact or broad occurrence coverage and read_file for source evidence. Do not treat any index result as a conclusion.')
+    if (tools.some((tool) => tool.name === 'desktop_observe') && tools.some((tool) => tool.name === 'mouse_control')) {
+      parts.push('--- Visible Desktop Control Protocol ---')
+      parts.push('Use this protocol only when the user explicitly requests desktop control, mouse control, keyboard control, or a visible on-screen operation. Do not infer desktop control merely because a normal request could also be completed through a visible application; in ordinary tasks, choose the most appropriate permitted tool yourself, including execute_command.')
+      parts.push('For an explicitly requested desktop-control task, start desktop_session for a multi-step task and follow this loop: desktop_observe -> mouse_control or keyboard_control -> desktop_observe verification. If visible control is blocked or unreliable, explain the observed limitation and ask the user before switching to a command, browser automation, or another non-visible fallback. Never silently substitute a background/system action for a requested visible action.')
+      parts.push('Act only on controls returned by the most recent desktop_observe result. Prefer semantic taskbar or foreground controls over coordinates. Do not close, minimize, or rearrange unrelated applications just to reveal another one. Do not claim a visible action occurred unless mouse_control or keyboard_control returned a verified result.')
+      parts.push('If the required target is not visible, input is unavailable, or the visible result cannot be verified, stop and report the limitation. Wait for the user\'s approval before using any non-visible fallback.')
+    }
     parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
     if (agentConfig.modelCandidates?.length) {
       parts.push(`Candidate models for delegated work: ${agentConfig.modelCandidates.map((candidate) => `${candidate.providerId}/${candidate.model}`).join(', ')}`)
@@ -207,7 +277,9 @@ export class ContextManager {
         parts.push(`- ${grant.path} (${grant.access})`)
       }
     }
-    parts.push(`Current time: ${new Date().toISOString()}`)
+    // Keep the common prompt prefix stable within a day so providers that support
+    // prompt caching can reuse it across turns instead of missing every second.
+    parts.push(`Current date: ${new Date().toISOString().slice(0, 10)}`)
 
     if (tools.length > 0) {
       parts.push('')

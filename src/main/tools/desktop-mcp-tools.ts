@@ -1,13 +1,12 @@
 import { randomUUID } from 'crypto'
-import { execFile } from 'child_process'
 import os from 'os'
 import path from 'path'
-import { promisify } from 'util'
 import type { ToolContext, ToolExecutionResult, ToolExecutor } from './index'
 import type { DesktopBounds, DesktopControl, DesktopDialog } from './desktop-observation-store'
 import { getDesktopControlSession, recordDesktopControlStep, storeDesktopObservation } from './desktop-observation-store'
+import { runPowerShellScript } from './powershell-runner'
+import { updateDesktopControlOverlay } from '../services/desktop-control-overlay'
 
-const execFileAsync = promisify(execFile)
 const MAX_ELEMENTS = 240
 
 type ObserveAction = 'active_window' | 'controls'
@@ -21,7 +20,14 @@ export interface DesktopSnapshot {
     bounds: DesktopBounds
   }
   cursor: { x: number; y: number }
+  /** Virtual desktop coordinates are shared by observation and mouse_control. */
   screen: { left: number; top: number; width: number; height: number }
+  displays?: Array<{
+    name: string
+    primary: boolean
+    bounds: DesktopBounds
+    workArea: DesktopBounds
+  }>
   controls?: DesktopControl[]
   priorityControls?: DesktopControl[]
   dialog?: DesktopDialog
@@ -29,6 +35,11 @@ export interface DesktopSnapshot {
     bounds: DesktopBounds
     controls: DesktopControl[]
   }
+  /** Every visible Windows taskbar, including taskbars on secondary displays. */
+  taskbars?: Array<{
+    bounds: DesktopBounds
+    controls: DesktopControl[]
+  }>
   controlCount?: number
   truncated?: boolean
 }
@@ -74,6 +85,12 @@ const desktopObserveTool: ToolExecutor = {
     try {
       const action = parseAction(params.action)
       const maxElements = parseMaxElements(params.maxElements)
+      updateDesktopControlOverlay({
+        state: 'observing',
+        title: '正在观察可见桌面',
+        detail: action === 'controls' ? '正在读取当前前台窗口及其可访问控件。' : '正在确认当前前台窗口。',
+        objective: '桌面感知',
+      })
       const observed = await observeVisibleDesktop(action, maxElements, true)
       const { snapshot, imagePath } = observed
       const observation = storeDesktopObservation({
@@ -82,6 +99,7 @@ const desktopObserveTool: ToolExecutor = {
         priorityControls: snapshot.priorityControls,
         dialog: snapshot.dialog,
         taskbar: snapshot.taskbar,
+        taskbars: snapshot.taskbars,
         controlCount: snapshot.controlCount,
         truncated: snapshot.truncated,
       })
@@ -101,10 +119,12 @@ const desktopObserveTool: ToolExecutor = {
           activeWindow: snapshot.activeWindow,
           cursor: snapshot.cursor,
           screen: snapshot.screen,
+          displays: snapshot.displays,
           controls: snapshot.controls,
           priorityControls: snapshot.priorityControls,
           dialog: snapshot.dialog,
           taskbar: snapshot.taskbar,
+          taskbars: snapshot.taskbars,
           controlCount: snapshot.controlCount,
           truncated: snapshot.truncated,
           visualInput: {
@@ -114,12 +134,18 @@ const desktopObserveTool: ToolExecutor = {
               ? 'The screenshot is supplied only to this vision-capable model on the next turn.'
               : 'This connection accepts text-only model input. The screenshot remains a local audit artifact; rely on the visible UI Automation controls and do not claim pixel-level text was read.',
           },
-          guidance: 'This observation represents only the visible foreground window and taskbar. To open another application, prefer an observed taskbar button; do not close or rearrange unrelated applications.',
+          guidance: 'Coordinates use the virtual desktop shown in screen; negative positions and taskbars on another display are valid when included in displays and taskbars. Use semantic controls whenever possible: their clickPoint is the Windows-provided hit-tested point. This observation represents only the visible foreground window and visible taskbars. To open another application, prefer an observed taskbar button; do not close or rearrange unrelated applications.',
         }),
         images: imagePath ? [{ path: imagePath, name: 'visible-desktop.png', mediaType: 'image/png' }] : undefined,
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      updateDesktopControlOverlay({
+        state: 'stopped',
+        title: '桌面观察未完成',
+        detail: message,
+        objective: '桌面感知',
+      })
       return `Desktop observation failed: ${message}`
     }
   },
@@ -171,6 +197,7 @@ public static class EvaDesktopMcp {
   [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left; public int Top; public int Right; public int Bottom; }
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string className, string windowName);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parentHandle, IntPtr childAfter, string className, string windowName);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr handle, StringBuilder text, int count);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr handle, out uint processId);
@@ -210,8 +237,20 @@ $result = [ordered]@{
   cursor = @{ x = $cursor.X; y = $cursor.Y }
   screen = @{ left = [EvaDesktopMcp]::GetSystemMetrics(76); top = [EvaDesktopMcp]::GetSystemMetrics(77); width = [EvaDesktopMcp]::GetSystemMetrics(78); height = [EvaDesktopMcp]::GetSystemMetrics(79) }
 }
+try {
+  Add-Type -AssemblyName System.Windows.Forms
+  $result.displays = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+    [ordered]@{
+      name = [string]$_.DeviceName
+      primary = [bool]$_.Primary
+      bounds = @{ left = $_.Bounds.Left; top = $_.Bounds.Top; width = $_.Bounds.Width; height = $_.Bounds.Height }
+      workArea = @{ left = $_.WorkingArea.Left; top = $_.WorkingArea.Top; width = $_.WorkingArea.Width; height = $_.WorkingArea.Height }
+    }
+  })
+} catch { }
 if ($payload.action -eq 'controls') {
   Add-Type -AssemblyName UIAutomationClient
+  Add-Type -AssemblyName WindowsBase
   $window = [Windows.Automation.AutomationElement]::FromHandle($handle)
   $nodes = $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
   $allControls = New-Object System.Collections.Generic.List[object]
@@ -252,6 +291,7 @@ if ($payload.action -eq 'controls') {
       focused = [bool]$control.focused
       password = [bool]$control.password
       bounds = $control.bounds
+      clickPoint = $control.clickPoint
     }
   }
 
@@ -282,13 +322,21 @@ if ($payload.action -eq 'controls') {
         surface = 'foreground'
         priority = 0
         bounds = @{ left = [Math]::Round($bounds.X); top = [Math]::Round($bounds.Y); width = [Math]::Round($bounds.Width); height = [Math]::Round($bounds.Height) }
+        clickPoint = $null
       }
+      try {
+        $clickablePoint = New-Object System.Windows.Point
+        if ($node.TryGetClickablePoint([ref]$clickablePoint)) {
+          $candidate.clickPoint = @{ x = [Math]::Round($clickablePoint.X); y = [Math]::Round($clickablePoint.Y) }
+        }
+      } catch { }
       $candidate['priority'] = Get-EvaControlPriority $candidate
       $allControls.Add($candidate)
     } catch { }
   }
-  $taskbarHandle = [EvaDesktopMcp]::FindWindow('Shell_TrayWnd', $null)
-  if ($taskbarHandle -ne [IntPtr]::Zero) {
+  $taskbarSnapshots = New-Object System.Collections.Generic.List[object]
+  function Add-EvaTaskbarSnapshot([IntPtr]$taskbarHandle) {
+    if ($taskbarHandle -eq [IntPtr]::Zero) { return }
     try {
       $taskbarRect = New-Object EvaDesktopMcp+Rect
       [EvaDesktopMcp]::GetWindowRect($taskbarHandle, [ref]$taskbarRect) | Out-Null
@@ -321,18 +369,37 @@ if ($payload.action -eq 'controls') {
               surface = 'taskbar'
               priority = 0
               bounds = @{ left = [Math]::Round($bounds.X); top = [Math]::Round($bounds.Y); width = [Math]::Round($bounds.Width); height = [Math]::Round($bounds.Height) }
+              clickPoint = $null
             }
+            try {
+              $clickablePoint = New-Object System.Windows.Point
+              if ($node.TryGetClickablePoint([ref]$clickablePoint)) {
+                $candidate.clickPoint = @{ x = [Math]::Round($clickablePoint.X); y = [Math]::Round($clickablePoint.Y) }
+              }
+            } catch { }
             $candidate['priority'] = (Get-EvaControlPriority $candidate) + 80
             $taskbarCandidates.Add($candidate)
             $allControls.Add($candidate)
           } catch { }
         }
-        $result.taskbar = [ordered]@{
+        $taskbarSnapshots.Add([ordered]@{
           bounds = $taskbarBounds
           controls = @($taskbarCandidates | Sort-Object @{ Expression = { $_.priority }; Descending = $true }, @{ Expression = { $_.bounds.left }; Descending = $false } | Select-Object -First 24 | ForEach-Object { ConvertTo-EvaPublicControl $_ })
-        }
+        })
       }
     } catch { }
+  }
+  Add-EvaTaskbarSnapshot ([EvaDesktopMcp]::FindWindow('Shell_TrayWnd', $null))
+  $taskbarAfter = [IntPtr]::Zero
+  while ($true) {
+    $secondaryTaskbar = [EvaDesktopMcp]::FindWindowEx([IntPtr]::Zero, $taskbarAfter, 'Shell_SecondaryTrayWnd', $null)
+    if ($secondaryTaskbar -eq [IntPtr]::Zero) { break }
+    Add-EvaTaskbarSnapshot $secondaryTaskbar
+    $taskbarAfter = $secondaryTaskbar
+  }
+  if ($taskbarSnapshots.Count -gt 0) {
+    $result.taskbars = @($taskbarSnapshots)
+    $result.taskbar = $taskbarSnapshots[0]
   }
   $orderedControls = @($allControls | Sort-Object @{ Expression = { $_.priority }; Descending = $true }, @{ Expression = { $_.focused }; Descending = $true }, @{ Expression = { $_.bounds.top }; Descending = $false }, @{ Expression = { $_.bounds.left }; Descending = $false })
   $visibleControls = @($orderedControls | Select-Object -First ([int]$payload.maxElements) | ForEach-Object { ConvertTo-EvaPublicControl $_ })
@@ -362,12 +429,7 @@ if ($payload.action -eq 'controls') {
 }
 [PSCustomObject]$result | ConvertTo-Json -Depth 6 -Compress
 `
-  const encodedScript = Buffer.from(script, 'utf16le').toString('base64')
-  const { stdout, stderr } = await execFileAsync(
-    'powershell.exe',
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript],
-    { windowsHide: true, timeout: 20_000, maxBuffer: 512 * 1024 },
-  )
+  const { stdout, stderr } = await runPowerShellScript(script, { timeout: 20_000, maxBuffer: 512 * 1024 })
   const output = stdout.trim()
   if (!output) throw new Error(stderr.trim() || 'PowerShell returned no desktop observation')
   return JSON.parse(output) as DesktopSnapshot
@@ -394,12 +456,7 @@ try {
 }
 Write-Output $outputPath
 `
-  const encodedScript = Buffer.from(script, 'utf16le').toString('base64')
-  const { stdout, stderr } = await execFileAsync(
-    'powershell.exe',
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript],
-    { windowsHide: true, timeout: 15_000, maxBuffer: 16 * 1024 },
-  )
+  const { stdout, stderr } = await runPowerShellScript(script, { timeout: 15_000, maxBuffer: 16 * 1024 })
   const resultPath = stdout.trim()
   if (!resultPath) throw new Error(stderr.trim() || 'PowerShell did not create a visible desktop screenshot')
   return resultPath

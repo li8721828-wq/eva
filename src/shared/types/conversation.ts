@@ -47,7 +47,22 @@ export interface ChatMessage {
   toolCallId?: string
   agentId?: string
   agentName?: string
+  /** Provider-reported usage accumulated for this assistant response. */
+  usage?: ChatUsage
   timestamp: number
+}
+
+export interface ChatUsage {
+  promptTokens: number
+  completionTokens: number
+  /** Tokens served from the provider prompt cache, when reported. */
+  cachedTokens?: number
+  /** Prompt tokens that were not served from cache, when reported or derived. */
+  cacheMissTokens?: number
+  /** Best-effort estimate based on the configured provider/model pricing table. */
+  estimatedCostCny?: number
+  /** Number of model calls that contributed to this response. */
+  modelCalls?: number
 }
 
 export interface ChatImageAttachment {
@@ -79,4 +94,5 @@ export interface ChatStreamEvent {
   isError?: boolean
   error?: string
   finishReason?: string
+  usage?: ChatUsage
 }

@@ -1,6 +1,5 @@
 import { create } from 'zustand'
 import type { AgentSymposium, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
-import { useAgentStore } from './use-agent-store'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
 
@@ -43,7 +42,7 @@ interface ChatState {
   setConversationPermissions: (id: string, permissionLevel: ConversationPermissionLevel, fileAccessGrants?: FileAccessGrant[]) => Promise<void>
   setConversationSymposium: (id: string, symposium: AgentSymposium) => Promise<void>
   setConversationGitBranch: (id: string, branch: string) => Promise<void>
-  sendMessage: () => Promise<void>
+  sendMessage: (agentId?: string) => Promise<void>
   abortStream: () => void
   appendStreamEvent: (event: ChatStreamEvent) => void
   clearCurrentChat: () => void
@@ -101,8 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   createConversation: async (agentId, mode, workspaceId) => {
     try {
-      // Default to currently selected agent if no agentId provided
-      const resolvedAgentId = agentId || useAgentStore.getState().selectedAgentId || ''
+      const resolvedAgentId = agentId || ''
       const workspaceState = useWorkspaceStore.getState()
       const resolvedWorkspaceId = workspaceId === undefined ? workspaceState.activeWorkspaceId : workspaceId
       const workspace = workspaceState.workspaces.find((item) => item.id === resolvedWorkspaceId)
@@ -299,17 +297,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async () => {
+  sendMessage: async (agentId) => {
     const { inputText, referenceImages, currentConversationId, isStreaming } = get()
     if ((!inputText.trim() && referenceImages.length === 0) || isStreaming) return
 
     const messageContent = inputText.trim() || 'Create an editable Blender model from the attached reference images.'
 
     let convId = currentConversationId
+    const existingConversation = convId
+      ? get().conversations.find((item) => item.id === convId)
+      : null
+    const requestedAgentId = agentId || existingConversation?.agentId || '__auto__'
 
     // Create conversation if none exists
     if (!convId) {
-      const conv = await get().createConversation()
+      const conv = await get().createConversation(requestedAgentId)
       convId = conv.id
     }
 
@@ -368,8 +370,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     try {
-      const selectedAgentId = conversation?.agentId || useAgentStore.getState().selectedAgentId || ''
-      await window.eva.chat.send(convId, messageContent, selectedAgentId, referenceImages)
+      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages)
     } catch (err) {
       console.error('Failed to send message:', err)
       set({
@@ -486,6 +487,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             role: 'assistant',
             content: finalContent,
             toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+            usage: event.usage,
             timestamp: Date.now(),
           }
           set({

@@ -125,4 +125,43 @@ describe('ContextManager', () => {
       expect(prompt).toContain('checked with read_file')
     })
   })
+
+  describe('long-context history', () => {
+    const agent: AgentConfig = {
+      id: 'long-context-agent',
+      name: 'Long Context Agent',
+      description: 'Test agent',
+      role: 'custom',
+      systemPrompt: 'Base instructions.',
+      model: 'deepseek-v4-pro',
+      providerId: 'deepseek',
+      tools: [],
+      maxIterations: 4,
+      temperature: 0,
+      isBuiltIn: false,
+      createdAt: 0,
+      updatedAt: 0,
+    }
+
+    it('keeps more than fourteen lightweight turns when the context budget allows it', () => {
+      const messages = Array.from({ length: 20 }, (_, index) => ({
+        id: `message-${index}`,
+        conversationId: 'conversation',
+        role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+        content: `turn ${index}`,
+        timestamp: index,
+      }))
+
+      const result = cm.buildContext({
+        agentConfig: agent,
+        messages,
+        workspacePath: 'C:\\workspace',
+        tools: [],
+        maxContextTokens: 900_000,
+      })
+
+      expect(result).toHaveLength(21)
+      expect(result[1].content).toBe('turn 0')
+    })
+  })
 })

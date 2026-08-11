@@ -960,6 +960,77 @@ a.tool-call-source__title:hover {
   text-align: center;
 }
 
+.app-titlebar {
+  display: flex;
+  height: 28px;
+  min-height: 28px;
+  align-items: stretch;
+  border-bottom: 1px solid #e7eaf0;
+  background: #ffffff;
+  color: #293548;
+  user-select: none;
+}
+
+.app-titlebar__drag {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+  padding: 0 22px;
+  -webkit-app-region: drag;
+}
+
+.app-titlebar__mark {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.app-titlebar__brand {
+  color: #5e697a;
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.app-titlebar__version {
+  color: #a7afbd;
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-titlebar__controls {
+  display: flex;
+  flex: none;
+  position: relative;
+  z-index: 20;
+  pointer-events: auto;
+  -webkit-app-region: no-drag !important;
+}
+
+.app-titlebar__control {
+  display: grid;
+  width: 42px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: #687386;
+  cursor: pointer;
+  pointer-events: auto;
+  -webkit-app-region: no-drag !important;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.app-titlebar__control:hover {
+  background: #f1f3f6;
+  color: #283548;
+}
+
+.app-titlebar__control--close:hover {
+  background: #e5484d;
+  color: #ffffff;
+}
+
 @media (max-width: 640px) {
   .settings-page__header {
     gap: 12px;

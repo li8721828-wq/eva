@@ -11,6 +11,7 @@ import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
 import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
+import { AppTitlebar } from '@/components/layout/AppTitlebar'
 import { Button } from '@/components/ui/Button'
 import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
 
@@ -161,7 +162,9 @@ const App: React.FC = () => {
 
   return (
     <ErrorBoundary>
-    <div className="flex h-screen w-screen overflow-hidden bg-white text-zinc-900" data-resizing={activeResize || undefined}>
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-white text-zinc-900" data-resizing={activeResize || undefined}>
+      <AppTitlebar />
+      <div className="flex min-h-0 flex-1">
       {/* Left Sidebar */}
       <Sidebar style={!sidebarCollapsed ? { width: sidebarWidth } : undefined} />
       {!sidebarCollapsed && <ResizeHandle target="sidebar" onPointerDown={startResize} />}
@@ -239,6 +242,7 @@ const App: React.FC = () => {
         open={agentManagerOpen}
         onOpenChange={setAgentManagerOpen}
       />
+      </div>
     </div>
     </ErrorBoundary>
   )

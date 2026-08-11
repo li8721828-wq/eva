@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useMemo, useCallback } from 'react'
-import type { ChatMessage } from '../../../shared/types'
+import type { ChatMessage, ChatUsage } from '../../../shared/types'
 import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MessageBubble } from './MessageBubble'
@@ -12,6 +12,8 @@ import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
 
 const PAGE_SIZE = 100
+const CONVERSATION_SCROLL_STORAGE_KEY = 'eva.conversation-scroll-positions'
+const MAX_SAVED_SCROLL_POSITIONS = 200
 const conversationScrollOffsets = new Map<string, number>()
 const SCROLL_FOLLOW_THRESHOLD = 72
 const SMOOTH_SPIN_CLASS = 'animate-spin'
@@ -21,6 +23,59 @@ const VIRTUAL_OVERSCAN = 900
 type RenderItem =
   | { id: string; kind: 'message'; message: ChatMessage }
   | { id: string; kind: 'goal' }
+
+function loadSavedScrollPositions() {
+  if (typeof window === 'undefined') return
+
+  try {
+    const saved = window.localStorage.getItem(CONVERSATION_SCROLL_STORAGE_KEY)
+    if (!saved) return
+
+    const parsed = JSON.parse(saved) as Record<string, unknown>
+    for (const [conversationId, offset] of Object.entries(parsed)) {
+      if (typeof offset === 'number' && Number.isFinite(offset) && offset >= 0) {
+        conversationScrollOffsets.set(conversationId, offset)
+      }
+    }
+  } catch {
+    // Scroll restoration is optional; an invalid saved value should not affect chat rendering.
+  }
+}
+
+function persistScrollPositions() {
+  if (typeof window === 'undefined') return
+
+  try {
+    const entries = Array.from(conversationScrollOffsets.entries()).slice(-MAX_SAVED_SCROLL_POSITIONS)
+    window.localStorage.setItem(CONVERSATION_SCROLL_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
+  } catch {
+    // Ignore unavailable storage (for example, a restrictive browser profile).
+  }
+}
+
+function rememberScrollPosition(conversationId: string, offset: number, persist = false) {
+  conversationScrollOffsets.set(conversationId, Math.max(0, offset))
+  if (persist) persistScrollPositions()
+}
+
+loadSavedScrollPositions()
+
+function sumConversationUsage(messages: ChatMessage[]): ChatUsage | undefined {
+  const usageMessages = messages.filter((message) => message.role === 'assistant' && message.usage)
+  if (usageMessages.length === 0) return undefined
+
+  return usageMessages.reduce<ChatUsage>((total, message) => {
+    const usage = message.usage!
+    return {
+      promptTokens: total.promptTokens + usage.promptTokens,
+      completionTokens: total.completionTokens + usage.completionTokens,
+      cachedTokens: (total.cachedTokens || 0) + (usage.cachedTokens || 0),
+      cacheMissTokens: (total.cacheMissTokens || 0) + (usage.cacheMissTokens || 0),
+      estimatedCostCny: (total.estimatedCostCny || 0) + (usage.estimatedCostCny || 0),
+      modelCalls: (total.modelCalls || 0) + (usage.modelCalls || 1),
+    }
+  }, { promptTokens: 0, completionTokens: 0 })
+}
 
 function GoalMark() {
   return (
@@ -45,8 +100,10 @@ export function MessageList({ className }: MessageListProps) {
   const hasGoalProgress = Boolean(goalTask?.progress?.conversationId === currentConversationId)
   const isGoalRunning = Boolean(goalTask?.isRunning)
   const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const activeConversationIdRef = useRef<string | null>(currentConversationId)
   const previousMessageCountRef = useRef(messages.length)
   const pendingRestoreRef = useRef<string | null>(currentConversationId)
+  const scrollPersistTimerRef = useRef<number | null>(null)
   const followStreamRef = useRef(true)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [scrollTop, setScrollTop] = useState(0)
@@ -63,17 +120,32 @@ export function MessageList({ className }: MessageListProps) {
     return true
   }
 
-  const saveScrollPosition = () => {
+  const saveScrollPosition = (conversationId = currentConversationId, persist = false) => {
     const scrollArea = scrollAreaRef.current
-    if (!currentConversationId || !scrollArea) return
-    conversationScrollOffsets.set(currentConversationId, scrollArea.scrollTop)
+    if (!conversationId || !scrollArea) return
+    rememberScrollPosition(conversationId, scrollArea.scrollTop, persist)
   }
 
   const handleScroll = () => {
     const scrollArea = scrollAreaRef.current
     if (!scrollArea) return
 
+    // Selecting a conversation causes the browser to emit an initial scroll
+    // event at the top of the reused surface. Do not let that event replace
+    // this conversation's saved position before restoration has completed.
+    const isRestoringCurrentConversation = pendingRestoreRef.current === currentConversationId
+    if (isRestoringCurrentConversation) {
+      setScrollTop(scrollArea.scrollTop)
+      setViewportHeight(scrollArea.clientHeight)
+      return
+    }
+
     saveScrollPosition()
+    if (scrollPersistTimerRef.current !== null) window.clearTimeout(scrollPersistTimerRef.current)
+    scrollPersistTimerRef.current = window.setTimeout(() => {
+      persistScrollPositions()
+      scrollPersistTimerRef.current = null
+    }, 320)
     setScrollTop(scrollArea.scrollTop)
     setViewportHeight(scrollArea.clientHeight)
     followStreamRef.current = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight <= SCROLL_FOLLOW_THRESHOLD
@@ -85,13 +157,18 @@ export function MessageList({ className }: MessageListProps) {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
     setMeasuredHeights({})
-    setScrollTop(0)
+    setScrollTop(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
   }, [currentConversationId])
 
   // Tool-role messages are retained for a valid model tool-call history, but
   // their full output is already available from the preceding tool card.
   // Rendering them as chat bubbles duplicates large search/page results.
   const renderableMessages = useMemo(() => messages.filter((message) => message.role !== 'tool'), [messages])
+  const conversationUsage = useMemo(() => sumConversationUsage(renderableMessages), [renderableMessages])
+  const latestUsageMessageId = useMemo(
+    () => [...renderableMessages].reverse().find((message) => message.role === 'assistant' && message.usage)?.id,
+    [renderableMessages]
+  )
 
   const visibleMessages = useMemo(() => {
     return renderableMessages.length <= visibleCount
@@ -204,9 +281,38 @@ export function MessageList({ className }: MessageListProps) {
   }, [])
 
   useLayoutEffect(() => {
-    // Capture the outgoing conversation before its scroll area unmounts.
-    return () => saveScrollPosition()
+    // Capture the outgoing conversation before the same scroll surface is
+    // reused for the next conversation. The ID is intentionally captured by
+    // this effect so positions can never be shared between conversations.
+    const conversationId = currentConversationId
+    activeConversationIdRef.current = conversationId
+    return () => saveScrollPosition(conversationId, true)
   }, [currentConversationId])
+
+  useEffect(() => {
+    const flushScrollPosition = () => {
+      saveScrollPosition(activeConversationIdRef.current, true)
+      if (scrollPersistTimerRef.current !== null) {
+        window.clearTimeout(scrollPersistTimerRef.current)
+        scrollPersistTimerRef.current = null
+      }
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushScrollPosition()
+    }
+
+    window.addEventListener('pagehide', flushScrollPosition)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      // This cleanup runs after React has already painted the next
+      // conversation. Saving a closure-bound ID here used to overwrite the
+      // outgoing conversation with the new surface's top offset.
+      flushScrollPosition()
+      window.removeEventListener('pagehide', flushScrollPosition)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
 
   useLayoutEffect(() => {
     pendingRestoreRef.current = currentConversationId
@@ -224,26 +330,58 @@ export function MessageList({ className }: MessageListProps) {
     // next one. Restoring against that empty surface would lock it at the top.
     if (isConversationLoading) return
 
+    // A stored scrollTop is meaningful only when the virtual list exposes the
+    // complete conversation height. With just the newest page in the layout,
+    // an older position is clamped and appears to be shared with the top.
+    if (visibleCount < renderableMessages.length) {
+      setVisibleCount(renderableMessages.length)
+      return
+    }
+
     const savedOffset = conversationScrollOffsets.get(conversationId)
-    const frame = requestAnimationFrame(() => {
+    let settleTimer: number | null = null
+    let finalSettleTimer: number | null = null
+    let secondFrame: number | null = null
+    const restore = () => {
       const area = scrollAreaRef.current
       if (!area || pendingRestoreRef.current !== conversationId) return
 
-      if (savedOffset === undefined) {
-        area.scrollTop = area.scrollHeight
-      } else {
-        area.scrollTop = Math.min(savedOffset, Math.max(0, area.scrollHeight - area.clientHeight))
-      }
-
+      area.scrollTop = savedOffset === undefined
+        ? area.scrollHeight
+        : Math.min(savedOffset, Math.max(0, area.scrollHeight - area.clientHeight))
       setScrollTop(area.scrollTop)
       setViewportHeight(area.clientHeight)
       followStreamRef.current = area.scrollHeight - area.scrollTop - area.clientHeight <= SCROLL_FOLLOW_THRESHOLD
-      previousMessageCountRef.current = messages.length
-      pendingRestoreRef.current = null
+    }
+
+    // The virtualized list needs one layout frame to establish its spacers.
+    // Apply the saved position again after it settles so loading a long
+    // conversation cannot clamp the reader back to the top.
+    const firstFrame = requestAnimationFrame(() => {
+      restore()
+      secondFrame = requestAnimationFrame(() => {
+        restore()
+        settleTimer = window.setTimeout(() => {
+          restore()
+          // Measured message heights can update after the first layout pass.
+          // Keep restoration exclusive to this conversation until that final
+          // pass completes, then allow its future user scrolls to persist.
+          finalSettleTimer = window.setTimeout(() => {
+            restore()
+            previousMessageCountRef.current = messages.length
+            pendingRestoreRef.current = null
+          }, 320)
+        }, 240)
+      })
     })
 
-    return () => cancelAnimationFrame(frame)
-  }, [currentConversationId, isConversationLoading, messages.length])
+    return () => {
+      cancelAnimationFrame(firstFrame)
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame)
+      if (settleTimer !== null) window.clearTimeout(settleTimer)
+      if (finalSettleTimer !== null) window.clearTimeout(finalSettleTimer)
+    }
+  }, [currentConversationId, isConversationLoading, messages.length, renderableMessages.length, visibleCount])
 
   useLayoutEffect(() => {
     const previousMessageCount = previousMessageCountRef.current
@@ -264,7 +402,13 @@ export function MessageList({ className }: MessageListProps) {
   useEffect(() => {
     // Streaming updates can arrive many times per second. An immediate follow
     // keeps the newest content visible without replaying a long smooth scroll.
-    if (isStreaming && followStreamRef.current) scrollToBottom('auto')
+    if (
+      isStreaming &&
+      pendingRestoreRef.current !== currentConversationId &&
+      followStreamRef.current
+    ) {
+      scrollToBottom('auto')
+    }
   }, [isStreaming, streamingContent, streamingToolCalls])
 
   if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !hasGoalProgress) {
@@ -272,7 +416,12 @@ export function MessageList({ className }: MessageListProps) {
   }
 
   return (
-    <ScrollArea ref={scrollAreaRef} onScroll={handleScroll} className={cn('flex-1', className)}>
+    <ScrollArea
+      key={currentConversationId ?? 'no-conversation'}
+      ref={scrollAreaRef}
+      onScroll={handleScroll}
+      className={cn('flex-1', className)}
+    >
       <div
         className={cn(
           'flex w-full flex-col px-12 py-10',
@@ -301,7 +450,10 @@ export function MessageList({ className }: MessageListProps) {
             className="pb-9"
           >
             {item.kind === 'message' ? (
-              <MessageBubble message={item.message} />
+              <MessageBubble
+                message={item.message}
+                conversationUsage={item.message.id === latestUsageMessageId ? conversationUsage : undefined}
+              />
             ) : (
               <article className="flex items-start gap-3">
                 <GoalMark />

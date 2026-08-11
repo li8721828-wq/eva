@@ -41,6 +41,24 @@ export class OpenAIProvider implements LLMProvider {
     })
   }
 
+  private mapUsage(usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    prompt_tokens_details?: { cached_tokens?: number }
+  } | null): ChatChunk['usage'] | undefined {
+    if (!usage) return undefined
+    const promptTokens = Number(usage.prompt_tokens || 0)
+    const completionTokens = Number(usage.completion_tokens || 0)
+    const cachedTokens = usage.prompt_tokens_details?.cached_tokens
+    return {
+      promptTokens,
+      completionTokens,
+      ...(typeof cachedTokens === 'number'
+        ? { cachedTokens, cacheMissTokens: Math.max(0, promptTokens - cachedTokens) }
+        : {}),
+    }
+  }
+
   async *chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const toolCallsAccumulator: Map<
       number,
@@ -55,6 +73,9 @@ export class OpenAIProvider implements LLMProvider {
             messages: toOpenAIMessages(params.messages),
             tools: toOpenAITools(params.tools),
             stream: true,
+            // Most hosted OpenAI-compatible providers return usage in the last
+            // stream chunk. Do not send this extension to unknown custom servers.
+            ...(this.type === 'custom' ? {} : { stream_options: { include_usage: true } }),
             temperature: params.temperature,
             max_tokens: params.maxTokens,
           },
@@ -64,8 +85,12 @@ export class OpenAIProvider implements LLMProvider {
     )
 
     for await (const chunk of stream) {
+      const usage = this.mapUsage(chunk.usage)
       const choice = chunk.choices[0]
-      if (!choice) continue
+      if (!choice) {
+        if (usage) yield { content: '', usage }
+        continue
+      }
 
       const delta = choice.delta
 
@@ -91,6 +116,7 @@ export class OpenAIProvider implements LLMProvider {
 
       const yieldChunk: ChatChunk = {
         content: delta?.content || '',
+        usage,
       }
 
       if (finishReason) {
@@ -109,7 +135,7 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       // Skip empty chunks (no content, no tool calls, no finish)
-      if (!yieldChunk.content && !yieldChunk.toolCalls && !yieldChunk.finishReason) {
+      if (!yieldChunk.content && !yieldChunk.toolCalls && !yieldChunk.finishReason && !yieldChunk.usage) {
         continue
       }
 
@@ -123,7 +149,7 @@ export class OpenAIProvider implements LLMProvider {
   ): Promise<{
     content: string
     toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
-    usage?: { promptTokens: number; completionTokens: number }
+    usage?: ChatChunk['usage']
   }> {
     const response = await withRetry(
       () =>
@@ -155,12 +181,7 @@ export class OpenAIProvider implements LLMProvider {
     return {
       content: choice.message.content || '',
       toolCalls,
-      usage: response.usage
-        ? {
-            promptTokens: response.usage.prompt_tokens,
-            completionTokens: response.usage.completion_tokens,
-          }
-        : undefined,
+      usage: this.mapUsage(response.usage),
     }
   }
 

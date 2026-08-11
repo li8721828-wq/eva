@@ -7,6 +7,9 @@ export interface SelectProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonE
   value: string
   onChange?: (event: React.ChangeEvent<HTMLSelectElement>) => void
   options: { value: string; label: string; disabled?: boolean }[]
+  menuClassName?: string
+  optionClassName?: string
+  selectedOptionClassName?: string
 }
 
 interface MenuPosition {
@@ -17,7 +20,7 @@ interface MenuPosition {
 }
 
 const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
-  ({ className, value, onChange, options, disabled, onKeyDown, ...props }, forwardedRef) => {
+  ({ className, value, onChange, options, disabled, onKeyDown, menuClassName, optionClassName, selectedOptionClassName, ...props }, forwardedRef) => {
     const triggerRef = useRef<HTMLButtonElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
     const [open, setOpen] = useState(false)
@@ -95,7 +98,7 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           onClick={() => !disabled && setOpen((current) => !current)}
           onKeyDown={handleKeyDown}
           className={cn(
-            'flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-1 text-left text-sm text-zinc-900 shadow-sm transition-colors hover:border-zinc-300 focus:outline-none focus-visible:border-zinc-400 focus-visible:shadow-sm disabled:cursor-not-allowed disabled:opacity-50',
+            'flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-zinc-200/80 bg-white/85 px-3 py-1 text-left text-sm text-zinc-900 shadow-[0_1px_2px_rgba(39,42,58,0.04)] transition-[border-color,background-color,box-shadow] hover:border-zinc-300/90 hover:bg-white focus:outline-none focus-visible:border-zinc-400/80 focus-visible:shadow-[0_5px_14px_-10px_rgba(39,42,58,0.32)] disabled:cursor-not-allowed disabled:opacity-50',
             className
           )}
           aria-expanded={open}
@@ -110,7 +113,10 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           <div
             ref={menuRef}
             role="listbox"
-            className="fixed z-[100] max-h-60 overflow-y-auto rounded-md border border-zinc-200 bg-white p-1 shadow-lg"
+            className={cn(
+              'fixed z-[100] max-h-60 overflow-y-auto rounded-xl border border-zinc-200/80 bg-[#fdfdff]/95 p-1.5 shadow-[0_18px_38px_-26px_rgba(39,42,58,0.4),0_6px_14px_-10px_rgba(39,42,58,0.12)] backdrop-blur-md',
+              menuClassName
+            )}
             style={{
               left: position.left,
               top: position.top,
@@ -129,8 +135,8 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
                   disabled={option.disabled}
                   onClick={() => selectOption(option)}
                   className={cn(
-                    'flex min-h-8 w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-sm transition-colors',
-                    isSelected ? 'bg-zinc-100 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50',
+                    'flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                    isSelected ? cn('bg-violet-50/80 text-zinc-900', selectedOptionClassName) : cn('text-zinc-700 hover:bg-zinc-50/90', optionClassName),
                     option.disabled && 'cursor-not-allowed opacity-45'
                   )}
                 >

@@ -19,7 +19,7 @@ export interface LLMProvider {
   ): Promise<{
     content: string
     toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
-    usage?: { promptTokens: number; completionTokens: number }
+    usage?: ChatChunk['usage']
   }>
 
   /**

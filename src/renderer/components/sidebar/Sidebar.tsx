@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/Button'
 import { ConversationList } from './ConversationList'
 import { ModeSelector } from './ModeSelector'
 import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus, UsersRound } from 'lucide-react'
-import evaMark from '@/assets/eva-mark.svg'
 
 export interface SidebarProps {
   className?: string
@@ -150,13 +149,16 @@ export function Sidebar({ className, style }: SidebarProps) {
         </div>
       )}
       {/* Header */}
-      <div className="flex h-16 items-center justify-between border-b border-zinc-200 px-5">
-        <div className="flex items-center gap-2">
-          <img src={evaMark} alt="Eva" className="h-8 w-8 shrink-0" />
-          <span className="text-lg font-semibold text-zinc-900">Eva</span>
-        </div>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" onClick={toggleSidebar} title="Collapse sidebar">
+      <div className="flex h-12 items-center justify-between border-b border-zinc-200/90 px-4">
+        <span className="text-sm font-semibold text-zinc-800">Workspace</span>
+        <div className="flex items-center">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+            onClick={toggleSidebar}
+            title="Collapse sidebar"
+          >
             <PanelLeftClose className="h-4 w-4" />
           </Button>
         </div>

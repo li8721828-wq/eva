@@ -10,7 +10,7 @@ const executeCommandTool: ToolExecutor = {
   definition: {
     name: 'execute_command',
     description:
-      'Execute a shell command in the terminal and return the output. Use for running scripts, installing packages, building projects, etc.',
+      'Execute a shell command in the terminal and return the output. Use for scripts, installs, builds, system automation, and other terminal work. For a user-requested visible desktop-control workflow, prefer desktop tools first; use a command-based fallback only after explaining it and obtaining the user\'s confirmation.',
     parameters: {
       type: 'object',
       properties: {
@@ -28,6 +28,8 @@ const executeCommandTool: ToolExecutor = {
     },
   },
   async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+    const command = params.command as string
+
     // A shell cannot be constrained to a directory by its working directory alone:
     // commands can still read, write, or execute outside it. Do not present
     // workspace-only access as a sandbox when it is not one.
@@ -35,7 +37,6 @@ const executeCommandTool: ToolExecutor = {
       return 'Command execution requires Full filesystem access. Workspace-only and authorized-folder conversations can use file tools, but cannot run an unrestricted local shell.'
     }
 
-    const command = params.command as string
     const timeout = Math.min((params.timeout as number) ?? 30_000, 120_000)
 
     // Create a dedicated session for command execution

@@ -1,5 +1,5 @@
 import { net } from 'electron'
-import { lookup } from 'dns/promises'
+import { resolve4, resolve6 } from 'dns/promises'
 import { load } from 'cheerio'
 import type { ToolExecutor, ToolContext } from './index'
 import { isBlockedWebHostname, isPrivateNetworkAddress } from './web-url-policy'
@@ -318,8 +318,13 @@ async function validatePublicUrl(url: URL): Promise<void> {
   if (url.username || url.password) throw new Error('URLs with embedded credentials are not allowed.')
   if (isBlockedWebHostname(url.hostname)) throw new Error('Local and private network addresses are blocked.')
 
-  const addresses = await lookup(url.hostname, { all: true, verbatim: true })
-  if (addresses.length === 0 || addresses.some((entry) => isPrivateNetworkAddress(entry.address))) {
+  // Do not use dns.lookup here. On some Windows machines it calls a broken
+  // getaddrinfo/Winsock provider even though direct DNS requests still work.
+  // resolve4/resolve6 keeps the SSRF validation intact while avoiding that
+  // platform-specific lookup path before Electron's network stack fetches it.
+  const records = await Promise.allSettled([resolve4(url.hostname), resolve6(url.hostname)])
+  const addresses = records.flatMap((record) => record.status === 'fulfilled' ? record.value : [])
+  if (addresses.length === 0 || addresses.some((address) => isPrivateNetworkAddress(address))) {
     throw new Error('Local and private network addresses are blocked.')
   }
 }

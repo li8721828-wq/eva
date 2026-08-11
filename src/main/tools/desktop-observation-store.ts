@@ -1,4 +1,9 @@
 import { randomUUID } from 'crypto'
+import {
+  hideDesktopControlOverlay,
+  setDesktopControlOverlayStopHandler,
+  updateDesktopControlOverlay,
+} from '../services/desktop-control-overlay'
 
 export interface DesktopBounds {
   left: number
@@ -16,6 +21,8 @@ export interface DesktopControl {
   focused: boolean
   password: boolean
   bounds: DesktopBounds
+  /** A UI Automation supplied hit-tested point, when Windows exposes one. */
+  clickPoint?: { x: number; y: number }
 }
 
 export interface DesktopDialog {
@@ -41,6 +48,11 @@ export interface DesktopObservation {
     bounds: DesktopBounds
     controls: DesktopControl[]
   }
+  /** Every visible Windows taskbar, including taskbars on secondary displays. */
+  taskbars?: Array<{
+    bounds: DesktopBounds
+    controls: DesktopControl[]
+  }>
   controlCount?: number
   truncated?: boolean
 }
@@ -126,6 +138,7 @@ export function startDesktopControlSession(
   }
   sessions.set(session.id, session)
   pruneExpiredSessions()
+  updateOverlay(session, 'observing', '正在建立桌面会话', 'Eva 将只依据当前可见的桌面状态执行操作。')
   return session
 }
 
@@ -149,7 +162,26 @@ export function setDesktopControlSessionState(
   if (session.state === 'expired') throw new Error('The desktop control session has expired. Start a new session.')
   session.state = state
   session.updatedAt = Date.now()
+  const stateDetail: Record<typeof state, [string, string]> = {
+    active: ['桌面会话已恢复', 'Eva 将继续根据当前可见界面执行下一步。'],
+    paused: ['桌面会话已暂停', '桌面保持不变，等待下一步指令。'],
+    stopped: ['桌面会话已停止', 'Eva 不会再执行鼠标或键盘操作。'],
+    completed: ['桌面任务已完成', '最后一次可见界面验证已记录。'],
+  }
+  const [title, detail] = stateDetail[state]
+  updateOverlay(session, state === 'active' ? 'observing' : state, title, detail)
   return session
+}
+
+/** Stops a session from the trusted desktop-control overlay. */
+export function stopDesktopControlSessionFromOverlay(sessionId: string | undefined): void {
+  if (!sessionId) return
+  const session = sessions.get(sessionId)
+  if (!session || session.state === 'stopped' || session.state === 'completed' || session.state === 'expired') return
+  session.state = 'stopped'
+  session.updatedAt = Date.now()
+  updateOverlay(session, 'stopped', 'Desktop control stopped', 'The active desktop session was ended from the overlay.')
+  hideDesktopControlOverlay()
 }
 
 export function requireActiveDesktopControlSession(id: unknown, conversationId?: string): DesktopControlSession {
@@ -160,9 +192,20 @@ export function requireActiveDesktopControlSession(id: unknown, conversationId?:
   if (session.steps.filter((step) => step.kind === 'action').length >= session.stepBudget) {
     session.state = 'paused'
     session.updatedAt = Date.now()
+    updateOverlay(session, 'paused', '已达到本次操作预算', '桌面会话已暂停，请审阅当前结果后再明确恢复。')
     throw new Error(`The desktop control session reached its ${session.stepBudget}-action budget and was paused. Review the result, then resume it explicitly.`)
   }
   return session
+}
+
+/** True only while a desktop session is actively allowed to operate. */
+export function hasActiveDesktopControlSession(conversationId?: string): boolean {
+  const targetConversationId = conversationId || 'global'
+  for (const session of sessions.values()) {
+    expireSessionIfNeeded(session)
+    if (session.conversationId === targetConversationId && session.state === 'active') return true
+  }
+  return false
 }
 
 export function recordDesktopControlStep(
@@ -176,6 +219,8 @@ export function recordDesktopControlStep(
   session.steps.push({ ...step, at: Date.now() })
   session.steps = session.steps.slice(-100)
   session.updatedAt = Date.now()
+  const state = step.kind === 'observe' ? 'observing' : step.kind === 'action' ? 'acting' : 'verifying'
+  updateOverlay(session, state, overlayTitle(step.kind), step.summary)
   return session
 }
 
@@ -203,9 +248,36 @@ function expireSessionIfNeeded(session: DesktopControlSession): void {
     if (Date.now() > session.expiresAt) {
       session.state = 'expired'
       session.updatedAt = Date.now()
+      updateOverlay(session, 'expired', '桌面会话已过期', '为避免长时间无人看管，Eva 已停止桌面控制。')
     }
   }
 }
+
+function overlayTitle(kind: DesktopSessionStep['kind']): string {
+  if (kind === 'observe') return '正在观察前台窗口'
+  if (kind === 'action') return '正在执行可见操作'
+  if (kind === 'verification') return '正在验证界面变化'
+  return '正在更新桌面会话'
+}
+
+function updateOverlay(
+  session: DesktopControlSession,
+  state: 'observing' | 'acting' | 'verifying' | 'paused' | 'completed' | 'stopped' | 'expired',
+  title: string,
+  detail: string,
+): void {
+  updateDesktopControlOverlay({
+    sessionId: session.id,
+    state,
+    title,
+    detail,
+    objective: session.objective,
+    actionsUsed: session.steps.filter((step) => step.kind === 'action').length,
+    stepBudget: session.stepBudget,
+  })
+}
+
+setDesktopControlOverlayStopHandler(stopDesktopControlSessionFromOverlay)
 
 function pruneExpiredSessions(): void {
   const threshold = Date.now() - SESSION_TTL_MS

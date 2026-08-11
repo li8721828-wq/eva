@@ -3,10 +3,10 @@ import fs from 'fs'
 import path from 'path'
 import type { ToolExecutor, ToolContext, ToolRegistry, FileService, TerminalService, ToolResultImage } from '../tools'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
-import type { ChatMessage } from '../../shared/types/conversation'
+import type { ChatMessage, ChatUsage } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
 import { ContextManager } from './context'
-import { DEFAULT_MAX_ITERATIONS } from '../../shared/constants'
+import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
 export interface AgentRunnerConfig {
@@ -178,6 +178,7 @@ export class AgentRunner {
       // same file/page/search result over and over.
       const readOnlyToolCache = new Map<string, CompletedToolResult>()
       const pendingWriteVerifications = new Set<string>()
+      let accumulatedUsage: ChatUsage | undefined
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -185,6 +186,7 @@ export class AgentRunner {
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
+        maxContextTokens: getModelInputBudgetTokens(agentConfig.model),
         tools: toolDefs,
       })
 
@@ -202,6 +204,7 @@ export class AgentRunner {
 
         // Call LLM (yields real-time text_delta events to caller)
         const response = yield* this.executeLLMCall(messages, toolDefs)
+        accumulatedUsage = this.mergeUsage(accumulatedUsage, response.usage)
 
         const hasToolCalls = response.toolCalls.length > 0
 
@@ -225,7 +228,7 @@ export class AgentRunner {
             })
             continue
           }
-          yield { type: 'done', content: response.content }
+          yield { type: 'done', content: response.content, usage: accumulatedUsage }
           return
         }
 
@@ -320,8 +323,9 @@ export class AgentRunner {
       })
       yield { type: 'thinking', content: 'Synthesizing the available results...' }
       const finalResponse = yield* this.executeLLMCall(messages, [])
+      accumulatedUsage = this.mergeUsage(accumulatedUsage, finalResponse.usage)
       if (finalResponse.content.trim()) {
-        yield { type: 'done', content: finalResponse.content }
+        yield { type: 'done', content: finalResponse.content, usage: accumulatedUsage }
         return
       }
 
@@ -365,7 +369,7 @@ export class AgentRunner {
   private async *executeLLMCall(
     messages: ChatMessageInput[],
     tools: ToolDefinition[]
-  ): AsyncGenerator<AgentEvent, { content: string; toolCalls: CompletedToolCall[]; finishReason: string }> {
+  ): AsyncGenerator<AgentEvent, { content: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage }> {
     const { agentConfig, provider } = this.config
     const signal = this.abortController?.signal
 
@@ -382,6 +386,7 @@ export class AgentRunner {
 
     let content = ''
     let finishReason = ''
+    let usage: ChatUsage | undefined
 
     // Tool call accumulation state (keyed by chunk index)
     const tcAccumulator: Map<number, { id: string; name: string; argsStr: string }> = new Map()
@@ -389,6 +394,7 @@ export class AgentRunner {
     for await (const chunk of stream) {
       // Check abort between chunks
       if (signal?.aborted) break
+      usage = this.mergeUsage(usage, this.toChatUsage(chunk.usage))
 
       // ── Text content ──────────────────────────────────────────────────────
       if (chunk.content) {
@@ -436,7 +442,54 @@ export class AgentRunner {
       })
     }
 
-    return { content, toolCalls, finishReason }
+    return { content, toolCalls, finishReason, usage }
+  }
+
+  private toChatUsage(usage?: ChatChunk['usage']): ChatUsage | undefined {
+    if (!usage) return undefined
+    const promptTokens = Math.max(0, usage.promptTokens || 0)
+    const completionTokens = Math.max(0, usage.completionTokens || 0)
+    const cachedTokens = usage.cachedTokens
+    const cacheMissTokens = usage.cacheMissTokens
+      ?? (typeof cachedTokens === 'number' ? Math.max(0, promptTokens - cachedTokens) : undefined)
+    return {
+      promptTokens,
+      completionTokens,
+      ...(typeof cachedTokens === 'number' ? { cachedTokens } : {}),
+      ...(typeof cacheMissTokens === 'number' ? { cacheMissTokens } : {}),
+      estimatedCostCny: this.estimateUsageCostCny(promptTokens, completionTokens, cachedTokens),
+      modelCalls: 1,
+    }
+  }
+
+  private mergeUsage(current?: ChatUsage, next?: ChatUsage): ChatUsage | undefined {
+    if (!current) return next
+    if (!next) return current
+    return {
+      promptTokens: current.promptTokens + next.promptTokens,
+      completionTokens: current.completionTokens + next.completionTokens,
+      cachedTokens: this.addOptional(current.cachedTokens, next.cachedTokens),
+      cacheMissTokens: this.addOptional(current.cacheMissTokens, next.cacheMissTokens),
+      estimatedCostCny: this.addOptional(current.estimatedCostCny, next.estimatedCostCny),
+      modelCalls: (current.modelCalls ?? 1) + (next.modelCalls ?? 1),
+    }
+  }
+
+  private addOptional(left?: number, right?: number): number | undefined {
+    if (left === undefined && right === undefined) return undefined
+    return (left ?? 0) + (right ?? 0)
+  }
+
+  private estimateUsageCostCny(promptTokens: number, completionTokens: number, cachedTokens?: number): number | undefined {
+    // Estimates are local reference values, not provider billing records.
+    if (this.config.provider.type !== 'deepseek') return undefined
+    const isFlash = this.config.agentConfig.model.toLowerCase().includes('flash')
+    const inputPerMillion = isFlash ? 0.5 : 2
+    const cachedInputPerMillion = isFlash ? 0.05 : 0.2
+    const outputPerMillion = isFlash ? 2 : 8
+    const cached = Math.min(promptTokens, Math.max(0, cachedTokens ?? 0))
+    const uncached = Math.max(0, promptTokens - cached)
+    return (uncached * inputPerMillion + cached * cachedInputPerMillion + completionTokens * outputPerMillion) / 1_000_000
   }
 
   /**

@@ -82,6 +82,12 @@ export interface ChatChunk {
     arguments?: string
   }>
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error'
+  usage?: {
+    promptTokens: number
+    completionTokens: number
+    cachedTokens?: number
+    cacheMissTokens?: number
+  }
 }
 
 export interface ToolDefinition {

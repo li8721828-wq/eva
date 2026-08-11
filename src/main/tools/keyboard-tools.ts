@@ -1,5 +1,3 @@
-import { execFile } from 'child_process'
-import { promisify } from 'util'
 import type { ToolContext, ToolExecutor } from './index'
 import {
   getFreshDesktopObservation,
@@ -8,8 +6,9 @@ import {
   storeDesktopObservation,
 } from './desktop-observation-store'
 import { observeVisibleDesktop } from './desktop-mcp-tools'
+import { runPowerShellScript } from './powershell-runner'
+import { updateDesktopControlOverlay } from '../services/desktop-control-overlay'
 
-const execFileAsync = promisify(execFile)
 const MAX_TEXT_LENGTH = 10_000
 const KEY_CODES: Record<string, number> = {
   ENTER: 0x0d,
@@ -61,6 +60,14 @@ const keyboardControlTool: ToolExecutor = {
     const text = action === 'type_text' ? parseText(params.text) : undefined
     const key = action === 'press_key' ? parseKey(params.key) : undefined
 
+    updateDesktopControlOverlay({
+      state: 'acting',
+      title: action === 'type_text' ? '正在输入到已聚焦控件' : `正在按下 ${key}`,
+      detail: '仅对最近观察到的可见前台窗口发送键盘输入。',
+      objective: session?.objective || '桌面控制',
+      actionsUsed: session?.steps.filter((step) => step.kind === 'action').length,
+      stepBudget: session?.stepBudget,
+    })
     const inputMethod = await sendKeyboardInput(observation.activeWindow.handle, text, key)
     await new Promise((resolve) => setTimeout(resolve, 180))
     const checked = await observeVisibleDesktop('controls', 100, false)
@@ -70,6 +77,7 @@ const keyboardControlTool: ToolExecutor = {
       priorityControls: checked.snapshot.priorityControls,
       dialog: checked.snapshot.dialog,
       taskbar: checked.snapshot.taskbar,
+      taskbars: checked.snapshot.taskbars,
       controlCount: checked.snapshot.controlCount,
       truncated: checked.snapshot.truncated,
     })
@@ -86,6 +94,13 @@ const keyboardControlTool: ToolExecutor = {
         summary: foregroundUnchanged ? 'Visible foreground window remained focused after keyboard input.' : 'Foreground window changed after keyboard input; inspect it before continuing.',
         observationId: nextObservation.id,
         verified: true,
+      })
+    } else {
+      updateDesktopControlOverlay({
+        state: 'completed',
+        title: '键盘操作已完成',
+        detail: foregroundUnchanged ? '前台窗口保持聚焦，输入已发送。' : '输入已发送，前台窗口发生变化。',
+        objective: '桌面控制',
       })
     }
 
@@ -183,11 +198,6 @@ if ($null -ne $payload.text) {
   'virtual_key'
 }
 `
-  const encodedScript = Buffer.from(script, 'utf16le').toString('base64')
-  const { stdout } = await execFileAsync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', encodedScript], {
-    windowsHide: true,
-    timeout: 20_000,
-    maxBuffer: 64 * 1024,
-  })
+  const { stdout } = await runPowerShellScript(script, { timeout: 20_000, maxBuffer: 64 * 1024, sta: true })
   return stdout.includes('clipboard_paste') ? 'clipboard_paste' : 'virtual_key'
 }

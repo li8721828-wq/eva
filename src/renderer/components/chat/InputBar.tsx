@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, FolderOpen, FolderPlus, ImagePlus, Paperclip, Send, Square, Trash2, X } from 'lucide-react'
+import { Bot, FolderOpen, FolderPlus, ImagePlus, Paperclip, Send, Settings2, Square, Trash2, X } from 'lucide-react'
 import type { ChatImageAttachment, ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 
@@ -31,7 +31,7 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 export function InputBar({ className }: InputBarProps) {
   const { conversations, createConversation, currentConversationId, isStreaming, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage, setError } = useChatStore()
   const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore()
-  const { agents, selectedAgentId, selectAgent } = useAgentStore()
+  const { agents } = useAgentStore()
   const isTaskRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const isSymposiumRunning = useSymposiumStore((state) => Boolean(currentConversationId && state.runtimes[currentConversationId]?.status === 'running'))
   const { startExpertTask, abortExpertTask } = useTaskStore()
@@ -40,14 +40,16 @@ export function InputBar({ className }: InputBarProps) {
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDraggingImages, setIsDraggingImages] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
+  const [isConversationSettingsOpen, setIsConversationSettingsOpen] = useState(false)
   const [caretPosition, setCaretPosition] = useState(0)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
+  const [assignedAgentId, setAssignedAgentId] = useState<string | null>(null)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
   const fileAccessGrants = currentConversation?.fileAccessGrants || []
-  const activeAgentId = currentConversation?.agentId || selectedAgentId || ''
+  const assignedAgent = agents.find((agent) => agent.id === assignedAgentId)
 
   const symposiumMention = useMemo(() => {
     if (!isSymposiumConversation) return null
@@ -71,33 +73,71 @@ export function InputBar({ className }: InputBarProps) {
     })
   }, [symposiumMention, symposiumMentionOptions])
 
+  const agentMention = useMemo(() => {
+    if (isSymposiumConversation) return null
+    const cursor = Math.min(caretPosition, inputText.length)
+    const beforeCursor = inputText.slice(0, cursor)
+    const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/)
+    if (!match) return null
+    return {
+      query: match[2].toLowerCase(),
+      start: cursor - match[0].length + match[1].length,
+      cursor,
+    }
+  }, [caretPosition, inputText, isSymposiumConversation])
+
+  const filteredAgentMentionOptions = useMemo(() => {
+    if (!agentMention) return []
+    return agents.filter((agent) => (
+      `${agent.name} ${agent.role} ${agent.description}`.toLowerCase().includes(agentMention.query)
+    )).slice(0, 8)
+  }, [agentMention, agents])
+
   useEffect(() => {
     setActiveMentionIndex(0)
-  }, [symposiumMention?.query, currentConversationId])
+  }, [agentMention?.query, symposiumMention?.query, currentConversationId])
 
-  const connectionOptions = useMemo(() => {
-    const enabled = savedProviders.filter((provider) => provider.isEnabled && provider.apiKey)
-    const options = enabled.map((provider) => ({ value: provider.id, label: getConnectionDisplayName(provider) }))
-    const active = savedProviders.find((provider) => provider.id === activeProviderId)
-    if (activeProviderId && !options.some((option) => option.value === activeProviderId)) {
-      options.unshift({ value: activeProviderId, label: active ? getConnectionDisplayName(active) : 'Current connection' })
-    }
-    return options.length > 0 ? options : [{ value: '', label: 'No model connections' }]
-  }, [activeProviderId, savedProviders])
+  useEffect(() => {
+    const conversationAgentId = currentConversation?.agentId
+    setAssignedAgentId(conversationAgentId && conversationAgentId !== '__auto__' ? conversationAgentId : null)
+  }, [currentConversation?.agentId, currentConversationId])
 
-  const activeConnectionModels = useMemo(() => {
-    const provider = savedProviders.find((item) => item.id === activeProviderId)
-    const models = provider?.models?.length
-      ? provider.models
-      : provider?.defaultModel
-        ? [{ id: provider.defaultModel, name: provider.defaultModel }]
-        : []
-    const options = models.map((model) => ({ value: model.id, label: model.name }))
-    if (activeModel && !options.some((option) => option.value === activeModel)) {
-      options.unshift({ value: activeModel, label: activeModel })
+  const modelChoices = useMemo(() => {
+    const visibleProviders = savedProviders.filter((provider) => (
+      (provider.isEnabled && provider.apiKey) || provider.id === activeProviderId
+    ))
+    const choices = visibleProviders.flatMap((provider) => {
+      const models = provider.models?.length
+        ? provider.models
+        : provider.defaultModel
+          ? [{ id: provider.defaultModel, name: provider.defaultModel }]
+          : []
+      return models.map((model) => ({
+        value: `${provider.id}\u001f${model.id}`,
+        providerId: provider.id,
+        modelId: model.id,
+        label: `${getConnectionDisplayName(provider)} / ${model.name}`,
+      }))
+    })
+    if (activeProviderId && activeModel && !choices.some((choice) => choice.providerId === activeProviderId && choice.modelId === activeModel)) {
+      const active = savedProviders.find((provider) => provider.id === activeProviderId)
+      choices.unshift({
+        value: `${activeProviderId}\u001f${activeModel}`,
+        providerId: activeProviderId,
+        modelId: activeModel,
+        label: `${active ? getConnectionDisplayName(active) : 'Current connection'} / ${activeModel}`,
+      })
     }
-    return options.length > 0 ? options : [{ value: '', label: 'No models in connection' }]
+    return choices
   }, [activeModel, activeProviderId, savedProviders])
+
+  const activeModelChoice = modelChoices.find((choice) => (
+    choice.providerId === activeProviderId && choice.modelId === activeModel
+  ))?.value || ''
+
+  const modelChoiceOptions = modelChoices.length > 0
+    ? modelChoices.map(({ value, label }) => ({ value, label }))
+    : [{ value: '', label: 'No model connections', disabled: true }]
 
   useEffect(() => {
     let cancelled = false
@@ -127,7 +167,7 @@ export function InputBar({ className }: InputBarProps) {
     if (useTeam) {
       const goal = inputText.trim()
       if (!goal) return
-      const conversation = currentConversation || await createConversation(activeAgentId, 'expert')
+      const conversation = currentConversation || await createConversation(undefined, 'expert')
       addMessage({
         id: crypto.randomUUID(),
         conversationId: conversation.id,
@@ -139,12 +179,12 @@ export function InputBar({ className }: InputBarProps) {
       setReferenceImages([])
       await startExpertTask(goal, conversation.id)
     } else {
-      await sendMessage()
+      await sendMessage(assignedAgentId || '__auto__')
     }
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [activeAgentId, addMessage, createConversation, currentConversation, inputText, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setError, setInputText, setReferenceImages, startExpertTask, workMode])
+  }, [addMessage, assignedAgentId, createConversation, currentConversation, inputText, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setError, setInputText, setReferenceImages, startExpertTask, workMode])
 
   const insertSymposiumMention = useCallback((participant: typeof symposiumMentionOptions[number]) => {
     if (!symposiumMention) return
@@ -158,6 +198,36 @@ export function InputBar({ className }: InputBarProps) {
       textareaRef.current?.setSelectionRange(nextCaretPosition, nextCaretPosition)
     })
   }, [inputText, setInputText, symposiumMention, symposiumMentionOptions])
+
+  const removeAgentMention = useCallback(() => {
+    if (!agentMention) return
+    const nextInput = `${inputText.slice(0, agentMention.start)}${inputText.slice(agentMention.cursor)}`.replace(/\s{2,}/g, ' ')
+    setInputText(nextInput)
+    setCaretPosition(agentMention.start)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(agentMention.start, agentMention.start)
+    })
+  }, [agentMention, inputText, setInputText])
+
+  const setAutoRouting = useCallback(() => {
+    removeAgentMention()
+    setAssignedAgentId(null)
+    if (currentConversation) void setConversationAgent(currentConversation.id, '__auto__')
+  }, [currentConversation, removeAgentMention, setConversationAgent])
+
+  const insertAgentMention = useCallback((agent: typeof agents[number]) => {
+    if (!agentMention) return
+    const nextInput = `${inputText.slice(0, agentMention.start)}${inputText.slice(agentMention.cursor)}`.replace(/\s{2,}/g, ' ')
+    setInputText(nextInput)
+    setAssignedAgentId(agent.id)
+    if (currentConversation) void setConversationAgent(currentConversation.id, agent.id)
+    setCaretPosition(agentMention.start)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(agentMention.start, agentMention.start)
+    })
+  }, [agentMention, currentConversation, inputText, setConversationAgent, setInputText])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (filteredSymposiumMentionOptions.length > 0) {
@@ -174,6 +244,28 @@ export function InputBar({ className }: InputBarProps) {
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault()
         insertSymposiumMention(filteredSymposiumMentionOptions[activeMentionIndex] || filteredSymposiumMentionOptions[0])
+        return
+      }
+    }
+    if (agentMention) {
+      const mentionOptionCount = filteredAgentMentionOptions.length + 1
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveMentionIndex((index) => (index + 1) % mentionOptionCount)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveMentionIndex((index) => (index - 1 + mentionOptionCount) % mentionOptionCount)
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        if (activeMentionIndex === 0) setAutoRouting()
+        else {
+          const agent = filteredAgentMentionOptions[activeMentionIndex - 1] || filteredAgentMentionOptions[0]
+          if (agent) insertAgentMention(agent)
+        }
         return
       }
     }
@@ -264,35 +356,15 @@ export function InputBar({ className }: InputBarProps) {
     }
   }
 
-  const handleConnectionChange = async (providerId: string) => {
-    const provider = savedProviders.find((item) => item.id === providerId)
-    if (!provider) return
-    const models = provider.models?.length
-      ? provider.models
-      : provider.defaultModel
-        ? [{ id: provider.defaultModel, name: provider.defaultModel }]
-        : []
-    const model = models.some((item) => item.id === activeModel)
-      ? activeModel
-      : models[0]?.id || ''
-    await saveModelSelection(providerId, model)
-  }
-
-  const handleModelChange = async (model: string) => {
-    if (!activeProviderId || !model) return
-    await saveModelSelection(activeProviderId, model)
+  const handleModelChoiceChange = async (choiceValue: string) => {
+    const choice = modelChoices.find((item) => item.value === choiceValue)
+    if (!choice) return
+    await saveModelSelection(choice.providerId, choice.modelId)
   }
 
   const handlePermissionChange = async (permission: ConversationPermissionLevel) => {
     const conversation = currentConversation || await createConversation()
     await setConversationPermissions(conversation.id, permission, conversation.fileAccessGrants || [])
-  }
-
-  const handleAgentChange = async (agentId: string) => {
-    if (!agentId) return
-    selectAgent(agentId)
-    const conversation = currentConversation || await createConversation(agentId)
-    await setConversationAgent(conversation.id, agentId)
   }
 
   const addFolderGrant = async () => {
@@ -324,17 +396,25 @@ export function InputBar({ className }: InputBarProps) {
   }
 
   return (
-    <div className={cn('border-t border-zinc-200 bg-zinc-50/80 px-8 py-5', className)}>
-      <div className="w-full">
+    <div
+      className={cn(
+        'relative z-20 shrink-0 overflow-visible bg-[#f7f8fc] px-8 py-5',
+        className,
+      )}
+    >
+      <div className="w-full rounded-xl shadow-[0_18px_40px_-28px_rgba(39,42,58,0.44),0_3px_10px_rgba(39,42,58,0.07)]">
         <div
-          className={cn('chat-composer relative overflow-visible rounded-lg border bg-white shadow-sm transition-colors duration-200 focus-within:border-zinc-400 focus-within:shadow-md', isDraggingImages ? 'border-violet-500 bg-violet-50/30' : 'border-zinc-300')}
+          className={cn(
+            'chat-composer relative isolate box-border min-w-0 overflow-visible rounded-xl border border-[rgba(99,102,115,0.14)] bg-transparent transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-[rgba(82,86,100,0.24)]',
+            isDraggingImages && 'border-violet-400 bg-violet-50/30',
+          )}
           onDragOver={(event) => { event.preventDefault(); setIsDraggingImages(true) }}
           onDragLeave={() => setIsDraggingImages(false)}
           onDrop={handleImageDrop}
         >
           <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={addReferenceImages} />
           {referenceImages.length > 0 && (
-            <div className="flex flex-wrap gap-2 border-b border-zinc-100 px-4 py-3">
+            <div className="flex flex-wrap gap-2 rounded-t-[11px] border-b border-zinc-100 bg-[#fdfdff] px-4 py-3">
               {referenceImages.map((image) => (
                 <div key={image.path} className="group relative h-16 w-16 overflow-hidden rounded-md border border-zinc-200 bg-zinc-100">
                   <ReferenceImagePreview image={image} className="h-full w-full" />
@@ -349,7 +429,25 @@ export function InputBar({ className }: InputBarProps) {
               </div>
             </div>
           )}
-          <div className="flex min-h-16 items-end gap-3 px-4 py-3">
+          {!isSymposiumConversation && assignedAgent && (
+            <div className="flex items-center justify-between gap-3 rounded-t-[11px] border-b border-violet-100 bg-violet-50/60 px-4 py-2">
+              <span className="inline-flex min-w-0 items-center gap-2 text-xs font-medium text-violet-800">
+                <Bot className="h-3.5 w-3.5 shrink-0" />
+                <span className="text-violet-500">Assigned agent</span>
+                <span className="truncate">{assignedAgent.name}</span>
+              </span>
+              <button
+                type="button"
+                onClick={setAutoRouting}
+                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-violet-500 transition-colors hover:bg-violet-100 hover:text-violet-800"
+                title="Return to automatic agent routing"
+                aria-label="Return to automatic agent routing"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+          <div className="flex min-h-16 items-end gap-3 rounded-t-[11px] bg-[#fdfdff] px-4 py-3">
             <Button
               variant="ghost"
               size="icon"
@@ -431,76 +529,117 @@ export function InputBar({ className }: InputBarProps) {
             </div>
           )}
 
+          {agentMention && !isSymposiumRunning && (
+            <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(380px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
+              <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Set the agent for this conversation</div>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={setAutoRouting}
+                className={cn(
+                  'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
+                  activeMentionIndex === 0 ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50'
+                )}
+              >
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-zinc-100 text-zinc-600"><Bot className="h-3.5 w-3.5" /></span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium">Auto routing</span>
+                  <span className="block truncate text-xs text-zinc-500">Let Eva choose the appropriate agent for each request.</span>
+                </span>
+              </button>
+              {filteredAgentMentionOptions.map((agent, index) => (
+                <button
+                  key={agent.id}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => insertAgentMention(agent)}
+                  className={cn(
+                    'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
+                    index + 1 === activeMentionIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50'
+                  )}
+                >
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-700"><Bot className="h-3.5 w-3.5" /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{agent.name}</span>
+                    <span className="block truncate text-xs text-zinc-500">{agent.role} · {agent.description}</span>
+                  </span>
+                </button>
+              ))}
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">Your selection is kept for this conversation.</div>
+            </div>
+          )}
+
           {attachmentError && <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">{attachmentError}</div>}
 
-          <div className="flex min-h-11 items-center justify-between gap-4 border-t border-zinc-100 bg-zinc-50 px-4 py-2.5 text-xs text-zinc-500">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-h-10 items-center justify-between gap-3 rounded-b-[11px] border-t border-zinc-100 bg-[#fafbfe] px-4 py-1.5 text-xs text-zinc-500">
+            <div className="flex min-w-0 items-center gap-1.5">
               {isSymposiumConversation ? (
                 <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-700"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
               ) : (
-                <>
-                  <Bot className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-                  <div className="w-[176px]">
-                    <Select
-                      value={activeAgentId}
-                      onChange={(event) => void handleAgentChange(event.target.value)}
-                      options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
-                      disabled={isSymposiumRunning}
-                      className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                      aria-label="Select agent"
-                      title={currentConversation ? 'Agent for this conversation' : 'Select an agent to create a draft conversation'}
-                    />
-                  </div>
-                  <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
-                  <div className="w-[144px]">
-                    <Select
-                      value={activeProviderId}
-                      onChange={(event) => void handleConnectionChange(event.target.value)}
-                      options={connectionOptions}
-                      disabled={isSymposiumRunning}
-                      className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                      aria-label="Select model connection"
-                      title="Select model connection"
-                    />
-                  </div>
-                  <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
-                  <div className="w-[170px]">
-                    <Select
-                      value={activeModel}
-                      onChange={(event) => void handleModelChange(event.target.value)}
-                      options={activeConnectionModels}
-                      disabled={isSymposiumRunning || (activeConnectionModels.length === 1 && !activeConnectionModels[0].value)}
-                      className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                      aria-label="Select model from connection"
-                      title="Select model in this connection"
-                    />
-                  </div>
-                </>
+                <div className="w-[min(290px,34vw)] min-w-[190px]">
+                  <Select
+                    value={activeModelChoice}
+                    onChange={(event) => void handleModelChoiceChange(event.target.value)}
+                    options={modelChoiceOptions}
+                    disabled={isSymposiumRunning || modelChoices.length === 0}
+                    className="h-7 rounded-md border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 shadow-none hover:bg-white/75 hover:text-zinc-800 focus:border-[rgba(99,102,115,0.16)] focus:bg-white/80 focus:shadow-[0_5px_14px_-12px_rgba(39,42,58,0.35)] focus:ring-0 focus-visible:border-[rgba(99,102,115,0.16)] focus-visible:ring-0"
+                    menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 shadow-[0_16px_36px_-26px_rgba(39,42,58,0.38),0_5px_12px_-10px_rgba(39,42,58,0.1)]"
+                    optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
+                    selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
+                    aria-label="Select model connection and model"
+                    title="Select a saved connection and model"
+                  />
+                </div>
               )}
             </div>
-            <div className="flex min-w-0 items-center gap-2">
-              <div className="h-4 w-px shrink-0 bg-zinc-200" aria-hidden="true" />
-              <div className="w-[176px]">
-                <Select
-                  value={permissionLevel}
-                  onChange={(event) => void handlePermissionChange(event.target.value as ConversationPermissionLevel)}
-                  options={[
-                    { value: 'workspace', label: 'Workspace only' },
-                    { value: 'granted-folders', label: 'Authorized folders' },
-                    { value: 'full-access', label: 'Full filesystem access' },
-                  ]}
-                  disabled={isSymposiumRunning}
-                  className="h-8 border-transparent bg-transparent text-xs font-medium text-zinc-700 shadow-none hover:bg-white/70 focus:border-zinc-300 focus:bg-white focus:shadow-sm focus:ring-0 focus-visible:border-zinc-300 focus-visible:ring-0"
-                  aria-label="Conversation file permission"
-                  title={currentConversation ? 'File access for this conversation' : 'Select a permission to create a draft conversation'}
-                />
-              </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {!isSymposiumConversation && (
+                <div className="relative">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
+                    onClick={() => setIsConversationSettingsOpen((open) => !open)}
+                    disabled={isSymposiumRunning}
+                    title="Conversation settings"
+                    aria-label="Conversation settings"
+                    aria-expanded={isConversationSettingsOpen}
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                  </Button>
+                  {isConversationSettingsOpen && (
+                    <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 w-64 rounded-xl border border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 p-3 shadow-[0_18px_38px_-28px_rgba(39,42,58,0.4),0_6px_14px_-10px_rgba(39,42,58,0.1)] backdrop-blur-md">
+                      <div className="mb-2.5">
+                        <p className="text-xs font-semibold text-zinc-700">Conversation access</p>
+                        <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">Choose what this conversation may access.</p>
+                      </div>
+                      <Select
+                        value={permissionLevel}
+                        onChange={(event) => {
+                          void handlePermissionChange(event.target.value as ConversationPermissionLevel)
+                          setIsConversationSettingsOpen(false)
+                        }}
+                        options={[
+                          { value: 'workspace', label: 'Workspace only' },
+                          { value: 'granted-folders', label: 'Authorized folders' },
+                          { value: 'full-access', label: 'Full filesystem access' },
+                        ]}
+                        className="h-8 border-[rgba(99,102,115,0.13)] bg-white/70 px-2.5 text-xs font-medium text-zinc-600 shadow-none hover:border-[rgba(99,102,115,0.2)] hover:bg-white focus-visible:border-[rgba(99,102,115,0.22)] focus-visible:shadow-[0_5px_14px_-12px_rgba(39,42,58,0.32)]"
+                        menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95"
+                        optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
+                        selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
+                        aria-label="Conversation file permission"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
               <span className="shrink-0 text-zinc-400">Shift+Enter for a new line</span>
             </div>
           </div>
 
           {currentConversation && permissionLevel === 'granted-folders' && (
-            <div className="flex flex-wrap items-center gap-2 border-t border-zinc-100 bg-white px-4 py-2.5">
+            <div className="flex flex-wrap items-center gap-2 rounded-b-[11px] border-t border-zinc-100 bg-[#fafbfe] px-4 py-2.5">
               {fileAccessGrants.map((grant) => (
                 <div key={grant.path} className="flex max-w-full items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs text-zinc-600">
                   <FolderOpen className="h-3.5 w-3.5 shrink-0 text-violet-500" />

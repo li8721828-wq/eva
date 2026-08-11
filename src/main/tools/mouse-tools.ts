@@ -1,5 +1,3 @@
-import { execFile } from 'child_process'
-import { promisify } from 'util'
 import type { ToolContext, ToolExecutor } from './index'
 import {
   getFreshDesktopObservation,
@@ -10,11 +8,13 @@ import {
   type DesktopObservation,
 } from './desktop-observation-store'
 import { observeVisibleDesktop } from './desktop-mcp-tools'
+import { runPowerShellScript } from './powershell-runner'
+import { updateDesktopControlOverlay } from '../services/desktop-control-overlay'
 
-const execFileAsync = promisify(execFile)
 const MAX_COORDINATE = 100_000
 
 type MouseAction = 'screen_info' | 'move' | 'click' | 'double_click' | 'scroll'
+type MousePacing = 'fast' | 'balanced' | 'precise'
 
 interface MouseReport {
   action: MouseAction
@@ -77,7 +77,12 @@ const mouseControlTool: ToolExecutor = {
         sessionId: { type: 'string', description: 'Optional desktop_session id. Required for a recorded multi-step desktop control workflow.' },
         allowCloseSelf: { type: 'boolean', description: 'Set true only when the user explicitly asked to close the Eva application itself. This authorizes clicking Eva\'s own Close title-bar control; minimization does not require it.' },
         allowCloseForeground: { type: 'boolean', description: 'Set true only when the user explicitly asked to close the currently visible non-Eva application. Do not set it merely to open or reveal another app.' },
-        durationMs: { type: 'number', description: 'Smooth pointer movement duration in milliseconds (120-1200, default 360).'},
+        pacing: {
+          type: 'string',
+          enum: ['fast', 'balanced', 'precise'],
+          description: 'Movement profile. balanced is the default adaptive 80-170ms movement. fast minimizes travel animation; precise uses a slower controlled approach for small controls.',
+        },
+        durationMs: { type: 'number', description: 'Optional explicit smooth pointer movement duration in milliseconds (40-1200). Prefer pacing unless a specific duration is necessary.'},
         button: {
           type: 'string',
           enum: ['left', 'right', 'middle'],
@@ -104,6 +109,7 @@ const mouseControlTool: ToolExecutor = {
       const button = parseButton(params.button)
       const delta = parseDelta(params.delta)
       const durationMs = parseDuration(params.durationMs)
+      const pacing = parsePacing(params.pacing)
       const selector = parseSelector(params.target)
       const allowCloseSelf = parseBoolean(params.allowCloseSelf, 'allowCloseSelf')
       const allowCloseForeground = parseBoolean(params.allowCloseForeground, 'allowCloseForeground')
@@ -122,8 +128,8 @@ const mouseControlTool: ToolExecutor = {
       let selectedControl: DesktopControl | undefined
       if (selector) {
         selectedControl = resolveObservedControl(selector, observation)
-        x = selectedControl.bounds.left + Math.round(selectedControl.bounds.width / 2)
-        y = selectedControl.bounds.top + Math.round(selectedControl.bounds.height / 2)
+        x = selectedControl.clickPoint?.x ?? selectedControl.bounds.left + Math.round(selectedControl.bounds.width / 2)
+        y = selectedControl.clickPoint?.y ?? selectedControl.bounds.top + Math.round(selectedControl.bounds.height / 2)
       }
       if (x === undefined || y === undefined) {
         throw new Error(`Mouse ${action} requires both x and y coordinates, or an observed target selector.`)
@@ -132,7 +138,15 @@ const mouseControlTool: ToolExecutor = {
       assertForegroundCloseIsAuthorized(action, button, x, y, selectedControl, observation, allowCloseForeground)
       assertPointInVisibleSurface(x!, y!, observation)
       const targetsTaskbar = selectedControl?.surface === 'taskbar'
-        || Boolean(observation.taskbar && isPointWithin(x, y, observation.taskbar.bounds))
+        || isPointInObservedTaskbar(x, y, observation)
+      updateDesktopControlOverlay({
+        state: 'acting',
+        title: describeAction(action, selectedControl, x, y),
+        detail: targetsTaskbar ? '正在操作当前可见任务栏中的目标。' : '正在操作当前可见前台界面。',
+        objective: session?.objective || '桌面控制',
+        actionsUsed: session?.steps.filter((step) => step.kind === 'action').length,
+        stepBudget: session?.stepBudget,
+      })
       const report = await runMouseCommand({
         action,
         x,
@@ -140,6 +154,7 @@ const mouseControlTool: ToolExecutor = {
         button,
         delta,
         durationMs,
+        pacing,
         // Taskbar controls are visible system launchers. They remain valid even
         // when a foreground-window handle changes between observation and click.
         expectedWindowHandle: targetsTaskbar ? undefined : observation.activeWindow.handle,
@@ -162,6 +177,7 @@ const mouseControlTool: ToolExecutor = {
         priorityControls: checked.snapshot.priorityControls,
         dialog: checked.snapshot.dialog,
         taskbar: checked.snapshot.taskbar,
+        taskbars: checked.snapshot.taskbars,
         controlCount: checked.snapshot.controlCount,
         truncated: checked.snapshot.truncated,
       })
@@ -173,6 +189,13 @@ const mouseControlTool: ToolExecutor = {
           observationId: nextObservation.id,
           verified: verification.verified,
         })
+      } else {
+        updateDesktopControlOverlay({
+          state: 'completed',
+          title: verification.verified ? '可见操作已验证' : '操作完成，需人工确认',
+          detail: verification.detail,
+          objective: '桌面控制',
+        })
       }
       return JSON.stringify({
         action,
@@ -180,6 +203,7 @@ const mouseControlTool: ToolExecutor = {
         cursor: report.cursor,
         startCursor: report.startCursor,
         pointerReached: report.pointerReached,
+        pacing,
         targetSurface: targetsTaskbar ? 'taskbar' : 'foreground',
         previousObservationId: observation.id,
         nextObservationId: nextObservation.id,
@@ -187,12 +211,19 @@ const mouseControlTool: ToolExecutor = {
         activeWindow: checked.snapshot.activeWindow,
         dialog: checked.snapshot.dialog,
         taskbar: checked.snapshot.taskbar,
+        taskbars: checked.snapshot.taskbars,
         priorityControls: checked.snapshot.priorityControls?.map(summarizeControl),
         verification,
         sessionId: session?.id,
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      updateDesktopControlOverlay({
+        state: 'stopped',
+        title: '鼠标操作未完成',
+        detail: message,
+        objective: '桌面控制',
+      })
       throw new Error(message)
     }
   },
@@ -275,7 +306,7 @@ function describeAction(action: MouseAction, control: DesktopControl | undefined
 }
 
 function summarizeControl(control: DesktopControl): Record<string, unknown> {
-  return { name: control.name, role: control.role, automationId: control.automationId, surface: control.surface || 'foreground', enabled: control.enabled, bounds: control.bounds }
+  return { name: control.name, role: control.role, automationId: control.automationId, surface: control.surface || 'foreground', enabled: control.enabled, bounds: control.bounds, clickPoint: control.clickPoint }
 }
 
 function describeSelector(selector: ControlSelector): string {
@@ -323,11 +354,17 @@ function parseDelta(value: unknown): number | undefined {
   return Math.round(numberValue)
 }
 
-function parseDuration(value: unknown): number {
-  if (value === undefined || value === null) return 360
+function parseDuration(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined
   const numberValue = Number(value)
   if (!Number.isFinite(numberValue)) throw new Error('durationMs must be a finite number')
-  return Math.max(120, Math.min(1200, Math.round(numberValue)))
+  return Math.max(40, Math.min(1200, Math.round(numberValue)))
+}
+
+function parsePacing(value: unknown): MousePacing {
+  if (value === undefined || value === null) return 'balanced'
+  if (value === 'fast' || value === 'balanced' || value === 'precise') return value
+  throw new Error('pacing must be fast, balanced, or precise')
 }
 
 function parseBoolean(value: unknown, label: string): boolean {
@@ -367,7 +404,7 @@ function isEvaCloseButtonCoordinate(
 
 function assertPointInVisibleSurface(x: number, y: number, observation: DesktopObservation): void {
   const inside = isPointWithin(x, y, observation.activeWindow.bounds)
-    || Boolean(observation.taskbar && isPointWithin(x, y, observation.taskbar.bounds))
+    || isPointInObservedTaskbar(x, y, observation)
   if (!inside) {
     throw new Error('The target is outside the observed foreground window and visible taskbar. Observe again and act only on an observed visible surface.')
   }
@@ -393,7 +430,20 @@ function assertForegroundCloseIsAuthorized(
 
 function isWithinVisibleSurface(control: DesktopControl, observation: DesktopObservation): boolean {
   return isWithin(control.bounds, observation.activeWindow.bounds)
-    || Boolean(control.surface === 'taskbar' && observation.taskbar && isWithin(control.bounds, observation.taskbar.bounds))
+    || Boolean(control.surface === 'taskbar' && isWithinObservedTaskbar(control.bounds, observation))
+}
+
+function isPointInObservedTaskbar(x: number, y: number, observation: DesktopObservation): boolean {
+  return observedTaskbars(observation).some((taskbar) => isPointWithin(x, y, taskbar.bounds))
+}
+
+function isWithinObservedTaskbar(bounds: DesktopBounds, observation: DesktopObservation): boolean {
+  return observedTaskbars(observation).some((taskbar) => isWithin(bounds, taskbar.bounds))
+}
+
+function observedTaskbars(observation: DesktopObservation): Array<{ bounds: DesktopBounds }> {
+  if (observation.taskbars?.length) return observation.taskbars
+  return observation.taskbar ? [observation.taskbar] : []
 }
 
 function isPointWithin(x: number, y: number, bounds: { left: number; top: number; width: number; height: number }): boolean {
@@ -417,6 +467,7 @@ async function runMouseCommand(payload: {
   button: 'left' | 'right' | 'middle'
   delta?: number
   durationMs?: number
+  pacing: MousePacing
   expectedWindowHandle?: number
 }): Promise<MouseReport> {
   const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
@@ -436,9 +487,15 @@ public static class EvaMouse {
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
   [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessDPIAware();
-  public static bool SmoothMove(int targetX, int targetY, int durationMs) {
+  public static bool SmoothMove(int targetX, int targetY, int durationMs, string pacing) {
     Point start; GetCursorPos(out start);
-    int steps = Math.Max(1, durationMs / 16);
+    double distance = Math.Sqrt(Math.Pow(targetX - start.X, 2) + Math.Pow(targetY - start.Y, 2));
+    if (durationMs <= 0) {
+      if (pacing == "fast") durationMs = distance < 100 ? 20 : 55;
+      else if (pacing == "precise") durationMs = Math.Max(150, Math.Min(320, (int)(100 + distance * 0.13)));
+      else durationMs = Math.Max(75, Math.Min(170, (int)(55 + distance * 0.07)));
+    }
+    int steps = Math.Max(1, Math.Min(12, durationMs / 14));
     int sleepMs = Math.Max(1, durationMs / steps);
     bool moved = true;
     for (int step = 1; step <= steps; step++) {
@@ -478,7 +535,8 @@ $target = $null
 $moveAccepted = $true
 if ($payload.action -eq 'move' -or $payload.action -eq 'click' -or $payload.action -eq 'double_click' -or $payload.action -eq 'scroll') {
   $target = @{ x = [int]$payload.x; y = [int]$payload.y }
-  $moveAccepted = [EvaMouse]::SmoothMove([int]$payload.x, [int]$payload.y, [int]$payload.durationMs)
+  $requestedDuration = if ($null -eq $payload.durationMs) { 0 } else { [int]$payload.durationMs }
+  $moveAccepted = [EvaMouse]::SmoothMove([int]$payload.x, [int]$payload.y, $requestedDuration, [string]$payload.pacing)
 }
 if ($payload.action -eq 'click') { [EvaMouse]::Click([string]$payload.button, $false) }
 if ($payload.action -eq 'double_click') { [EvaMouse]::Click([string]$payload.button, $true) }
@@ -499,12 +557,7 @@ if ($null -ne $target) {
   screen = @{ left = [EvaMouse]::GetSystemMetrics(76); top = [EvaMouse]::GetSystemMetrics(77); width = [EvaMouse]::GetSystemMetrics(78); height = [EvaMouse]::GetSystemMetrics(79) }
 } | ConvertTo-Json -Compress
 `
-  const encodedScript = Buffer.from(script, 'utf16le').toString('base64')
-  const { stdout, stderr } = await execFileAsync(
-    'powershell.exe',
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encodedScript],
-    { windowsHide: true, timeout: 15_000, maxBuffer: 16 * 1024 },
-  )
+  const { stdout, stderr } = await runPowerShellScript(script, { timeout: 15_000, maxBuffer: 16 * 1024 })
   const output = stdout.trim()
   if (output) return JSON.parse(output) as MouseReport
   throw new Error(stderr.trim() || 'PowerShell returned no mouse-control result')

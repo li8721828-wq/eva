@@ -2,7 +2,7 @@ import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import type { ChatMessage } from '../../../shared/types'
+import type { ChatMessage, ChatUsage } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
@@ -35,6 +35,45 @@ export interface MessageBubbleProps {
   message: ChatMessage
   className?: string
   isStreaming?: boolean
+  /** Shown only on the newest usage-bearing reply to avoid repeating totals. */
+  conversationUsage?: ChatUsage
+}
+
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(value)
+}
+
+function formatCny(value: number): string {
+  return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
+}
+
+function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversationUsage?: ChatUsage }) {
+  const totalTokens = usage.promptTokens + usage.completionTokens
+  const cacheRate = usage.cachedTokens && usage.promptTokens > 0
+    ? Math.round((usage.cachedTokens / usage.promptTokens) * 100)
+    : null
+  const conversationTokens = conversationUsage
+    ? conversationUsage.promptTokens + conversationUsage.completionTokens
+    : 0
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-zinc-200/70 pt-2.5 text-[11px] font-medium tabular-nums text-zinc-400">
+      <span>
+        {usage.modelCalls && usage.modelCalls > 1 ? `${usage.modelCalls} 次调用 · ` : ''}
+        本次 {formatTokenCount(totalTokens)} tokens
+      </span>
+      <span>输入 {formatTokenCount(usage.promptTokens)} · 输出 {formatTokenCount(usage.completionTokens)}</span>
+      {cacheRate !== null ? <span>缓存 {cacheRate}%</span> : null}
+      {usage.estimatedCostCny !== undefined ? (
+        <span title="基于 Eva 内置 DeepSeek 参考价的估算；实际账单以供应商记录为准。">
+          预计 ¥{formatCny(usage.estimatedCostCny)}
+        </span>
+      ) : null}
+      {conversationUsage && conversationTokens > totalTokens ? (
+        <span className="text-zinc-350">本对话 {formatTokenCount(conversationTokens)}</span>
+      ) : null}
+    </div>
+  )
 }
 
 export function MarkdownMessageContent({ content, className }: { content: string; className?: string }) {
@@ -61,7 +100,7 @@ export function MarkdownMessageContent({ content, className }: { content: string
   )
 }
 
-export function MessageBubble({ message, className, isStreaming = false }: MessageBubbleProps) {
+export function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
 
@@ -133,6 +172,7 @@ export function MessageBubble({ message, className, isStreaming = false }: Messa
             </div>
           )}
           <MarkdownMessageContent content={message.content} />
+          {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>
 
         {/* Tool calls */}

@@ -34,4 +34,11 @@ describe('execute_command permission boundary', () => {
     await expect(tool.execute({ command: 'echo ok' }, context)).resolves.toBe('ok')
     expect(context.terminalService.createSession).toHaveBeenCalledWith(expect.any(String), 'C:/workspace')
   })
+
+  it('allows a command-based fallback when full filesystem access is granted', async () => {
+    const context = makeContext(true)
+    await expect(tool.execute({ command: 'start chrome.exe' }, context)).resolves.toBe('ok')
+
+    expect(context.terminalService.createSession).toHaveBeenCalledWith(expect.any(String), 'C:/workspace')
+  })
 })

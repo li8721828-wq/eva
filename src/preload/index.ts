@@ -33,6 +33,13 @@ function onStream<T>(channel: string, callback: EventCallback<T>): Unsubscribe {
 }
 
 export interface EvaAPI {
+  windowControls: {
+    minimize(): Promise<void>
+    toggleMaximize(): Promise<void>
+    close(): Promise<void>
+    version(): Promise<string>
+  }
+
   // 会话管理
   conversation: {
     list(): Promise<Conversation[]>
@@ -186,6 +193,22 @@ export interface EvaAPI {
 }
 
 const evaAPI: EvaAPI = {
+  windowControls: {
+    minimize: () => {
+      ipcRenderer.send(IPC.WINDOW_MINIMIZE)
+      return Promise.resolve()
+    },
+    toggleMaximize: () => {
+      ipcRenderer.send(IPC.WINDOW_TOGGLE_MAXIMIZE)
+      return Promise.resolve()
+    },
+    close: () => {
+      ipcRenderer.send(IPC.WINDOW_CLOSE)
+      return Promise.resolve()
+    },
+    version: () => ipcRenderer.invoke(IPC.WINDOW_GET_VERSION),
+  },
+
   // 会话管理
   conversation: {
     list: () => ipcRenderer.invoke(IPC.CONVERSATION_LIST),

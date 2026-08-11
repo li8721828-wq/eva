@@ -23,12 +23,12 @@ export interface ChatPanelProps {
 export function ChatPanel({ className }: ChatPanelProps) {
   const { conversations, currentConversationId, error, setError, setConversationGitBranch, setConversationSymposium } = useChatStore()
   const { workMode, terminalVisible, toggleTerminal } = useAppStore()
-  const { agents, getSelectedAgent } = useAgentStore()
+  const { agents } = useAgentStore()
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
   const { currentPlan, isRunning: isTaskRunning, recoveryStatus, summary: expertSummary } = expertTask
 
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
-  const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId) || getSelectedAgent()
+  const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId)
   const symposiumRuntime = useSymposiumStore((state) => currentConversationId ? state.runtimes[currentConversationId] : undefined)
   const symposium = currentConversation?.symposium
   const symposiumRunning = symposiumRuntime?.status === 'running'
@@ -161,7 +161,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
           <span className="text-base font-medium text-zinc-800">
             {currentConversationId ? 'Conversation' : 'New Chat'}
           </span>
-          <span className="text-sm text-zinc-500">{symposium ? 'Model Symposium' : agent?.name || 'Coding Assistant'}</span>
+          <span className="text-sm text-zinc-500">{symposium ? 'Model Symposium' : agent?.name || 'Auto'}</span>
           {symposium && <span className="inline-flex items-center gap-1 text-xs text-violet-600"><UsersRound className="h-3.5 w-3.5" />Symposium</span>}
         </div>
         <div className="flex items-center gap-2">

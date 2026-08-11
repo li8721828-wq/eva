@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { app, ipcMain, dialog, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { SpecTemplate } from '../../shared/types/spec'
 import type { ProviderConfigEntry } from '../storage/config-store'
@@ -39,6 +39,28 @@ export function registerSystemHandlers(
   terminalService?: TerminalService,
   providerRegistry?: ProviderRegistry
 ): void {
+  // Frameless-window controls use direct one-way IPC events. This removes the
+  // renderer-side invoke/reply dependency from core minimize/maximize/close.
+  ipcMain.on(IPC.WINDOW_MINIMIZE, (event): void => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (window && !window.isDestroyed()) window.minimize()
+  })
+
+  ipcMain.on(IPC.WINDOW_TOGGLE_MAXIMIZE, (event): void => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window || window.isDestroyed()) return
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+  })
+
+  ipcMain.on(IPC.WINDOW_CLOSE, (): void => {
+    // A user-triggered title-bar close means exit the application. This also
+    // disposes any desktop-control overlay through the before-quit handler.
+    app.quit()
+  })
+
+  ipcMain.handle(IPC.WINDOW_GET_VERSION, (): string => app.getVersion())
+
   // ── File system handlers ──────────────────────────────────────────────────
 
   ipcMain.handle(IPC.FILE_READ, async (event, filePath: string, workspacePath?: string): Promise<string> => {

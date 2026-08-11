@@ -1,3 +1,5 @@
+import type { ChatUsage } from './conversation'
+
 export type AgentRole = 'leader' | 'researcher' | 'coder' | 'reviewer' | 'tester' | 'custom'
 export type AgentModelPreference = 'reasoning' | 'coding' | 'research' | 'fast'
 
@@ -46,6 +48,7 @@ export interface AgentEvent {
     isError: boolean
   }
   error?: string
+  usage?: ChatUsage
 }
 
 export type WorkMode = 'normal' | 'expert' | 'goal'

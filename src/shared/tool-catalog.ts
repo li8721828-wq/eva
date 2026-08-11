@@ -21,8 +21,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'web_search', label: 'Web search', description: 'Allow this agent to query the active search service. Requires a configured Brave, Tavily, or SearXNG provider.', category: 'Internet', risk: 'network' },
   { id: 'read_web_page', label: 'Read web page', description: 'Read a public HTTP(S) webpage. Local and private network addresses are blocked.', category: 'Internet', risk: 'network' },
   { id: 'execute_command', label: 'Run command', description: 'Execute a terminal command in the workspace.', category: 'Execution', risk: 'system' },
-  { id: 'mouse_control', label: 'Mouse control', description: 'Move, click, double-click, or scroll only on a recent visible-desktop observation. The foreground window is revalidated and pointer movement is smooth. Eva can minimize itself, while closing Eva requires explicit user authorization. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
-  { id: 'desktop_observe', label: 'Desktop observer', description: 'Capture the visible foreground Windows surface and its accessible controls as structured names, roles, bounds, and states. Hidden/background windows and password values are never exposed. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
+  { id: 'mouse_control', label: 'Mouse control', description: 'Move, click, double-click, or scroll only on a recent visible-desktop observation. Semantic targets use Windows hit-tested click points when available, all visible taskbars are supported, and movement adapts for fast, balanced, or precise actions. Eva can minimize itself, while closing Eva requires explicit user authorization. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
+  { id: 'desktop_observe', label: 'Desktop observer', description: 'Capture the visible foreground Windows surface and every visible taskbar as structured names, roles, bounds, states, and click points. Hidden/background windows and password values are never exposed. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'keyboard_control', label: 'Keyboard control', description: 'Type into a focused visible control or press navigation keys after a recent desktop observation. The foreground window is revalidated and typed content is not returned. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'desktop_session', label: 'Desktop control session', description: 'Bound a multi-step visible-desktop workflow to one conversation with an objective, action budget, pause/resume, timeout, and step record. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'blender_inspect_scene', label: 'Inspect Blender scene', description: 'Read a compact summary of a configured Blender project.', category: 'Integrations', risk: 'read' },
@@ -34,4 +34,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 14
+export const TOOL_CATALOG_VERSION = 15

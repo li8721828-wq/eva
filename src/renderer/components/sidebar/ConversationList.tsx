@@ -4,8 +4,7 @@ import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
-import { AlertTriangle, Archive, ArchiveRestore, FolderKanban, MessageSquare, Plus, Trash2, UsersRound } from 'lucide-react'
-import { useAppStore } from '@/stores/use-app-store'
+import { AlertTriangle, Archive, ArchiveRestore, MessageSquare, Plus, Trash2, UsersRound } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
@@ -74,14 +73,15 @@ export function ConversationList({ className }: ConversationListProps) {
   const {
     workspaces,
     setActiveWorkspaceId,
+    deleteWorkspace,
   } = useWorkspaceStore()
-  const openTaskArtifacts = useAppStore((state) => state.openTaskArtifacts)
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set())
   const [channelsOpen, setChannelsOpen] = useState(true)
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [globalTasksOpen, setGlobalTasksOpen] = useState(true)
   const [archivedOpen, setArchivedOpen] = useState(true)
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null)
+  const [workspaceToDelete, setWorkspaceToDelete] = useState<Workspace | null>(null)
   const [qqStatus, setQqStatus] = useState<QqRemoteStatus>({ state: 'disabled', message: 'QQ remote control is disabled.' })
 
   useEffect(() => {
@@ -121,6 +121,14 @@ export function ConversationList({ className }: ConversationListProps) {
     const conversationId = conversationToDelete.id
     setConversationToDelete(null)
     await deleteConversation(conversationId)
+  }
+
+  const confirmRemoveWorkspace = async () => {
+    if (!workspaceToDelete) return
+
+    const workspaceId = workspaceToDelete.id
+    setWorkspaceToDelete(null)
+    await deleteWorkspace(workspaceId)
   }
 
   return (
@@ -174,7 +182,7 @@ export function ConversationList({ className }: ConversationListProps) {
           const isCollapsed = collapsedProjects.has(workspace.id)
 
           return (
-            <div key={workspace.id} className="rounded-lg">
+            <div key={workspace.id} className="group/project rounded-lg">
               <div className="flex h-9 items-center gap-1">
                 <button
                   type="button"
@@ -188,21 +196,21 @@ export function ConversationList({ className }: ConversationListProps) {
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 shrink-0"
-                  onClick={() => openTaskArtifacts(workspace.id)}
-                  title={`View task artifacts for ${workspace.name}`}
-                  aria-label={`View task artifacts for ${workspace.name}`}
-                >
-                  <FolderKanban className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0"
                   onClick={() => createConversation(undefined, 'normal', workspace.id)}
                   title={`New conversation in ${workspace.name}`}
                   aria-label={`New conversation in ${workspace.name}`}
                 >
                   <Plus className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0 text-zinc-400 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-600 group-hover/project:opacity-100 group-focus-within/project:opacity-100"
+                  onClick={() => setWorkspaceToDelete(workspace)}
+                  title={`Remove ${workspace.name} from Eva`}
+                  aria-label={`Remove ${workspace.name} from Eva`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </div>
 
@@ -304,6 +312,25 @@ export function ConversationList({ className }: ConversationListProps) {
         <div className="flex items-center justify-end gap-3 border-t border-zinc-100 bg-zinc-50/70 px-6 py-4">
           <Button variant="outline" onClick={() => setConversationToDelete(null)}>Cancel</Button>
           <Button variant="destructive" onClick={() => void confirmDelete()}>Delete</Button>
+        </div>
+      </Dialog>
+
+      <Dialog open={workspaceToDelete !== null} onOpenChange={(open) => !open && setWorkspaceToDelete(null)} className="max-w-md overflow-hidden rounded-xl p-0">
+        <DialogClose onClose={() => setWorkspaceToDelete(null)} />
+        <div className="p-6 pb-5">
+          <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-lg bg-red-50 text-red-600">
+            <AlertTriangle className="h-5 w-5" />
+          </div>
+          <DialogHeader className="mb-0 gap-2 pr-8">
+            <DialogTitle>Remove project from Eva?</DialogTitle>
+            <DialogDescription className="leading-6">
+              <span className="font-medium text-zinc-700">{workspaceToDelete?.name}</span> will be removed from the workspace list and its local index will be cleared. The project folder and its files will not be deleted. Its conversations will remain available as global tasks.
+            </DialogDescription>
+          </DialogHeader>
+        </div>
+        <div className="flex items-center justify-end gap-3 border-t border-zinc-100 bg-zinc-50/70 px-6 py-4">
+          <Button variant="outline" onClick={() => setWorkspaceToDelete(null)}>Cancel</Button>
+          <Button variant="destructive" onClick={() => void confirmRemoveWorkspace()}>Remove project</Button>
         </div>
       </Dialog>
     </>
