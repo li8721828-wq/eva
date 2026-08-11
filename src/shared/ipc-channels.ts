@@ -106,6 +106,8 @@ export const IPC = {
   PROVIDER_DELETE: 'provider:delete',
   PROVIDER_TEST: 'provider:test',
   PROVIDER_MODELS: 'provider:models',
+  COST_USAGE_REPORT: 'cost:usage-report',
+  COST_RATE_CARDS_SAVE: 'cost:rate-cards-save',
 
   // QQ remote control
   QQ_REMOTE_GET_CONFIG: 'qq-remote:get-config',

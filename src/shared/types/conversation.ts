@@ -3,10 +3,14 @@ import type { FileAccessGrant } from './file-access'
 import type { AgentSymposium } from './symposium'
 
 export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
+export type ConversationExecutionStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+export type ConversationTitleSource = 'auto' | 'manual' | 'system'
 
 export interface Conversation {
   id: string
   title: string
+  /** Distinguishes model-generated titles from titles explicitly chosen by the user. */
+  titleSource?: ConversationTitleSource
   agentId: string
   mode: 'normal' | 'expert' | 'goal'
   workspaceId?: string
@@ -29,6 +33,9 @@ export interface Conversation {
   gitWorktreePath?: string
   /** Optional shared deliberation that belongs to this conversation. */
   symposium?: AgentSymposium
+  /** Most recent agent execution state, retained for conversation navigation. */
+  executionStatus?: ConversationExecutionStatus
+  executionUpdatedAt?: number
   archived?: boolean
   workspacePath: string
   createdAt: number
@@ -47,6 +54,10 @@ export interface ChatMessage {
   toolCallId?: string
   agentId?: string
   agentName?: string
+  /** Model connection that produced this message, retained for cost reporting. */
+  providerId?: string
+  providerName?: string
+  model?: string
   /** Provider-reported usage accumulated for this assistant response. */
   usage?: ChatUsage
   timestamp: number

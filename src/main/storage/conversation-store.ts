@@ -97,6 +97,7 @@ export class ConversationStore {
 
   async createConversation(params: {
     title: string
+    titleSource?: Conversation['titleSource']
     agentId: string
     mode: 'normal' | 'expert' | 'goal'
     workspaceId?: string
@@ -115,6 +116,7 @@ export class ConversationStore {
       const conversation: Conversation = {
         id: uuidv4(),
         title: params.title,
+        titleSource: params.titleSource || 'manual',
         agentId: params.agentId,
         mode: params.mode,
         workspaceId: params.workspaceId,
@@ -157,7 +159,7 @@ export class ConversationStore {
 
   async updateConversation(
     id: string,
-    updates: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'gitRepositoryPath' | 'gitBranch' | 'gitWorktreePath' | 'workspacePath' | 'symposium' | 'updatedAt'>>
+    updates: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'gitRepositoryPath' | 'gitBranch' | 'gitWorktreePath' | 'workspacePath' | 'symposium' | 'executionStatus' | 'executionUpdatedAt' | 'updatedAt'>>
   ): Promise<void> {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)

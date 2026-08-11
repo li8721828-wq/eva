@@ -49,7 +49,7 @@ function collectToolArtifacts(toolCalls: ToolCall[]): Pick<TaskArtifactRun, 'sou
         isError: Boolean(toolCall.isError),
       })
     }
-    if (toolCall.name === 'write_file' && !toolCall.isError) {
+    if ((toolCall.name === 'write_file' || toolCall.name === 'edit_file') && !toolCall.isError) {
       const filePath = stringArgument(toolCall, 'path', 'filePath', 'file_path') || 'Generated file'
       files.push({
         id: `file-${toolCall.id}`,

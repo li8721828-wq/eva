@@ -8,6 +8,7 @@ import type { ProviderConfigEntry } from '../../shared/types/provider'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
+import type { ModelRateCard } from '../../shared/types/cost'
 import { CredentialStore } from './credential-store'
 
 export type { ProviderConfigEntry }
@@ -15,7 +16,7 @@ export type { ProviderConfigEntry }
 export interface AppConfig {
   // General
   theme: 'dark' | 'light'
-  language: 'en' | 'zh'
+  language: 'en' | 'zh' | 'ja'
   workspacePath: string
   fileAccessGrants: FileAccessGrant[]
   sidebarCollapsed: boolean
@@ -32,6 +33,7 @@ export interface AppConfig {
   temperature: number
   maxTokens: number
   automation: AutomationConfig
+  costRateCards: ModelRateCard[]
 }
 
 const DEFAULT_PROVIDERS: ProviderConfigEntry[] = [
@@ -74,6 +76,7 @@ const DEFAULTS: AppConfig = {
   temperature: DEFAULT_TEMPERATURE,
   maxTokens: DEFAULT_MAX_TOKENS,
   automation: DEFAULT_AUTOMATION_CONFIG,
+  costRateCards: [],
 }
 
 export class ConfigStore {

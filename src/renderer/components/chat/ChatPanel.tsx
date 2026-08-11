@@ -103,9 +103,9 @@ export function ChatPanel({ className }: ChatPanelProps) {
       const next = (() => {
       if (currentTools.includes(toolId)) {
         const next = currentTools.filter((id) => id !== toolId)
-        return toolId === 'read_file' ? next.filter((id) => id !== 'write_file') : next
+        return toolId === 'read_file' ? next.filter((id) => id !== 'write_file' && id !== 'edit_file') : next
       }
-      return toolId === 'write_file' && !currentTools.includes('read_file')
+      return (toolId === 'write_file' || toolId === 'edit_file') && !currentTools.includes('read_file')
         ? [...currentTools, 'read_file', toolId]
         : [...currentTools, toolId]
       })()
@@ -123,7 +123,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
         ...participant,
         tools: symposiumToolDrafts[participant.id] || [],
       }))
-      const hasWriter = participants.some((participant) => participant.tools?.includes('write_file'))
+      const hasWriter = participants.some((participant) => participant.tools?.includes('write_file') || participant.tools?.includes('edit_file'))
       if (hasWriter && !currentConversation.workspacePath) throw new Error('File editing requires this Symposium to belong to a workspace.')
       await setConversationSymposium(currentConversation.id, {
         ...currentConversation.symposium,

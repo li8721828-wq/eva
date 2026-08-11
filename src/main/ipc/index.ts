@@ -6,6 +6,7 @@ import { registerWorkspaceHandlers } from './workspace'
 import { registerActivityHandlers } from './activity'
 import { registerPluginHandlers } from './plugin'
 import { registerGitHandlers } from './git'
+import { registerCostHandlers } from './cost'
 import type { FileService, TerminalService, ToolRegistry } from '../tools'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from '../services/project-index-service'
@@ -34,6 +35,7 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerAgentHandlers()
   registerPluginHandlers()
   registerGitHandlers()
+  registerCostHandlers()
   const taskServices: TaskServices | undefined = services
     ? {
         toolRegistry: services.toolRegistry,

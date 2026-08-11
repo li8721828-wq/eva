@@ -20,6 +20,7 @@ import {
   Key,
   Link,
   Loader2,
+  Languages,
   Plus,
   RefreshCw,
   Server,
@@ -37,6 +38,7 @@ import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
+import { uiCopy } from '@/lib/ui-copy'
 
 type ProviderType = ProviderConfigEntry['type']
 
@@ -75,6 +77,9 @@ export function SettingsDialog() {
     setActiveProvider,
     activeModel,
     setActiveModel,
+    language,
+    setLanguage,
+    setCurrentView,
   } = useAppStore()
 
   const [providerType, setProviderType] = useState<ProviderType>('openai')
@@ -103,6 +108,7 @@ export function SettingsDialog() {
   const [qqSaving, setQqSaving] = useState(false)
   const [qqResult, setQqResult] = useState<{ success: boolean; message: string } | null>(null)
   const [automation, setAutomation] = useState<AutomationConfig>(DEFAULT_AUTOMATION_CONFIG)
+  const copy = uiCopy[language].settings
 
   const getProviderTestConfig = (): ProviderTestConfig => ({
     id: editingProviderId || `provider-${providerType}`,
@@ -478,8 +484,8 @@ export function SettingsDialog() {
     <section className="settings-page" aria-label="Settings">
       <header className="settings-page__header">
         <div>
-          <h1 className="settings-page__title">Settings</h1>
-          <p className="settings-page__description">Configure Eva to your preferences</p>
+          <h1 className="settings-page__title">{copy.title}</h1>
+          <p className="settings-page__description">{copy.description}</p>
         </div>
         <Button variant="ghost" size="icon" className="settings-page__back" onClick={() => setSettingsOpen(false)} title="Back to workspace" aria-label="Back to workspace">
           <ArrowLeft className="h-4 w-4" />
@@ -488,35 +494,53 @@ export function SettingsDialog() {
 
       <Tabs defaultValue="general" className="settings-dialog__tabs">
         <TabsList className="settings-dialog__tabs-list">
-          <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="models">Models</TabsTrigger>
-          <TabsTrigger value="agents">Agents</TabsTrigger>
-          <TabsTrigger value="automation">Automation</TabsTrigger>
-          <TabsTrigger value="plugins">Plugins</TabsTrigger>
-          <TabsTrigger value="qq">QQ Remote</TabsTrigger>
-          <TabsTrigger value="about">About</TabsTrigger>
+          <TabsTrigger value="general">{copy.general}</TabsTrigger>
+          <TabsTrigger value="models">{copy.models}</TabsTrigger>
+          <TabsTrigger value="cost">{copy.cost}</TabsTrigger>
+          <TabsTrigger value="agents">{copy.agents}</TabsTrigger>
+          <TabsTrigger value="automation">{copy.automation}</TabsTrigger>
+          <TabsTrigger value="plugins">{copy.plugins}</TabsTrigger>
+          <TabsTrigger value="qq">{copy.qq}</TabsTrigger>
+          <TabsTrigger value="about">{copy.about}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="settings-dialog__content">
           <div className="settings-dialog__general-layout">
             <div className="settings-dialog__card settings-dialog__field">
               <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                <Languages className="h-4 w-4 text-zinc-500" />
+                {copy.language}
+              </label>
+              <Select
+                value={language}
+                onChange={(event) => setLanguage(event.target.value as typeof language)}
+                options={[
+                  { value: 'zh', label: '简体中文' },
+                  { value: 'en', label: 'English' },
+                  { value: 'ja', label: '日本語' },
+                ]}
+              />
+              <p className="text-xs leading-5 text-zinc-500">{copy.languageDescription}</p>
+            </div>
+
+            <div className="settings-dialog__card settings-dialog__field">
+              <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                 <FolderOpen className="h-4 w-4 text-zinc-500" />
-                Workspace Path
+                {copy.workspace}
               </label>
               <div className="flex gap-2">
                 <Input
                   value={workspacePath}
                   onChange={(event) => setWorkspacePath(event.target.value)}
-                  placeholder="Select a folder or enter its full path"
+                  placeholder={copy.workspacePlaceholder}
                   className="flex-1"
                 />
                 <Button variant="outline" size="sm" onClick={handleBrowseFolder}>
-                  Browse
+                  {copy.browse}
                 </Button>
               </div>
               <p className="text-xs leading-5 text-zinc-500">
-                Used as a fallback for older conversations. New conversations use their selected project, and file access is configured in each conversation input bar.
+                {copy.workspaceDescription}
               </p>
             </div>
           </div>
@@ -739,6 +763,16 @@ export function SettingsDialog() {
                 {testResult.message}
               </div>
             )}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="cost" className="settings-dialog__content">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 py-4">
+            <div className="settings-dialog__card space-y-2">
+              <h2 className="text-base font-semibold text-zinc-900">{copy.cost}</h2>
+              <p className="text-sm leading-6 text-zinc-500">{copy.costDescription}</p>
+              <Button onClick={() => { setSettingsOpen(false); setCurrentView('cost') }} className="mt-2">{copy.openCost}</Button>
+            </div>
           </div>
         </TabsContent>
 

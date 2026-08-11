@@ -2,8 +2,9 @@ import { create } from 'zustand'
 import type { WorkMode } from '../../shared/types'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
-export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts' | 'symposium'
+export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts' | 'symposium' | 'cost'
 export type Theme = 'dark' | 'light'
+export type AppLanguage = 'en' | 'zh' | 'ja'
 
 interface CurrentFile {
   path: string
@@ -13,6 +14,7 @@ interface CurrentFile {
 
 interface AppState {
   theme: Theme
+  language: AppLanguage
   sidebarCollapsed: boolean
   sidebarWidth: number
   rightPanelWidth: number
@@ -33,6 +35,7 @@ interface AppState {
   activeModel: string
 
   setTheme: (theme: Theme) => void
+  setLanguage: (language: AppLanguage) => void
   toggleSidebar: () => void
   setSidebarWidth: (width: number) => void
   setRightPanelWidth: (width: number) => void
@@ -62,6 +65,7 @@ interface AppState {
 
 export const useAppStore = create<AppState>((set, get) => ({
   theme: 'light',
+  language: 'en',
   sidebarCollapsed: false,
   sidebarWidth: 304,
   rightPanelWidth: 360,
@@ -98,6 +102,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ workspacePath: path })
     window.eva.config.set('workspacePath', path).catch(console.error)
   },
+  setLanguage: (language) => {
+    set({ language })
+    window.eva.config.set('language', language).catch(console.error)
+  },
   setFileAccessGrants: (fileAccessGrants) => {
     set({ fileAccessGrants })
     window.eva.config.set('fileAccessGrants', fileAccessGrants).catch(console.error)
@@ -131,6 +139,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const config = await window.eva.config.getAll() as Record<string, unknown>
       set({
         theme: (config.theme as Theme) || 'light',
+        language: ['en', 'zh', 'ja'].includes(config.language as string) ? config.language as AppLanguage : 'en',
         sidebarCollapsed: (config.sidebarCollapsed as boolean) ?? false,
         sidebarWidth: Math.max(240, Math.min(440, Number(config.sidebarWidth) || 304)),
         rightPanelWidth: Math.max(300, Math.min(640, Number(config.rightPanelWidth) || 360)),

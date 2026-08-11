@@ -51,6 +51,10 @@ export async function cancelTaskRun(
         ? { ...snapshot.execution, state: 'cancelled', lastActivityAt: Date.now(), nextRetryAt: undefined }
         : undefined,
     })
+    await getStorage().conversations.updateConversation(conversationId, {
+      executionStatus: 'cancelled',
+      executionUpdatedAt: Date.now(),
+    })
   }
   return queueCancelled || Boolean(goalPlanner || teamOrchestrator || snapshot)
 }
@@ -118,6 +122,10 @@ async function persistQueueUpdate(update: TaskQueueUpdate): Promise<void> {
       lastActivityAt: Date.now(),
       nextRetryAt: update.nextRetryAt,
     },
+  })
+  await getStorage().conversations.updateConversation(update.conversationId, {
+    executionStatus: status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'failed' ? 'failed' : 'running',
+    executionUpdatedAt: Date.now(),
   })
 }
 
@@ -328,12 +336,17 @@ export function registerTaskHandlers(services?: TaskServices): void {
         checkpoints: previousSnapshot?.checkpoints || [],
         execution: { state: 'queued', attempt: 0, maxAttempts: 2, queuedAt: Date.now(), lastActivityAt: Date.now() },
       })
+      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+      win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 
       taskExecutionQueue.enqueue({
         conversationId,
         kind: 'expert',
         maxAttempts: 2,
-        onUpdate: persistQueueUpdate,
+        onUpdate: async (update) => {
+          await persistQueueUpdate(update)
+          if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
+        },
         run: async (attempt) => {
           if (attempt > 1) payload.resume = true
           let orchestrator: TeamOrchestrator | null = null
@@ -477,6 +490,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
             content,
             agentId: worker.id,
             agentName: worker.name,
+            providerId: worker.providerId,
+            providerName: getStorage().config.getProvider(worker.providerId)?.name || worker.providerId,
+            model: worker.model,
+            usage: agentEvent.type === 'done' ? agentEvent.usage : undefined,
             timestamp: Date.now(),
           })
           if (agentEvent.type === 'done' || agentEvent.type === 'error') {
@@ -706,12 +723,17 @@ export function registerTaskHandlers(services?: TaskServices): void {
         checkpoints: previousSnapshot?.checkpoints || [],
         execution: { state: 'queued', attempt: 0, maxAttempts: 2, queuedAt: Date.now(), lastActivityAt: Date.now() },
       })
+      await getStorage().conversations.updateConversation(payload.conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+      win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
 
       taskExecutionQueue.enqueue({
         conversationId: payload.conversationId,
         kind: 'goal',
         maxAttempts: 2,
-        onUpdate: persistQueueUpdate,
+        onUpdate: async (update) => {
+          await persistQueueUpdate(update)
+          if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
+        },
         run: async (attempt) => {
           if (attempt > 1) payload.resume = true
           let planner: GoalPlanner | null = null

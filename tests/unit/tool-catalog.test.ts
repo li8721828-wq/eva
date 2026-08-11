@@ -13,4 +13,8 @@ describe('tool catalog', () => {
       expect.objectContaining({ id: 'read_web_page', risk: 'network' }),
     ])
   })
+
+  it('exposes exact file editing as a write tool', () => {
+    expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'edit_file', category: 'Files', risk: 'write' }))
+  })
 })

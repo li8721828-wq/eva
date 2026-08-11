@@ -9,6 +9,7 @@ import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
 import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
+import { CostCenter } from '@/components/cost/CostCenter'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
 import { AppTitlebar } from '@/components/layout/AppTitlebar'
@@ -65,6 +66,7 @@ const App: React.FC = () => {
     setAgentManagerOpen,
     settingsOpen,
     currentView,
+    language,
     sidebarCollapsed,
     sidebarWidth,
     rightPanelWidth,
@@ -160,6 +162,20 @@ const App: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize)
   }, [rightPanelVisible, setRightPanelVisible])
 
+  // Settings can contain long, independently scrollable content. Reset any
+  // legacy document scroll before showing a full-height workspace view.
+  useEffect(() => {
+    window.scrollTo(0, 0)
+    document.documentElement.scrollTop = 0
+    document.body.scrollTop = 0
+  }, [currentView, settingsOpen])
+
+  useEffect(() => {
+    document.documentElement.lang = language === 'zh' ? 'zh-CN' : language === 'ja' ? 'ja' : 'en'
+  }, [language])
+
+  const showRightPanel = currentView === 'chat' && rightPanelVisible
+
   return (
     <ErrorBoundary>
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-white text-zinc-900" data-resizing={activeResize || undefined}>
@@ -175,13 +191,13 @@ const App: React.FC = () => {
           <SettingsDialog />
         ) : (
           <>
-          <div className="flex flex-1 min-h-0">
-          <div className="flex-1 min-w-0">
-            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : <ChatPanel className="h-full" />}
+          <div className="flex min-h-0 min-w-0 flex-1">
+          <div className="min-h-0 min-w-0 flex-1">
+            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
           </div>
 
           {/* Right Panel Toggle */}
-          {!rightPanelVisible && (
+          {currentView === 'chat' && !rightPanelVisible && (
             <div className="flex flex-col items-center border-l border-zinc-200 bg-white py-2 px-1">
               <Button variant="ghost" size="icon" onClick={toggleRightPanel} title="Show panel" aria-label="Toggle file panel">
                 <PanelRight className="h-4 w-4" />
@@ -190,7 +206,7 @@ const App: React.FC = () => {
           )}
 
           {/* Right Panel (File Explorer + Editor) */}
-          {rightPanelVisible && (
+          {showRightPanel && (
             <>
             <ResizeHandle target="right-panel" onPointerDown={startResize} />
             <div className="flex shrink-0 flex-col" style={{ width: rightPanelWidth }}>

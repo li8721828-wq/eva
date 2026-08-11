@@ -89,6 +89,7 @@ export const SYMPOSIUM_TOOL_OPTIONS: SymposiumToolOption[] = [
   { id: 'list_directory', label: 'Browse workspace', description: 'List authorized folders and files.', group: 'Workspace' },
   { id: 'search_files', label: 'Find files', description: 'Search authorized files by name.', group: 'Workspace' },
   { id: 'read_file', label: 'Read files', description: 'Read source and document content.', group: 'Workspace' },
+  { id: 'edit_file', label: 'Edit files', description: 'Replace one exact, unique fragment in an authorized file.', group: 'Workspace' },
   { id: 'write_file', label: 'Write files', description: 'Create or update authorized workspace files.', group: 'Workspace' },
   { id: 'search_code', label: 'Search code', description: 'Find exact text across source files.', group: 'Code' },
   { id: 'search_by_regex', label: 'Regex search', description: 'Search source using regular expressions.', group: 'Code' },

@@ -6,6 +6,7 @@ import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
+import type { CostUsageReport, ModelRateCard } from '../shared/types/cost'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
@@ -46,7 +47,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>): Promise<void>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>): Promise<void>
     onChanged(callback: EventCallback<string>): Unsubscribe
   }
 
@@ -167,6 +168,11 @@ export interface EvaAPI {
     delete(id: string): Promise<void>
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
+  }
+
+  cost: {
+    getUsageReport(): Promise<CostUsageReport>
+    saveRateCards(rateCards: ModelRateCard[]): Promise<void>
   }
 
   qqRemote: {
@@ -376,6 +382,11 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.PROVIDER_DELETE, id),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
+  },
+
+  cost: {
+    getUsageReport: () => ipcRenderer.invoke(IPC.COST_USAGE_REPORT),
+    saveRateCards: (rateCards) => ipcRenderer.invoke(IPC.COST_RATE_CARDS_SAVE, rateCards),
   },
 
   qqRemote: {

@@ -93,7 +93,12 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, currentConversationId, isConversationLoading, isStreaming, streamingContent, streamingToolCalls, streamingStatus } = useChatStore()
+  const { messages, currentConversationId, isConversationLoading, streamingByConversation } = useChatStore()
+  const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
+  const isStreaming = Boolean(stream?.isStreaming)
+  const streamingContent = stream?.content || ''
+  const streamingToolCalls = stream?.toolCalls || []
+  const streamingStatus = stream?.status || ''
   const { rightPanelVisible } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const goalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] : undefined)

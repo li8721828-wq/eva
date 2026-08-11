@@ -31,14 +31,13 @@ function elapsedLabel(startedAt: number | null, now: number): string {
  * second activity list here would only duplicate information and consume space.
  */
 export function ExecutionMonitor() {
-  const {
-    currentConversationId,
-    isStreaming,
-    streamingStatus,
-    streamingToolCalls,
-    streamingStartedAt,
-    streamingLastActivityAt,
-  } = useChatStore()
+  const { currentConversationId, streamingByConversation } = useChatStore()
+  const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
+  const isStreaming = Boolean(stream?.isStreaming)
+  const streamingStatus = stream?.status || ''
+  const streamingToolCalls = stream?.toolCalls || []
+  const streamingStartedAt = stream?.startedAt || null
+  const streamingLastActivityAt = stream?.lastActivityAt || null
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
   const goalTask = useTaskStore((state) => state.goalTasks[currentConversationId || ''] || EMPTY_GOAL_TASK)
   const clearPlan = useTaskStore((state) => state.clearPlan)

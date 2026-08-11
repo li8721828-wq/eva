@@ -22,6 +22,7 @@ import type { ChatMessageInput } from '../../shared/types/provider'
 import type { GoalProgress } from '../../shared/types/task'
 import { SYMPOSIUM_TOOL_OPTIONS, type AgentSymposium, type SymposiumContinueInput, type SymposiumDiscussionMemory, type SymposiumModelParticipant, type SymposiumStartInput, type SymposiumStreamEvent } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
+import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -36,6 +37,35 @@ const activeRunners = new Map<string, AgentRunner>()
 // `run_task` creates a nested runner under the active chat runner. Keep its
 // handle separately so cancellation and replacement cannot leave it orphaned.
 const activeTaskRunners = new Map<string, AgentRunner>()
+let legacyTitleRefreshTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleLegacyTitleRefresh(services: ChatServices): void {
+  if (legacyTitleRefreshTimer) return
+
+  const runWhenIdle = (): void => {
+    if (activeRunners.size > 0 || activeTaskRunners.size > 0) {
+      legacyTitleRefreshTimer = setTimeout(runWhenIdle, 5_000)
+      return
+    }
+
+    legacyTitleRefreshTimer = undefined
+    const provider = services.providerRegistry.get(getStorage().config.get('activeProviderId'))
+    const model = getStorage().config.getActiveModel()
+    if (!provider || !model) return
+
+    void refreshLegacyConversationTitles({
+      provider,
+      model,
+      notify: (conversationId) => BrowserWindow.getAllWindows().forEach((window) => {
+        if (!window.isDestroyed()) window.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
+      }),
+    })
+  }
+
+  // Let the renderer settle first. A new foreground request takes priority and
+  // causes this background migration to wait for an idle period.
+  legacyTitleRefreshTimer = setTimeout(runWhenIdle, 5_000)
+}
 // Auto conversations can launch a Goal as an internal tool. Keep those planners
 // separately from the visible Goal screen so they remain cancellable after the
 // chat turn that started them has completed.
@@ -291,6 +321,9 @@ async function runAgentSymposium(
         content: content.trim() || fallbackContent,
         agentId: participant.id,
         agentName: seatName,
+        providerId: participant.providerId,
+        providerName: participant.providerName,
+        model: participant.model,
         timestamp: Date.now(),
       })
       if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, input.conversationId)
@@ -517,6 +550,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
   // ─── Conversation CRUD ──────────────────────────────────────────────────────
 
   ipcMain.handle(IPC.CONVERSATION_LIST, async (): Promise<Conversation[]> => {
+    if (services) scheduleLegacyTitleRefresh(services)
     return getStorage().conversations.listConversations()
   })
 
@@ -529,6 +563,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const workspace = data.workspaceId ? await getStorage().workspaces.get(data.workspaceId) : null
       const conversation = await getStorage().conversations.createConversation({
         title: data.title || 'New Conversation',
+        titleSource: data.title && data.title !== 'New Conversation' ? 'manual' : 'auto',
         agentId: data.agentId || '',
         mode: data.mode || 'normal',
         workspaceId: workspace?.id,
@@ -583,10 +618,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
     async (
       event,
       id: string,
-      data: Partial<Pick<Conversation, 'title' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>
+      data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium'>>
     ): Promise<void> => {
       const conversation = await getStorage().conversations.getConversation(id)
-      await getStorage().conversations.updateConversation(id, data)
+      await getStorage().conversations.updateConversation(id, {
+        ...data,
+        ...(data.title && !data.titleSource ? { titleSource: 'manual' } : {}),
+      })
 
       if (data.archived !== undefined) {
         void recordActivity({
@@ -697,6 +735,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           send({ type: 'done', content: '' })
           return
         }
+        const shouldGenerateTitle = conversation.messageCount === 0
 
         // 4. Save user message to storage immediately
         const userMessageId = uuidv4()
@@ -710,6 +749,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, { ...userChatMessage, images: persistableImages(referenceImages) })
+        await convStore.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+        win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 
         // 5. Create AgentRunner
         const workspaceAccess = await getConversationAccess(conversation)
@@ -1029,6 +1070,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
           agentName: effectiveAgentConfig.name,
+          providerId: effectiveAgentConfig.providerId,
+          providerName: getStorage().config.getProvider(effectiveAgentConfig.providerId)?.name || effectiveAgentConfig.providerId,
+          model: effectiveAgentConfig.model,
           usage: assistantUsage,
           timestamp: Date.now(),
         }
@@ -1048,6 +1092,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           await convStore.addMessage(conversationId, toolMessage)
         }
+        const latestConversation = await convStore.getConversation(conversationId)
+        if (latestConversation?.executionStatus !== 'cancelled') {
+          await convStore.updateConversation(conversationId, {
+            executionStatus: runError ? 'failed' : 'completed',
+            executionUpdatedAt: Date.now(),
+          })
+        }
         win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         void recordActivity({
           category: 'agent',
@@ -1057,7 +1108,27 @@ export function registerConversationHandlers(services?: ChatServices): void {
           conversationId,
           workspaceId: conversation.workspaceId,
         }, win)
+        if (shouldGenerateTitle) {
+          void generateConversationTitle({
+            conversationId,
+            firstMessage: message,
+            provider,
+            model: effectiveAgentConfig.model,
+            notify: (id) => {
+              if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, id)
+            },
+          })
+        }
       } catch (err: any) {
+        try {
+          await getStorage().conversations.updateConversation(conversationId, {
+            executionStatus: 'failed',
+            executionUpdatedAt: Date.now(),
+          })
+          if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
+        } catch {
+          // The conversation may not exist when validation failed before loading it.
+        }
         void recordActivity({
           category: 'agent',
           action: 'agent.failed',
@@ -1078,13 +1149,20 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   // ─── Chat: abort ────────────────────────────────────────────────────────────
 
-  ipcMain.on(IPC.CHAT_ABORT, (_event, conversationId?: string) => {
+  ipcMain.on(IPC.CHAT_ABORT, (event, conversationId?: string) => {
     if (conversationId) {
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
       activeBackgroundGoalPlanners.get(conversationId)?.abort()
       activeSymposiumAborters.get(conversationId)?.()
       activeTaskRunners.delete(conversationId)
+      void getStorage().conversations.updateConversation(conversationId, {
+        executionStatus: 'cancelled',
+        executionUpdatedAt: Date.now(),
+      }).then(() => {
+        const win = BrowserWindow.fromWebContents(event.sender)
+        if (win && !win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
+      }).catch(() => undefined)
     }
   })
 

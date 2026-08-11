@@ -9,9 +9,9 @@ interface RemoteToolPolicyContext {
 }
 
 function buildOperationSummary(request: ToolApprovalRequest): { title: string; detail: string } {
-  if (request.toolCall.name === 'write_file') {
+  if (request.toolCall.name === 'write_file' || request.toolCall.name === 'edit_file') {
     const path = String(request.toolCall.arguments.path || '(missing path)')
-    const content = String(request.toolCall.arguments.content || '')
+    const content = String(request.toolCall.arguments.newContent || request.toolCall.arguments.content || '')
     const preview = content.replace(/\s+/g, ' ').slice(0, 180)
     return {
       title: 'QQ remote file write request',
@@ -48,7 +48,7 @@ async function showLocalApproval(title: string, detail: string): Promise<boolean
  */
 export function createRemoteToolApproval(context: RemoteToolPolicyContext): (request: ToolApprovalRequest) => Promise<ToolApprovalDecision> {
   return async (request) => {
-    if (request.toolCall.name !== 'write_file' && request.toolCall.name !== 'execute_command') {
+    if (request.toolCall.name !== 'write_file' && request.toolCall.name !== 'edit_file' && request.toolCall.name !== 'execute_command') {
       return { approved: true }
     }
 

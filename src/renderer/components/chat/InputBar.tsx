@@ -29,7 +29,8 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, isStreaming, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage, setError } = useChatStore()
+  const { conversations, createConversation, currentConversationId, streamingByConversation, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage, setError } = useChatStore()
+  const isStreaming = Boolean(currentConversationId && streamingByConversation[currentConversationId]?.isStreaming)
   const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore()
   const { agents } = useAgentStore()
   const isTaskRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))

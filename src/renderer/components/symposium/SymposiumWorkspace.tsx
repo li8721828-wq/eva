@@ -98,9 +98,9 @@ export function SymposiumWorkspace() {
     setSelectedTools((current) => {
       if (current.includes(toolId)) {
         const next = current.filter((id) => id !== toolId)
-        return toolId === 'read_file' ? next.filter((id) => id !== 'write_file') : next
+        return toolId === 'read_file' ? next.filter((id) => id !== 'write_file' && id !== 'edit_file') : next
       }
-      return toolId === 'write_file' && !current.includes('read_file')
+      return (toolId === 'write_file' || toolId === 'edit_file') && !current.includes('read_file')
         ? [...current, 'read_file', toolId]
         : [...current, toolId]
     })
@@ -111,13 +111,13 @@ export function SymposiumWorkspace() {
       const currentTools = current[participantId] ?? selectedTools
       const next = currentTools.includes(toolId)
         ? currentTools.filter((id) => id !== toolId)
-        : toolId === 'write_file' && !currentTools.includes('read_file')
+        : (toolId === 'write_file' || toolId === 'edit_file') && !currentTools.includes('read_file')
           ? [...currentTools, 'read_file', toolId]
           : [...currentTools, toolId]
       return {
         ...current,
         [participantId]: toolId === 'read_file' && currentTools.includes(toolId)
-          ? next.filter((id) => id !== 'write_file')
+          ? next.filter((id) => id !== 'write_file' && id !== 'edit_file')
           : next,
       }
     })
@@ -133,7 +133,7 @@ export function SymposiumWorkspace() {
       setError('Choose at least two models.')
       return
     }
-    if (participants.some((participant) => participant.tools?.includes('write_file')) && !workspace?.path) {
+    if (participants.some((participant) => participant.tools?.includes('write_file') || participant.tools?.includes('edit_file')) && !workspace?.path) {
       setError('Choose a project workspace before granting file write access.')
       return
     }

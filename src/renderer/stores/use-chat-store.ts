@@ -3,17 +3,25 @@ import type { AgentSymposium, ChatImageAttachment, ChatMessage, Conversation, Co
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
 
+export interface ConversationStreamState {
+  isStreaming: boolean
+  content: string
+  toolCalls: ToolCall[]
+  status: string
+  startedAt: number | null
+  lastActivityAt: number | null
+}
+
+function createIdleStream(): ConversationStreamState {
+  return { isStreaming: false, content: '', toolCalls: [], status: '', startedAt: null, lastActivityAt: null }
+}
+
 interface ChatState {
   conversations: Conversation[]
   currentConversationId: string | null
   messages: ChatMessage[]
   isConversationLoading: boolean
-  isStreaming: boolean
-  streamingContent: string
-  streamingToolCalls: ToolCall[]
-  streamingStatus: string
-  streamingStartedAt: number | null
-  streamingLastActivityAt: number | null
+  streamingByConversation: Record<string, ConversationStreamState>
   inputText: string
   referenceImages: ChatImageAttachment[]
   error: string | null
@@ -23,9 +31,6 @@ interface ChatState {
   setCurrentConversationId: (id: string | null) => void
   setMessages: (messages: ChatMessage[]) => void
   addMessage: (message: ChatMessage) => void
-  setIsStreaming: (streaming: boolean) => void
-  setStreamingContent: (content: string) => void
-  appendStreamingContent: (delta: string) => void
   setInputText: (text: string) => void
   setReferenceImages: (images: ChatImageAttachment[]) => void
   setError: (error: string | null) => void
@@ -53,9 +58,8 @@ function generateId(): string {
 }
 
 function createConversationTitle(message: string): string {
-  const normalized = message.replace(/\s+/g, ' ').trim()
-  const maxLength = 36
-  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized
+  void message
+  return '新建任务对话'
 }
 
 function parentDirectory(filePath: string): string {
@@ -67,12 +71,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   currentConversationId: null,
   messages: [],
   isConversationLoading: false,
-  isStreaming: false,
-  streamingContent: '',
-  streamingToolCalls: [],
-  streamingStatus: '',
-  streamingStartedAt: null,
-  streamingLastActivityAt: null,
+  streamingByConversation: {},
   inputText: '',
   referenceImages: [],
   error: null,
@@ -81,10 +80,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setCurrentConversationId: (id) => set({ currentConversationId: id }),
   setMessages: (messages) => set({ messages }),
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
-  setIsStreaming: (streaming) => set({ isStreaming: streaming }),
-  setStreamingContent: (content) => set({ streamingContent: content }),
-  appendStreamingContent: (delta) =>
-    set((s) => ({ streamingContent: s.streamingContent + delta })),
   setInputText: (text) => set({ inputText: text }),
   setReferenceImages: (images) => set({ referenceImages: images }),
   setError: (error) => set({ error }),
@@ -119,11 +114,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         currentConversationId: conv.id,
         messages: [],
         isConversationLoading: false,
-        streamingContent: '',
-        streamingToolCalls: [],
-        streamingStatus: '',
-        streamingStartedAt: null,
-        streamingLastActivityAt: null,
         error: null,
       }))
       return conv
@@ -135,7 +125,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   selectConversation: async (id) => {
     try {
-      set({ currentConversationId: id, messages: [], isConversationLoading: true, isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null, error: null })
+      set({ currentConversationId: id, messages: [], isConversationLoading: true, error: null })
       const result = await window.eva.conversation.load(id)
       if (get().currentConversationId === id) {
         set({ messages: result.messages, isConversationLoading: false })
@@ -165,15 +155,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await window.eva.conversation.delete(id)
       set((s) => {
         const conversations = s.conversations.filter((c) => c.id !== id)
-        const updates: Partial<ChatState> = { conversations }
+        const { [id]: _removed, ...streamingByConversation } = s.streamingByConversation
+        const updates: Partial<ChatState> = { conversations, streamingByConversation }
         if (s.currentConversationId === id) {
           updates.currentConversationId = conversations.find((conversation) => !conversation.archived)?.id || null
           updates.messages = []
-          updates.streamingContent = ''
-          updates.streamingToolCalls = []
-          updates.streamingStatus = ''
-          updates.streamingStartedAt = null
-          updates.streamingLastActivityAt = null
         }
         return updates
       })
@@ -203,12 +189,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (state.currentConversationId === id) {
           updates.currentConversationId = conversations.find((conversation) => !conversation.archived)?.id || null
           updates.messages = []
-          updates.streamingContent = ''
-          updates.streamingToolCalls = []
-          updates.streamingStatus = ''
-          updates.streamingStartedAt = null
-          updates.streamingLastActivityAt = null
         }
+        const { [id]: _removed, ...streamingByConversation } = state.streamingByConversation
+        updates.streamingByConversation = streamingByConversation
         return updates
       })
 
@@ -298,8 +281,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (agentId) => {
-    const { inputText, referenceImages, currentConversationId, isStreaming } = get()
-    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming) return
+    const { inputText, referenceImages, currentConversationId } = get()
+    if ((!inputText.trim() && referenceImages.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
 
     const messageContent = inputText.trim() || 'Create an editable Blender model from the attached reference images.'
 
@@ -335,10 +318,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
     if (conversation?.title === 'New Conversation' && conversation.messageCount === 0) {
       try {
-        await window.eva.conversation.update(convId, { title: initialTitle })
+        await window.eva.conversation.update(convId, { title: initialTitle, titleSource: 'auto' })
         set((state) => ({
           conversations: state.conversations.map((item) =>
-            item.id === convId ? { ...item, title: initialTitle } : item
+            item.id === convId ? { ...item, title: initialTitle, titleSource: 'auto' } : item
           ),
         }))
       } catch (err) {
@@ -360,12 +343,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...s.messages, userMessage],
       inputText: '',
       referenceImages: [],
-      isStreaming: true,
-      streamingContent: '',
-      streamingToolCalls: [],
-      streamingStatus: 'Preparing the request...',
-      streamingStartedAt: Date.now(),
-      streamingLastActivityAt: Date.now(),
+      streamingByConversation: {
+        ...s.streamingByConversation,
+        [convId!]: { isStreaming: true, content: '', toolCalls: [], status: 'Preparing the request...', startedAt: Date.now(), lastActivityAt: Date.now() },
+      },
       error: null,
     }))
 
@@ -373,10 +354,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages)
     } catch (err) {
       console.error('Failed to send message:', err)
-      set({
-        isStreaming: false,
+      set((s) => ({
+        streamingByConversation: { ...s.streamingByConversation, [convId!]: createIdleStream() },
         error: 'Failed to send message. Please check your configuration.',
-      })
+      }))
     }
   },
 
@@ -385,45 +366,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (currentConversationId) {
       window.eva.chat.abort(currentConversationId)
     }
-    // Finalize current streaming content as a message
-    const { streamingContent, streamingToolCalls } = get()
-    if (streamingContent) {
-      const assistantMessage: ChatMessage = {
-        id: generateId(),
-        conversationId: get().currentConversationId || '',
-        role: 'assistant',
-        content: streamingContent,
-        toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-        timestamp: Date.now(),
-      }
-      set((s) => ({
-        messages: [...s.messages, assistantMessage],
-        streamingContent: '',
-        streamingToolCalls: [],
-        streamingStatus: '',
-        streamingStartedAt: null,
-        streamingLastActivityAt: null,
-        isStreaming: false,
-      }))
-    } else {
-      set({ isStreaming: false, streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null })
-    }
+    if (currentConversationId) set((s) => ({
+      streamingByConversation: {
+        ...s.streamingByConversation,
+        [currentConversationId]: { ...(s.streamingByConversation[currentConversationId] || createIdleStream()), status: 'Stopping...', lastActivityAt: Date.now() },
+      },
+    }))
   },
 
   appendStreamEvent: (event) => {
-    set({ streamingLastActivityAt: Date.now() })
+    const conversationId = event.conversationId
+    if (!conversationId) return
     switch (event.type) {
       case 'thinking': {
-        set({ streamingStatus: event.content || 'Preparing the next step...' })
+        set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
         break
       }
 
       case 'text_delta': {
         if (event.content) {
-          set((s) => ({
-            streamingContent: s.streamingContent + event.content,
-            streamingStatus: 'Generating response...',
-          }))
+          set((s) => {
+            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content!, status: 'Generating response...', lastActivityAt: Date.now() } } }
+          })
         }
         break
       }
@@ -433,27 +398,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (event.toolCall) {
           set((s) => {
             const tc = event.toolCall!
-            const existing = s.streamingToolCalls.find((t) => t.id === tc.id)
+            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existing = stream.toolCalls.find((t) => t.id === tc.id)
             if (existing) {
               return {
-                streamingToolCalls: s.streamingToolCalls.map((t) =>
-                  t.id === tc.id ? { ...t, ...tc } : t
-                ),
-                streamingStatus: `Running ${tc.name || 'tool'}...`,
+                streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, toolCalls: stream.toolCalls.map((t) => t.id === tc.id ? { ...t, ...tc } : t), status: `Running ${tc.name || 'tool'}...`, lastActivityAt: Date.now() } },
               }
             }
             return {
-              streamingToolCalls: [
-                ...s.streamingToolCalls,
-                {
+              streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, toolCalls: [...stream.toolCalls, {
                   id: tc.id || generateId(),
                   name: tc.name || 'unknown',
                   arguments: (tc.arguments as Record<string, unknown>) || {},
                   result: tc.result,
                   isError: tc.isError,
-                },
-              ],
-              streamingStatus: `Running ${tc.name || 'tool'}...`,
+                }], status: `Running ${tc.name || 'tool'}...`, lastActivityAt: Date.now() } },
             }
           })
         }
@@ -462,45 +421,37 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       case 'tool_result': {
         if (event.toolCallId) {
-          set((s) => ({
-            streamingToolCalls: s.streamingToolCalls.map((tc) =>
-              tc.id === event.toolCallId
-                ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError) }
-                : tc
-            ),
-            streamingStatus: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...',
-          }))
+          set((s) => {
+            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError) } : tc), status: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...', lastActivityAt: Date.now() } } }
+          })
         }
         break
       }
 
       case 'done': {
-        const { streamingContent, streamingToolCalls, messages, currentConversationId } = get()
+        const { streamingByConversation } = get()
+        const stream = streamingByConversation[conversationId] || createIdleStream()
 
         // For 'done' event, content may carry the final full content
-        const finalContent = event.content || streamingContent
+        const finalContent = event.content || stream.content
 
-        if (finalContent || streamingToolCalls.length > 0) {
+        if (finalContent || stream.toolCalls.length > 0) {
           const assistantMessage: ChatMessage = {
             id: event.messageId || generateId(),
-            conversationId: currentConversationId || '',
+            conversationId,
             role: 'assistant',
             content: finalContent,
-            toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+            toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,
             usage: event.usage,
             timestamp: Date.now(),
           }
-          set({
-            messages: [...messages, assistantMessage],
-            streamingContent: '',
-            streamingToolCalls: [],
-            streamingStatus: '',
-            streamingStartedAt: null,
-            streamingLastActivityAt: null,
-            isStreaming: false,
-          })
+          set((s) => ({
+            messages: s.currentConversationId === conversationId ? [...s.messages, assistantMessage] : s.messages,
+            streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
+          }))
         } else {
-          set({ isStreaming: false, streamingContent: '', streamingToolCalls: [], streamingStatus: '', streamingStartedAt: null, streamingLastActivityAt: null })
+          set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() } }))
         }
 
         // Refresh conversation list
@@ -512,20 +463,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const errorMsg = event.error || 'An error occurred'
         const errorMessage: ChatMessage = {
           id: generateId(),
-          conversationId: get().currentConversationId || '',
+          conversationId,
           role: 'assistant',
           content: `⚠️ Error: ${errorMsg}`,
           timestamp: Date.now(),
         }
         set((s) => ({
-          messages: [...s.messages, errorMessage],
-          isStreaming: false,
-          streamingContent: '',
-          streamingToolCalls: [],
-          streamingStatus: '',
-          streamingStartedAt: null,
-          streamingLastActivityAt: null,
-          error: errorMsg,
+          messages: s.currentConversationId === conversationId ? [...s.messages, errorMessage] : s.messages,
+          streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
+          error: s.currentConversationId === conversationId ? errorMsg : s.error,
         }))
         break
       }
@@ -533,15 +479,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearCurrentChat: () => {
-    set({
-      messages: [],
-      streamingContent: '',
-      streamingToolCalls: [],
-      streamingStatus: '',
-      streamingStartedAt: null,
-      streamingLastActivityAt: null,
-      isStreaming: false,
-      error: null,
+    set((s) => {
+      const conversationId = s.currentConversationId
+      if (!conversationId) return { messages: [], error: null }
+      return {
+        messages: [],
+        streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
+        error: null,
+      }
     })
   },
 }))

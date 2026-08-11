@@ -32,7 +32,6 @@ export function useStreaming(): void {
       pendingText = ''
 
       if (!conversationId || !content) return
-      if (conversationId !== useChatStore.getState().currentConversationId) return
 
       useChatStore.getState().appendStreamEvent({
         type: 'text_delta',
@@ -49,11 +48,8 @@ export function useStreaming(): void {
     // Listen for chat stream events
     const cleanupChat = window.eva.chat.onStream((_event, data) => {
       const streamEvent = data as unknown as ChatStreamEvent
-      // The chat surface has one visible stream. Events for a background
-      // conversation are persisted by the main process and loaded on return.
-      if (streamEvent.conversationId !== useChatStore.getState().currentConversationId) return
-
       if (streamEvent.type === 'text_delta' && streamEvent.content) {
+        if (!streamEvent.conversationId) return
         if (pendingConversationId && pendingConversationId !== streamEvent.conversationId) {
           flushPendingText()
         }

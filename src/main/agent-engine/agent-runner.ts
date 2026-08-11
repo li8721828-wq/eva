@@ -22,7 +22,7 @@ export interface AgentRunnerConfig {
   fileService: FileService
   terminalService: TerminalService
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
-  /** Optional exact paths an otherwise permitted write_file call may modify. */
+  /** Optional exact paths an otherwise permitted file-editing call may modify. */
   allowedWritePaths?: string[]
   /** Internal orchestration capability available in Auto conversations. */
   delegateToTeam?: (goal: string) => Promise<string>
@@ -265,7 +265,7 @@ export class AgentRunner {
           toolResults.set(toolCall.id, result)
 
           const targetPath = this.resolveWorkspacePath(toolCall.arguments.path, workspacePath)
-          if (!result.isError && toolCall.name === 'write_file' && targetPath) pendingWriteVerifications.add(targetPath)
+          if (!result.isError && (toolCall.name === 'write_file' || toolCall.name === 'edit_file') && targetPath) pendingWriteVerifications.add(targetPath)
           if (!result.isError && toolCall.name === 'read_file' && targetPath) pendingWriteVerifications.delete(targetPath)
 
           // Emit tool_result event
@@ -565,7 +565,7 @@ export class AgentRunner {
       }
     }
 
-    if (toolCall.name === 'write_file' && this.config.allowedWritePaths?.length) {
+    if ((toolCall.name === 'write_file' || toolCall.name === 'edit_file') && this.config.allowedWritePaths?.length) {
       const requestedPath = typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : ''
       const resolvedRequested = requestedPath
         ? path.resolve(path.isAbsolute(requestedPath) ? requestedPath : toolContext.workspacePath, requestedPath)

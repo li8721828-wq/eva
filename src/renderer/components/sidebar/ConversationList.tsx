@@ -4,7 +4,7 @@ import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
-import { AlertTriangle, Archive, ArchiveRestore, MessageSquare, Plus, Trash2, UsersRound } from 'lucide-react'
+import { AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageSquare, Plus, Trash2, UsersRound, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
@@ -25,6 +25,22 @@ interface ConversationRowProps {
 }
 
 function ConversationRow({ conversation, isSelected, archived = false, onSelect, onArchive, onRestore, onDelete }: ConversationRowProps) {
+  const executionIndicator = conversation.executionStatus === 'running'
+    ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-600" aria-label="Running" />
+    : conversation.executionStatus === 'completed'
+      ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-label="Completed" />
+      : conversation.executionStatus === 'failed' || conversation.executionStatus === 'cancelled'
+        ? <XCircle className="h-3.5 w-3.5 shrink-0 text-red-500" aria-label={conversation.executionStatus === 'failed' ? 'Failed' : 'Stopped'} />
+        : null
+  const executionLabel = conversation.executionStatus === 'running'
+    ? 'Running'
+    : conversation.executionStatus === 'completed'
+      ? 'Completed'
+      : conversation.executionStatus === 'failed'
+        ? 'Failed'
+        : conversation.executionStatus === 'cancelled'
+          ? 'Stopped'
+          : undefined
   return (
     <div
       className={cn(
@@ -44,6 +60,7 @@ function ConversationRow({ conversation, isSelected, archived = false, onSelect,
             ? <UsersRound className="h-3.5 w-3.5 shrink-0 text-violet-500" />
             : <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
           <span className="min-w-0 flex-1 truncate">{conversation.title || 'Untitled'}</span>
+          {executionIndicator && <span title={executionLabel}>{executionIndicator}</span>}
         </button>
       )}
       <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">

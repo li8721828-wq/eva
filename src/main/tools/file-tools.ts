@@ -2,7 +2,7 @@ import path from 'path'
 import type { ToolExecutor, ToolContext } from './index'
 
 export function createFileTools(): ToolExecutor[] {
-  return [readFileTool, writeFileTool, listDirectoryTool, searchFilesTool, fileInfoTool]
+  return [readFileTool, editFileTool, writeFileTool, listDirectoryTool, searchFilesTool, fileInfoTool]
 }
 
 const readFileTool: ToolExecutor = {
@@ -59,6 +59,44 @@ const writeFileTool: ToolExecutor = {
 
     await context.fileService.writeFile(filePath, content, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
     return `Successfully wrote to ${filePath}`
+  },
+}
+
+const editFileTool: ToolExecutor = {
+  definition: {
+    name: 'edit_file',
+    description: 'Replace one exact, unique text fragment in an existing authorized file. Read the file first and provide oldContent exactly as it appears. The edit fails rather than guessing when the fragment is missing or occurs more than once.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'File path (relative to workspace or absolute)' },
+        oldContent: { type: 'string', description: 'Exact existing text to replace. It must occur exactly once.' },
+        newContent: { type: 'string', description: 'Replacement text. An empty string deletes the exact fragment.' },
+      },
+      required: ['path', 'oldContent', 'newContent'],
+    },
+  },
+  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+    const filePath = params.path as string
+    const oldContent = params.oldContent as string
+    const newContent = params.newContent as string
+    if (!oldContent) throw new Error('edit_file requires a non-empty oldContent value.')
+
+    const content = await context.fileService.readFile(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    const firstMatch = content.indexOf(oldContent)
+    if (firstMatch < 0) throw new Error(`The requested text was not found in ${filePath}. Read the file again and use an exact fragment.`)
+    if (content.indexOf(oldContent, firstMatch + oldContent.length) >= 0) {
+      throw new Error(`The requested text occurs more than once in ${filePath}. Include more surrounding context so the edit is unambiguous.`)
+    }
+
+    await context.fileService.writeFile(
+      filePath,
+      `${content.slice(0, firstMatch)}${newContent}${content.slice(firstMatch + oldContent.length)}`,
+      context.workspacePath,
+      context.fileAccessGrants,
+      context.fullFilesystemAccess,
+    )
+    return `Successfully edited ${filePath}`
   },
 }
 
