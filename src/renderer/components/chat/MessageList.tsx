@@ -95,6 +95,7 @@ export function MessageList({ className }: MessageListProps) {
   const previousMessageCountRef = useRef(messages.length)
   const pendingRestoreRef = useRef<string | null>(currentConversationId)
   const scrollPersistTimerRef = useRef<number | null>(null)
+  const scrollFrameRef = useRef<number | null>(null)
   const followStreamRef = useRef(true)
   const lastScrollTopRef = useRef(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -161,7 +162,7 @@ export function MessageList({ className }: MessageListProps) {
     }
   }, [])
 
-  const handleScroll = () => {
+  const processScroll = () => {
     const scrollArea = scrollAreaRef.current
     if (!scrollArea) return
 
@@ -189,6 +190,18 @@ export function MessageList({ className }: MessageListProps) {
     updateScrollAffordances(scrollArea, true)
   }
 
+  const handleScroll = () => {
+    // Native wheel and touchpad scrolling can produce far more events than the
+    // browser can paint. Applying state for each event re-renders Markdown
+    // while it is moving, which made long answers appear to vibrate. Keep only
+    // the latest position in each paint frame instead.
+    if (scrollFrameRef.current !== null) return
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null
+      processScroll()
+    })
+  }
+
   // Keep older history out of the DOM until requested. The current page is
   // virtualized again below, so a large Markdown response does not make all
   // of its neighbors expensive to render.
@@ -202,6 +215,7 @@ export function MessageList({ className }: MessageListProps) {
 
   useEffect(() => () => {
     if (scrollIndicatorTimerRef.current !== null) window.clearTimeout(scrollIndicatorTimerRef.current)
+    if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
   }, [])
 
   // Tool-role messages are retained for a valid model tool-call history, but

@@ -1,6 +1,6 @@
 {
   "name": "eva",
-  "version": "0.1.67",
+  "version": "0.1.71",
   "description": "Eva - AI Coding Agent Desktop Client",
   "main": "./out/main/index.js",
   "scripts": {

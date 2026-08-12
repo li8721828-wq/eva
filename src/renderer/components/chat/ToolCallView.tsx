@@ -121,10 +121,10 @@ export function ToolCallGroupView({ toolCalls, className }: ToolCallGroupViewPro
     : detail
 
   return (
-    <div className={cn('inline-flex max-w-full flex-col', className)}>
+    <div className={cn('tool-call-group inline-flex max-w-full flex-col', className)}>
       <button
         onClick={() => setExpanded((value) => !value)}
-        className="flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-zinc-50"
+        className="tool-call-summary flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors"
         aria-expanded={expanded}
       >
         <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform', expanded && 'rotate-90')} />
@@ -140,7 +140,7 @@ export function ToolCallGroupView({ toolCalls, className }: ToolCallGroupViewPro
       </button>
 
       {expanded && (
-        <div className="mt-1.5 ml-4 space-y-1 border-l border-zinc-200 pl-3 pb-1">
+        <div className="tool-call-group__details mt-1.5 ml-4 space-y-1 pl-3 pb-1">
           {groupedCalls.map(({ toolCall, count }) => (
             <div key={toolCall.id} className="flex min-w-0 items-start gap-2">
               <ToolCallView toolCall={toolCall} className="min-w-0 flex-1" />
@@ -160,10 +160,10 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
   const searchSources = toolCall.name === 'web_search' ? parseSearchSources(toolCall.result) : []
 
   return (
-    <div className={cn('max-w-full', className)}>
+    <div className={cn('tool-call-item max-w-full', className)}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-zinc-50"
+        className="tool-call-item__trigger flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors"
       >
         <ChevronRight
           className={cn('h-3.5 w-3.5 text-zinc-400 transition-transform', expanded && 'rotate-90')}
@@ -192,7 +192,7 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
       </button>
 
       {expanded && (
-        <div className="mt-1.5 ml-4 max-w-[42rem] space-y-2 border-l border-zinc-200 pl-3 pb-1">
+        <div className="tool-call-item__details mt-1.5 ml-4 max-w-[42rem] space-y-2 pl-3 pb-1">
           {toolCall.name === 'web_search' && searchSources.length > 0 ? (
             <>
               <div className="tool-call-detail__query">

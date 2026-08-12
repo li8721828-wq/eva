@@ -59,7 +59,7 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
     : 0
 
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-zinc-200/70 pt-2.5 text-[11px] font-medium tabular-nums text-zinc-400">
+    <div className="chat-usage-summary mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-2.5 text-[11px] font-medium tabular-nums text-zinc-400">
       <span>
         {usage.modelCalls && usage.modelCalls > 1 ? `${usage.modelCalls} 次调用 · ` : ''}
         本次 {formatTokenCount(totalTokens)} tokens
@@ -80,7 +80,7 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
 
 export function MarkdownMessageContent({ content, className }: { content: string; className?: string }) {
   return (
-    <div className={cn('chat-message-markdown prose prose-sm max-w-none text-zinc-900 prose-pre:bg-white prose-pre:border prose-pre:border-zinc-200 prose-code:text-zinc-800 prose-headings:text-zinc-900 prose-a:text-violet-600', className)}>
+    <div className={cn('chat-message-markdown prose prose-sm max-w-none', className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
@@ -102,7 +102,7 @@ export function MarkdownMessageContent({ content, className }: { content: string
   )
 }
 
-export function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
+export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
@@ -181,7 +181,7 @@ export function MessageBubble({ message, className, isStreaming = false, convers
       <div
         aria-busy={isStreaming || undefined}
         className={cn(
-          'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium',
+          'chat-message-avatar flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium',
           isTool
             ? 'bg-zinc-100 text-zinc-500'
             : 'bg-violet-100 text-violet-600'
@@ -194,7 +194,7 @@ export function MessageBubble({ message, className, isStreaming = false, convers
       <div className="min-w-0 max-w-[52rem]">
         <div className="chat-message-surface chat-assistant-message px-5 py-4">
           {message.agentName && (
-            <div className="mb-2.5 flex items-center gap-2">
+            <div className="chat-agent-label mb-2.5 flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
               <Badge variant="primary" className="px-1.5 py-0 text-[11px] leading-5">
                 {message.agentName}
@@ -206,17 +206,17 @@ export function MessageBubble({ message, className, isStreaming = false, convers
         </div>
 
         {!isStreaming && !isTool && (
-          <div className="mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            <button type="button" onClick={() => void handleCopyAssistant()} disabled={busy} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-50 hover:text-zinc-700" title={actionCopy.copy} aria-label={actionCopy.copy}>
+          <div className="message-actions mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <button type="button" onClick={() => void handleCopyAssistant()} disabled={busy} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.copy} aria-label={actionCopy.copy}>
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? actionCopy.copied : actionCopy.copy}
             </button>
-            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} disabled={busy} className={cn('inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-zinc-50', message.favorited ? 'text-violet-600' : 'text-zinc-400 hover:text-zinc-700')} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
+            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} disabled={busy} className={cn('message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors', message.favorited ? 'text-violet-600' : 'text-zinc-400')} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
               <Heart className={cn('h-3.5 w-3.5', message.favorited && 'fill-current')} />{message.favorited ? actionCopy.unfavorite : actionCopy.favorite}
             </button>
-            <button type="button" onClick={() => void handleRegenerate()} disabled={busy} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-50 hover:text-zinc-700" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
+            <button type="button" onClick={() => void handleRegenerate()} disabled={busy} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
               <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />{actionCopy.regenerate}
             </button>
-            <button type="button" onClick={() => void handleDelete()} disabled={busy} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-600" title={actionCopy.remove} aria-label={actionCopy.remove}>
+            <button type="button" onClick={() => void handleDelete()} disabled={busy} className="message-action message-action--danger inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.remove} aria-label={actionCopy.remove}>
               <Trash2 className="h-3.5 w-3.5" />{actionCopy.remove}
             </button>
           </div>
@@ -227,4 +227,4 @@ export function MessageBubble({ message, className, isStreaming = false, convers
       </div>
     </article>
   )
-}
+})
