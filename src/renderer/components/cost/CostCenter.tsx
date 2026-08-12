@@ -95,7 +95,11 @@ function TrendChart({ records, granularity }: { records: CostUsageRecord[]; gran
   )
 }
 
-export function CostCenter() {
+interface CostCenterProps {
+  embedded?: boolean
+}
+
+export function CostCenter({ embedded = false }: CostCenterProps) {
   const setCurrentView = useAppStore((state) => state.setCurrentView)
   const language = useAppStore((state) => state.language)
   const copy = uiCopy[language].cost
@@ -178,13 +182,21 @@ export function CostCenter() {
   }
 
   return (
-    <div className="cost-center flex h-full min-h-0 flex-col overflow-auto">
-      <header className="cost-header flex flex-wrap items-start justify-between gap-4 border-b px-7 py-5">
-        <div><div className="flex items-center gap-2"><Coins className="h-5 w-5 text-violet-600" /><h1 className="text-lg font-semibold text-zinc-900">{copy.title}</h1></div><p className="mt-1 text-sm text-zinc-500">{copy.subtitle}</p></div>
-        <div className="flex gap-2"><Button variant="ghost" size="sm" onClick={() => setCurrentView('chat')}><ArrowLeft className="mr-1.5 h-3.5 w-3.5" />{copy.back}</Button><Button variant="outline" size="sm" onClick={() => void loadReport()} disabled={loading}><RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', loading && 'animate-spin')} />{copy.refresh}</Button></div>
-      </header>
+    <div className={cn('cost-center flex h-full min-h-0 flex-col overflow-auto', embedded && 'cost-center--embedded')}>
+      {!embedded && (
+        <header className="cost-header flex flex-wrap items-start justify-between gap-4 border-b px-7 py-5">
+          <div><div className="flex items-center gap-2"><Coins className="h-5 w-5 text-violet-600" /><h1 className="text-lg font-semibold text-zinc-900">{copy.title}</h1></div><p className="mt-1 text-sm text-zinc-500">{copy.subtitle}</p></div>
+          <div className="flex gap-2"><Button variant="ghost" size="sm" onClick={() => setCurrentView('chat')}><ArrowLeft className="mr-1.5 h-3.5 w-3.5" />{copy.back}</Button><Button variant="outline" size="sm" onClick={() => void loadReport()} disabled={loading}><RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', loading && 'animate-spin')} />{copy.refresh}</Button></div>
+        </header>
+      )}
 
       <main className="cost-content mx-auto flex w-full max-w-7xl flex-col gap-6 px-7 py-6">
+        {embedded && (
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div><h2 className="text-base font-semibold text-zinc-900">{copy.title}</h2><p className="mt-1 text-sm text-zinc-500">{copy.subtitle}</p></div>
+            <Button variant="outline" size="sm" onClick={() => void loadReport()} disabled={loading}><RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', loading && 'animate-spin')} />{copy.refresh}</Button>
+          </div>
+        )}
         <div className="cost-filters flex flex-wrap items-end gap-3 pb-5">
           <div className="w-40"><label className="mb-1.5 block text-xs font-medium text-zinc-600">{copy.timePeriod}</label><Select value={range} onChange={(event) => setRange(event.target.value as Range)} options={rangeOptions} /></div>
           <div className="w-36"><label className="mb-1.5 block text-xs font-medium text-zinc-600">{copy.aggregation}</label><Select value={granularity} onChange={(event) => setGranularity(event.target.value as Granularity)} options={granularityOptions} /></div>

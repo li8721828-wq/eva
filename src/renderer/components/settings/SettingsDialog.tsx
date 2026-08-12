@@ -38,6 +38,7 @@ import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
+import { CostCenter } from '@/components/cost/CostCenter'
 import { uiCopy } from '@/lib/ui-copy'
 
 type ProviderType = ProviderConfigEntry['type']
@@ -79,7 +80,6 @@ export function SettingsDialog() {
     setActiveModel,
     language,
     setLanguage,
-    setCurrentView,
   } = useAppStore()
 
   const [providerType, setProviderType] = useState<ProviderType>('openai')
@@ -767,13 +767,7 @@ export function SettingsDialog() {
         </TabsContent>
 
         <TabsContent value="cost" className="settings-dialog__content">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 py-4">
-            <div className="settings-dialog__card space-y-2">
-              <h2 className="text-base font-semibold text-zinc-900">{copy.cost}</h2>
-              <p className="text-sm leading-6 text-zinc-500">{copy.costDescription}</p>
-              <Button onClick={() => { setSettingsOpen(false); setCurrentView('cost') }} className="mt-2">{copy.openCost}</Button>
-            </div>
-          </div>
+          <CostCenter embedded />
         </TabsContent>
 
         <TabsContent value="automation" className="settings-dialog__content">

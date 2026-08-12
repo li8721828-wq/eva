@@ -3,7 +3,7 @@ import type { ChatMessage, ChatUsage } from '../../../shared/types'
 import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MessageBubble } from './MessageBubble'
-import { ToolCallView } from './ToolCallView'
+import { ToolCallGroupView } from './ToolCallView'
 import { WelcomeScreen } from './WelcomeScreen'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -389,7 +389,7 @@ export function MessageList({ className }: MessageListProps) {
       key={currentConversationId ?? 'no-conversation'}
       ref={scrollAreaRef}
       onScroll={handleScroll}
-      className={cn('flex-1', className)}
+      className={cn('eva-message-scroll flex-1', className)}
     >
       <div
         className={cn(
@@ -444,9 +444,7 @@ export function MessageList({ className }: MessageListProps) {
         {/* Streaming tool calls */}
         {isStreaming && streamingToolCalls.length > 0 && (
           <div className="px-0 py-2">
-            {streamingToolCalls.map((tc) => (
-              <ToolCallView key={tc.id} toolCall={tc} />
-            ))}
+            <ToolCallGroupView toolCalls={streamingToolCalls} />
           </div>
         )}
 

@@ -10,6 +10,8 @@ import { createDesktopMcpTools } from './desktop-mcp-tools'
 import { createDesktopSessionTools } from './desktop-session-tools'
 import { createKeyboardTools } from './keyboard-tools'
 import { createProjectIndexTools } from './project-index-tools'
+import { createBrowserControlTools } from './browser-control-tools'
+import { createFormFillWorkflowTools } from './form-fill-workflow'
 import type { ProjectIndexService } from '../services/project-index-service'
 
 export interface ToolContext {
@@ -115,6 +117,8 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService): T
   for (const tool of createDesktopMcpTools()) registry.register(tool)
   for (const tool of createDesktopSessionTools()) registry.register(tool)
   for (const tool of createKeyboardTools()) registry.register(tool)
+  for (const tool of createBrowserControlTools()) registry.register(tool)
+  for (const tool of createFormFillWorkflowTools()) registry.register(tool)
   if (projectIndexService) {
     for (const tool of createProjectIndexTools(projectIndexService)) registry.register(tool)
   }

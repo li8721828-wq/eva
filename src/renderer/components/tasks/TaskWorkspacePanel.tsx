@@ -9,6 +9,9 @@ import {
   ListTodo,
   Loader2,
   PanelTopOpen,
+  Play,
+  Square,
+  X,
 } from 'lucide-react'
 import type { TaskArtifactItem, TaskRunSnapshot, TaskRunStatus, TaskStatus } from '../../../shared/types/task'
 import { getModelInputBudgetTokens } from '../../../shared/constants'
@@ -35,9 +38,10 @@ function formatTokens(value: number): string {
   return value.toLocaleString()
 }
 
-function StepStatusIcon({ status }: { status: TaskStatus | TaskRunStatus }) {
+function StepStatusIcon({ status, paused = false }: { status: TaskStatus | TaskRunStatus; paused?: boolean }) {
   if (status === 'completed') return <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
   if (status === 'failed' || status === 'cancelled' || status === 'interrupted') return <CircleX className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+  if (paused && (status === 'in_progress' || status === 'running')) return <Square className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
   if (status === 'in_progress' || status === 'running') return <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-violet-500" />
   return <Circle className="mt-0.5 h-4 w-4 shrink-0 text-zinc-300" />
 }
@@ -65,11 +69,11 @@ function statusLabel(status?: TaskRunStatus) {
   return {
     queued: 'Queued',
     running: 'In progress',
-    paused: 'Paused',
+    paused: 'Stopped',
     completed: 'Complete',
     failed: 'Needs attention',
     cancelled: 'Stopped',
-    interrupted: 'Interrupted',
+    interrupted: 'Stopped',
   }[status]
 }
 
@@ -85,11 +89,17 @@ export function TaskWorkspacePanel() {
   const { workspaces, activeWorkspaceId } = useWorkspaceStore()
   const liveGoalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] || EMPTY_GOAL_TASK : EMPTY_GOAL_TASK)
   const liveExpertTask = useTaskStore((state) => currentConversationId ? state.expertTasks[currentConversationId] || EMPTY_EXPERT_TASK : EMPTY_EXPERT_TASK)
+  const abortGoal = useTaskStore((state) => state.abortGoal)
+  const abortExpertTask = useTaskStore((state) => state.abortExpertTask)
+  const pauseGoal = useTaskStore((state) => state.pauseGoal)
+  const resumeGoal = useTaskStore((state) => state.resumeGoal)
   const [snapshot, setSnapshot] = useState<TaskRunSnapshot | null>(null)
   const [artifacts, setArtifacts] = useState<TaskArtifactItem[]>([])
   const [loading, setLoading] = useState(false)
   const [taskView, setTaskView] = useState<'plan' | 'usage'>('plan')
   const [showAllSteps, setShowAllSteps] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
 
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
   const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
@@ -107,10 +117,14 @@ export function TaskWorkspacePanel() {
   const visibleSteps = showAllSteps ? steps : steps.slice(0, 5)
   const visibleArtifacts = artifacts.slice(0, 3)
   const taskGoal = liveExpertTask.currentPlan?.goal || liveGoalProgress?.goal || snapshot?.goal
-  const taskStatus = liveExpertTask.isRunning || liveGoalTask.isRunning
-    ? 'running'
-    : snapshot?.status || liveExpertTask.recoveryStatus || liveGoalTask.recoveryStatus
+  const taskIsPaused = liveGoalTask.isPaused || snapshot?.status === 'paused' || snapshot?.status === 'interrupted'
+  const taskStatus = taskIsPaused
+    ? (snapshot?.status === 'interrupted' ? 'interrupted' : 'paused')
+    : liveExpertTask.isRunning || liveGoalTask.isRunning
+      ? 'running'
+      : snapshot?.status || liveExpertTask.recoveryStatus || liveGoalTask.recoveryStatus
   const hasTaskRun = Boolean(snapshot || liveExpertTask.currentPlan || liveGoalProgress || liveExpertTask.isRunning || liveGoalTask.isRunning)
+  const taskIsRunning = !taskIsPaused && (liveExpertTask.isRunning || liveGoalTask.isRunning || snapshot?.status === 'running' || snapshot?.status === 'queued')
   const usageMessages = useMemo(() => messages.filter((message) => message.role === 'assistant' && message.usage), [messages])
   const usageTotals = useMemo(() => usageMessages.reduce((total, message) => ({
     prompt: total.prompt + (message.usage?.promptTokens || 0),
@@ -174,6 +188,52 @@ export function TaskWorkspacePanel() {
   }
 
   const openSelectedFile = () => setRightPanelTab('editor')
+
+  const stopTask = async () => {
+    if (!currentConversationId || stopping) return
+    setStopping(true)
+    try {
+      if (snapshot?.kind === 'expert') {
+        await window.eva.task.addFeedback(currentConversationId, 'Pause this task after the current operation.', undefined, true)
+      } else if (liveGoalTask.isRunning || snapshot?.kind === 'goal') {
+        pauseGoal(currentConversationId)
+      } else {
+        await window.eva.task.addFeedback(currentConversationId, 'Pause this task after the current operation.', undefined, true)
+      }
+      await refresh()
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const continueTask = async () => {
+    if (!currentConversationId || stopping || !snapshot) return
+    setStopping(true)
+    try {
+      if (snapshot.status === 'paused') {
+        if (snapshot.kind === 'goal') resumeGoal(currentConversationId)
+        else await window.eva.task.resumeFromCheckpoint(currentConversationId)
+      } else {
+        await window.eva.task.resume({ conversationId: snapshot.conversationId, kind: snapshot.kind, goal: snapshot.goal || snapshot.progress?.goal || snapshot.plan?.goal || '', agentId: snapshot.agentId || '' })
+      }
+      await refresh()
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const cancelTask = async () => {
+    if (!currentConversationId || cancelling) return
+    if (!window.confirm('Cancel this task? Its current execution cannot be continued.')) return
+    setCancelling(true)
+    try {
+      if (snapshot?.kind === 'goal') await abortGoal(currentConversationId)
+      else await abortExpertTask(currentConversationId)
+      await refresh()
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   return (
     <div className="task-workspace-panel flex min-h-0 flex-1 flex-col">
@@ -282,9 +342,19 @@ export function TaskWorkspacePanel() {
               </div>
               <p className="mt-1 text-xs leading-5 text-zinc-500">A compact overview of this conversation's work.</p>
             </div>
-            <span className={cn('shrink-0 rounded-full px-2 py-1 text-[11px] font-medium', taskStatus === 'completed' ? 'bg-emerald-50 text-emerald-700' : taskStatus === 'failed' ? 'bg-red-50 text-red-700' : taskStatus ? 'bg-violet-50 text-violet-700' : 'bg-zinc-100 text-zinc-500')}>
-              {statusLabel(taskStatus)}
-            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className={cn('rounded-full px-2 py-1 text-[11px] font-medium', taskStatus === 'completed' ? 'bg-emerald-50 text-emerald-700' : taskStatus === 'failed' ? 'bg-red-50 text-red-700' : taskStatus ? 'bg-violet-50 text-violet-700' : 'bg-zinc-100 text-zinc-500')}>
+                {statusLabel(taskStatus)}
+              </span>
+              {(taskIsRunning || taskIsPaused) && <>
+                <button type="button" onClick={() => void (taskIsPaused ? continueTask() : stopTask())} disabled={stopping} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60" title={taskIsPaused ? 'Continue this task' : 'Stop after the current operation'}>
+                  {taskIsPaused ? <Play className="h-3 w-3 fill-current" /> : <Square className="h-3 w-3 fill-current" />}{stopping ? 'Working...' : taskIsPaused ? 'Continue' : 'Stop'}
+                </button>
+                <button type="button" onClick={() => void cancelTask()} disabled={cancelling} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-wait disabled:opacity-60" title="Cancel this task">
+                  <X className="h-3 w-3" />{cancelling ? 'Cancelling...' : 'Cancel'}
+                </button>
+              </>}
+            </div>
           </div>
 
           {!hasTaskRun ? (
@@ -307,7 +377,7 @@ export function TaskWorkspacePanel() {
                   <ol className="space-y-1">
                     {visibleSteps.map((step, index) => (
                       <li key={step.id} className="flex gap-2.5 rounded-md px-1 py-2">
-                        <StepStatusIcon status={step.status} />
+                        <StepStatusIcon status={step.status} paused={taskIsPaused} />
                         <div className="min-w-0 flex-1">
                           <div className="flex gap-2"><span className="text-xs tabular-nums text-zinc-400">{index + 1}</span><p className={cn('truncate text-sm leading-5', step.status === 'completed' ? 'text-zinc-500' : 'font-medium text-zinc-700')} title={step.title}>{step.title}</p></div>
                         </div>

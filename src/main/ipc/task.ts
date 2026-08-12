@@ -30,6 +30,11 @@ const activeGoalPlanners = new Map<string, GoalPlanner>()
 const taskExecutionQueue = new TaskExecutionQueue(2)
 let taskServices: TaskServices | null = null
 
+function notifyConversationChanged(event: IpcMainEvent, conversationId: string): void {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (window && !window.isDestroyed()) window.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
+}
+
 /** Persist a user-requested stop before the planner has a chance to emit again. */
 export async function cancelTaskRun(
   conversationId: string,
@@ -74,11 +79,13 @@ export async function controlForegroundGoal(
   if (action === 'pause' && planner) {
     planner.pause()
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
     return { handled: true, status: 'paused' }
   }
   if (action === 'resume' && planner) {
     planner.resume()
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
     return { handled: true, status: 'running' }
   }
   if (action === 'cancel' && (planner || queued || snapshot)) {
@@ -616,12 +623,14 @@ export function registerTaskHandlers(services?: TaskServices): void {
   )
 
   // Expert mode - abort
-  ipcMain.on(IPC.TASK_ABORT, (_event, conversationId: string) => {
-    void cancelTaskRun(conversationId, 'expert')
+  ipcMain.on(IPC.TASK_ABORT, (event, conversationId: string) => {
+    void cancelTaskRun(conversationId, 'expert').then(() => notifyConversationChanged(event, conversationId))
   })
 
-  ipcMain.handle(IPC.TASK_CANCEL, async (_event, conversationId: string): Promise<boolean> => {
-    return cancelTaskRun(conversationId)
+  ipcMain.handle(IPC.TASK_CANCEL, async (event, conversationId: string): Promise<boolean> => {
+    const cancelled = await cancelTaskRun(conversationId)
+    notifyConversationChanged(event, conversationId)
+    return cancelled
   })
 
   // Expert mode - status
@@ -653,7 +662,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
     })
   })
 
-  ipcMain.handle(IPC.TASK_FEEDBACK_ADD, async (_event, payload: { conversationId: string; content: string; checkpointId?: string; pauseAfterCurrentOperation?: boolean }): Promise<TaskFeedback> => {
+  ipcMain.handle(IPC.TASK_FEEDBACK_ADD, async (event, payload: { conversationId: string; content: string; checkpointId?: string; pauseAfterCurrentOperation?: boolean }): Promise<TaskFeedback> => {
     const content = payload.content.trim()
     if (!content) throw new Error('A task reply cannot be empty.')
     if (content.length > 4000) throw new Error('A task reply must be 4,000 characters or fewer.')
@@ -687,10 +696,14 @@ export function registerTaskHandlers(services?: TaskServices): void {
       status: payload.pauseAfterCurrentOperation && (goalPlanner || teamOrchestrator) ? 'paused' : snapshot.status,
       checkpoints,
     })
+    if (payload.pauseAfterCurrentOperation && (goalPlanner || teamOrchestrator)) {
+      await getStorage().conversations.updateConversation(payload.conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+      notifyConversationChanged(event, payload.conversationId)
+    }
     return feedback
   })
 
-  ipcMain.handle(IPC.TASK_CHECKPOINT_RESUME, async (_event, conversationId: string): Promise<boolean> => {
+  ipcMain.handle(IPC.TASK_CHECKPOINT_RESUME, async (event, conversationId: string): Promise<boolean> => {
     const goalPlanner = activeGoalPlanners.get(conversationId)
     const teamOrchestrator = activeOrchestrators.get(conversationId)
     const resumedInProcess = Boolean(goalPlanner || teamOrchestrator)
@@ -699,6 +712,8 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const snapshot = await getStorage().taskRuns.get(conversationId)
     if (snapshot?.status === 'paused' && resumedInProcess) {
       await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+      notifyConversationChanged(event, conversationId)
     }
     return resumedInProcess
   })
@@ -875,24 +890,34 @@ export function registerTaskHandlers(services?: TaskServices): void {
   )
 
   // Goal mode - abort
-  ipcMain.on(IPC.TASK_GOAL_ABORT, (_event, conversationId: string) => {
-    void cancelTaskRun(conversationId, 'goal')
+  ipcMain.on(IPC.TASK_GOAL_ABORT, (event, conversationId: string) => {
+    void cancelTaskRun(conversationId, 'goal').then(() => notifyConversationChanged(event, conversationId))
   })
 
   // Goal mode - pause
-  ipcMain.on(IPC.TASK_GOAL_PAUSE, (_event, conversationId: string) => {
+  ipcMain.on(IPC.TASK_GOAL_PAUSE, (event, conversationId: string) => {
     const planner = activeGoalPlanners.get(conversationId)
     if (!planner) return
     planner.pause()
-    void getStorage().taskRuns.get(conversationId).then((snapshot) => snapshot && getStorage().taskRuns.save({ ...snapshot, status: 'paused' }))
+    void getStorage().taskRuns.get(conversationId).then(async (snapshot) => {
+      if (!snapshot) return
+      await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+      notifyConversationChanged(event, conversationId)
+    })
   })
 
   // Goal mode - resume
-  ipcMain.on(IPC.TASK_GOAL_RESUME, (_event, conversationId: string) => {
+  ipcMain.on(IPC.TASK_GOAL_RESUME, (event, conversationId: string) => {
     const planner = activeGoalPlanners.get(conversationId)
     if (!planner) return
     planner.resume()
-    void getStorage().taskRuns.get(conversationId).then((snapshot) => snapshot && getStorage().taskRuns.save({ ...snapshot, status: 'running' }))
+    void getStorage().taskRuns.get(conversationId).then(async (snapshot) => {
+      if (!snapshot) return
+      await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+      notifyConversationChanged(event, conversationId)
+    })
   })
 }
 

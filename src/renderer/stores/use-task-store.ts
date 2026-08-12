@@ -131,9 +131,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   abortExpertTask: async (conversationId) => {
     if (!conversationId) return
     try {
-      await window.eva.task.abort(conversationId)
+      await window.eva.task.cancel(conversationId)
       set((state) => ({
-        expertTasks: updateTask(state.expertTasks, conversationId, (task) => ({ ...task, isRunning: false }), EMPTY_EXPERT_TASK),
+        expertTasks: updateTask(state.expertTasks, conversationId, (task) => ({ ...task, isRunning: false, recoveryStatus: 'cancelled' }), EMPTY_EXPERT_TASK),
       }))
     } catch (error) {
       console.error('Failed to abort expert task:', error)

@@ -99,19 +99,13 @@ export function ToolCallGroupView({ toolCalls, className }: ToolCallGroupViewPro
   }, new Map<string, { toolCall: ToolCall; count: number }>()).values())
   const repeatedCount = toolCalls.length - groupedCalls.length
 
-  if (repeatedCount === 0 && toolCalls.length <= 2) {
-    return (
-      <div className={cn('space-y-2', className)}>
-        {toolCalls.map((toolCall) => <ToolCallView key={toolCall.id} toolCall={toolCall} />)}
-      </div>
-    )
-  }
-
   const researchTools = toolCalls.filter((toolCall) => toolCall.name === 'web_search' || toolCall.name === 'read_web_page')
   const isResearchOnly = researchTools.length === toolCalls.length
   const completedCount = toolCalls.filter((toolCall) => Boolean(toolCall.result) && !toolCall.isError).length
   const errorCount = toolCalls.filter((toolCall) => toolCall.isError).length
   const runningCount = toolCalls.length - completedCount - errorCount
+  const activeTool = [...toolCalls].reverse().find((toolCall) => !toolCall.result && !toolCall.isError)
+  const activeLabel = activeTool ? getToolLabel(activeTool) : null
   const searchCount = toolCalls.filter((toolCall) => toolCall.name === 'web_search').length
   const pageCount = toolCalls.filter((toolCall) => toolCall.name === 'read_web_page').length
   const status = errorCount > 0
@@ -137,9 +131,12 @@ export function ToolCallGroupView({ toolCalls, className }: ToolCallGroupViewPro
         <span className="text-zinc-500">
           {isResearchOnly ? <Search className="h-3.5 w-3.5" /> : <Wrench className="h-3.5 w-3.5" />}
         </span>
-        <span className="text-sm font-medium text-zinc-700">{isResearchOnly ? 'Research activity' : 'Tool activity'}</span>
-        <span className="min-w-0 truncate text-xs text-zinc-500">{displayDetail}</span>
-        <span className="ml-auto shrink-0 text-xs text-zinc-500">{status}</span>
+        <span className="text-sm font-medium text-zinc-700">{activeLabel?.title || (isResearchOnly ? 'Research activity' : 'Tool activity')}</span>
+        <span className="min-w-0 truncate text-xs text-zinc-500">{activeLabel?.detail || displayDetail}</span>
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-zinc-500">
+          {activeTool && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />}
+          {status}
+        </span>
       </button>
 
       {expanded && (

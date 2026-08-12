@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
-import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
+import { useAppStore } from '@/stores/use-app-store'
 import { EMPTY_EXPERT_TASK, useTaskStore } from '@/stores/use-task-store'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
@@ -22,13 +22,12 @@ export interface ChatPanelProps {
 
 export function ChatPanel({ className }: ChatPanelProps) {
   const { conversations, currentConversationId, error, setError, setConversationGitBranch, setConversationSymposium } = useChatStore()
-  const { workMode, terminalVisible, toggleTerminal } = useAppStore()
   const { agents } = useAgentStore()
+  const { workMode, terminalVisible, toggleTerminal } = useAppStore()
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
   const { currentPlan, isRunning: isTaskRunning, recoveryStatus, summary: expertSummary } = expertTask
 
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
-  const agent = agents.find((candidate) => candidate.id === currentConversation?.agentId)
   const symposiumRuntime = useSymposiumStore((state) => currentConversationId ? state.runtimes[currentConversationId] : undefined)
   const symposium = currentConversation?.symposium
   const symposiumRunning = symposiumRuntime?.status === 'running'
@@ -146,25 +145,16 @@ export function ChatPanel({ className }: ChatPanelProps) {
     }
   }
 
-  const modeLabels: Record<string, string> = {
-    normal: 'Auto',
-    expert: 'Team',
-    goal: 'Goal',
-  }
-
   return (
     <div className={cn('eva-chat-surface flex h-full flex-col', className)}>
       {/* Header */}
-      <div className="eva-chat-header flex h-14 items-center justify-between border-b px-6">
-        <div className="flex items-center gap-2.5">
-          <Bot className="h-4 w-4 text-violet-500" />
-          <span className="text-base font-medium text-zinc-800">
-            {currentConversationId ? 'Conversation' : 'New Chat'}
-          </span>
-          <span className="text-sm text-zinc-500">{symposium ? 'Model Symposium' : agent?.name || 'Auto'}</span>
-          {symposium && <span className="inline-flex items-center gap-1 text-xs text-violet-600"><UsersRound className="h-3.5 w-3.5" />Symposium</span>}
+      <div className="eva-chat-header flex h-14 items-center justify-between gap-4 border-b px-6">
+        <div className="min-w-0">
+          <h1 className="truncate text-base font-semibold text-zinc-800" title={currentConversation?.title || 'New conversation'}>
+            {currentConversation?.title || 'New conversation'}
+          </h1>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {currentConversationId && (
             <Button
               variant="ghost"
@@ -201,9 +191,6 @@ export function ChatPanel({ className }: ChatPanelProps) {
               Full access
             </Badge>
           )}
-          <Badge variant={workMode === 'normal' ? 'default' : 'primary'}>
-            {modeLabels[workMode]}
-          </Badge>
         </div>
       </div>
 

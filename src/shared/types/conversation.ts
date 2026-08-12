@@ -3,7 +3,7 @@ import type { FileAccessGrant } from './file-access'
 import type { AgentSymposium } from './symposium'
 
 export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
-export type ConversationExecutionStatus = 'running' | 'completed' | 'failed' | 'cancelled'
+export type ConversationExecutionStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 export type ConversationTitleSource = 'auto' | 'manual' | 'system'
 
 export interface Conversation {

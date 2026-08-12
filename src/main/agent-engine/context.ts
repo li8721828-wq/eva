@@ -264,6 +264,10 @@ export class ContextManager {
       parts.push('Act only on controls returned by the most recent desktop_observe result. Prefer semantic taskbar or foreground controls over coordinates. Do not close, minimize, or rearrange unrelated applications just to reveal another one. Do not claim a visible action occurred unless mouse_control or keyboard_control returned a verified result.')
       parts.push('If the required target is not visible, input is unavailable, or the visible result cannot be verified, stop and report the limitation. Wait for the user\'s approval before using any non-visible fallback.')
     }
+    if (tools.some((tool) => tool.name === 'browser_control')) {
+      parts.push('--- Browser Control Protocol ---')
+      parts.push('browser_control is a general browser primitive. Open an isolated visible HTTPS session, observe accessible fields, then interact only with selectors returned by observe. Never read or fill password fields, bypass login/CAPTCHA/MFA, or submit a form without explicit user approval and confirmSubmit: true. form_fill_workflow is a separate higher-level workflow and must not be conflated with browser_control.')
+    }
     parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
     if (agentConfig.modelCandidates?.length) {
       parts.push(`Candidate models for delegated work: ${agentConfig.modelCandidates.map((candidate) => `${candidate.providerId}/${candidate.model}`).join(', ')}`)

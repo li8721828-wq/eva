@@ -127,7 +127,16 @@ html, body, #root {
 
 .task-workspace-note__content {
   padding-top: 18px;
-  scrollbar-color: rgba(139, 92, 246, 0.35) transparent;
+  scrollbar-width: none;
+}
+
+.eva-message-scroll {
+  scrollbar-width: none;
+}
+
+.eva-message-scroll::-webkit-scrollbar,
+.task-workspace-note__content::-webkit-scrollbar {
+  display: none;
 }
 
 .eva-chat-surface {
@@ -167,6 +176,23 @@ html, body, #root {
 
 .cost-content {
   min-height: 100%;
+}
+
+.cost-center--embedded {
+  height: auto;
+  min-height: auto;
+  flex: none;
+  overflow: visible;
+  background: transparent;
+}
+
+.cost-center--embedded .cost-content {
+  min-height: auto;
+  padding: 4px 0 28px;
+}
+
+.cost-center--embedded .cost-filters {
+  padding-bottom: 20px;
 }
 
 .cost-filters {
@@ -669,7 +695,9 @@ a.tool-call-source__title:hover {
 .settings-dialog__content {
   flex: 1;
   overflow-y: auto;
-  padding: 32px clamp(28px, 5vw, 72px) 40px !important;
+  /* Keep the scrollbar in a dedicated gutter rather than against the content cards. */
+  scrollbar-gutter: stable;
+  padding: 32px calc(clamp(28px, 5vw, 72px) + 14px) 40px clamp(28px, 5vw, 72px) !important;
   background: transparent;
 }
 
@@ -1252,7 +1280,7 @@ a.tool-call-source__title:hover {
   }
 
   .settings-dialog__content {
-    padding: 20px !important;
+    padding: 20px 32px 20px 20px !important;
   }
 
   .settings-page .settings-dialog__card {
