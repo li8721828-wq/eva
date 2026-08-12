@@ -55,6 +55,10 @@ export interface ChatParams {
   temperature?: number
   maxTokens?: number
   stream?: boolean
+  reasoning?: {
+    enabled: boolean
+    budgetTokens?: number
+  }
 }
 
 export interface ChatMessageInput {
@@ -75,6 +79,8 @@ export interface ChatMessageInput {
 
 export interface ChatChunk {
   content: string
+  /** Provider-supplied reasoning, never synthesized by Eva. */
+  reasoningContent?: string
   toolCalls?: Array<{
     index: number
     id?: string

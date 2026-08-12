@@ -10,6 +10,9 @@ export interface LLMProvider {
    */
   chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk>
 
+  /** Whether this exact model can return provider-supplied reasoning content. */
+  supportsReasoning(model: string): boolean
+
   /**
    * 非流式聊天 - 返回完整响应
    */

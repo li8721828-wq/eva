@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatImageAttachment, ChatMessage, ChatUsage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatUsage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -23,6 +23,7 @@ import type { GoalProgress } from '../../shared/types/task'
 import { SYMPOSIUM_TOOL_OPTIONS, type AgentSymposium, type SymposiumContinueInput, type SymposiumDiscussionMemory, type SymposiumModelParticipant, type SymposiumStartInput, type SymposiumStreamEvent } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
 import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
+import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -506,6 +507,8 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
       return { type: 'text_delta', content: event.content }
     case 'thinking':
       return { type: 'thinking', content: event.content }
+    case 'reasoning':
+      return { type: 'reasoning_delta', content: event.content }
     case 'tool_call':
       return { type: 'tool_call_start', toolCall: event.toolCall }
     case 'tool_result':
@@ -677,7 +680,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(
     IPC.CHAT_SEND,
-    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[] }) => {
+    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[] }) => {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
@@ -754,11 +757,14 @@ export function registerConversationHandlers(services?: ChatServices): void {
         // 4. Save user message to storage immediately
         const userMessageId = uuidv4()
         const referenceImages = loadReferenceImages(payload.images, true)
+        const documentContext = await buildDocumentAttachmentContext(payload.attachments)
         const userChatMessage: ChatMessage = {
           id: userMessageId,
           conversationId,
           role: 'user',
           content: message,
+          attachmentContext: documentContext || undefined,
+          attachments: payload.attachments,
           images: referenceImages,
           timestamp: Date.now(),
         }
@@ -1016,6 +1022,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
         const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean }> = []
         let assistantContent = ''
+        let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
         let runError: string | null = null
 
@@ -1025,6 +1032,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
             // Text events are streaming deltas. The final done event replaces
             // this accumulated draft with the canonical response content.
             assistantContent += agentEvent.content
+          }
+          if (agentEvent.type === 'reasoning' && agentEvent.content) {
+            assistantReasoningContent += agentEvent.content
           }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
             allToolCalls.push(agentEvent.toolCall)
@@ -1081,6 +1091,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           conversationId,
           role: 'assistant',
           content: runError && !assistantContent && allToolCalls.length === 0 ? `Error: ${runError}` : assistantContent,
+          reasoningContent: assistantReasoningContent || undefined,
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
           agentName: effectiveAgentConfig.name,

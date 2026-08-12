@@ -86,6 +86,7 @@ export function MessageList({ className }: MessageListProps) {
   const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
   const isStreaming = Boolean(stream?.isStreaming)
   const streamingContent = stream?.content || ''
+  const streamingReasoningContent = stream?.reasoningContent || ''
   const streamingToolCalls = stream?.toolCalls || []
   const streamingStatus = stream?.status || ''
   const { rightPanelVisible, language } = useAppStore()
@@ -441,13 +442,13 @@ export function MessageList({ className }: MessageListProps) {
     // rendered text visibly shake. Only follow newly streamed text.
     if (
       isStreaming &&
-      streamingContent &&
+    (streamingContent || streamingReasoningContent) &&
       pendingRestoreRef.current !== currentConversationId &&
       followStreamRef.current
     ) {
       scrollToBottom('auto')
     }
-  }, [isStreaming, streamingContent])
+  }, [isStreaming, streamingContent, streamingReasoningContent])
 
   if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning) {
     return <WelcomeScreen className={className} />
@@ -523,7 +524,7 @@ export function MessageList({ className }: MessageListProps) {
         {/* Render the in-flight Markdown through the same assistant-message surface.
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
-        {isStreaming && streamingContent && (
+        {isStreaming && (streamingContent || streamingReasoningContent) && (
           <MessageBubble
             isStreaming
             message={{
@@ -531,6 +532,7 @@ export function MessageList({ className }: MessageListProps) {
               conversationId: currentConversationId || '',
               role: 'assistant',
               content: streamingContent,
+              reasoningContent: streamingReasoningContent || undefined,
               timestamp: Date.now(),
             }}
           />

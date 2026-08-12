@@ -8,8 +8,8 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, FolderOpen, FolderPlus, ImagePlus, Paperclip, Send, Settings2, Square, Trash2, X } from 'lucide-react'
-import type { ChatImageAttachment, ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
+import { Bot, FileText, FolderOpen, FolderPlus, ImagePlus, Paperclip, Send, Settings2, Square, Trash2, X } from 'lucide-react'
+import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 
 export interface InputBarProps {
@@ -29,7 +29,7 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, streamingByConversation, inputText, referenceImages, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, sendMessage, abortStream, addMessage, setError } = useChatStore()
+  const { conversations, createConversation, currentConversationId, streamingByConversation, inputText, referenceImages, documentAttachments, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError } = useChatStore()
   const isStreaming = Boolean(currentConversationId && streamingByConversation[currentConversationId]?.isStreaming)
   const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore()
   const { agents } = useAgentStore()
@@ -39,7 +39,7 @@ export function InputBar({ className }: InputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
-  const [isDraggingImages, setIsDraggingImages] = useState(false)
+  const [isDraggingAttachments, setIsDraggingAttachments] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [isConversationSettingsOpen, setIsConversationSettingsOpen] = useState(false)
   const [caretPosition, setCaretPosition] = useState(0)
@@ -321,25 +321,58 @@ export function InputBar({ className }: InputBarProps) {
     event.target.value = ''
   }
 
-  const handleImageDrop = (event: React.DragEvent<HTMLDivElement>) => {
+  const addDocumentPaths = useCallback(async (paths: string[]) => {
+    if (!paths.length) return
+    const uniquePaths = paths.filter((filePath) => filePath && !documentAttachments.some((attachment) => attachment.path === filePath))
+    const additions: ChatDocumentAttachment[] = []
+    for (const filePath of uniquePaths.slice(0, 20 - documentAttachments.length)) {
+      try {
+        const entries = await window.eva.file.tree(filePath)
+        const isFolder = entries.length > 0
+        additions.push({ path: filePath, name: filePath.replace(/^.*[\\/]/, ''), size: 0, kind: isFolder ? 'folder' : 'file' })
+      } catch {
+        additions.push({ path: filePath, name: filePath.replace(/^.*[\\/]/, ''), size: 0, kind: 'file' })
+      }
+    }
+    if (additions.length) setDocumentAttachments([...documentAttachments, ...additions])
+    if (uniquePaths.length > additions.length) setAttachmentError('You can attach up to 20 files or folders at once.')
+  }, [documentAttachments, setDocumentAttachments])
+
+  const selectAttachments = () => {
+    void window.eva.file.selectAttachments().then(addDocumentPaths).catch(() => setAttachmentError('Could not select attachments.'))
+  }
+
+  const handleAttachmentDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault()
-    setIsDraggingImages(false)
-    addReferenceFiles(Array.from(event.dataTransfer.files))
+    setIsDraggingAttachments(false)
+    const files = Array.from(event.dataTransfer.files)
+    const images = files.filter((file) => file.type.startsWith('image/'))
+    const documents = files.filter((file) => !file.type.startsWith('image/'))
+    if (images.length) addReferenceFiles(images)
+    void addDocumentPaths(documents.map((file) => window.eva.file.getPath(file)).filter(Boolean))
   }
 
   const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const pastedImages = Array.from(event.clipboardData.items)
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    const pastedFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
       .map((item) => item.getAsFile())
       .filter((file): file is File => Boolean(file))
-    if (pastedImages.length) {
+    if (pastedFiles.length) {
       event.preventDefault()
-      addReferenceFiles(pastedImages)
+      const images = pastedFiles.filter((file) => file.type.startsWith('image/'))
+      const documents = pastedFiles.filter((file) => !file.type.startsWith('image/'))
+      if (images.length) addReferenceFiles(images)
+      void addDocumentPaths(documents.map((file) => window.eva.file.getPath(file)).filter(Boolean))
     }
   }
 
   const removeReferenceImage = (path: string) => {
     setReferenceImages(referenceImages.filter((image) => image.path !== path))
+    setAttachmentError(null)
+  }
+
+  const removeDocumentAttachment = (path: string) => {
+    setDocumentAttachments(documentAttachments.filter((attachment) => attachment.path !== path))
     setAttachmentError(null)
   }
 
@@ -407,11 +440,11 @@ export function InputBar({ className }: InputBarProps) {
         <div
           className={cn(
             'chat-composer relative isolate box-border min-w-0 overflow-visible rounded-xl border border-[rgba(99,102,115,0.14)] bg-transparent transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-[rgba(82,86,100,0.24)]',
-            isDraggingImages && 'border-violet-400 bg-violet-50/30',
+            isDraggingAttachments && 'border-violet-400 bg-violet-50/30',
           )}
-          onDragOver={(event) => { event.preventDefault(); setIsDraggingImages(true) }}
-          onDragLeave={() => setIsDraggingImages(false)}
-          onDrop={handleImageDrop}
+          onDragOver={(event) => { event.preventDefault(); setIsDraggingAttachments(true) }}
+          onDragLeave={() => setIsDraggingAttachments(false)}
+          onDrop={handleAttachmentDrop}
         >
           <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={addReferenceImages} />
           {referenceImages.length > 0 && (
@@ -428,6 +461,17 @@ export function InputBar({ className }: InputBarProps) {
                 <span className="font-medium text-zinc-700">Reference images</span>
                 <span>Agent will use these views to build a new editable model.</span>
               </div>
+            </div>
+          )}
+          {documentAttachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 border-b border-zinc-100 bg-[#fdfdff] px-4 py-3">
+              {documentAttachments.map((attachment) => (
+                <span key={attachment.path} className="inline-flex max-w-full items-center gap-2 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700">
+                  {attachment.kind === 'folder' ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-600" /> : <FileText className="h-3.5 w-3.5 shrink-0 text-violet-600" />}
+                  <span className="truncate">{attachment.name}</span>
+                  <button type="button" onClick={() => removeDocumentAttachment(attachment.path)} className="-mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700" title={`Remove ${attachment.name}`} aria-label={`Remove ${attachment.name}`}><X className="h-3 w-3" /></button>
+                </span>
+              ))}
             </div>
           )}
           {!isSymposiumConversation && assignedAgent && (
@@ -454,11 +498,11 @@ export function InputBar({ className }: InputBarProps) {
               size="icon"
               className="mb-0.5 h-8 w-8 shrink-0 text-zinc-400 hover:text-zinc-700"
               title="Attach file"
-              aria-label="Attach reference images"
-              onClick={() => imageInputRef.current?.click()}
+              aria-label="Attach files or folders"
+              onClick={selectAttachments}
               disabled={isSymposiumRunning || isSymposiumConversation}
             >
-            {referenceImages.length ? <ImagePlus className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
+            {referenceImages.length || documentAttachments.length ? <ImagePlus className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
             </Button>
 
             <textarea
@@ -488,12 +532,12 @@ export function InputBar({ className }: InputBarProps) {
               <button
                 className={cn(
                   'mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors',
-                  inputText.trim() || referenceImages.length > 0
+                   inputText.trim() || referenceImages.length > 0 || documentAttachments.length > 0
                     ? 'bg-violet-600 text-white hover:bg-violet-700'
                     : 'bg-zinc-100 text-zinc-400'
                 )}
                 onClick={handleSend}
-                disabled={isSymposiumRunning || (!inputText.trim() && referenceImages.length === 0)}
+                 disabled={isSymposiumRunning || (!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0)}
                 title={currentConversation?.symposium ? 'Send to all discussion participants' : 'Send'}
                 aria-label={currentConversation?.symposium ? 'Send to all discussion participants' : 'Send message'}
               >

@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
-import type { Conversation, ChatImageAttachment, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
 import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
@@ -55,7 +55,7 @@ export interface EvaAPI {
 
   // 聊天
   chat: {
-    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[]): Promise<void>
+    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[]): Promise<void>
     onStream(callback: EventCallback<ChatStreamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
   }
@@ -107,6 +107,7 @@ export interface EvaAPI {
     tree(path: string, workspacePath?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>
     search(path: string, query: string, workspacePath?: string): Promise<string[]>
     selectFolder(): Promise<string | null>
+    selectAttachments(): Promise<string[]>
     imagePreview(path: string): Promise<string | null>
     getPath(file: File): string
   }
@@ -231,8 +232,8 @@ const evaAPI: EvaAPI = {
 
   // 聊天
   chat: {
-    send: (conversationId, message, agentId, images) => {
-      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images })
+    send: (conversationId, message, agentId, images, attachments) => {
+      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments })
       return Promise.resolve()
     },
     onStream: (callback) => onStream(IPC.CHAT_STREAM, callback),
@@ -308,6 +309,7 @@ const evaAPI: EvaAPI = {
     tree: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_TREE, path, workspacePath),
     search: (path, query, workspacePath) => ipcRenderer.invoke(IPC.FILE_SEARCH, query, workspacePath),
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
+    selectAttachments: () => ipcRenderer.invoke(IPC.FILE_SELECT_ATTACHMENTS),
     imagePreview: (path) => ipcRenderer.invoke(IPC.FILE_IMAGE_PREVIEW, path),
     getPath: (file) => webUtils.getPathForFile(file),
   },

@@ -7,10 +7,11 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, RefreshCw, Trash2 } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, ChevronDown, BrainCircuit } from 'lucide-react'
 import { useState } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
+import { useAgentStore } from '@/stores/use-agent-store'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -78,6 +79,22 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
   )
 }
 
+function ReasoningPanel({ content, streaming = false }: { content: string; streaming?: boolean }) {
+  const [open, setOpen] = useState(streaming)
+  if (!content) return null
+
+  return (
+    <details open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)} className="mb-3 border-y border-violet-100 bg-violet-50/45">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-medium text-violet-700 hover:bg-violet-50/80">
+        <BrainCircuit className="h-3.5 w-3.5" />
+        <span className="flex-1">模型思考{streaming ? '中' : ''}</span>
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
+      </summary>
+      <div className="max-h-56 overflow-auto border-t border-violet-100 px-3 py-2.5 text-xs leading-5 text-zinc-600 whitespace-pre-wrap">{content}</div>
+    </details>
+  )
+}
+
 export function MarkdownMessageContent({ content, className }: { content: string; className?: string }) {
   return (
     <div className={cn('chat-message-markdown prose prose-sm max-w-none', className)}>
@@ -106,11 +123,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
+  const agents = useAgentStore((state) => state.agents)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
-  const regenerateFromMessage = useChatStore((state) => state.regenerateFromMessage)
-  const deleteMessagesFrom = useChatStore((state) => state.deleteMessagesFrom)
   const [copied, setCopied] = useState(false)
-  const [busy, setBusy] = useState(false)
   const actionCopy = language === 'zh'
     ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成', remove: '删除回复', confirm: '删除这条回复及其后续内容吗？' }
     : language === 'ja'
@@ -123,16 +138,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     window.setTimeout(() => setCopied(false), 1600)
   }
 
-  const handleRegenerate = async () => {
-    setBusy(true)
-    try { await regenerateFromMessage(message.id) } finally { setBusy(false) }
-  }
-
-  const handleDelete = async () => {
-    if (!window.confirm(actionCopy.confirm)) return
-    setBusy(true)
-    try { await deleteMessagesFrom(message.id) } finally { setBusy(false) }
-  }
+  const shouldShowReasoning = isStreaming || Boolean(
+    message.agentId && agents.find((agent) => agent.id === message.agentId)?.showThinking
+  )
 
   if (isUser) {
     return (
@@ -201,23 +209,18 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
               </Badge>
             </div>
           )}
+          {shouldShowReasoning && <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />}
           <MarkdownMessageContent content={message.content} />
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>
 
         {!isStreaming && !isTool && (
           <div className="message-actions mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            <button type="button" onClick={() => void handleCopyAssistant()} disabled={busy} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.copy} aria-label={actionCopy.copy}>
+            <button type="button" onClick={() => void handleCopyAssistant()} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.copy} aria-label={actionCopy.copy}>
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? actionCopy.copied : actionCopy.copy}
             </button>
-            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} disabled={busy} className={cn('message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors', message.favorited ? 'text-violet-600' : 'text-zinc-400')} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
+            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} className={cn('message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors', message.favorited ? 'text-violet-600' : 'text-zinc-400')} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
               <Heart className={cn('h-3.5 w-3.5', message.favorited && 'fill-current')} />{message.favorited ? actionCopy.unfavorite : actionCopy.favorite}
-            </button>
-            <button type="button" onClick={() => void handleRegenerate()} disabled={busy} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
-              <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />{actionCopy.regenerate}
-            </button>
-            <button type="button" onClick={() => void handleDelete()} disabled={busy} className="message-action message-action--danger inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.remove} aria-label={actionCopy.remove}>
-              <Trash2 className="h-3.5 w-3.5" />{actionCopy.remove}
             </button>
           </div>
         )}

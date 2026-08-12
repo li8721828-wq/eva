@@ -124,6 +124,19 @@ describe('ContextManager', () => {
       expect(prompt).toContain('current information could not be verified')
       expect(prompt).toContain('checked with read_file')
     })
+
+    it('does not inject legacy output-format rules into the system prompt', () => {
+      const agent: AgentConfig = {
+        id: 'format-agent', name: 'Format Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        outputFormat: 'json', model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const prompt = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+
+      expect(prompt).not.toContain('--- Agent Output Format ---')
+      expect(prompt).not.toContain('Return valid JSON only.')
+    })
   })
 
   describe('long-context history', () => {

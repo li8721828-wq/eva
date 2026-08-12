@@ -7,6 +7,7 @@ import { Textarea } from '@/components/ui/Textarea'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { ToolAccessPanel } from './ToolAccessPanel'
+import { OutputFormatPanel } from './OutputFormatPanel'
 import { Save, X } from 'lucide-react'
 import { uiCopy } from '@/lib/ui-copy'
 import { useAppStore } from '@/stores/use-app-store'
@@ -44,6 +45,7 @@ export function AgentEditor({
   const [description, setDescription] = useState(agent?.description || '')
   const [role, setRole] = useState<AgentRole>(agent?.role || 'custom')
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '')
+  const [showThinking, setShowThinking] = useState(Boolean(agent?.showThinking))
   const [providerId, setProviderId] = useState(agent?.providerId || defaultProviderId)
   const [model, setModel] = useState(agent?.model || defaultModel)
   const [temperature, setTemperature] = useState(agent?.temperature ?? 0.7)
@@ -58,6 +60,7 @@ export function AgentEditor({
       setDescription(agent.description)
       setRole(agent.role)
       setSystemPrompt(agent.systemPrompt)
+      setShowThinking(Boolean(agent.showThinking))
       setProviderId(agent.providerId)
       setModel(agent.model)
       setTemperature(agent.temperature)
@@ -109,6 +112,7 @@ export function AgentEditor({
       description,
       role,
       systemPrompt,
+      showThinking,
       providerId,
       model,
       temperature,
@@ -184,6 +188,11 @@ export function AgentEditor({
           className="font-mono text-xs"
         />
       </div>
+
+      <OutputFormatPanel
+        showThinking={showThinking}
+        onShowThinkingChange={setShowThinking}
+      />
 
       {/* Provider + Model (cascading) */}
       <div className="grid grid-cols-2 gap-3">

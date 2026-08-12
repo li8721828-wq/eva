@@ -84,6 +84,7 @@ export const IPC = {
   FILE_TREE: 'file:tree',
   FILE_SEARCH: 'file:search',
   FILE_SELECT_FOLDER: 'file:select-folder',
+  FILE_SELECT_ATTACHMENTS: 'file:select-attachments',
   FILE_IMAGE_PREVIEW: 'file:image-preview',
 
   // 终端

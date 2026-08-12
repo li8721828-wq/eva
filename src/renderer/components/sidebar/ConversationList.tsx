@@ -179,11 +179,7 @@ export function ConversationList({ className }: ConversationListProps) {
                 />
               ))}
             </div>
-          ) : (
-            <p className="px-3 py-1 text-xs leading-5 text-zinc-400">
-              {qqStatus.state === 'connected' ? 'Waiting for a QQ message.' : 'Connect QQ Remote in Settings to receive messages.'}
-            </p>
-          ))}
+          ) : null)}
         </div>
 
         <button
@@ -252,9 +248,6 @@ export function ConversationList({ className }: ConversationListProps) {
           )
         })}
 
-        {projectsOpen && workspaces.length === 0 && (
-          <div className="px-3 py-6 text-sm leading-6 text-zinc-400">Add a project folder to organize conversations and permissions.</div>
-        )}
 
         {unassigned.length > 0 && (
           <div>

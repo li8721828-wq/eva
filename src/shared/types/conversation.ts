@@ -50,6 +50,12 @@ export interface ChatMessage {
   conversationId: string
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** Parsed local attachment content used only for model context, never rendered as chat text. */
+  attachmentContext?: string
+  /** Provider-supplied reasoning shown separately from the final answer. */
+  reasoningContent?: string
+  /** Files and folders the user attached to this message. Their contents stay local. */
+  attachments?: ChatDocumentAttachment[]
   /** Local image references selected explicitly by the user. Base64 data is never persisted. */
   images?: ChatImageAttachment[]
   toolCalls?: ToolCall[]
@@ -89,6 +95,13 @@ export interface ChatImageAttachment {
   dataUrl?: string
 }
 
+export interface ChatDocumentAttachment {
+  path: string
+  name: string
+  size: number
+  kind: 'file' | 'folder'
+}
+
 export interface ToolCall {
   id: string
   name: string
@@ -100,7 +113,7 @@ export interface ToolCall {
 export interface ChatStreamEvent {
   /** The conversation that owns this stream event. */
   conversationId?: string
-  type: 'thinking' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
   messageId?: string
   content?: string
   toolCall?: Partial<ToolCall>

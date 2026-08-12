@@ -11,19 +11,6 @@ const OLD_TOOL_RESULT_MAX_CHARS = 300
 const RECENT_TOOL_RESULT_MAX_CHARS = 3_500
 const CONTEXT_SAFETY_TOKENS = 2_048
 
-const RESPONSE_PRESENTATION_PROTOCOL = `--- Eva Response Presentation Protocol ---
-Your answer is rendered inside Eva's conversation canvas. Treat it as a calm, readable document, not as a dashboard or a collection of UI cards.
-- Start with a direct answer or outcome in one to three short paragraphs. Do not restate the user's request.
-- Use Markdown only when it improves scanning. Prefer plain paragraphs and one-level bullet lists. Use numbered lists only for ordered procedures.
-- Use at most four short section headings in a response. Do not use a level-1 heading (#); the conversation already has a title. Do not nest headings merely to create visual emphasis.
-- Use bold only for a small number of key terms. Do not bold entire sentences, prefix every line with a bold label, or combine bold text with emoji as a fake status component.
-- Use blockquotes only for an actual quote, a short source excerpt, or an exact command/output that must be distinguished. Never use blockquotes as decorative callouts, warnings, summaries, or status panels.
-- Use tables only when comparing several items across the same fields. Do not use tables for ordinary prose, checklists, or one-item status displays.
-- Use fenced code blocks only for executable code, commands, or literal structured data. Keep explanatory text outside the block. Use inline code only for identifiers, file paths, commands, and values.
-- Do not render progress trackers, task plans, step checklists, tool transcripts, or fake completion badges in the answer. Eva displays live tools and Goal progress separately in the task workspace.
-- Keep paragraphs focused, avoid repeated conclusions, and end once the requested result and necessary caveats are clear.
-- Match the user's language unless technical material or a requested artifact requires another language.`
-
 function compactText(value: string, maxChars: number): string {
   const normalized = value.replace(/\s+/g, ' ').trim()
   if (normalized.length <= maxChars) return normalized
@@ -52,7 +39,7 @@ function chatMessageToInput(msg: ChatMessage, maxToolResultChars?: number): Chat
     : ''
   const input: ChatMessageInput = {
     role: msg.role,
-    content: `${msg.role === 'tool' && maxToolResultChars ? compactText(msg.content || '', maxToolResultChars) : msg.content || ''}${imageNotice}`,
+    content: `${msg.role === 'tool' && maxToolResultChars ? compactText(msg.content || '', maxToolResultChars) : msg.content || ''}${msg.attachmentContext || ''}${imageNotice}`,
     images: msg.images?.map((image) => ({
       mediaType: image.mediaType,
       dataUrl: image.dataUrl,
@@ -243,8 +230,6 @@ export class ContextManager {
     const parts: string[] = []
 
     parts.push(agentConfig.systemPrompt)
-    parts.push('')
-    parts.push(RESPONSE_PRESENTATION_PROTOCOL)
 
     parts.push('')
     parts.push('--- Eva Platform Capabilities ---')

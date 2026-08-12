@@ -145,6 +145,11 @@ export function registerSystemHandlers(
     return result.filePaths[0] || null
   })
 
+  ipcMain.handle(IPC.FILE_SELECT_ATTACHMENTS, async (): Promise<string[]> => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile', 'openDirectory', 'multiSelections'] })
+    return result.canceled ? [] : result.filePaths
+  })
+
   ipcMain.handle(IPC.FILE_IMAGE_PREVIEW, async (_event, filePath: string): Promise<string | null> => {
     const mediaType = PREVIEW_IMAGE_TYPES[path.extname(filePath).toLowerCase()]
     if (!mediaType) return null

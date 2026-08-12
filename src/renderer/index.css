@@ -272,10 +272,10 @@ html, body, #root {
   cursor: text;
   outline: 0;
   color: #203150;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  font-size: 0.96875rem;
-  font-weight: 450;
-  line-height: 1.7;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.6;
   text-rendering: optimizeLegibility;
 }
 
@@ -356,10 +356,10 @@ html, body, #root {
 
 .chat-message-markdown {
   color: #2e3a50;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", "PingFang SC", sans-serif;
-  font-size: 1rem;
-  font-weight: 400;
-  line-height: 1.82;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.6;
   min-width: 0;
   text-rendering: optimizeLegibility;
 }
@@ -377,8 +377,8 @@ html, body, #root {
 .chat-message-markdown h3,
 .chat-message-markdown h4 {
   color: #1b2940;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Source Han Sans SC", "Microsoft YaHei UI", sans-serif;
-  font-weight: 640;
+  font-family: inherit;
+  font-weight: 600;
   letter-spacing: 0;
   line-height: 1.45;
 }
@@ -402,8 +402,8 @@ html, body, #root {
 }
 
 .chat-message-markdown strong {
-  color: #1d2b43;
-  font-weight: 640;
+  color: inherit;
+  font-weight: inherit;
 }
 
 .chat-message-markdown hr {
@@ -498,7 +498,7 @@ html, body, #root {
   border-bottom-color: rgba(185, 198, 222, 0.9);
   background: transparent;
   color: #27364d;
-  font-weight: 620;
+  font-weight: 600;
 }
 
 .chat-message-markdown tbody tr:last-child td {

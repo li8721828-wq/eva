@@ -41,6 +41,10 @@ export class OpenAIProvider implements LLMProvider {
     })
   }
 
+  supportsReasoning(model: string): boolean {
+    return this.type === 'deepseek' && model.trim().toLowerCase() === 'deepseek-reasoner'
+  }
+
   private mapUsage(usage?: {
     prompt_tokens?: number
     completion_tokens?: number
@@ -114,9 +118,11 @@ export class OpenAIProvider implements LLMProvider {
       else if (choice.finish_reason === 'tool_calls') finishReason = 'tool_calls'
       else if (choice.finish_reason === 'length') finishReason = 'length'
 
+      const reasoningContent = (delta as { reasoning_content?: string } | undefined)?.reasoning_content
       const yieldChunk: ChatChunk = {
         content: delta?.content || '',
-        usage,
+        ...(reasoningContent ? { reasoningContent } : {}),
+        ...(usage ? { usage } : {}),
       }
 
       if (finishReason) {
@@ -135,7 +141,7 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       // Skip empty chunks (no content, no tool calls, no finish)
-      if (!yieldChunk.content && !yieldChunk.toolCalls && !yieldChunk.finishReason && !yieldChunk.usage) {
+      if (!yieldChunk.content && !yieldChunk.reasoningContent && !yieldChunk.toolCalls && !yieldChunk.finishReason && !yieldChunk.usage) {
         continue
       }
 

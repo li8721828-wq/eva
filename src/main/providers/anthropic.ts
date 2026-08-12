@@ -25,6 +25,11 @@ export class AnthropicProvider implements LLMProvider {
     })
   }
 
+  supportsReasoning(model: string): boolean {
+    const normalized = model.trim().toLowerCase()
+    return normalized.includes('claude-3-7-sonnet') || /claude-(sonnet|opus)-4(?:[-.]|$)/.test(normalized)
+  }
+
   /**
    * Convert shared messages to Anthropic format.
    * System messages are excluded (handled separately).
@@ -112,8 +117,10 @@ export class AnthropicProvider implements LLMProvider {
             messages: this.convertMessages(userMessages),
             tools: this.convertTools(params.tools),
             stream: true,
-            temperature: params.temperature,
-          },
+            ...(params.reasoning?.enabled
+              ? { thinking: { type: 'enabled', budget_tokens: params.reasoning.budgetTokens || 1024 } }
+              : { temperature: params.temperature }),
+          } as any,
           { signal }
         ),
       this.id
@@ -146,6 +153,11 @@ export class AnthropicProvider implements LLMProvider {
           if (delta.type === 'text_delta') {
             yield {
               content: delta.text || '',
+            }
+          } else if (delta.type === 'thinking_delta') {
+            yield {
+              content: '',
+              reasoningContent: delta.thinking || '',
             }
           } else if (delta.type === 'input_json_delta') {
             const block = toolUseBlocks.get(idx)

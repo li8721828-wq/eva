@@ -15,9 +15,6 @@ export function WelcomeScreen({ className }: WelcomeScreenProps) {
       <div className="flex w-full max-w-lg flex-col items-center gap-4 px-4 text-center">
         <img src={evaMark} alt="Eva" className="h-12 w-12" />
         <h1 className="text-2xl font-bold text-zinc-900">Welcome to Eva</h1>
-        <p className="max-w-md text-base leading-relaxed text-zinc-500">
-          Your AI-powered coding agent. Write, debug, refactor, and review code with intelligent assistance.
-        </p>
         <div className="mt-4 flex items-center justify-center">
           <Button className="gap-2" onClick={() => createConversation()}>
             <MessageSquarePlus className="h-4 w-4" />

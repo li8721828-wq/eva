@@ -140,6 +140,13 @@ export class AgentRunner {
     try {
       const { agentConfig, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
       const maxIter = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
+      if (agentConfig.showThinking && !this.config.provider.supportsReasoning(agentConfig.model)) {
+        yield {
+          type: 'error',
+          error: `无法显示模型思考：${agentConfig.providerId} / ${agentConfig.model} 不支持推理内容输出。请选择 DeepSeek Reasoner 或支持扩展思考的 Claude 模型，或关闭此选项。`,
+        }
+        return
+      }
 
       // Tool definitions filtered by agent's allowed tool list
       const toolDefs: ToolDefinition[] = [
@@ -380,11 +387,13 @@ export class AgentRunner {
         tools: tools.length > 0 ? tools : undefined,
         temperature: agentConfig.temperature,
         stream: true,
+        reasoning: agentConfig.showThinking ? { enabled: true, budgetTokens: 1024 } : undefined,
       },
       signal
     )
 
     let content = ''
+    let receivedReasoning = false
     let finishReason = ''
     let usage: ChatUsage | undefined
 
@@ -395,6 +404,11 @@ export class AgentRunner {
       // Check abort between chunks
       if (signal?.aborted) break
       usage = this.mergeUsage(usage, this.toChatUsage(chunk.usage))
+
+      if (agentConfig.showThinking && chunk.reasoningContent) {
+        receivedReasoning = true
+        yield { type: 'reasoning', content: chunk.reasoningContent }
+      }
 
       // ── Text content ──────────────────────────────────────────────────────
       if (chunk.content) {
@@ -440,6 +454,10 @@ export class AgentRunner {
         name: acc.name,
         arguments: parsedArgs,
       })
+    }
+
+    if (agentConfig.showThinking && !receivedReasoning) {
+      throw new Error(`模型未返回可显示的思考内容。${agentConfig.providerId} / ${agentConfig.model} 可能未启用推理模式或当前连接不支持该能力。`)
     }
 
     return { content, toolCalls, finishReason, usage }

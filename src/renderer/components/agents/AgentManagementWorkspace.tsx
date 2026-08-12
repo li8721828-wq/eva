@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentConfig } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { TOOL_CATALOG } from '../../../shared/tool-catalog'
@@ -7,14 +7,14 @@ import { useAppStore } from '@/stores/use-app-store'
 import { uiCopy } from '@/lib/ui-copy'
 import { AgentEditor } from './AgentEditor'
 import { Button } from '@/components/ui/Button'
-import { Dialog, DialogClose } from '@/components/ui/Dialog'
 import { Input } from '@/components/ui/Input'
 import { ModelAccessPanel } from './ModelAccessPanel'
 import { ToolAccessPanel } from './ToolAccessPanel'
+import { OutputFormatPanel } from './OutputFormatPanel'
 import { AlertTriangle, Bot, Braces, ChevronLeft, Cpu, Pencil, Plus, Search, Trash2, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-type WorkspaceView = 'details' | 'create' | 'edit' | 'tools' | 'models' | 'confirm-delete'
+type WorkspaceView = 'details' | 'create' | 'edit' | 'tools' | 'models' | 'thinking' | 'confirm-delete'
 
 export interface AgentManagementWorkspaceProps {
   className?: string
@@ -85,19 +85,34 @@ function AgentCard({ agent, onOpen, copy }: { agent: AgentConfig; onOpen: () => 
   )
 }
 
-/** A compact agent overview with focused, in-place configuration dialogs. */
+function findScrollableParent(element: HTMLElement | null) {
+  let parent = element?.parentElement ?? null
+  while (parent) {
+    const overflowY = window.getComputedStyle(parent).overflowY
+    if ((overflowY === 'auto' || overflowY === 'scroll') && parent.scrollHeight > parent.clientHeight) return parent
+    parent = parent.parentElement
+  }
+  return null
+}
+
+/** Agent workspace with in-module configuration navigation. */
 export function AgentManagementWorkspace({ className }: AgentManagementWorkspaceProps) {
   const { agents, createAgent, updateAgent, deleteAgent } = useAgentStore()
   const { activeProviderId, activeModel, language } = useAppStore()
   const copy = uiCopy[language].agents
   const [view, setView] = useState<WorkspaceView>('details')
-  const [dialogOpen, setDialogOpen] = useState(false)
+  const [screen, setScreen] = useState<'list' | 'agent'>('list')
   const [editingAgent, setEditingAgent] = useState<AgentConfig | null>(null)
   const [agentToDelete, setAgentToDelete] = useState<AgentConfig | null>(null)
   const [toolSelection, setToolSelection] = useState<string[]>([])
   const [modelSelection, setModelSelection] = useState<NonNullable<AgentConfig['modelCandidates']>>([])
+  const [showThinking, setShowThinking] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [query, setQuery] = useState('')
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const listScrollParentRef = useRef<HTMLElement | null>(null)
+  const listScrollTopRef = useRef(0)
+  const shouldRestoreListScrollRef = useRef(false)
 
   useEffect(() => {
     void window.eva.provider.list().then(setSavedProviders).catch((error) => console.error('Failed to load model connections:', error))
@@ -112,25 +127,44 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const builtInAgents = filteredAgents.filter((agent) => agent.isBuiltIn)
   const customAgents = filteredAgents.filter((agent) => !agent.isBuiltIn)
 
+  const rememberListScroll = useCallback(() => {
+    listScrollParentRef.current = findScrollableParent(workspaceRef.current)
+    listScrollTopRef.current = listScrollParentRef.current?.scrollTop ?? 0
+    shouldRestoreListScrollRef.current = true
+  }, [])
+
+  useEffect(() => {
+    if (screen !== 'list' || !shouldRestoreListScrollRef.current) return
+    const frame = window.requestAnimationFrame(() => {
+      const scrollParent = listScrollParentRef.current ?? findScrollableParent(workspaceRef.current)
+      if (scrollParent) scrollParent.scrollTop = listScrollTopRef.current
+      shouldRestoreListScrollRef.current = false
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [screen])
+
   const openDetails = useCallback((agent: AgentConfig) => {
+    rememberListScroll()
     setEditingAgent(agent)
     setAgentToDelete(null)
     setView('details')
-    setDialogOpen(true)
-  }, [])
+    setScreen('agent')
+  }, [rememberListScroll])
 
-  const closeDialog = useCallback(() => {
-    setDialogOpen(false)
+  const returnToList = useCallback(() => {
     setView('details')
     setAgentToDelete(null)
+    setEditingAgent(null)
+    setScreen('list')
   }, [])
 
   const openCreate = useCallback(() => {
+    rememberListScroll()
     setEditingAgent(null)
     setAgentToDelete(null)
     setView('create')
-    setDialogOpen(true)
-  }, [])
+    setScreen('agent')
+  }, [rememberListScroll])
 
   const handleManageTools = useCallback((agent: AgentConfig) => {
     setEditingAgent(agent)
@@ -142,6 +176,12 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     setEditingAgent(agent)
     setModelSelection(agent.modelCandidates?.length ? agent.modelCandidates : [{ providerId: agent.providerId, model: agent.model }])
     setView('models')
+  }, [])
+
+  const handleManageThinking = useCallback((agent: AgentConfig) => {
+    setEditingAgent(agent)
+    setShowThinking(Boolean(agent.showThinking))
+    setView('thinking')
   }, [])
 
   const handleSaveCreate = useCallback(async (data: Partial<AgentConfig>) => {
@@ -188,15 +228,26 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     }
   }, [editingAgent, modelSelection, updateAgent])
 
+  const handleSaveThinking = useCallback(async () => {
+    if (!editingAgent) return
+    try {
+      await updateAgent(editingAgent.id, { showThinking })
+      setEditingAgent({ ...editingAgent, showThinking })
+      setView('details')
+    } catch (error) {
+      console.error('Failed to update output format:', error)
+    }
+  }, [editingAgent, showThinking, updateAgent])
+
   const handleConfirmDelete = useCallback(async () => {
     if (!agentToDelete) return
     try {
       await deleteAgent(agentToDelete.id)
-      closeDialog()
+      returnToList()
     } catch (error) {
       console.error('Failed to delete agent:', error)
     }
-  }, [agentToDelete, closeDialog, deleteAgent])
+  }, [agentToDelete, deleteAgent, returnToList])
 
   const detailAgent = editingAgent
   const candidates = detailAgent?.modelCandidates?.length
@@ -258,6 +309,13 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
           </section>
 
           <section className="border-t border-zinc-100 pt-6">
+            <div className="flex items-start justify-between gap-4">
+              <div><h3 className="text-sm font-semibold text-zinc-900">模型思考</h3><p className="mt-1 text-sm text-zinc-500">{detailAgent.showThinking ? '显示模型思考' : '不显示模型思考'}</p></div>
+              <Button variant="outline" size="sm" onClick={() => handleManageThinking(detailAgent)}>{copy.configure}</Button>
+            </div>
+          </section>
+
+          <section className="border-t border-zinc-100 pt-6">
             <h3 className="text-sm font-semibold text-zinc-900">{copy.systemInstructions}</h3>
             <p className="mt-1 text-sm text-zinc-500">{detailAgent.isBuiltIn ? copy.builtInInstructions : copy.customInstructions}</p>
             <pre className="mt-3 max-h-48 overflow-auto rounded-lg bg-zinc-50 p-4 whitespace-pre-wrap font-mono text-xs leading-5 text-zinc-600">{detailAgent.systemPrompt}</pre>
@@ -267,7 +325,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     )
   }
 
-  const renderDialogContent = () => {
+  const renderAgentPageContent = () => {
     if (view === 'create' || view === 'edit') {
       return (
         <div className="px-6 py-6 sm:px-8">
@@ -277,7 +335,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
             defaultProviderId={activeProviderId}
             defaultModel={activeModel}
             onSave={view === 'edit' ? handleSaveEdit : handleSaveCreate}
-            onCancel={() => view === 'edit' ? setView('details') : closeDialog()}
+            onCancel={() => view === 'edit' ? setView('details') : returnToList()}
           />
         </div>
       )
@@ -303,6 +361,16 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
       )
     }
 
+    if (view === 'thinking' && editingAgent) {
+      return (
+        <div className="px-6 py-6 sm:px-8">
+          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
+          <OutputFormatPanel showThinking={showThinking} onShowThinkingChange={setShowThinking} />
+          <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveThinking()}>{copy.save}</Button></div>
+        </div>
+      )
+    }
+
     if (view === 'confirm-delete' && agentToDelete) {
       return (
         <div className="px-6 py-12 text-center sm:px-8">
@@ -317,8 +385,38 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     return renderDetail()
   }
 
+  const handleAgentPageBack = () => {
+    if (view === 'details' || view === 'create') {
+      returnToList()
+      return
+    }
+    setAgentToDelete(null)
+    setView('details')
+  }
+
+  if (screen === 'agent') {
+    const title = editingAgent ? agentDisplayName(editingAgent, copy) : copy.create
+    return (
+      <div ref={workspaceRef} className={cn('min-h-[580px] bg-white/55', className)}>
+        <div className="mx-auto w-full max-w-6xl px-6 py-8 sm:px-10 sm:py-10">
+          <button
+            type="button"
+            onClick={handleAgentPageBack}
+            className="inline-flex items-center gap-1.5 text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200"
+          >
+            <ChevronLeft className="h-4 w-4" />
+            {view === 'details' || view === 'create' ? copy.workspace : `${copy.back} ${title}`}
+          </button>
+          <div className="mt-5 overflow-hidden rounded-lg border border-zinc-200/80 bg-white shadow-[0_18px_40px_-32px_rgba(30,41,59,0.38)]">
+            {renderAgentPageContent()}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className={cn('min-h-[580px] bg-white/55', className)}>
+    <div ref={workspaceRef} className={cn('min-h-[580px] bg-white/55', className)}>
       <div className="mx-auto w-full max-w-6xl px-6 py-8 sm:px-10 sm:py-10">
         <header className="flex flex-col gap-5 border-b border-zinc-200/80 pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -342,11 +440,6 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
           {customAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{customAgents.map((agent) => <AgentCard key={agent.id} agent={agent} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <button type="button" onClick={openCreate} className="flex min-h-32 w-full items-center justify-center rounded-lg border border-dashed border-indigo-200 bg-white/60 p-6 text-sm font-medium text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-50/50">{copy.specialist}</button>}
         </section>
       </div>
-
-      <Dialog open={dialogOpen} onOpenChange={(open) => open ? setDialogOpen(true) : closeDialog()} className="max-w-5xl p-0">
-        <DialogClose onClose={closeDialog} />
-        {renderDialogContent()}
-      </Dialog>
     </div>
   )
 }

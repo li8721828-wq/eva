@@ -140,6 +140,12 @@ describe('createProvider', () => {
 })
 
 describe('OpenAIProvider streaming tool calls', () => {
+  it('recognizes DeepSeek Reasoner as a reasoning-capable model', () => {
+    const provider = new OpenAIProvider('test', 'Test', 'deepseek', { apiKey: 'test-key' })
+    expect(provider.supportsReasoning('deepseek-reasoner')).toBe(true)
+    expect(provider.supportsReasoning('deepseek-chat')).toBe(false)
+  })
+
   it('emits one complete tool call instead of duplicating streamed arguments', async () => {
     async function* streamToolCall() {
       yield {

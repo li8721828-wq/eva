@@ -340,7 +340,6 @@ export function TaskWorkspacePanel() {
                 <span className="text-sm font-semibold text-zinc-800">Task workspace</span>
                 {loading && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" />}
               </div>
-              <p className="mt-1 text-xs leading-5 text-zinc-500">A compact overview of this conversation's work.</p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <span className={cn('rounded-full px-2 py-1 text-[11px] font-medium', taskStatus === 'completed' ? 'bg-emerald-50 text-emerald-700' : taskStatus === 'failed' ? 'bg-red-50 text-red-700' : taskStatus ? 'bg-violet-50 text-violet-700' : 'bg-zinc-100 text-zinc-500')}>
@@ -361,7 +360,6 @@ export function TaskWorkspacePanel() {
             <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
               <PanelTopOpen className="mb-3 h-6 w-6 text-violet-300" />
               <p className="font-medium text-zinc-700">No task plan yet</p>
-              <p className="mt-1">When Eva starts a Goal or Expert task, its plan is retained here and completed steps are checked automatically.</p>
             </div>
           ) : (
             <>
@@ -395,9 +393,7 @@ export function TaskWorkspacePanel() {
               <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Generated documents</h2>
               <button type="button" onClick={() => setRightPanelTab('files')} className="text-xs font-medium text-violet-700 hover:text-violet-900">Browse files</button>
             </div>
-            {artifacts.length === 0 ? (
-              <p className="text-xs leading-5 text-zinc-500">Generated files will appear here as the task creates or updates them.</p>
-            ) : (
+            {artifacts.length > 0 && (
               <div className="space-y-1">
                 {visibleArtifacts.map((artifact) => <button key={artifact.id} type="button" onClick={() => void openArtifact(artifact)} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={artifact.path}>
                   <FileText className="h-4 w-4 shrink-0 text-violet-400" />

@@ -1,11 +1,12 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
 
 export interface ConversationStreamState {
   isStreaming: boolean
   content: string
+  reasoningContent: string
   toolCalls: ToolCall[]
   status: string
   startedAt: number | null
@@ -13,7 +14,7 @@ export interface ConversationStreamState {
 }
 
 function createIdleStream(): ConversationStreamState {
-  return { isStreaming: false, content: '', toolCalls: [], status: '', startedAt: null, lastActivityAt: null }
+  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], status: '', startedAt: null, lastActivityAt: null }
 }
 
 interface ChatState {
@@ -24,6 +25,7 @@ interface ChatState {
   streamingByConversation: Record<string, ConversationStreamState>
   inputText: string
   referenceImages: ChatImageAttachment[]
+  documentAttachments: ChatDocumentAttachment[]
   error: string | null
 
   // Data setters
@@ -33,6 +35,7 @@ interface ChatState {
   addMessage: (message: ChatMessage) => void
   setInputText: (text: string) => void
   setReferenceImages: (images: ChatImageAttachment[]) => void
+  setDocumentAttachments: (attachments: ChatDocumentAttachment[]) => void
   setError: (error: string | null) => void
   updateMessageFavorite: (messageId: string, favorited: boolean) => Promise<void>
   deleteMessagesFrom: (messageId: string) => Promise<void>
@@ -77,6 +80,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingByConversation: {},
   inputText: '',
   referenceImages: [],
+  documentAttachments: [],
   error: null,
 
   setConversations: (conversations) => set({ conversations }),
@@ -85,6 +89,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
   setInputText: (text) => set({ inputText: text }),
   setReferenceImages: (images) => set({ referenceImages: images }),
+  setDocumentAttachments: (attachments) => set({ documentAttachments: attachments }),
   setError: (error) => set({ error }),
 
   updateMessageFavorite: async (messageId, favorited) => {
@@ -326,10 +331,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (agentId) => {
-    const { inputText, referenceImages, currentConversationId } = get()
-    if ((!inputText.trim() && referenceImages.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
+    const { inputText, referenceImages, documentAttachments, currentConversationId } = get()
+    if ((!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
 
-    const messageContent = inputText.trim() || 'Create an editable Blender model from the attached reference images.'
+    const messageContent = inputText.trim() || (referenceImages.length ? 'Create an editable Blender model from the attached reference images.' : 'Read and analyze the attached files.')
 
     let convId = currentConversationId
     const existingConversation = convId
@@ -348,7 +353,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     // Selecting an image is explicit consent to let this conversation read it.
     // Preserve workspace write access while adding image folders as read-only grants.
-    if (conversation && conversation.permissionLevel !== 'full-access' && referenceImages.length > 0) {
+    if (conversation && conversation.permissionLevel !== 'full-access' && (referenceImages.length > 0 || documentAttachments.length > 0)) {
       const existingGrants = conversation.fileAccessGrants || []
       const nextGrants = [...existingGrants]
       for (const image of referenceImages) {
@@ -380,6 +385,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversationId: convId,
       role: 'user',
       content: messageContent,
+      attachments: documentAttachments,
       images: referenceImages,
       timestamp: Date.now(),
     }
@@ -388,6 +394,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: [...s.messages, userMessage],
       inputText: '',
       referenceImages: [],
+      documentAttachments: [],
       streamingByConversation: {
         ...s.streamingByConversation,
         [convId!]: { isStreaming: true, content: '', toolCalls: [], status: 'Preparing the request...', startedAt: Date.now(), lastActivityAt: Date.now() },
@@ -396,7 +403,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     try {
-      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages)
+      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments)
     } catch (err) {
       console.error('Failed to send message:', err)
       set((s) => ({
@@ -425,6 +432,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     switch (event.type) {
       case 'thinking': {
         set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
+        break
+      }
+      for (const attachment of documentAttachments) {
+        const folder = attachment.kind === 'folder' ? attachment.path : parentDirectory(attachment.path)
+        if (folder && !nextGrants.some((grant) => grant.path === folder)) {
+          nextGrants.push({ path: folder, access: 'read' })
+        }
+      }
+
+      case 'reasoning_delta': {
+        if (event.content) {
+          set((s) => {
+            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningContent: stream.reasoningContent + event.content!, status: '模型正在思考...', lastActivityAt: Date.now() } } }
+          })
+        }
         break
       }
 
@@ -487,6 +510,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             conversationId,
             role: 'assistant',
             content: finalContent,
+            reasoningContent: stream.reasoningContent || undefined,
             toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,
             usage: event.usage,
             timestamp: Date.now(),
