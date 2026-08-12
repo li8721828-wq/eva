@@ -4,7 +4,7 @@ export interface ToolCatalogEntry {
   id: string
   label: string
   description: string
-  category: 'Files' | 'Search' | 'Execution' | 'Internet' | 'Integrations'
+  category: 'Files' | 'Search' | 'Execution' | 'Internet' | 'Automation' | 'Integrations'
   risk: ToolRiskLevel
 }
 
@@ -26,8 +26,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'desktop_observe', label: 'Desktop observer', description: 'Capture the visible foreground Windows surface and every visible taskbar as structured names, roles, bounds, states, and click points. Hidden/background windows and password values are never exposed. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'keyboard_control', label: 'Keyboard control', description: 'Type into a focused visible control or press navigation keys after a recent desktop observation. The foreground window is revalidated and typed content is not returned. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'desktop_session', label: 'Desktop control session', description: 'Bound a multi-step visible-desktop workflow to one conversation with an objective, action budget, pause/resume, timeout, and step record. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
-  { id: 'browser_control', label: 'Browser control', description: 'Open and interact with an isolated visible browser session using accessible page selectors. Login, CAPTCHA, passwords, and final submission remain user-controlled.', category: 'Execution', risk: 'system' },
-  { id: 'form_fill_workflow', label: 'Form/table fill workflow', description: 'Analyze and fill explicit fields in a browser session. It never submits the final form and requires a review before confirmation.', category: 'Integrations', risk: 'system' },
+  { id: 'browser_control', label: 'Browser control', description: 'Open and interact with an isolated visible browser session using accessible controls or visual canvas coordinates. Login, CAPTCHA, passwords, and final submission remain user-controlled.', category: 'Execution', risk: 'system' },
+  { id: 'form_fill_workflow', label: 'Form/table fill workflow', description: 'Analyze and fill explicit fields in a browser session. It never submits the final form and requires a review before confirmation.', category: 'Automation', risk: 'system' },
   { id: 'blender_inspect_scene', label: 'Inspect Blender scene', description: 'Read a compact summary of a configured Blender project.', category: 'Integrations', risk: 'read' },
   { id: 'blender_run_script', label: 'Run Blender script', description: 'Run an approved bpy script through the configured Blender Connector.', category: 'Integrations', risk: 'system' },
   { id: 'blender_model_from_reference', label: 'Model from reference images', description: 'Create a new editable .blend model from attached visual references.', category: 'Integrations', risk: 'system' },
@@ -37,4 +37,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 17
+export const TOOL_CATALOG_VERSION = 18

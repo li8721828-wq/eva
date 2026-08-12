@@ -659,6 +659,20 @@ export function registerConversationHandlers(services?: ChatServices): void {
     }
   )
 
+  ipcMain.handle(
+    IPC.CONVERSATION_MESSAGE_UPDATE,
+    async (_event, conversationId: string, messageId: string, data: Partial<Pick<ChatMessage, 'favorited'>>): Promise<void> => {
+      await getStorage().conversations.updateMessage(conversationId, messageId, data)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.CONVERSATION_MESSAGES_DELETE_FROM,
+    async (_event, conversationId: string, messageId: string): Promise<void> => {
+      await getStorage().conversations.deleteMessages(conversationId, messageId)
+    }
+  )
+
   // ─── Chat: send (fire-and-forget; events streamed via CHAT_STREAM) ──────────
 
   ipcMain.on(

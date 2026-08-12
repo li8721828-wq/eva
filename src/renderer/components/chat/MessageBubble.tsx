@@ -7,8 +7,10 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, RefreshCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
+import { useChatStore } from '@/stores/use-chat-store'
+import { useAppStore } from '@/stores/use-app-store'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -103,6 +105,34 @@ export function MarkdownMessageContent({ content, className }: { content: string
 export function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
+  const language = useAppStore((state) => state.language)
+  const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
+  const regenerateFromMessage = useChatStore((state) => state.regenerateFromMessage)
+  const deleteMessagesFrom = useChatStore((state) => state.deleteMessagesFrom)
+  const [copied, setCopied] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const actionCopy = language === 'zh'
+    ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成', remove: '删除回复', confirm: '删除这条回复及其后续内容吗？' }
+    : language === 'ja'
+      ? { copy: 'コピー', copied: 'コピー済み', favorite: 'お気に入り', unfavorite: 'お気に入りを解除', regenerate: '再生成', remove: '返信を削除', confirm: 'この返信と後続の内容を削除しますか？' }
+      : { copy: 'Copy', copied: 'Copied', favorite: 'Favorite', unfavorite: 'Unfavorite', regenerate: 'Regenerate', remove: 'Delete reply', confirm: 'Delete this reply and everything after it?' }
+
+  const handleCopyAssistant = async () => {
+    await navigator.clipboard.writeText(message.content)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+
+  const handleRegenerate = async () => {
+    setBusy(true)
+    try { await regenerateFromMessage(message.id) } finally { setBusy(false) }
+  }
+
+  const handleDelete = async () => {
+    if (!window.confirm(actionCopy.confirm)) return
+    setBusy(true)
+    try { await deleteMessagesFrom(message.id) } finally { setBusy(false) }
+  }
 
   if (isUser) {
     return (
@@ -146,7 +176,7 @@ export function MessageBubble({ message, className, isStreaming = false, convers
   }
 
   return (
-    <article className={cn('flex items-start gap-3', className)}>
+    <article className={cn('group flex items-start gap-3', className)}>
       {/* Avatar */}
       <div
         aria-busy={isStreaming || undefined}
@@ -174,6 +204,23 @@ export function MessageBubble({ message, className, isStreaming = false, convers
           <MarkdownMessageContent content={message.content} />
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>
+
+        {!isStreaming && !isTool && (
+          <div className="mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <button type="button" onClick={() => void handleCopyAssistant()} disabled={busy} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-50 hover:text-zinc-700" title={actionCopy.copy} aria-label={actionCopy.copy}>
+              {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? actionCopy.copied : actionCopy.copy}
+            </button>
+            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} disabled={busy} className={cn('inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors hover:bg-zinc-50', message.favorited ? 'text-violet-600' : 'text-zinc-400 hover:text-zinc-700')} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
+              <Heart className={cn('h-3.5 w-3.5', message.favorited && 'fill-current')} />{message.favorited ? actionCopy.unfavorite : actionCopy.favorite}
+            </button>
+            <button type="button" onClick={() => void handleRegenerate()} disabled={busy} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-50 hover:text-zinc-700" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
+              <RefreshCw className={cn('h-3.5 w-3.5', busy && 'animate-spin')} />{actionCopy.regenerate}
+            </button>
+            <button type="button" onClick={() => void handleDelete()} disabled={busy} className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors hover:bg-red-50 hover:text-red-600" title={actionCopy.remove} aria-label={actionCopy.remove}>
+              <Trash2 className="h-3.5 w-3.5" />{actionCopy.remove}
+            </button>
+          </div>
+        )}
 
         {/* Tool calls */}
         {message.toolCalls?.length ? <ToolCallGroupView toolCalls={message.toolCalls} className="mt-3" /> : null}

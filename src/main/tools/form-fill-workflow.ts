@@ -1,5 +1,5 @@
 import type { ToolContext, ToolExecutor } from './index'
-import { runBrowserObserve, runBrowserInteraction } from './browser-control-tools'
+import { runBrowserObserve, runBrowserInteraction, runBrowserSpreadsheetPaste } from './browser-control-tools'
 
 /**
  * Form and table filling is deliberately a workflow tool, separate from the
@@ -12,13 +12,14 @@ export function createFormFillWorkflowTools(): ToolExecutor[] {
 const formFillWorkflowTool: ToolExecutor = {
   definition: {
     name: 'form_fill_workflow',
-    description: 'Prepare, validate, and execute a browser form or table filling workflow from explicit field mappings. Uses browser_control underneath but never submits or sends data; final submission must be performed with browser_control and confirmSubmit: true after review.',
+    description: 'Prepare, validate, and execute a browser form or table filling workflow from explicit field mappings. It can paste TSV into the currently selected spreadsheet cell without visual coordinates. It never submits or sends data; final submission must be performed with browser_control and confirmSubmit: true after review.',
     parameters: {
       type: 'object',
       properties: {
         browserSessionId: { type: 'string', description: 'Browser session returned by browser_control open.' },
-        action: { type: 'string', enum: ['analyze', 'fill'], description: 'Analyze available form fields or fill explicit mappings.' },
+        action: { type: 'string', enum: ['analyze', 'fill', 'paste_table'], description: 'Analyze available form fields, fill explicit mappings, or paste TSV values starting at the currently selected spreadsheet cell.' },
         mappings: { type: 'array', description: 'For fill: entries with an observed CSS selector and a value. Do not include passwords or credentials.', items: { type: 'object', properties: { selector: { type: 'string' }, value: { type: 'string' }, kind: { type: 'string', enum: ['text', 'select'] } }, required: ['selector', 'value'] } },
+        tsv: { type: 'string', description: 'For paste_table: tab-separated rows to insert from the currently selected spreadsheet cell. Do not include credentials or data the user did not authorize.' },
       },
       required: ['browserSessionId', 'action'],
     },
@@ -29,6 +30,11 @@ const formFillWorkflowTool: ToolExecutor = {
     const action = params.action
     if (!browserSessionId) throw new Error('browserSessionId is required.')
     if (action === 'analyze') return runBrowserObserve(browserSessionId, context.conversationId)
+    if (action === 'paste_table') {
+      if (typeof params.tsv !== 'string') throw new Error('paste_table requires tsv text.')
+      const result = await runBrowserSpreadsheetPaste(browserSessionId, context.conversationId, params.tsv)
+      return JSON.stringify({ ...result, submitRequired: true, guidance: 'The TSV values were pasted from the currently selected spreadsheet cell. Observe the browser to verify the grid before saving or submitting.' })
+    }
     if (action !== 'fill') throw new Error('action must be analyze or fill.')
     if (!Array.isArray(params.mappings) || params.mappings.length === 0) throw new Error('fill requires at least one explicit selector/value mapping.')
     const results: Array<Record<string, unknown>> = []

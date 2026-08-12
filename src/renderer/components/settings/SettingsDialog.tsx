@@ -109,6 +109,7 @@ export function SettingsDialog() {
   const [qqResult, setQqResult] = useState<{ success: boolean; message: string } | null>(null)
   const [automation, setAutomation] = useState<AutomationConfig>(DEFAULT_AUTOMATION_CONFIG)
   const copy = uiCopy[language].settings
+  const automationCopy = uiCopy[language].automation
 
   const getProviderTestConfig = (): ProviderTestConfig => ({
     id: editingProviderId || `provider-${providerType}`,
@@ -771,37 +772,44 @@ export function SettingsDialog() {
         </TabsContent>
 
         <TabsContent value="automation" className="settings-dialog__content">
-          <section className="mx-auto w-full max-w-5xl divide-y divide-zinc-200 border-y border-zinc-200">
-            <div className="py-5">
-              <h2 className="text-base font-semibold text-zinc-900">Internal capabilities</h2>
-              <p className="mt-1 text-sm leading-6 text-zinc-500">Capabilities available to the agent as internal tools. They stay within the current conversation and are injected into system context only when enabled.</p>
+          <section className="mx-auto w-full max-w-6xl">
+            <div className="mb-6">
+              <h2 className="text-base font-semibold text-zinc-900">{automationCopy.title}</h2>
+              <p className="mt-1 text-sm leading-6 text-zinc-500">{automationCopy.description}</p>
             </div>
-            {HIDDEN_CAPABILITIES.map((capability) => {
-              const config = automation[capability.id]
-              return (
-                <article key={capability.id} className="grid gap-5 py-5 lg:grid-cols-[minmax(0,1fr)_260px]">
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-semibold text-zinc-900">{capability.name}</h3>
-                    <p className="mt-1 text-sm leading-6 text-zinc-600">{capability.description}</p>
-                    <dl className="mt-4 grid gap-3 text-xs leading-5 text-zinc-500">
-                      <div><dt className="font-medium text-zinc-700">Flow</dt><dd>{capability.workflow}</dd></div>
-                      <div><dt className="font-medium text-zinc-700">System context</dt><dd>{capability.context}</dd></div>
-                      <div><dt className="font-medium text-zinc-700">Skills and services</dt><dd>{capability.dependencies}</dd></div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              {HIDDEN_CAPABILITIES.map((capability) => {
+                const config = automation[capability.id]
+                return (
+                  <article key={capability.id} className="flex min-h-[270px] flex-col rounded-xl border border-zinc-200/90 bg-white/85 p-5 shadow-[0_12px_30px_-24px_rgba(79,70,229,0.55)] transition-shadow hover:shadow-[0_16px_34px_-24px_rgba(79,70,229,0.6)]">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <h3 className="text-sm font-semibold text-zinc-900">{capability.name}</h3>
+                        <p className="mt-1 text-sm leading-6 text-zinc-600">{capability.description}</p>
+                      </div>
+                      <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs font-medium text-zinc-600">
+                        <span>{config.enabled ? automationCopy.enabled : automationCopy.off}</span>
+                        <input type="checkbox" checked={config.enabled} onChange={(event) => void updateAutomation(capability.id, { enabled: event.target.checked })} className="h-4 w-4 accent-violet-600" />
+                      </label>
+                    </div>
+                    <dl className="mt-5 grid gap-3 border-t border-zinc-100 pt-4 text-xs leading-5 text-zinc-500">
+                      <div><dt className="font-medium text-zinc-700">{automationCopy.flow}</dt><dd className="mt-0.5">{capability.workflow}</dd></div>
+                      <div><dt className="font-medium text-zinc-700">{automationCopy.context}</dt><dd className="mt-0.5 line-clamp-2">{capability.context}</dd></div>
+                      <div><dt className="font-medium text-zinc-700">{automationCopy.services}</dt><dd className="mt-0.5 line-clamp-2">{capability.dependencies}</dd></div>
                     </dl>
-                  </div>
-                  <div className="flex flex-col gap-3 self-start border-l border-zinc-200 pl-5 text-sm">
-                    <label className="flex cursor-pointer items-center justify-between gap-3 text-zinc-700"><span>Enabled</span><input type="checkbox" checked={config.enabled} onChange={(event) => void updateAutomation(capability.id, { enabled: event.target.checked })} className="h-4 w-4 accent-violet-600" /></label>
-                    <label className="flex cursor-pointer items-center justify-between gap-3 text-zinc-700"><span>Agent may invoke</span><input type="checkbox" checked={config.autoInvoke} disabled={!config.enabled} onChange={(event) => void updateAutomation(capability.id, { autoInvoke: event.target.checked })} className="h-4 w-4 accent-violet-600 disabled:opacity-40" /></label>
-                    {capability.id === 'goal' && (
-                      <>
-                        <label className="space-y-1 text-xs text-zinc-500"><span>Maximum steps</span><Input type="number" min={2} max={30} value={automation.goal.maxSteps} onChange={(event) => void updateAutomation('goal', { maxSteps: Math.max(2, Math.min(30, Number(event.target.value) || 12)) })} /></label>
-                        <label className="space-y-1 text-xs text-zinc-500"><span>Timeout (minutes)</span><Input type="number" min={1} max={120} value={automation.goal.timeoutMinutes} onChange={(event) => void updateAutomation('goal', { timeoutMinutes: Math.max(1, Math.min(120, Number(event.target.value) || 30)) })} /></label>
-                      </>
-                    )}
-                  </div>
-                </article>
-              )
-            })}
+                    <div className="mt-auto border-t border-zinc-100 pt-4">
+                      <label className="flex cursor-pointer items-center justify-between gap-3 text-sm text-zinc-700"><span>{automationCopy.invoke}</span><input type="checkbox" checked={config.autoInvoke} disabled={!config.enabled} onChange={(event) => void updateAutomation(capability.id, { autoInvoke: event.target.checked })} className="h-4 w-4 accent-violet-600 disabled:opacity-40" /></label>
+                      {capability.id === 'goal' && (
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                          <label className="space-y-1 text-xs text-zinc-500"><span>{automationCopy.maxSteps}</span><Input type="number" min={2} max={30} value={automation.goal.maxSteps} onChange={(event) => void updateAutomation('goal', { maxSteps: Math.max(2, Math.min(30, Number(event.target.value) || 12)) })} /></label>
+                          <label className="space-y-1 text-xs text-zinc-500"><span>{automationCopy.timeout}</span><Input type="number" min={1} max={120} value={automation.goal.timeoutMinutes} onChange={(event) => void updateAutomation('goal', { timeoutMinutes: Math.max(1, Math.min(120, Number(event.target.value) || 30)) })} /></label>
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
           </section>
         </TabsContent>
 

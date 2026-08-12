@@ -91,7 +91,9 @@ const desktopObserveTool: ToolExecutor = {
         detail: action === 'controls' ? '正在读取当前前台窗口及其可访问控件。' : '正在确认当前前台窗口。',
         objective: '桌面感知',
       })
-      const observed = await observeVisibleDesktop(action, maxElements, true)
+      // Passive observations should not repaint the floating status card.
+      // Only an explicitly started desktop session owns that overlay.
+      const observed = await observeVisibleDesktop(action, maxElements, Boolean(params.sessionId))
       const { snapshot, imagePath } = observed
       const observation = storeDesktopObservation({
         activeWindow: snapshot.activeWindow,

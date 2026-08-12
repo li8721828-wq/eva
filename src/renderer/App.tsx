@@ -187,11 +187,7 @@ const App: React.FC = () => {
 
       {/* Main Workspace */}
       <div className="flex flex-1 flex-col min-w-0">
-        {settingsOpen ? (
-          <SettingsDialog />
-        ) : (
-          <>
-          <div className="flex min-h-0 min-w-0 flex-1">
+        <div className={settingsOpen ? 'hidden' : 'flex min-h-0 min-w-0 flex-1'} aria-hidden={settingsOpen || undefined}>
           <div className="min-h-0 min-w-0 flex-1">
             {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
           </div>
@@ -240,13 +236,12 @@ const App: React.FC = () => {
         </div>
 
         {/* Terminal Panel */}
-        {terminalVisible && (
+        {!settingsOpen && terminalVisible && (
           <Suspense fallback={<LazyFallback className="h-48" />}>
             <TerminalPanel />
           </Suspense>
         )}
-          </>
-        )}
+        {settingsOpen && <SettingsDialog />}
       </div>
 
       {/* Agent Manager Dialog */}

@@ -24,6 +24,7 @@ const TERMINAL_STATES = new Set<DesktopControlOverlayState>(['completed', 'stopp
  * takes focus, so it stays visible while Eva operates another application.
  */
 export function updateDesktopControlOverlay(update: DesktopControlOverlayUpdate): void {
+  if (!update.sessionId) return
   latestUpdate = update
   if (dismissTimer) clearTimeout(dismissTimer)
 
@@ -61,12 +62,12 @@ function ensureOverlayWindow(): BrowserWindow {
   if (overlayWindow && !overlayWindow.isDestroyed()) return overlayWindow
 
   overlayWindow = new BrowserWindow({
-    width: 360,
-    height: 188,
-    minWidth: 360,
-    maxWidth: 360,
-    minHeight: 188,
-    maxHeight: 188,
+    width: 344,
+    height: 154,
+    minWidth: 344,
+    maxWidth: 344,
+    minHeight: 154,
+    maxHeight: 154,
     show: false,
     frame: false,
     transparent: true,
@@ -108,7 +109,7 @@ function ensureOverlayWindow(): BrowserWindow {
 
 function placeOverlay(window: BrowserWindow): void {
   const workArea = screen.getPrimaryDisplay().workArea
-  window.setPosition(workArea.x + workArea.width - 380, workArea.y + workArea.height - 208)
+  window.setPosition(workArea.x + workArea.width - 364, workArea.y + workArea.height - 174)
 }
 
 function sendUpdate(window: BrowserWindow, update: DesktopControlOverlayUpdate): void {
@@ -131,8 +132,8 @@ function installStopButton(window: BrowserWindow): void {
     button.id = 'stop';
     button.className = 'stop';
     button.type = 'button';
-    button.textContent = '\\u7ed3\\u675f';
-    button.title = '\\u7ed3\\u675f\\u684c\\u9762\\u63a7\\u5236';
+    button.textContent = '\\u505c\\u6b62';
+    button.title = '\\u505c\\u6b62\\u684c\\u9762\\u4f1a\\u8bdd';
     button.addEventListener('click', () => { window.location.href = 'eva-desktop-control:stop'; });
     top.appendChild(button);
   })()`, true).catch(() => undefined)
@@ -152,29 +153,29 @@ const OVERLAY_HTML = `<!doctype html>
   html, body { width: 100%; height: 100%; margin: 0; background: transparent; overflow: hidden; }
   .shell { height: 100%; padding: 8px; }
   .panel {
-    height: 172px; padding: 18px 18px 15px; border-radius: 18px;
-    color: #f7f5ff; background: rgba(28, 24, 43, .94);
-    border: 1px solid rgba(199, 178, 255, .24);
-    box-shadow: 0 18px 42px rgba(20, 14, 40, .32), inset 0 1px rgba(255,255,255,.08);
+    height: 138px; padding: 14px 15px 12px; border-radius: 16px;
+    color: #2d2940; background: rgba(255, 255, 255, .96);
+    border: 1px solid rgba(139, 117, 224, .18);
+    box-shadow: 0 14px 34px rgba(82, 67, 142, .18), inset 0 1px rgba(255,255,255,.9);
   }
   .top { display: flex; align-items: center; gap: 10px; }
   .orbital { position: relative; width: 28px; height: 28px; flex: 0 0 28px; }
-  .orbit { position: absolute; inset: 3px; border: 1px solid rgba(203, 185, 255, .78); border-radius: 50%; transform: rotate(-28deg); }
-  .core { position: absolute; left: 10px; top: 10px; width: 8px; height: 8px; background: #a982ff; border-radius: 50%; box-shadow: 0 0 12px rgba(169,130,255,.9); }
-  .satellite { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: #eadfff; box-shadow: 0 0 8px rgba(234,223,255,.9); }
+  .orbit { position: absolute; inset: 3px; border: 1px solid rgba(139, 117, 224, .42); border-radius: 50%; transform: rotate(-28deg); }
+  .core { position: absolute; left: 10px; top: 10px; width: 8px; height: 8px; background: #8666df; border-radius: 50%; box-shadow: 0 0 10px rgba(134,102,223,.42); }
+  .satellite { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: #bca8f5; box-shadow: 0 0 7px rgba(188,168,245,.65); }
   .satellite.a { left: 3px; top: 4px; } .satellite.b { right: 3px; bottom: 4px; }
   .topline { min-width: 0; flex: 1; }
-  .eyebrow { font-size: 10px; letter-spacing: 1.25px; color: #c7b7f5; font-weight: 650; }
-  .state { margin-top: 2px; font-size: 12px; color: #a9a3bb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pulse { width: 8px; height: 8px; border-radius: 50%; background: #9d7bff; box-shadow: 0 0 0 0 rgba(157,123,255,.62); animation: pulse 1.8s ease-out infinite; }
-  .stop { appearance: none; border: 0; border-radius: 7px; padding: 5px 8px; margin-left: 2px; background: rgba(255,255,255,.09); color: #e7e0fa; font: 600 11px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif; cursor: pointer; transition: background .15s ease, color .15s ease; }
-  .stop:hover { background: rgba(255,255,255,.17); color: #fff; }
-  h1 { margin: 15px 0 6px; font-size: 16px; line-height: 1.3; letter-spacing: 0; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  p { margin: 0; min-height: 34px; font-size: 12px; line-height: 1.45; color: #c4bed2; overflow: hidden; }
-  .footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.09); font-size: 11px; color: #9d96ae; }
+  .eyebrow { font-size: 10px; letter-spacing: 1.15px; color: #7762b7; font-weight: 700; }
+  .state { margin-top: 2px; font-size: 12px; color: #817b91; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pulse { width: 8px; height: 8px; border-radius: 50%; background: #8666df; box-shadow: 0 0 0 0 rgba(134,102,223,.42); animation: pulse 1.8s ease-out infinite; }
+  .stop { appearance: none; border: 1px solid rgba(134,102,223,.18); border-radius: 7px; padding: 5px 8px; margin-left: 2px; background: #f5f1ff; color: #6751a3; font: 600 11px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif; cursor: pointer; transition: background .15s ease, color .15s ease; }
+  .stop:hover { background: #ebe4ff; color: #4e3b88; }
+  h1 { margin: 12px 0 4px; font-size: 14px; line-height: 1.3; letter-spacing: 0; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  p { margin: 0; min-height: 28px; font-size: 11px; line-height: 1.4; color: #746f82; overflow: hidden; }
+  .footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(76,63,120,.09); font-size: 10px; color: #8d879b; }
   .progress { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .bar { width: 66px; height: 3px; overflow: hidden; border-radius: 99px; background: rgba(255,255,255,.12); }
-  .bar > i { display: block; width: 46%; height: 100%; border-radius: inherit; background: linear-gradient(90deg,#8a63f8,#cab5ff); animation: drift 1.35s ease-in-out infinite; }
+  .bar { width: 58px; height: 3px; overflow: hidden; border-radius: 99px; background: rgba(76,63,120,.1); }
+  .bar > i { display: block; width: 46%; height: 100%; border-radius: inherit; background: #9a7bea; animation: drift 1.35s ease-in-out infinite; }
   .terminal .pulse { background: #44d39b; animation: none; box-shadow: none; }
   .terminal .bar > i { width: 100%; animation: none; background: #44d39b; }
   .paused .pulse { background: #f4b85a; animation: none; box-shadow: none; }

@@ -8,6 +8,8 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { ToolAccessPanel } from './ToolAccessPanel'
 import { Save, X } from 'lucide-react'
+import { uiCopy } from '@/lib/ui-copy'
+import { useAppStore } from '@/stores/use-app-store'
 
 export interface AgentEditorProps {
   agent?: AgentConfig
@@ -36,6 +38,8 @@ export function AgentEditor({
   onCancel,
   className,
 }: AgentEditorProps) {
+  const language = useAppStore((state) => state.language)
+  const copy = uiCopy[language].agents
   const [name, setName] = useState(agent?.name || '')
   const [description, setDescription] = useState(agent?.description || '')
   const [role, setRole] = useState<AgentRole>(agent?.role || 'custom')
@@ -96,7 +100,7 @@ export function AgentEditor({
 
   const handleSave = () => {
     if (!name.trim()) {
-      setNameError('Name is required')
+      setNameError(copy.nameRequired)
       return
     }
     setNameError('')
@@ -116,17 +120,17 @@ export function AgentEditor({
   return (
     <div className={cn('flex flex-col gap-4 p-4', className)}>
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-medium text-zinc-800">{agent ? 'Edit Agent' : 'New Agent'}</h3>
+        <h3 className="text-sm font-medium text-zinc-800">{agent ? copy.edit : copy.create}</h3>
         <div className="flex items-center gap-2">
           {onCancel && (
             <Button variant="ghost" size="sm" onClick={onCancel} className="gap-1.5">
               <X className="h-3.5 w-3.5" />
-              Cancel
+              {copy.cancel}
             </Button>
           )}
           <Button size="sm" onClick={handleSave} className="gap-1.5">
             <Save className="h-3.5 w-3.5" />
-            Save
+            {language === 'zh' ? '保存' : language === 'ja' ? '保存' : 'Save'}
           </Button>
         </div>
       </div>
@@ -135,7 +139,7 @@ export function AgentEditor({
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <label className="text-sm font-medium text-zinc-500">
-            Name <span className="text-red-400">*</span>
+            {copy.name} <span className="text-red-400">*</span>
           </label>
           <Input
             value={name}
@@ -143,14 +147,14 @@ export function AgentEditor({
               setName(e.target.value)
               if (nameError) setNameError('')
             }}
-            placeholder="e.g. Researcher Jack"
+            placeholder={language === 'zh' ? '例如：研究员小王' : language === 'ja' ? '例：リサーチャー田中' : 'e.g. Researcher Jack'}
             className={nameError ? 'border-red-500' : ''}
           />
           {nameError && <p className="text-xs text-red-500">{nameError}</p>}
-          <p className="text-xs leading-5 text-zinc-500">Roles are reusable templates. Give each Agent an individual name, such as Researcher Jack or Researcher Lucy.</p>
+          <p className="text-xs leading-5 text-zinc-500">{copy.nameHint}</p>
         </div>
         <div className="space-y-1.5">
-          <label className="text-sm font-medium text-zinc-500">Role</label>
+          <label className="text-sm font-medium text-zinc-500">{copy.role}</label>
           <Select
             value={role}
             onChange={(e) => setRole(e.target.value as AgentRole)}
@@ -161,21 +165,21 @@ export function AgentEditor({
 
       {/* Description */}
       <div className="space-y-1.5">
-        <label className="text-sm font-medium text-zinc-500">Description</label>
+        <label className="text-sm font-medium text-zinc-500">{copy.descriptionLabel}</label>
         <Input
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          placeholder="Brief description of what this agent does"
+          placeholder={language === 'zh' ? '简要说明该智能体的职责' : language === 'ja' ? 'このエージェントの役割を簡潔に説明' : 'Brief description of what this agent does'}
         />
       </div>
 
       {/* System Prompt */}
       <div className="space-y-1.5">
-        <label className="text-sm font-medium text-zinc-500">System Prompt</label>
+        <label className="text-sm font-medium text-zinc-500">{copy.systemPrompt}</label>
         <Textarea
           value={systemPrompt}
           onChange={(e) => setSystemPrompt(e.target.value)}
-          placeholder="You are an expert..."
+          placeholder={language === 'zh' ? '你是一名专业的…' : language === 'ja' ? 'あなたは専門家です…' : 'You are an expert...'}
           rows={10}
           className="font-mono text-xs"
         />
@@ -184,7 +188,7 @@ export function AgentEditor({
       {/* Provider + Model (cascading) */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <label className="text-sm font-medium text-zinc-500">Provider</label>
+          <label className="text-sm font-medium text-zinc-500">{copy.provider}</label>
           <Select
             value={providerId}
             onChange={(e) => handleProviderChange(e.target.value)}
@@ -192,7 +196,7 @@ export function AgentEditor({
           />
         </div>
         <div className="space-y-1.5">
-          <label className="text-sm font-medium text-zinc-500">Model</label>
+          <label className="text-sm font-medium text-zinc-500">{copy.model}</label>
           <Select
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -204,7 +208,7 @@ export function AgentEditor({
       {/* Temperature + Max Iterations */}
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
-          <label className="text-sm font-medium text-zinc-500">Temperature: {temperature.toFixed(1)}</label>
+          <label className="text-sm font-medium text-zinc-500">{copy.temperature}: {temperature.toFixed(1)}</label>
           <input
             type="range"
             min="0"
@@ -216,7 +220,7 @@ export function AgentEditor({
           />
         </div>
         <div className="space-y-1.5">
-          <label className="text-sm font-medium text-zinc-500">Max Iterations</label>
+          <label className="text-sm font-medium text-zinc-500">{copy.iterationLimit}</label>
           <Input
             type="number"
             min={1}

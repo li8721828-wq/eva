@@ -5,6 +5,8 @@ export const IPC = {
   CONVERSATION_DELETE: 'conversation:delete',
   CONVERSATION_LOAD: 'conversation:load',
   CONVERSATION_UPDATE: 'conversation:update',
+  CONVERSATION_MESSAGE_UPDATE: 'conversation:message-update',
+  CONVERSATION_MESSAGES_DELETE_FROM: 'conversation:messages-delete-from',
   CONVERSATION_CHANGED: 'conversation:changed',
 
   // Activity log

@@ -299,12 +299,12 @@ export class AgentRunner {
         }
 
         const desktopImages = this.supportsVisionInput()
-          ? await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe'])
+          ? await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe', 'browser_control'])
           : []
         if (desktopImages.length > 0) {
           messages.push({
             role: 'user',
-            content: 'A desktop_observe call supplied this screenshot of the visible foreground desktop. Use it only as visual evidence for the currently visible surface. Do not infer or access anything hidden behind another window. Before interacting, use the returned observationId with mouse_control or keyboard_control; observe again after each meaningful action.',
+            content: 'A desktop_observe or browser_control call supplied a screenshot of a visible surface. Use it only as visual evidence for that surface. For desktop screenshots, use the returned observationId with mouse_control or keyboard_control. For browser screenshots, use the returned visualObservationId with browser_control click_at, type_at, scroll_at, or press_key. In either case, observe again after each meaningful action and never infer hidden content.',
             images: desktopImages,
           })
         }
@@ -685,7 +685,7 @@ export class AgentRunner {
 
   /**
    * Only Blender renders are sent back as multimodal user content. Tool
-   * screenshots (such as desktop_observe) remain execution evidence and must
+   * screenshots (such as desktop_observe and browser_control) remain execution evidence and must
    * not be attached to a follow-up model request: many OpenAI-compatible
    * endpoints accept text-only message parts and reject image_url entirely.
    */

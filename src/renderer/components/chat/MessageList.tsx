@@ -5,19 +5,22 @@ import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MessageBubble } from './MessageBubble'
 import { ToolCallGroupView } from './ToolCallView'
 import { WelcomeScreen } from './WelcomeScreen'
-import { Loader2 } from 'lucide-react'
+import { ChevronsDown, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
 
 const PAGE_SIZE = 100
-const CONVERSATION_SCROLL_STORAGE_KEY = 'eva.conversation-scroll-positions'
+const CONVERSATION_SCROLL_STORAGE_KEY = 'eva.conversation-scroll-positions.v2'
 const MAX_SAVED_SCROLL_POSITIONS = 200
 const conversationScrollOffsets = new Map<string, number>()
 const SCROLL_FOLLOW_THRESHOLD = 72
 const SMOOTH_SPIN_CLASS = 'animate-spin'
 const ESTIMATED_MESSAGE_HEIGHT = 180
 const VIRTUAL_OVERSCAN = 900
+const JUMP_TO_BOTTOM_THRESHOLD = 240
+
+type ScrollIndicator = { top: number; height: number }
 
 type RenderItem = { id: string; kind: 'message'; message: ChatMessage }
 
@@ -85,7 +88,7 @@ export function MessageList({ className }: MessageListProps) {
   const streamingContent = stream?.content || ''
   const streamingToolCalls = stream?.toolCalls || []
   const streamingStatus = stream?.status || ''
-  const { rightPanelVisible } = useAppStore()
+  const { rightPanelVisible, language } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const activeConversationIdRef = useRef<string | null>(currentConversationId)
@@ -93,26 +96,70 @@ export function MessageList({ className }: MessageListProps) {
   const pendingRestoreRef = useRef<string | null>(currentConversationId)
   const scrollPersistTimerRef = useRef<number | null>(null)
   const followStreamRef = useRef(true)
+  const lastScrollTopRef = useRef(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(800)
   const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({})
   const itemElementsRef = useRef(new Map<string, HTMLDivElement>())
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const scrollIndicatorTimerRef = useRef<number | null>(null)
+  const [scrollIndicatorVisible, setScrollIndicatorVisible] = useState(false)
+  const [scrollIndicator, setScrollIndicator] = useState<ScrollIndicator>({ top: 0, height: 100 })
+  const [canJumpToBottom, setCanJumpToBottom] = useState(false)
+
+  const updateScrollAffordances = useCallback((scrollArea: HTMLDivElement, reveal = false) => {
+    const overflow = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)
+    const height = scrollArea.scrollHeight > 0
+      ? Math.min(100, Math.max(9, (scrollArea.clientHeight / scrollArea.scrollHeight) * 100))
+      : 100
+    const top = overflow > 0 ? (scrollArea.scrollTop / overflow) * (100 - height) : 0
+    setScrollIndicator((previous) => (
+      Math.abs(previous.top - top) < 0.2 && Math.abs(previous.height - height) < 0.2
+        ? previous
+        : { top, height }
+    ))
+    setCanJumpToBottom(overflow - scrollArea.scrollTop > JUMP_TO_BOTTOM_THRESHOLD)
+
+    if (!reveal) return
+    setScrollIndicatorVisible(true)
+    if (scrollIndicatorTimerRef.current !== null) window.clearTimeout(scrollIndicatorTimerRef.current)
+    scrollIndicatorTimerRef.current = window.setTimeout(() => {
+      setScrollIndicatorVisible(false)
+      scrollIndicatorTimerRef.current = null
+    }, 900)
+  }, [])
 
   const scrollToBottom = (behavior: ScrollBehavior) => {
     const scrollArea = scrollAreaRef.current
     if (!scrollArea) return false
     scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior })
-    setScrollTop(Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight))
+    const nextScrollTop = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)
+    lastScrollTopRef.current = nextScrollTop
+    setScrollTop(nextScrollTop)
+    updateScrollAffordances(scrollArea, behavior === 'smooth')
     return true
   }
 
   const saveScrollPosition = (conversationId = currentConversationId, persist = false) => {
     const scrollArea = scrollAreaRef.current
-    if (!conversationId || !scrollArea) return
-    rememberScrollPosition(conversationId, scrollArea.scrollTop, persist)
+    if (!conversationId) return
+    const offset = scrollArea?.scrollTop ?? lastScrollTopRef.current
+    rememberScrollPosition(conversationId, offset, persist)
   }
+
+  useLayoutEffect(() => {
+    // Settings replaces the chat subtree. Layout-effect cleanup runs while
+    // this scroll container still exists, unlike passive cleanup which can
+    // run after React has detached the DOM node and lost the real offset.
+    return () => {
+      const conversationId = activeConversationIdRef.current
+      const scrollArea = scrollAreaRef.current
+      if (!conversationId || !scrollArea) return
+      lastScrollTopRef.current = scrollArea.scrollTop
+      rememberScrollPosition(conversationId, scrollArea.scrollTop, true)
+    }
+  }, [])
 
   const handleScroll = () => {
     const scrollArea = scrollAreaRef.current
@@ -125,10 +172,12 @@ export function MessageList({ className }: MessageListProps) {
     if (isRestoringCurrentConversation) {
       setScrollTop(scrollArea.scrollTop)
       setViewportHeight(scrollArea.clientHeight)
+      updateScrollAffordances(scrollArea)
       return
     }
 
     saveScrollPosition()
+    lastScrollTopRef.current = scrollArea.scrollTop
     if (scrollPersistTimerRef.current !== null) window.clearTimeout(scrollPersistTimerRef.current)
     scrollPersistTimerRef.current = window.setTimeout(() => {
       persistScrollPositions()
@@ -137,6 +186,7 @@ export function MessageList({ className }: MessageListProps) {
     setScrollTop(scrollArea.scrollTop)
     setViewportHeight(scrollArea.clientHeight)
     followStreamRef.current = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight <= SCROLL_FOLLOW_THRESHOLD
+    updateScrollAffordances(scrollArea, true)
   }
 
   // Keep older history out of the DOM until requested. The current page is
@@ -145,8 +195,14 @@ export function MessageList({ className }: MessageListProps) {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
     setMeasuredHeights({})
-    setScrollTop(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
+    const savedOffset = currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0
+    lastScrollTopRef.current = savedOffset
+    setScrollTop(savedOffset)
   }, [currentConversationId])
+
+  useEffect(() => () => {
+    if (scrollIndicatorTimerRef.current !== null) window.clearTimeout(scrollIndicatorTimerRef.current)
+  }, [])
 
   // Tool-role messages are retained for a valid model tool-call history, but
   // their full output is already available from the preceding tool card.
@@ -249,15 +305,6 @@ export function MessageList({ className }: MessageListProps) {
     }
   }, [])
 
-  useLayoutEffect(() => {
-    // Capture the outgoing conversation before the same scroll surface is
-    // reused for the next conversation. The ID is intentionally captured by
-    // this effect so positions can never be shared between conversations.
-    const conversationId = currentConversationId
-    activeConversationIdRef.current = conversationId
-    return () => saveScrollPosition(conversationId, true)
-  }, [currentConversationId])
-
   useEffect(() => {
     const flushScrollPosition = () => {
       saveScrollPosition(activeConversationIdRef.current, true)
@@ -274,16 +321,20 @@ export function MessageList({ className }: MessageListProps) {
     window.addEventListener('pagehide', flushScrollPosition)
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
-      // This cleanup runs after React has already painted the next
-      // conversation. Saving a closure-bound ID here used to overwrite the
-      // outgoing conversation with the new surface's top offset.
-      flushScrollPosition()
+      // The layout-effect cleanup above owns unmount persistence because it
+      // runs before the scroll node is detached. This cleanup only releases
+      // global listeners and pending timers.
+      if (scrollPersistTimerRef.current !== null) {
+        window.clearTimeout(scrollPersistTimerRef.current)
+        scrollPersistTimerRef.current = null
+      }
       window.removeEventListener('pagehide', flushScrollPosition)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
   }, [])
 
   useLayoutEffect(() => {
+    activeConversationIdRef.current = currentConversationId
     pendingRestoreRef.current = currentConversationId
     previousMessageCountRef.current = 0
   }, [currentConversationId])
@@ -318,9 +369,11 @@ export function MessageList({ className }: MessageListProps) {
       area.scrollTop = savedOffset === undefined
         ? area.scrollHeight
         : Math.min(savedOffset, Math.max(0, area.scrollHeight - area.clientHeight))
+      lastScrollTopRef.current = area.scrollTop
       setScrollTop(area.scrollTop)
       setViewportHeight(area.clientHeight)
       followStreamRef.current = area.scrollHeight - area.scrollTop - area.clientHeight <= SCROLL_FOLLOW_THRESHOLD
+      updateScrollAffordances(area)
     }
 
     // The virtualized list needs one layout frame to establish its spacers.
@@ -350,7 +403,7 @@ export function MessageList({ className }: MessageListProps) {
       if (settleTimer !== null) window.clearTimeout(settleTimer)
       if (finalSettleTimer !== null) window.clearTimeout(finalSettleTimer)
     }
-  }, [currentConversationId, isConversationLoading, messages.length, renderableMessages.length, visibleCount])
+  }, [currentConversationId, isConversationLoading, messages.length, renderableMessages.length, updateScrollAffordances, visibleCount])
 
   useLayoutEffect(() => {
     const previousMessageCount = previousMessageCountRef.current
@@ -369,28 +422,33 @@ export function MessageList({ className }: MessageListProps) {
   }, [currentConversationId, messages])
 
   useEffect(() => {
-    // Streaming updates can arrive many times per second. An immediate follow
-    // keeps the newest content visible without replaying a long smooth scroll.
+    // Tool state can update rapidly during desktop observation. Following on
+    // those updates kept resetting scrollTop near the bottom and made the
+    // rendered text visibly shake. Only follow newly streamed text.
     if (
       isStreaming &&
+      streamingContent &&
       pendingRestoreRef.current !== currentConversationId &&
       followStreamRef.current
     ) {
       scrollToBottom('auto')
     }
-  }, [isStreaming, streamingContent, streamingToolCalls])
+  }, [isStreaming, streamingContent])
 
   if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning) {
     return <WelcomeScreen className={className} />
   }
 
+  const jumpToBottomLabel = language === 'zh' ? '回到最新消息' : language === 'ja' ? '最新メッセージへ' : 'Jump to latest message'
+
   return (
-    <ScrollArea
-      key={currentConversationId ?? 'no-conversation'}
-      ref={scrollAreaRef}
-      onScroll={handleScroll}
-      className={cn('eva-message-scroll flex-1', className)}
-    >
+    <div className={cn('relative min-h-0 flex-1', className)}>
+      <ScrollArea
+        key={currentConversationId ?? 'no-conversation'}
+        ref={scrollAreaRef}
+        onScroll={handleScroll}
+        className="eva-message-scroll h-full"
+      >
       <div
         className={cn(
           'flex w-full flex-col px-12 py-10',
@@ -463,7 +521,35 @@ export function MessageList({ className }: MessageListProps) {
             }}
           />
         )}
+        </div>
+      </ScrollArea>
+
+      <div className="pointer-events-none absolute bottom-5 right-3 top-7 z-20">
+        <div
+          aria-hidden="true"
+          className={cn(
+            'absolute bottom-0 right-0 top-0 w-[3px] transition-opacity duration-300',
+            scrollIndicatorVisible ? 'opacity-100' : 'opacity-0'
+          )}
+        >
+          <span
+            className="absolute left-0 w-full rounded-full bg-violet-300/70 shadow-[0_0_7px_rgba(139,92,246,0.2)] transition-[top,height] duration-150"
+            style={{ top: `${scrollIndicator.top}%`, height: `${scrollIndicator.height}%` }}
+          />
+        </div>
+
+        {canJumpToBottom && (
+          <button
+            type="button"
+            onClick={() => scrollToBottom('smooth')}
+            title={jumpToBottomLabel}
+            aria-label={jumpToBottomLabel}
+            className="pointer-events-auto absolute bottom-2 right-3 grid h-9 w-9 place-items-center rounded-full border border-violet-100 bg-white/90 text-violet-500 shadow-[0_12px_24px_-15px_rgba(79,70,229,0.5)] backdrop-blur transition duration-200 hover:-translate-y-0.5 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-200"
+          >
+            <ChevronsDown className="h-[18px] w-[18px]" strokeWidth={1.8} />
+          </button>
+        )}
       </div>
-    </ScrollArea>
+    </div>
   )
 }

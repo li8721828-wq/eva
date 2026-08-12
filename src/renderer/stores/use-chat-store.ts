@@ -34,6 +34,9 @@ interface ChatState {
   setInputText: (text: string) => void
   setReferenceImages: (images: ChatImageAttachment[]) => void
   setError: (error: string | null) => void
+  updateMessageFavorite: (messageId: string, favorited: boolean) => Promise<void>
+  deleteMessagesFrom: (messageId: string) => Promise<void>
+  regenerateFromMessage: (messageId: string) => Promise<void>
 
   // Actions
   loadConversations: () => Promise<void>
@@ -83,6 +86,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setInputText: (text) => set({ inputText: text }),
   setReferenceImages: (images) => set({ referenceImages: images }),
   setError: (error) => set({ error }),
+
+  updateMessageFavorite: async (messageId, favorited) => {
+    const conversationId = get().currentConversationId
+    if (!conversationId) return
+    await window.eva.conversation.updateMessage(conversationId, messageId, { favorited })
+    set((state) => ({ messages: state.messages.map((message) => message.id === messageId ? { ...message, favorited } : message) }))
+  },
+
+  deleteMessagesFrom: async (messageId) => {
+    const conversationId = get().currentConversationId
+    if (!conversationId) return
+    await window.eva.conversation.deleteMessagesFrom(conversationId, messageId)
+    set((state) => {
+      const index = state.messages.findIndex((message) => message.id === messageId)
+      return index < 0 ? state : { messages: state.messages.slice(0, index) }
+    })
+  },
+
+  regenerateFromMessage: async (messageId) => {
+    const state = get()
+    const conversationId = state.currentConversationId
+    if (!conversationId || state.streamingByConversation[conversationId]?.isStreaming) return
+    const index = state.messages.findIndex((message) => message.id === messageId)
+    if (index < 0 || state.messages[index].role !== 'assistant') return
+    const previousUser = [...state.messages.slice(0, index)].reverse().find((message) => message.role === 'user')
+    if (!previousUser) return
+    // Remove the original prompt and response branch so sendMessage can add
+    // one clean prompt for the regenerated answer.
+    await state.deleteMessagesFrom(previousUser.id)
+    set({ inputText: previousUser.content, referenceImages: previousUser.images || [] })
+    await get().sendMessage()
+  },
 
   loadConversations: async () => {
     try {

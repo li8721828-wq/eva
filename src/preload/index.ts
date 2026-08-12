@@ -48,6 +48,8 @@ export interface EvaAPI {
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
     update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt'>>): Promise<void>
+    updateMessage(conversationId: string, messageId: string, data: Partial<Pick<ChatMessage, 'favorited'>>): Promise<void>
+    deleteMessagesFrom(conversationId: string, messageId: string): Promise<void>
     onChanged(callback: EventCallback<string>): Unsubscribe
   }
 
@@ -222,6 +224,8 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.CONVERSATION_DELETE, id),
     load: (id) => ipcRenderer.invoke(IPC.CONVERSATION_LOAD, id),
     update: (id, data) => ipcRenderer.invoke(IPC.CONVERSATION_UPDATE, id, data),
+    updateMessage: (conversationId, messageId, data) => ipcRenderer.invoke(IPC.CONVERSATION_MESSAGE_UPDATE, conversationId, messageId, data),
+    deleteMessagesFrom: (conversationId, messageId) => ipcRenderer.invoke(IPC.CONVERSATION_MESSAGES_DELETE_FROM, conversationId, messageId),
     onChanged: (callback) => onStream(IPC.CONVERSATION_CHANGED, callback),
   },
 

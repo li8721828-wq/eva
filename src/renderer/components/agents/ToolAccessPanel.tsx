@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Boxes, CheckCircle2, Globe2, HardDrive, Search, TerminalSquare, TriangleAlert } from 'lucide-react'
+import { Boxes, CheckCircle2, Globe2, HardDrive, ListChecks, Search, TerminalSquare, TriangleAlert } from 'lucide-react'
 import { TOOL_CATALOG, type ToolCatalogEntry } from '../../../shared/tool-catalog'
 import { isSearchProviderPluginId, type InstalledPlugin } from '../../../shared/types/plugin'
 import { cn } from '@/lib/utils'
@@ -9,6 +9,7 @@ const categoryIcons = {
   Search,
   Execution: TerminalSquare,
   Internet: Globe2,
+  Automation: ListChecks,
   Integrations: Boxes,
 }
 

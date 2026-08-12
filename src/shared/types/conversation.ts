@@ -62,6 +62,8 @@ export interface ChatMessage {
   model?: string
   /** Provider-reported usage accumulated for this assistant response. */
   usage?: ChatUsage
+  /** User-curated assistant response, retained in the conversation record. */
+  favorited?: boolean
   timestamp: number
 }
 

@@ -266,7 +266,7 @@ export class ContextManager {
     }
     if (tools.some((tool) => tool.name === 'browser_control')) {
       parts.push('--- Browser Control Protocol ---')
-      parts.push('browser_control is a general browser primitive. Open an isolated visible HTTPS session, observe accessible fields, then interact only with selectors returned by observe. Never read or fill password fields, bypass login/CAPTCHA/MFA, or submit a form without explicit user approval and confirmSubmit: true. form_fill_workflow is a separate higher-level workflow and must not be conflated with browser_control.')
+      parts.push('browser_control is a general browser primitive. Open an isolated visible HTTPS session, observe accessible fields, then interact only with selectors returned by observe. For canvas-rendered pages such as spreadsheets, call observe_visual, inspect its screenshot, then use click_at, type_at, scroll_at, or press_key with its visualObservationId and screenshot-relative coordinates. Re-observe after every meaningful visual change; never guess coordinates or reuse expired observations. Never read or fill password fields, bypass login/CAPTCHA/MFA, or submit a form without explicit user approval and confirmSubmit: true. form_fill_workflow is a separate higher-level workflow and must not be conflated with browser_control.')
     }
     parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
     if (agentConfig.modelCandidates?.length) {
