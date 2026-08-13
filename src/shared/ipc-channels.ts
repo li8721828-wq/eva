@@ -86,6 +86,7 @@ export const IPC = {
   FILE_SELECT_FOLDER: 'file:select-folder',
   FILE_SELECT_ATTACHMENTS: 'file:select-attachments',
   FILE_IMAGE_PREVIEW: 'file:image-preview',
+  FILE_SAVE_CLIPBOARD_IMAGE: 'file:save-clipboard-image',
 
   // 终端
   TERMINAL_CREATE: 'terminal:create',
@@ -109,6 +110,9 @@ export const IPC = {
   PROVIDER_DELETE: 'provider:delete',
   PROVIDER_TEST: 'provider:test',
   PROVIDER_MODELS: 'provider:models',
+  MODEL_POOL_LIST: 'model-pool:list',
+  MODEL_POOL_SAVE: 'model-pool:save',
+  MODEL_POOL_ROUTE: 'model-pool:route',
   COST_USAGE_REPORT: 'cost:usage-report',
   COST_RATE_CARDS_SAVE: 'cost:rate-cards-save',
 

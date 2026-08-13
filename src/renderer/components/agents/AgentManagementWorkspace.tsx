@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentConfig } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
+import type { ModelPool } from '../../../shared/types/model-pool'
 import { TOOL_CATALOG } from '../../../shared/tool-catalog'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -14,7 +15,7 @@ import { OutputFormatPanel } from './OutputFormatPanel'
 import { AlertTriangle, Bot, Braces, ChevronLeft, Cpu, Pencil, Plus, Search, Trash2, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-type WorkspaceView = 'details' | 'create' | 'edit' | 'tools' | 'models' | 'thinking' | 'confirm-delete'
+type WorkspaceView = 'details' | 'create' | 'edit' | 'tools' | 'models' | 'output' | 'confirm-delete'
 
 export interface AgentManagementWorkspaceProps {
   className?: string
@@ -49,19 +50,20 @@ function roleLabel(role: AgentConfig['role'], copy: typeof uiCopy.en.agents) {
 
 function AgentCard({ agent, onOpen, copy }: { agent: AgentConfig; onOpen: () => void; copy: typeof uiCopy.en.agents }) {
   const candidates = agent.modelCandidates?.length ? agent.modelCandidates : [{ providerId: agent.providerId, model: agent.model }]
-  const previewTools = agent.tools.slice(0, 3)
+  const tools = Array.isArray(agent.tools) ? agent.tools : []
+  const previewTools = tools.slice(0, 3)
 
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="group flex min-h-[218px] w-full flex-col rounded-lg border border-indigo-100/90 bg-white/85 p-5 text-left shadow-[0_12px_28px_-26px_rgba(30,41,59,0.55)] transition-all duration-200 hover:-translate-y-0.5 hover:border-violet-200 hover:bg-white hover:shadow-[0_18px_32px_-24px_rgba(79,70,229,0.38)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200"
+      className="agent-card group eva-panel flex min-h-[218px] w-full flex-col p-5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300"
     >
       <div className="flex items-start justify-between gap-3">
         <span className={cn('flex h-9 w-9 items-center justify-center rounded-lg', agent.isBuiltIn ? 'bg-violet-50 text-violet-600' : 'bg-cyan-50 text-cyan-700')}>
           {agent.isBuiltIn ? <Bot className="h-4.5 w-4.5" /> : <Braces className="h-4.5 w-4.5" />}
         </span>
-        <span className={cn('rounded-full px-2.5 py-1 text-[11px] font-medium', agent.isBuiltIn ? 'bg-zinc-100 text-zinc-500' : 'bg-cyan-50 text-cyan-700')}>
+        <span className={cn('rounded px-2.5 py-1 text-[11px] font-medium', agent.isBuiltIn ? 'bg-zinc-100 text-zinc-500' : 'bg-cyan-50 text-cyan-700')}>
           {agent.isBuiltIn ? copy.builtInBadge : copy.customBadge}
         </span>
       </div>
@@ -75,10 +77,10 @@ function AgentCard({ agent, onOpen, copy }: { agent: AgentConfig; onOpen: () => 
       <div className="mt-auto border-t border-zinc-100 pt-3">
         <div className="flex items-center gap-4 text-xs text-zinc-500">
           <span className="inline-flex items-center gap-1.5"><Cpu className="h-3.5 w-3.5 text-cyan-600" />{candidates.length} {copy.models}</span>
-          <span className="inline-flex items-center gap-1.5"><Wrench className="h-3.5 w-3.5 text-violet-600" />{agent.tools.length} {copy.tools}</span>
+          <span className="inline-flex items-center gap-1.5"><Wrench className="h-3.5 w-3.5 text-violet-600" />{tools.length} {copy.tools}</span>
         </div>
         {previewTools.length > 0 && (
-          <p className="mt-2 truncate text-xs text-zinc-400">{previewTools.map(agentToolsLabel).join(' · ')}{agent.tools.length > previewTools.length ? ` +${agent.tools.length - previewTools.length}` : ''}</p>
+          <p className="mt-2 truncate text-xs text-zinc-400">{previewTools.map(agentToolsLabel).join(' · ')}{tools.length > previewTools.length ? ` +${tools.length - previewTools.length}` : ''}</p>
         )}
       </div>
     </button>
@@ -106,8 +108,17 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const [agentToDelete, setAgentToDelete] = useState<AgentConfig | null>(null)
   const [toolSelection, setToolSelection] = useState<string[]>([])
   const [modelSelection, setModelSelection] = useState<NonNullable<AgentConfig['modelCandidates']>>([])
+  const [selectedPoolIds, setSelectedPoolIds] = useState<string[]>([])
   const [showThinking, setShowThinking] = useState(false)
+  const [outputFormat, setOutputFormat] = useState<NonNullable<AgentConfig['outputFormat']>>('default')
+  const [outputFormatInstructions, setOutputFormatInstructions] = useState('')
+  const [outputStyle, setOutputStyle] = useState<NonNullable<AgentConfig['outputStyle']>>('balanced')
+  const [outputFont, setOutputFont] = useState<NonNullable<AgentConfig['outputFont']>>('system')
+  const [outputColor, setOutputColor] = useState<NonNullable<AgentConfig['outputColor']>>('slate')
+  const [outputFontSize, setOutputFontSize] = useState<NonNullable<AgentConfig['outputFontSize']>>('medium')
+  const [outputTextEffect, setOutputTextEffect] = useState<NonNullable<AgentConfig['outputTextEffect']>>('none')
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
+  const [modelPools, setModelPools] = useState<ModelPool[]>([])
   const [query, setQuery] = useState('')
   const workspaceRef = useRef<HTMLDivElement>(null)
   const listScrollParentRef = useRef<HTMLElement | null>(null)
@@ -116,6 +127,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
 
   useEffect(() => {
     void window.eva.provider.list().then(setSavedProviders).catch((error) => console.error('Failed to load model connections:', error))
+    void window.eva.modelPool.list().then(setModelPools).catch((error) => console.error('Failed to load model pools:', error))
   }, [])
 
   const filteredAgents = useMemo(() => {
@@ -175,13 +187,21 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const handleManageModels = useCallback((agent: AgentConfig) => {
     setEditingAgent(agent)
     setModelSelection(agent.modelCandidates?.length ? agent.modelCandidates : [{ providerId: agent.providerId, model: agent.model }])
+    setSelectedPoolIds(agent.modelPoolIds || [])
     setView('models')
   }, [])
 
-  const handleManageThinking = useCallback((agent: AgentConfig) => {
+  const handleManageOutput = useCallback((agent: AgentConfig) => {
     setEditingAgent(agent)
     setShowThinking(Boolean(agent.showThinking))
-    setView('thinking')
+    setOutputFormat(agent.outputFormat || 'default')
+    setOutputFormatInstructions(agent.outputFormatInstructions || '')
+    setOutputStyle(agent.outputStyle || 'balanced')
+    setOutputFont(agent.outputFont || 'system')
+    setOutputColor(agent.outputColor || 'slate')
+    setOutputFontSize(agent.outputFontSize || 'medium')
+    setOutputTextEffect(agent.outputTextEffect || 'none')
+    setView('output')
   }, [])
 
   const handleSaveCreate = useCallback(async (data: Partial<AgentConfig>) => {
@@ -220,24 +240,28 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const handleSaveModels = useCallback(async () => {
     if (!editingAgent) return
     try {
-      await updateAgent(editingAgent.id, { modelCandidates: modelSelection })
-      setEditingAgent({ ...editingAgent, modelCandidates: modelSelection })
+      const tools = selectedPoolIds.length && !editingAgent.tools.includes('delegate_to_model_pool')
+        ? [...editingAgent.tools, 'delegate_to_model_pool']
+        : editingAgent.tools
+      await updateAgent(editingAgent.id, { modelCandidates: modelSelection, modelPoolIds: selectedPoolIds, tools })
+      setEditingAgent({ ...editingAgent, modelCandidates: modelSelection, modelPoolIds: selectedPoolIds, tools })
       setView('details')
     } catch (error) {
       console.error('Failed to update model access:', error)
     }
-  }, [editingAgent, modelSelection, updateAgent])
+  }, [editingAgent, modelSelection, selectedPoolIds, updateAgent])
 
-  const handleSaveThinking = useCallback(async () => {
+  const handleSaveOutput = useCallback(async () => {
     if (!editingAgent) return
     try {
-      await updateAgent(editingAgent.id, { showThinking })
-      setEditingAgent({ ...editingAgent, showThinking })
+      const updates = { showThinking, outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect }
+      await updateAgent(editingAgent.id, updates)
+      setEditingAgent({ ...editingAgent, ...updates })
       setView('details')
     } catch (error) {
       console.error('Failed to update output format:', error)
     }
-  }, [editingAgent, showThinking, updateAgent])
+  }, [editingAgent, showThinking, outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, updateAgent])
 
   const handleConfirmDelete = useCallback(async () => {
     if (!agentToDelete) return
@@ -267,7 +291,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 id="dialog-title" className="text-lg font-semibold text-zinc-900">{agentDisplayName(detailAgent, copy)}</h2>
-                  <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">{roleLabel(detailAgent.role, copy)}</span>
+                  <span className="rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">{roleLabel(detailAgent.role, copy)}</span>
                 </div>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">{detailAgent.description || copy.noDescription}</p>
               </div>
@@ -282,9 +306,9 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
         </div>
 
         <div className="grid gap-3 border-b border-zinc-100 px-6 py-5 sm:grid-cols-3 sm:px-8">
-          <div className="rounded-lg bg-zinc-50 px-4 py-3"><p className="text-xs text-zinc-500">{copy.temperature}</p><p className="mt-1 text-sm font-semibold text-zinc-800">{detailAgent.temperature}</p></div>
-          <div className="rounded-lg bg-zinc-50 px-4 py-3"><p className="text-xs text-zinc-500">{copy.iterationLimit}</p><p className="mt-1 text-sm font-semibold text-zinc-800">{detailAgent.maxIterations}</p></div>
-          <div className="rounded-lg bg-zinc-50 px-4 py-3"><p className="text-xs text-zinc-500">{copy.assignedTools}</p><p className="mt-1 text-sm font-semibold text-zinc-800">{detailAgent.tools.length}</p></div>
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3"><p className="text-xs text-zinc-500">{copy.temperature}</p><p className="mt-1 text-sm font-semibold text-zinc-800">{detailAgent.temperature}</p></div>
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3"><p className="text-xs text-zinc-500">{copy.iterationLimit}</p><p className="mt-1 text-sm font-semibold text-zinc-800">{detailAgent.maxIterations}</p></div>
+          <div className="rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3"><p className="text-xs text-zinc-500">{copy.assignedTools}</p><p className="mt-1 text-sm font-semibold text-zinc-800">{detailAgent.tools.length}</p></div>
         </div>
 
         <div className="space-y-6 px-6 py-6 sm:px-8">
@@ -294,7 +318,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
               <Button variant="outline" size="sm" onClick={() => handleManageModels(detailAgent)}>{copy.configure}</Button>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              {candidates.length ? candidates.map((candidate) => <span key={`${candidate.providerId}:${candidate.model}`} className="rounded-full bg-cyan-50 px-3 py-1.5 text-xs text-cyan-800">{candidate.providerId} / {candidate.model}</span>) : <span className="text-sm text-zinc-500">{copy.noCandidates}</span>}
+              {candidates.length ? candidates.map((candidate) => <span key={`${candidate.providerId}:${candidate.model}`} className="rounded-md border border-cyan-100 bg-cyan-50 px-3 py-1.5 text-xs text-cyan-800">{candidate.providerId} / {candidate.model}</span>) : <span className="text-sm text-zinc-500">{copy.noCandidates}</span>}
             </div>
           </section>
 
@@ -304,14 +328,14 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
               <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleManageTools(detailAgent)}><Wrench className="h-3.5 w-3.5" />{copy.configure}</Button>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
-              {detailAgent.tools.length ? detailAgent.tools.map((tool) => <span key={tool} className="rounded-full bg-violet-50 px-3 py-1.5 text-xs text-violet-700">{agentToolsLabel(tool)}</span>) : <span className="text-sm text-zinc-500">{copy.noTools}</span>}
+              {detailAgent.tools.length ? detailAgent.tools.map((tool) => <span key={tool} className="rounded-md border border-violet-100 bg-violet-50 px-3 py-1.5 text-xs text-violet-700">{agentToolsLabel(tool)}</span>) : <span className="text-sm text-zinc-500">{copy.noTools}</span>}
             </div>
           </section>
 
           <section className="border-t border-zinc-100 pt-6">
             <div className="flex items-start justify-between gap-4">
-              <div><h3 className="text-sm font-semibold text-zinc-900">模型思考</h3><p className="mt-1 text-sm text-zinc-500">{detailAgent.showThinking ? '显示模型思考' : '不显示模型思考'}</p></div>
-              <Button variant="outline" size="sm" onClick={() => handleManageThinking(detailAgent)}>{copy.configure}</Button>
+              <div><h3 className="text-sm font-semibold text-zinc-900">输出格式</h3><p className="mt-1 text-sm text-zinc-500">已启用统一阅读样式、字体与回复表达偏好。</p></div>
+              <Button variant="outline" size="sm" onClick={() => handleManageOutput(detailAgent)}>{copy.configure}</Button>
             </div>
           </section>
 
@@ -355,18 +379,18 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
       return (
         <div className="px-6 py-6 sm:px-8">
           <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
-          <ModelAccessPanel candidates={modelSelection} providers={savedProviders} onChange={setModelSelection} />
+          <ModelAccessPanel candidates={modelSelection} providers={savedProviders} pools={modelPools} poolIds={selectedPoolIds} onPoolChange={setSelectedPoolIds} onChange={setModelSelection} />
           <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveModels()}>{copy.saveModels}</Button></div>
         </div>
       )
     }
 
-    if (view === 'thinking' && editingAgent) {
+    if (view === 'output' && editingAgent) {
       return (
         <div className="px-6 py-6 sm:px-8">
           <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
-          <OutputFormatPanel showThinking={showThinking} onShowThinkingChange={setShowThinking} />
-          <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveThinking()}>{copy.save}</Button></div>
+          <OutputFormatPanel outputFormat={outputFormat} outputFormatInstructions={outputFormatInstructions} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} showThinking={showThinking} onOutputFormatChange={setOutputFormat} onOutputFormatInstructionsChange={setOutputFormatInstructions} onOutputStyleChange={setOutputStyle} onOutputFontChange={setOutputFont} onOutputColorChange={setOutputColor} onOutputFontSizeChange={setOutputFontSize} onOutputTextEffectChange={setOutputTextEffect} onShowThinkingChange={setShowThinking} />
+          <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveOutput()}>{copy.save}</Button></div>
         </div>
       )
     }
@@ -397,7 +421,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   if (screen === 'agent') {
     const title = editingAgent ? agentDisplayName(editingAgent, copy) : copy.create
     return (
-      <div ref={workspaceRef} className={cn('min-h-[580px] bg-white/55', className)}>
+      <div ref={workspaceRef} className={cn('min-h-[580px] bg-transparent', className)}>
         <div className="mx-auto w-full max-w-6xl px-6 py-8 sm:px-10 sm:py-10">
           <button
             type="button"
@@ -407,7 +431,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
             <ChevronLeft className="h-4 w-4" />
             {view === 'details' || view === 'create' ? copy.workspace : `${copy.back} ${title}`}
           </button>
-          <div className="mt-5 overflow-hidden rounded-lg border border-zinc-200/80 bg-white shadow-[0_18px_40px_-32px_rgba(30,41,59,0.38)]">
+          <div className="mt-5 overflow-hidden rounded-lg border border-zinc-200/80 bg-[rgba(255,255,255,0.9)] shadow-[0_18px_40px_-32px_rgba(30,41,59,0.38)]">
             {renderAgentPageContent()}
           </div>
         </div>
@@ -416,9 +440,9 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   }
 
   return (
-    <div ref={workspaceRef} className={cn('min-h-[580px] bg-white/55', className)}>
+    <div ref={workspaceRef} className={cn('min-h-[580px] bg-transparent', className)}>
       <div className="mx-auto w-full max-w-6xl px-6 py-8 sm:px-10 sm:py-10">
-        <header className="flex flex-col gap-5 border-b border-zinc-200/80 pb-7 lg:flex-row lg:items-end lg:justify-between">
+        <header className="flex flex-col gap-5 border-b border-[var(--ui-border)] pb-7 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.12em] text-violet-600">{copy.workspace}</p>
             <h2 className="mt-2 text-xl font-semibold text-zinc-900">{copy.heading}</h2>
@@ -431,13 +455,13 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
         </header>
 
         <section className="pt-8">
-          <div className="mb-4 flex items-center gap-3"><h3 className="text-sm font-semibold text-zinc-800">{copy.builtIn}</h3><span className="rounded-full bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-700">{builtInAgents.length}</span></div>
+          <div className="mb-4 flex items-center gap-3"><h3 className="text-sm font-semibold text-zinc-800">{copy.builtIn}</h3><span className="rounded bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-700">{builtInAgents.length}</span></div>
           {builtInAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{builtInAgents.map((agent) => <AgentCard key={agent.id} agent={agent} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <p className="py-8 text-sm text-zinc-500">{copy.noMatch}</p>}
         </section>
 
-        <section className="mt-9 border-t border-zinc-200/80 pt-8">
-          <div className="mb-4 flex items-center justify-between gap-3"><div className="flex items-center gap-3"><h3 className="text-sm font-semibold text-zinc-800">{copy.custom}</h3><span className="rounded-full bg-cyan-50 px-2 py-0.5 text-xs font-medium text-cyan-700">{customAgents.length}</span></div><button type="button" onClick={openCreate} className="text-sm font-medium text-violet-700 hover:text-violet-900">{copy.specialist}</button></div>
-          {customAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{customAgents.map((agent) => <AgentCard key={agent.id} agent={agent} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <button type="button" onClick={openCreate} className="flex min-h-32 w-full items-center justify-center rounded-lg border border-dashed border-indigo-200 bg-white/60 p-6 text-sm font-medium text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-50/50">{copy.specialist}</button>}
+        <section className="mt-9 border-t border-[var(--ui-border)] pt-8">
+          <div className="mb-4 flex items-center justify-between gap-3"><div className="flex items-center gap-3"><h3 className="text-sm font-semibold text-zinc-800">{copy.custom}</h3><span className="rounded bg-cyan-50 px-2 py-0.5 text-xs font-medium text-cyan-700">{customAgents.length}</span></div><button type="button" onClick={openCreate} className="text-sm font-medium text-violet-700 hover:text-violet-900">{copy.specialist}</button></div>
+          {customAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{customAgents.map((agent) => <AgentCard key={agent.id} agent={agent} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <button type="button" onClick={openCreate} className="flex min-h-32 w-full items-center justify-center rounded-lg border border-dashed border-[var(--ui-border-strong)] bg-white/65 p-6 text-sm font-medium text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-50/50">{copy.specialist}</button>}
         </section>
       </div>
     </div>

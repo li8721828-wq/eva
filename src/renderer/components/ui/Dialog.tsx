@@ -87,7 +87,7 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="dialog-title"
-        className={cn('relative z-50 w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto rounded-2xl bg-white p-6 shadow-xl', className)}
+        className={cn('relative z-50 w-full max-w-lg max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-6 shadow-xl', className)}
       >
         {children}
       </div>

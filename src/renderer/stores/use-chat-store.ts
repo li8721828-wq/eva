@@ -434,12 +434,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
         break
       }
-      for (const attachment of documentAttachments) {
-        const folder = attachment.kind === 'folder' ? attachment.path : parentDirectory(attachment.path)
-        if (folder && !nextGrants.some((grant) => grant.path === folder)) {
-          nextGrants.push({ path: folder, access: 'read' })
-        }
-      }
 
       case 'reasoning_delta': {
         if (event.content) {
@@ -491,7 +485,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (event.toolCallId) {
           set((s) => {
             const stream = s.streamingByConversation[conversationId] || createIdleStream()
-            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError) } : tc), status: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...', lastActivityAt: Date.now() } } }
+              return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError), protocol: event.protocol } : tc), status: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...', lastActivityAt: Date.now() } } }
           })
         }
         break

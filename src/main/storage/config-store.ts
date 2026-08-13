@@ -9,6 +9,7 @@ import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ModelRateCard } from '../../shared/types/cost'
+import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
 import { CredentialStore } from './credential-store'
 
 export type { ProviderConfigEntry }
@@ -27,6 +28,9 @@ export interface AppConfig {
   providers: ProviderConfigEntry[]
   activeProviderId: string
   activeModel: string
+  modelPools: ModelPool[]
+  /** @deprecated Legacy singleton pool, migrated into modelPools on startup. */
+  modelPool?: ModelPoolEntry[]
 
   // Advanced
   maxIterations: number
@@ -72,6 +76,7 @@ const DEFAULTS: AppConfig = {
   providers: DEFAULT_PROVIDERS,
   activeProviderId: 'openai',
   activeModel: 'gpt-4o',
+  modelPools: [],
   maxIterations: DEFAULT_MAX_ITERATIONS,
   temperature: DEFAULT_TEMPERATURE,
   maxTokens: DEFAULT_MAX_TOKENS,
@@ -89,6 +94,7 @@ export class ConfigStore {
       defaults: DEFAULTS,
     })
     this.migrateProviderCredentials()
+    this.migrateModelPools()
   }
 
   get<K extends keyof AppConfig>(key: K): AppConfig[K] {
@@ -168,5 +174,12 @@ export class ConfigStore {
       return { ...provider, apiKey: '' }
     })
     this.store.set('providers', migrated)
+  }
+
+  private migrateModelPools(): void {
+    const pools = this.store.get('modelPools') || []
+    const legacyEntries = this.store.get('modelPool') || []
+    if (pools.length || !legacyEntries.length) return
+    this.store.set('modelPools', [{ id: 'default-model-pool', name: 'Default model pool', entries: legacyEntries }])
   }
 }

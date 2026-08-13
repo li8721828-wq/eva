@@ -3,6 +3,7 @@ import { IPC } from '../../shared/ipc-channels'
 import type { SpecTemplate } from '../../shared/types/spec'
 import type { ProviderConfigEntry } from '../storage/config-store'
 import type { ProviderModelsResult, ProviderTestConfig } from '../../shared/types/provider'
+import type { ModelPool, ModelPoolEntry, ModelRouteRequest, ModelRouteResult } from '../../shared/types/model-pool'
 import type { FileService, TerminalService } from '../tools'
 import type { FileEntry } from '../tools'
 import fs from 'fs'
@@ -11,6 +12,7 @@ import { getStorage } from '../storage'
 import { SpecService } from '../services/spec-service'
 import { createProvider, type ProviderRegistry } from '../providers'
 import { recordActivity } from '../services/activity-log'
+import { ModelRouter } from '../services/model-router'
 
 const terminalWorkspaces = new Map<string, string>()
 const PREVIEW_IMAGE_TYPES: Record<string, string> = {
@@ -20,6 +22,11 @@ const PREVIEW_IMAGE_TYPES: Record<string, string> = {
   '.webp': 'image/webp',
 }
 const MAX_PREVIEW_IMAGE_BYTES = 12 * 1024 * 1024
+const CLIPBOARD_IMAGE_TYPES: Record<string, { extension: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }> = {
+  'image/jpeg': { extension: 'jpg', mediaType: 'image/jpeg' },
+  'image/png': { extension: 'png', mediaType: 'image/png' },
+  'image/webp': { extension: 'webp', mediaType: 'image/webp' },
+}
 
 function recordWorkspaceActivity(
   event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent,
@@ -216,6 +223,45 @@ export function registerSystemHandlers(
     return getStorage().config.getProviders()
   })
 
+  ipcMain.handle(
+    IPC.FILE_SAVE_CLIPBOARD_IMAGE,
+    async (_event, input: { dataUrl: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }): Promise<{ path: string; name: string; size: number }> => {
+      const type = CLIPBOARD_IMAGE_TYPES[input?.mediaType]
+      if (!type || typeof input?.dataUrl !== 'string') throw new Error('Unsupported clipboard image type.')
+      const prefix = `data:${type.mediaType};base64,`
+      if (!input.dataUrl.startsWith(prefix)) throw new Error('Clipboard image data is invalid.')
+      const data = Buffer.from(input.dataUrl.slice(prefix.length), 'base64')
+      if (!data.length || data.length > MAX_PREVIEW_IMAGE_BYTES) throw new Error('Clipboard image must be 12 MB or smaller.')
+      const directory = path.join(app.getPath('userData'), 'clipboard-images')
+      await fs.promises.mkdir(directory, { recursive: true })
+      const name = `screenshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${type.extension}`
+      const imagePath = path.join(directory, name)
+      await fs.promises.writeFile(imagePath, data, { flag: 'wx' })
+      return { path: imagePath, name, size: data.length }
+    }
+  )
+
+  ipcMain.handle(IPC.MODEL_POOL_LIST, async (): Promise<ModelPool[]> => getStorage().config.get('modelPools'))
+  ipcMain.handle(IPC.MODEL_POOL_SAVE, async (_event, pools: ModelPool[]): Promise<void> => {
+    const poolIds = new Set<string>()
+    for (const pool of pools) {
+      if (!pool.id || !pool.name.trim() || poolIds.has(pool.id)) throw new Error('Each model pool needs a unique ID and name.')
+      poolIds.add(pool.id)
+      const entryIds = new Set<string>()
+      for (const entry of pool.entries) {
+        if (!entry.id || !entry.name.trim() || !entry.providerId || !entry.model || entryIds.has(entry.id)) {
+          throw new Error('Each model pool entry needs a unique ID, name, provider, and model.')
+        }
+        entryIds.add(entry.id)
+      }
+    }
+    getStorage().config.set('modelPools', pools)
+  })
+  ipcMain.handle(IPC.MODEL_POOL_ROUTE, async (_event, request: ModelRouteRequest): Promise<ModelRouteResult> => {
+    const router = new ModelRouter(getStorage().config.get('modelPools'), (entry) => Boolean(providerRegistry?.get(entry.providerId)))
+    return router.resolve(request)
+  })
+
   ipcMain.handle(IPC.PROVIDER_CONFIG, async (_event, provider: ProviderConfigEntry): Promise<void> => {
     getStorage().config.saveProvider(provider)
 
@@ -235,6 +281,7 @@ export function registerSystemHandlers(
 
   ipcMain.handle(IPC.PROVIDER_DELETE, async (_event, id: string): Promise<void> => {
     getStorage().config.deleteProvider(id)
+    getStorage().config.set('modelPools', getStorage().config.get('modelPools').map((pool) => ({ ...pool, entries: pool.entries.filter((entry) => entry.providerId !== id) })))
     providerRegistry?.unregister(id)
   })
 

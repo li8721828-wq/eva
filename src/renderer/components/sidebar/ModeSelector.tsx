@@ -11,8 +11,8 @@ const modes: { value: WorkMode; label: string; description: string }[] = [
   },
   {
     value: 'expert',
-    label: 'Team (force)',
-    description: 'Always use multi-agent collaboration',
+    label: 'Team (smart)',
+    description: 'Use a team only when the request benefits from collaboration',
   },
 ]
 

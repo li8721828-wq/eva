@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import type { AgentModelCandidate } from '../../../shared/types/agent'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
+import type { ModelPool } from '../../../shared/types/model-pool'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { Plus, Trash2 } from 'lucide-react'
@@ -8,10 +9,16 @@ import { Plus, Trash2 } from 'lucide-react'
 export function ModelAccessPanel({
   candidates,
   providers,
+  pools,
+  poolIds,
+  onPoolChange,
   onChange,
 }: {
   candidates: AgentModelCandidate[]
   providers: ProviderConfigEntry[]
+  pools: ModelPool[]
+  poolIds: string[]
+  onPoolChange: (poolIds: string[]) => void
   onChange: (candidates: AgentModelCandidate[]) => void
 }) {
   const usableProviders = providers.filter((provider) => provider.apiKey && (provider.models?.length || provider.defaultModel))
@@ -43,8 +50,9 @@ export function ModelAccessPanel({
   return (
     <div className="space-y-4">
       <p className="text-sm leading-6 text-zinc-500">
-        These connections are available to this agent during delegated work. Hiding a connection from the chat picker does not remove it here.
+        Select model pools this agent may call as a tool. Its own primary connection remains unchanged; the pool is used only when it delegates a bounded subtask.
       </p>
+      <div className="space-y-1.5"><label className="text-xs font-medium text-zinc-500">Callable model pools</label><div className="overflow-hidden rounded-md border border-zinc-200 bg-white divide-y divide-zinc-100">{pools.length ? pools.map((pool) => <label key={pool.id} className="flex items-center gap-2 px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-50"><input type="checkbox" checked={poolIds.includes(pool.id)} onChange={(event) => onPoolChange(event.target.checked ? [...poolIds, pool.id] : poolIds.filter((id) => id !== pool.id))} />{pool.name}<span className="text-xs text-zinc-400">{pool.entries.length} routes</span></label>) : <p className="px-3 py-2 text-xs text-zinc-500">No model pools are configured.</p>}</div></div>
       <div className="flex items-end gap-2">
         <div className="min-w-0 flex-1 space-y-1.5">
           <label className="text-xs font-medium text-zinc-500">Connection</label>

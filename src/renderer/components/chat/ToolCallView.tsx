@@ -14,6 +14,12 @@ function getToolIcon(name: string) {
 }
 
 function getToolLabel(toolCall: ToolCall): { title: string; detail?: string; resultCount?: number } {
+  if (toolCall.name === 'delegate_to_model_pool') {
+    const poolId = typeof toolCall.arguments.poolId === 'string' ? toolCall.arguments.poolId : ''
+    const capability = typeof toolCall.arguments.capability === 'string' ? toolCall.arguments.capability : ''
+    return { title: 'Model pool', detail: [poolId, capability].filter(Boolean).join(' / ') || 'Delegated model' }
+  }
+
   if (toolCall.name === 'web_search') {
     const query = typeof toolCall.arguments.query === 'string' ? toolCall.arguments.query : ''
     const resultCount = toolCall.result?.match(/^\d+\.\s/gm)?.length
@@ -158,6 +164,7 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
   const isRunning = !toolCall.result && !toolCall.isError
   const label = getToolLabel(toolCall)
   const searchSources = toolCall.name === 'web_search' ? parseSearchSources(toolCall.result) : []
+  const protocolStatus = toolCall.protocol?.status
 
   return (
     <div className={cn('tool-call-item max-w-full', className)}>
@@ -186,7 +193,9 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
           ) : toolCall.isError ? (
             <XCircle className="h-3.5 w-3.5 text-red-500" />
           ) : (
-            <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+            protocolStatus === 'unknown' || protocolStatus === 'dispatched' || protocolStatus === 'applied'
+              ? <Wrench className="h-3.5 w-3.5 text-amber-500" />
+              : <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
           )}
         </span>
       </button>
@@ -234,6 +243,12 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
               {toolCall.result && (
                 <div className={cn('tool-call-result', toolCall.isError && 'tool-call-result--error')}>
                   {toolCall.result}
+                </div>
+              )}
+              {toolCall.protocol && (
+                <div className="text-xs text-zinc-500">
+                  Protocol: {toolCall.protocol.status} · operation {toolCall.protocol.operationId}
+                  {toolCall.protocol.snapshot && ` · snapshot r${toolCall.protocol.snapshot.revision}`}
                 </div>
               )}
             </>

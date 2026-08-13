@@ -1,4 +1,6 @@
 import type { ToolDefinition } from '../../shared/types/provider'
+import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
+import { randomUUID } from 'crypto'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import { createFileTools } from './file-tools'
 import { createTerminalTools } from './terminal-tools'
@@ -12,7 +14,9 @@ import { createKeyboardTools } from './keyboard-tools'
 import { createProjectIndexTools } from './project-index-tools'
 import { createBrowserControlTools } from './browser-control-tools'
 import { createFormFillWorkflowTools } from './form-fill-workflow'
+import { createModelPoolTools } from './model-pool-tools'
 import type { ProjectIndexService } from '../services/project-index-service'
+import type { ProviderRegistry } from '../providers'
 
 export interface ToolContext {
   conversationId?: string
@@ -22,6 +26,11 @@ export interface ToolContext {
   supportsVisionInput?: boolean
   fileService: FileService
   terminalService: TerminalService
+  allowedModelPoolIds?: string[]
+  /** Point-in-time visual tool outputs available to a same-turn delegation. */
+  visualAttachments?: ToolResultImage[]
+  /** Bounded text context from the owning Agent's current run. */
+  agentContext?: string
 }
 
 export interface ToolResultImage {
@@ -33,6 +42,26 @@ export interface ToolResultImage {
 export interface ToolExecutionResult {
   content: string
   images?: ToolResultImage[]
+  /** Structured protocol metadata. Text content is retained for compatibility. */
+  protocol?: ExecutionEnvelope
+}
+
+export function createExecutionEnvelope(
+  kind: ExecutionEnvelope['kind'],
+  status: ExecutionEnvelope['status'],
+  data?: Record<string, unknown>,
+  options?: Pick<ExecutionEnvelope, 'sessionId' | 'snapshot' | 'evidence' | 'error' | 'nextAction' | 'proposedAction'>,
+): ExecutionEnvelope {
+  return {
+    protocolVersion: '1',
+    operationId: `op_${randomUUID()}`,
+    kind,
+    status,
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    data,
+    ...options,
+  }
 }
 
 export interface ToolExecutor {
@@ -104,7 +133,7 @@ export class ToolRegistry {
   }
 }
 
-export function createToolRegistry(projectIndexService?: ProjectIndexService): ToolRegistry {
+export function createToolRegistry(projectIndexService?: ProjectIndexService, providerRegistry?: ProviderRegistry): ToolRegistry {
   const registry = new ToolRegistry()
 
   // Register all tools
@@ -119,6 +148,9 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService): T
   for (const tool of createKeyboardTools()) registry.register(tool)
   for (const tool of createBrowserControlTools()) registry.register(tool)
   for (const tool of createFormFillWorkflowTools()) registry.register(tool)
+  if (providerRegistry) {
+    for (const tool of createModelPoolTools(providerRegistry)) registry.register(tool)
+  }
   if (projectIndexService) {
     for (const tool of createProjectIndexTools(projectIndexService)) registry.register(tool)
   }

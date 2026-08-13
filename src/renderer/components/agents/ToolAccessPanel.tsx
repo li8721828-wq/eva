@@ -76,7 +76,7 @@ export function ToolAccessPanel({ tools, onChange, disabled = false }: ToolAcces
                     key={tool.id}
                     className={cn(
                       'flex cursor-pointer items-start gap-3 rounded-md border px-3 py-3 transition-colors',
-                      enabled ? 'border-violet-300 bg-violet-50/70' : 'border-zinc-200 bg-white hover:border-zinc-300',
+                      enabled ? 'border-violet-300 bg-violet-50/60' : 'border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50',
                       disabled && 'cursor-default opacity-60'
                     )}
                   >

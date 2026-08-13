@@ -89,7 +89,7 @@ export function MessageList({ className }: MessageListProps) {
   const streamingReasoningContent = stream?.reasoningContent || ''
   const streamingToolCalls = stream?.toolCalls || []
   const streamingStatus = stream?.status || ''
-  const { rightPanelVisible, language } = useAppStore()
+  const { rightPanelVisible, rightPanelWidth, language } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const scrollAreaRef = useRef<HTMLDivElement>(null)
   const activeConversationIdRef = useRef<string | null>(currentConversationId)
@@ -540,7 +540,10 @@ export function MessageList({ className }: MessageListProps) {
         </div>
       </ScrollArea>
 
-      <div className="pointer-events-none absolute bottom-5 right-3 top-7 z-20">
+      <div
+        className="pointer-events-none absolute bottom-5 right-3 top-7 z-20"
+        style={rightPanelVisible ? { right: `${12 - rightPanelWidth}px` } : undefined}
+      >
         <div
           aria-hidden="true"
           className={cn(

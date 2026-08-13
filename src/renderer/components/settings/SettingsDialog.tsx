@@ -39,6 +39,7 @@ import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
+import { ModelPoolPanel } from './ModelPoolPanel'
 import { uiCopy } from '@/lib/ui-copy'
 
 type ProviderType = ProviderConfigEntry['type']
@@ -597,6 +598,8 @@ export function SettingsDialog() {
                   })}
                 </div>
               </section>
+
+              <ModelPoolPanel providers={savedProviders} />
 
               <Separator />
 

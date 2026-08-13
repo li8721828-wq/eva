@@ -24,6 +24,8 @@ import { SYMPOSIUM_TOOL_OPTIONS, type AgentSymposium, type SymposiumContinueInpu
 import { controlForegroundGoal } from './task'
 import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
 import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
+import { ModelRouter } from '../services/model-router'
+import type { ModelPoolEntry } from '../../shared/types/model-pool'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -402,6 +404,59 @@ function persistableImages(images: ChatImageAttachment[] | undefined): ChatImage
   return images?.map(({ dataUrl: _dataUrl, ...image }) => image)
 }
 
+function primaryModelSupportsVision(agent: AgentConfig, provider: import('../providers/base-provider').LLMProvider): boolean {
+  if (provider.type === 'anthropic') return true
+  return provider.type === 'openai' && /(?:gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4-mini)/i.test(agent.model)
+}
+
+async function analyzeImagesWithAuthorizedPool(
+  services: ChatServices,
+  agent: AgentConfig,
+  prompt: string,
+  images: ChatImageAttachment[],
+): Promise<string> {
+  const pools = getStorage().config.get('modelPools')
+  const candidates: ModelPoolEntry[] = []
+  const seen = new Set<string>()
+  for (const poolId of agent.modelPoolIds || []) {
+    const router = new ModelRouter(pools, (entry) => Boolean(services.providerRegistry.get(entry.providerId)))
+    for (const capability of ['vision', 'image'] as const) {
+      const route = router.resolve({ poolId, capability })
+      for (const entry of [route.primary, ...route.fallbacks]) {
+        if (entry && !seen.has(entry.id)) {
+          seen.add(entry.id)
+          candidates.push(entry)
+        }
+      }
+    }
+  }
+  if (!candidates.length) {
+    throw new Error('The selected primary model does not support image input. Assign this agent a model pool with a Vision or Image route in Agent > Model access, or select a vision-capable primary model.')
+  }
+
+  const errors: string[] = []
+  for (const entry of candidates) {
+    const provider = services.providerRegistry.get(entry.providerId)
+    if (!provider) continue
+    try {
+      const response = await provider.chatComplete({
+        model: entry.model,
+        messages: [
+          { role: 'system', content: 'Analyze the attached image(s) for the user request. Return factual visual observations, relevant text, layout, and uncertainty. Do not claim to use tools or access anything outside these images.' },
+          { role: 'user', content: prompt || 'Describe the attached image(s).', images: images.map((image) => ({ name: image.name, mediaType: image.mediaType, dataUrl: image.dataUrl })) },
+        ],
+        temperature: 0.2,
+        maxTokens: 4096,
+      })
+      if (!response.content.trim()) throw new Error('Model returned an empty image analysis.')
+      return `Image analysis from ${entry.name} (${entry.providerId} / ${entry.model}):\n${response.content}`
+    } catch (error) {
+      errors.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  throw new Error(`No model in the authorized visual pool could analyze the image.\n${errors.join('\n')}`)
+}
+
 async function runInternalTeamDelegation(
   services: ChatServices,
   conversation: Conversation,
@@ -517,6 +572,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
         toolCallId: event.toolResult?.toolCallId,
         toolResult: event.toolResult?.result,
         isError: event.toolResult?.isError,
+        protocol: event.toolResult?.protocol,
       }
     case 'error':
       return { type: 'error', error: event.error }
@@ -758,12 +814,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const userMessageId = uuidv4()
         const referenceImages = loadReferenceImages(payload.images, true)
         const documentContext = await buildDocumentAttachmentContext(payload.attachments)
+        const imageContext = referenceImages?.length && !primaryModelSupportsVision(effectiveAgentConfig, provider)
+          ? await analyzeImagesWithAuthorizedPool(services, effectiveAgentConfig, message, referenceImages)
+          : ''
         const userChatMessage: ChatMessage = {
           id: userMessageId,
           conversationId,
           role: 'user',
           content: message,
-          attachmentContext: documentContext || undefined,
+          attachmentContext: [documentContext, imageContext].filter(Boolean).join('\n\n') || undefined,
           attachments: payload.attachments,
           images: referenceImages,
           timestamp: Date.now(),
@@ -1020,13 +1079,16 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
         // 6. Execute the ReAct loop and stream events
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
-        const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean }> = []
+        const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean; protocol?: import('../../shared/types/execution-protocol').ExecutionEnvelope }> = []
         let assistantContent = ''
         let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
         let runError: string | null = null
 
-        for await (const agentEvent of runner.run({ messages: historyMessages, newMessage: userChatMessage })) {
+        const primarySupportsVision = primaryModelSupportsVision(effectiveAgentConfig, provider)
+        const runnerHistory = primarySupportsVision ? historyMessages : historyMessages.map((history) => history.images?.length ? { ...history, images: undefined } : history)
+        const runnerMessage = imageContext ? { ...userChatMessage, images: undefined } : userChatMessage
+        for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage })) {
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
             // Text events are streaming deltas. The final done event replaces
@@ -1082,6 +1144,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                   arguments: tc.arguments,
                   result: result ? compactToolResult(result.result) : undefined,
                   isError: result?.isError,
+                  protocol: result?.protocol,
                 }
               })
             : undefined

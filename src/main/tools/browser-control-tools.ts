@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import type { ToolContext, ToolExecutor } from './index'
+import { createExecutionEnvelope, type ToolContext, type ToolExecutionResult, type ToolExecutor } from './index'
 
 const MAX_TEXT_LENGTH = 12_000
 const MAX_ELEMENTS = 160
@@ -22,6 +22,15 @@ interface BrowserSession {
   url: string
   disposed: boolean
   layoutView: () => void
+  revision: number
+  latestSnapshot?: BrowserSnapshot
+}
+
+interface BrowserSnapshot {
+  id: string
+  revision: number
+  createdAt: number
+  scope: 'page' | 'canvas'
 }
 
 interface BrowserVisualObservation {
@@ -77,6 +86,7 @@ const browserControlTool: ToolExecutor = {
         text: { type: 'string', description: `Text for type, maximum ${MAX_TEXT_LENGTH} characters. Password fields are rejected.` },
         value: { type: 'string', description: 'Option value or visible text for select.' },
         visualObservationId: { type: 'string', description: 'Required for click_at, type_at, scroll_at, and native press_key. Returned by observe_visual; coordinates are relative to that browser screenshot.' },
+        snapshotId: { type: 'string', description: 'Required for semantic DOM or accessibility actions. Returned by observe; prevents actions against stale page state.' },
         x: { type: 'number', description: 'X coordinate within the browser viewport for click_at or type_at, based on the latest observe_visual screenshot.' },
         y: { type: 'number', description: 'Y coordinate within the browser viewport for click_at, type_at, or scroll_at, based on the latest observe_visual screenshot.' },
         deltaY: { type: 'number', description: 'Vertical wheel delta for scroll_at.' },
@@ -87,18 +97,18 @@ const browserControlTool: ToolExecutor = {
     },
   },
 
-  async execute(params: Record<string, unknown>, context: ToolContext) {
+  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string | ToolExecutionResult> {
     const action = parseAction(params.action)
     if (action === 'open') return openBrowser(params, context)
     const session = getSession(params.browserSessionId, context.conversationId)
-    if (action === 'observe') return observeBrowser(session)
+    if (action === 'observe') return observeBrowserResult(session)
     if (action === 'observe_visual') return observeBrowserVisual(session, context)
     if (action === 'close') return closeBrowser(session)
     return interactBrowser(session, params)
   },
 }
 
-async function observeBrowserVisual(session: BrowserSession, context: ToolContext) {
+async function observeBrowserVisual(session: BrowserSession, context: ToolContext): Promise<ToolExecutionResult> {
   const imageSize = await getViewportSize(session)
   const visualObservation: BrowserVisualObservation = {
     id: `browser_view_${randomUUID()}`,
@@ -109,24 +119,30 @@ async function observeBrowserVisual(session: BrowserSession, context: ToolContex
   }
   visualObservations.set(visualObservation.id, visualObservation)
   pruneVisualObservations()
+  const snapshot = createBrowserSnapshot(session, 'canvas')
 
   const summary = JSON.stringify({
     browserSessionId: session.id,
     visualObservationId: visualObservation.id,
+    snapshotId: snapshot.id,
+    revision: snapshot.revision,
     viewport: imageSize,
     url: session.view.webContents.getURL(),
     guidance: 'Use this screenshot as the only coordinate reference for canvas controls. Coordinates are relative to the page viewport, not the Eva Browser window. Re-observe after scrolling, navigation, or any visible layout change. Do not click a final submit, save, or send control without explicit user approval and confirmSubmit: true.',
   })
-  if (!context.supportsVisionInput) {
-    return `${summary}\nVisual browser interaction requires a vision-capable configured model. The screenshot is unavailable to the current model, so do not guess coordinates.`
-  }
-
   const image = await session.view.webContents.capturePage()
   const screenshotPath = path.join(os.tmpdir(), `eva-browser-${visualObservation.id}.png`)
   await fs.promises.writeFile(screenshotPath, image.toPNG())
   return {
-    content: summary,
+    content: context.supportsVisionInput
+      ? summary
+      : `${summary}\nThe primary model is text-only; this screenshot is routed to an authorized visual model pool when configured.`,
     images: [{ path: screenshotPath, name: 'browser-viewport.png', mediaType: 'image/png' as const }],
+    protocol: createExecutionEnvelope('observation', 'observed', { url: session.view.webContents.getURL(), viewport: imageSize, visualObservationId: visualObservation.id }, {
+      sessionId: session.id,
+      snapshot: { id: snapshot.id, revision: snapshot.revision, scope: 'canvas', capturedAt: new Date(snapshot.createdAt).toISOString() },
+      evidence: [{ type: 'screenshot', summary: 'Browser viewport screenshot', sourceId: screenshotPath }],
+    }),
   }
 }
 
@@ -155,7 +171,7 @@ async function openBrowser(params: Record<string, unknown>, context: ToolContext
     const [width, height] = host.getContentSize()
     view.setBounds({ x: 16, y: 48, width: Math.max(320, width - 32), height: Math.max(260, height - 64) })
   }
-  session = { id, ownerConversationId: context.conversationId, host, view, url: url.toString(), disposed: false, layoutView }
+  session = { id, ownerConversationId: context.conversationId, host, view, url: url.toString(), disposed: false, layoutView, revision: 0 }
   sessions.set(id, session)
   host.on('resize', layoutView)
   host.once('closed', () => {
@@ -205,25 +221,90 @@ async function observeBrowser(session: BrowserSession): Promise<string> {
   })()`)
   session.url = session.view.webContents.getURL()
   const accessibility = await observeBrowserAccessibility(session)
-  return JSON.stringify({ browserSessionId: session.id, url: session.url, elements: observed, accessibility, guidance: 'Use DOM selectors or interactive accessibility node IDs returned here. Password values are intentionally omitted. Canvas spreadsheets may expose cells, selection state, or an editor through accessibility. For bulk grid entry, use form_fill_workflow paste_table after selecting the starting cell. Do not submit or send without confirmSubmit: true.' })
+  const snapshot = createBrowserSnapshot(session, 'page')
+  return JSON.stringify({ browserSessionId: session.id, snapshotId: snapshot.id, revision: snapshot.revision, url: session.url, elements: observed, accessibility, guidance: 'Use DOM selectors or interactive accessibility node IDs returned here. Password values are intentionally omitted. Canvas spreadsheets may expose cells, selection state, or an editor through accessibility. For bulk grid entry, use form_fill_workflow paste_table after selecting the starting cell. Do not submit or send without confirmSubmit: true.' })
+}
+
+async function observeBrowserResult(session: BrowserSession): Promise<ToolExecutionResult> {
+  const content = await observeBrowser(session)
+  const snapshot = session.latestSnapshot
+  if (!snapshot) throw new Error('Browser observation did not produce a page snapshot.')
+  return {
+    content,
+    protocol: createExecutionEnvelope('observation', 'observed', { url: session.url }, {
+      sessionId: session.id,
+      snapshot: { id: snapshot.id, revision: snapshot.revision, scope: snapshot.scope, capturedAt: new Date(snapshot.createdAt).toISOString() },
+      evidence: [{ type: 'dom', summary: 'Current visible DOM controls and browser accessibility tree were observed.' }],
+    }),
+  }
 }
 
 export async function runBrowserObserve(sessionId: string, conversationId: string | undefined): Promise<string> {
   return observeBrowser(getSession(sessionId, conversationId))
 }
 
-async function interactBrowser(session: BrowserSession, params: Record<string, unknown>): Promise<string> {
+async function interactBrowser(session: BrowserSession, params: Record<string, unknown>): Promise<string | ToolExecutionResult> {
   const interaction = parseInteraction(params.interaction)
-  if (interaction === 'ax_click' || interaction === 'ax_type') return interactAccessibilityBrowser(session, params, interaction)
-  if (interaction === 'click_at' || interaction === 'type_at' || interaction === 'scroll_at' || (interaction === 'press_key' && !params.selector)) {
-    return interactCanvasBrowser(session, params, interaction)
+  assertCurrentBrowserSnapshot(params.snapshotId, session)
+  if (interaction === 'ax_click' || interaction === 'ax_type') {
+    const content = await interactAccessibilityBrowser(session, params, interaction)
+    return protocolBrowserAction(session, content, interaction, 'applied')
   }
-  const selector = interaction === 'press_key' ? undefined : stringParam(params.selector, 'selector')
-  const confirmSubmit = params.confirmSubmit === true
-  const payload = { interaction, selector, text: params.text, value: params.value, key: params.key, confirmSubmit }
-  const result = await session.view.webContents.executeJavaScript(`(${browserInteraction.toString()})(${JSON.stringify(payload)}, ${MAX_TEXT_LENGTH})`)
-  session.url = session.view.webContents.getURL()
-  return JSON.stringify({ browserSessionId: session.id, url: session.url, ...result })
+  if (interaction === 'click_at' || interaction === 'type_at' || interaction === 'scroll_at' || (interaction === 'press_key' && !params.selector)) {
+    const content = await interactCanvasBrowser(session, params, interaction)
+    return captureBrowserVerification(session, content, interaction)
+  }
+  {
+    const selector = interaction === 'press_key' ? undefined : stringParam(params.selector, 'selector')
+    const confirmSubmit = params.confirmSubmit === true
+    const payload = { interaction, selector, text: params.text, value: params.value, key: params.key, confirmSubmit }
+    const result = await session.view.webContents.executeJavaScript(`(${browserInteraction.toString()})(${JSON.stringify(payload)}, ${MAX_TEXT_LENGTH})`)
+    session.url = session.view.webContents.getURL()
+    return protocolBrowserAction(session, JSON.stringify({ browserSessionId: session.id, url: session.url, ...result }), interaction, 'applied')
+  }
+}
+
+function protocolBrowserAction(session: BrowserSession, content: string, interaction: BrowserInteraction, status: 'applied' | 'verified'): ToolExecutionResult {
+  const snapshot = createBrowserSnapshot(session, 'page')
+  return {
+    content,
+    protocol: createExecutionEnvelope('action', status, { interaction, url: session.url }, {
+      sessionId: session.id,
+      snapshot: { id: snapshot.id, revision: snapshot.revision, scope: 'page', capturedAt: new Date(snapshot.createdAt).toISOString() },
+      evidence: [{ type: 'dom', summary: status === 'verified' ? 'Page state matched the requested expectation.' : 'Browser event was delivered; observe the resulting page state before claiming success.' }],
+    }),
+  }
+}
+
+function createBrowserSnapshot(session: BrowserSession, scope: BrowserSnapshot['scope']): BrowserSnapshot {
+  const snapshot: BrowserSnapshot = { id: `browser_snapshot_${randomUUID()}`, revision: ++session.revision, createdAt: Date.now(), scope }
+  session.latestSnapshot = snapshot
+  return snapshot
+}
+
+function assertCurrentBrowserSnapshot(value: unknown, session: BrowserSession): void {
+  if (value === undefined || value === null) return
+  if (typeof value !== 'string' || !value) throw new Error('snapshotId must be a non-empty string when supplied.')
+  const snapshot = session.latestSnapshot
+  if (!snapshot || snapshot.id !== value) {
+    throw new Error('The browser snapshot is stale or belongs to another page state. Call browser_control observe or observe_visual again before interacting.')
+  }
+}
+
+async function captureBrowserVerification(session: BrowserSession, content: string, interaction: BrowserInteraction): Promise<ToolExecutionResult> {
+  const image = await session.view.webContents.capturePage()
+  const screenshotPath = path.join(os.tmpdir(), `eva-browser-action-${randomUUID()}.png`)
+  await fs.promises.writeFile(screenshotPath, image.toPNG())
+  const snapshot = createBrowserSnapshot(session, 'canvas')
+  return {
+    content: `${content}\nPost-action browser screenshot captured. Inspect it before claiming the requested page change occurred.`,
+    images: [{ path: screenshotPath, name: 'browser-action-verification.png', mediaType: 'image/png' }],
+    protocol: createExecutionEnvelope('action', 'dispatched', { interaction, url: session.url }, {
+      sessionId: session.id,
+      snapshot: { id: snapshot.id, revision: snapshot.revision, scope: 'canvas', capturedAt: new Date(snapshot.createdAt).toISOString() },
+      evidence: [{ type: 'screenshot', summary: 'Post-action canvas screenshot requires visual verification.', sourceId: screenshotPath }],
+    }),
+  }
 }
 
 export async function runBrowserInteraction(sessionId: string, conversationId: string | undefined, params: Record<string, unknown>): Promise<{ browserSessionId: string; url: string; result: Record<string, unknown> }> {

@@ -1,4 +1,5 @@
 import fs from 'fs'
+import fsPromises from 'fs/promises'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { AgentConfig } from '../../shared/types/agent'
@@ -26,15 +27,19 @@ export class AgentStore {
     try {
       if (!fs.existsSync(this.filePath)) return []
       const raw = fs.readFileSync(this.filePath, 'utf-8')
-      return JSON.parse(raw) as AgentConfig[]
+      const parsed = JSON.parse(raw) as unknown
+      return Array.isArray(parsed) ? parsed.map((value) => normalizeAgent(value)) : []
     } catch {
       return []
     }
   }
 
-  private writeAgents(agents: AgentConfig[]): void {
+  private async writeAgents(agents: AgentConfig[]): Promise<void> {
     this.ensureDir()
-    fs.writeFileSync(this.filePath, JSON.stringify(agents, null, 2), 'utf-8')
+    const tmpPath = this.filePath + '.tmp'
+    const data = JSON.stringify(agents, null, 2)
+    await fsPromises.writeFile(tmpPath, data, 'utf-8')
+    await fsPromises.rename(tmpPath, this.filePath)
   }
 
   // ─── CRUD ──────────────────────────────────────────────────────────────────
@@ -60,7 +65,7 @@ export class AgentStore {
       updatedAt: now,
     }
     agents.push(agent)
-    this.writeAgents(agents)
+    await this.writeAgents(agents)
     return agent
   }
 
@@ -77,7 +82,7 @@ export class AgentStore {
       ...updates,
       updatedAt: Date.now(),
     }
-    this.writeAgents(agents)
+    await this.writeAgents(agents)
     return agents[index]
   }
 
@@ -88,7 +93,7 @@ export class AgentStore {
     if (target.isBuiltIn) throw new Error('Cannot delete built-in agent')
 
     const filtered = agents.filter((a) => a.id !== id)
-    this.writeAgents(filtered)
+    await this.writeAgents(filtered)
   }
 
   // ─── Built-in Agents ───────────────────────────────────────────────────────
@@ -126,7 +131,7 @@ export class AgentStore {
       }
     }
 
-    this.writeAgents(newAgents)
+    await this.writeAgents(newAgents)
   }
 
   // ─── Query ─────────────────────────────────────────────────────────────────
@@ -134,5 +139,38 @@ export class AgentStore {
   async getAgentsByRole(role: string): Promise<AgentConfig[]> {
     const agents = this.readAgents()
     return agents.filter((a) => a.role === role)
+  }
+}
+
+/** Backfill fields introduced after older Agent configurations were persisted. */
+function normalizeAgent(value: unknown): AgentConfig {
+  const raw = value && typeof value === 'object' ? value as Partial<AgentConfig> : {}
+  return {
+    id: typeof raw.id === 'string' ? raw.id : uuidv4(),
+    name: typeof raw.name === 'string' ? raw.name : 'Unnamed Agent',
+    description: typeof raw.description === 'string' ? raw.description : '',
+    role: raw.role || 'custom',
+    systemPrompt: typeof raw.systemPrompt === 'string' ? raw.systemPrompt : '',
+    outputFormat: raw.outputFormat || 'default',
+    outputFormatInstructions: typeof raw.outputFormatInstructions === 'string' ? raw.outputFormatInstructions : '',
+    outputStyle: raw.outputStyle || 'balanced',
+    outputFont: raw.outputFont || 'system',
+    outputColor: raw.outputColor || 'slate',
+    outputFontSize: raw.outputFontSize || 'medium',
+    outputTextEffect: raw.outputTextEffect || 'none',
+    showThinking: Boolean(raw.showThinking),
+    model: typeof raw.model === 'string' ? raw.model : 'gpt-4o',
+    providerId: typeof raw.providerId === 'string' ? raw.providerId : 'openai',
+    modelCandidates: Array.isArray(raw.modelCandidates) ? raw.modelCandidates : [],
+    modelPreference: raw.modelPreference,
+    modelPoolIds: Array.isArray(raw.modelPoolIds) ? raw.modelPoolIds : [],
+    tools: Array.isArray(raw.tools) ? raw.tools.filter((tool): tool is string => typeof tool === 'string') : [],
+    toolCatalogVersion: raw.toolCatalogVersion,
+    maxIterations: typeof raw.maxIterations === 'number' && raw.maxIterations > 0 ? raw.maxIterations : 100,
+    temperature: typeof raw.temperature === 'number' ? raw.temperature : 0.7,
+    isBuiltIn: Boolean(raw.isBuiltIn),
+    taskScoped: Boolean(raw.taskScoped),
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
   }
 }

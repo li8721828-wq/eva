@@ -1,9 +1,10 @@
-import type { ToolContext, ToolExecutor } from './index'
+import { createExecutionEnvelope, type ToolContext, type ToolExecutionResult, type ToolExecutor } from './index'
 import {
   getFreshDesktopObservation,
   recordDesktopControlStep,
   requireActiveDesktopControlSession,
   storeDesktopObservation,
+  DESKTOP_OBSERVATION_TTL_MS,
   type DesktopControl,
   type DesktopObservation,
 } from './desktop-observation-store'
@@ -43,7 +44,7 @@ export function createMouseTools(): ToolExecutor[] {
 const mouseControlTool: ToolExecutor = {
   definition: {
     name: 'mouse_control',
-    description: 'Control the local Windows pointer through a recent desktop_observe result. Pointer actions require the observationId from the currently visible foreground window or visible taskbar. The tool rejects stale or no-longer-visible targets, moves smoothly, and verifies that Windows actually placed the pointer at the requested target before reporting success. It never targets background or occluded windows. Closing the foreground app is blocked unless explicitly authorized; dialog Cancel and Close controls remain available to dismiss a visible blocker.',
+    description: 'Control the local Windows pointer through a recent desktop_observe result. Pointer actions require the observationId from the currently visible foreground window or visible taskbar. Every click, double-click, or scroll automatically captures the resulting complete desktop for the next verification cycle. The tool verifies pointer arrival but does not claim the requested UI outcome unless the post-action observation confirms it.',
     parameters: {
       type: 'object',
       properties: {
@@ -67,7 +68,7 @@ const mouseControlTool: ToolExecutor = {
         },
         expected: {
           type: 'object',
-          description: 'Optional visible result to check after the action. Verification is based only on the foreground window observed after the action.',
+          description: 'Optional explicit visible result to check after the action, such as a changed window title or an observed target becoming present/enabled. Without expected, the tool reports dispatch only and the following screenshot must be interpreted by the Agent or visual model pool.',
           properties: {
             windowTitleIncludes: { type: 'string' },
             targetPresent: { type: 'boolean' },
@@ -94,7 +95,7 @@ const mouseControlTool: ToolExecutor = {
     },
   },
 
-  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string | ToolExecutionResult> {
     if (process.platform !== 'win32') {
       throw new Error('Mouse control is currently available only on Windows.')
     }
@@ -123,7 +124,27 @@ const mouseControlTool: ToolExecutor = {
         return `Screen bounds: left ${report.screen.left}, top ${report.screen.top}, width ${report.screen.width}, height ${report.screen.height}. Cursor: ${report.cursor.x}, ${report.cursor.y}.`
       }
 
-      const observation = getFreshDesktopObservation(params.observationId)
+      let observation
+      try {
+        observation = getFreshDesktopObservation(params.observationId)
+      } catch (error) {
+        // A semantic target can be safely re-resolved against a fresh UI
+        // snapshot. Raw coordinates cannot, because the window may have moved.
+        const message = error instanceof Error ? error.message : String(error)
+        if (!selector) return createObservationRecovery(message)
+        if (!message.toLowerCase().includes('expired')) throw error
+        const refreshed = await observeVisibleDesktop('controls', 100, false)
+        observation = storeDesktopObservation({
+          activeWindow: refreshed.snapshot.activeWindow,
+          controls: refreshed.snapshot.controls,
+          priorityControls: refreshed.snapshot.priorityControls,
+          dialog: refreshed.snapshot.dialog,
+          taskbar: refreshed.snapshot.taskbar,
+          taskbars: refreshed.snapshot.taskbars,
+          controlCount: refreshed.snapshot.controlCount,
+          truncated: refreshed.snapshot.truncated,
+        })
+      }
       const session = params.sessionId ? requireActiveDesktopControlSession(params.sessionId, context.conversationId) : undefined
       let selectedControl: DesktopControl | undefined
       if (selector) {
@@ -170,7 +191,8 @@ const mouseControlTool: ToolExecutor = {
         })
       }
 
-      const checked = await observeVisibleDesktop('controls', 100, false)
+      const needsVisualVerification = action !== 'move'
+      const checked = await observeVisibleDesktop('controls', 100, needsVisualVerification)
       const nextObservation = storeDesktopObservation({
         activeWindow: checked.snapshot.activeWindow,
         controls: checked.snapshot.controls,
@@ -197,7 +219,7 @@ const mouseControlTool: ToolExecutor = {
           objective: '桌面控制',
         })
       }
-      return JSON.stringify({
+      const result = JSON.stringify({
         action,
         target: selectedControl ? summarizeControl(selectedControl) : { x, y },
         cursor: report.cursor,
@@ -207,7 +229,7 @@ const mouseControlTool: ToolExecutor = {
         targetSurface: targetsTaskbar ? 'taskbar' : 'foreground',
         previousObservationId: observation.id,
         nextObservationId: nextObservation.id,
-        validForMs: 15_000,
+        validForMs: DESKTOP_OBSERVATION_TTL_MS,
         activeWindow: checked.snapshot.activeWindow,
         dialog: checked.snapshot.dialog,
         taskbar: checked.snapshot.taskbar,
@@ -215,7 +237,18 @@ const mouseControlTool: ToolExecutor = {
         priorityControls: checked.snapshot.priorityControls?.map(summarizeControl),
         verification,
         sessionId: session?.id,
+        visualVerificationCaptured: Boolean(checked.imagePath),
       })
+      if (!checked.imagePath) return result
+      return {
+        content: result,
+        images: [{ path: checked.imagePath, name: 'desktop-action-verification.png', mediaType: 'image/png' }],
+        protocol: createExecutionEnvelope('action', verification.verified ? 'verified' : 'dispatched', { action, target: selectedControl ? summarizeControl(selectedControl) : { x, y }, verification }, {
+          sessionId: session?.id,
+          snapshot: { id: nextObservation.id, revision: nextObservation.revision, scope: 'desktop', capturedAt: new Date().toISOString() },
+          evidence: [{ type: 'structured', summary: verification.detail }, { type: 'screenshot', summary: 'Post-action desktop screenshot', sourceId: checked.imagePath }],
+        }),
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       updateDesktopControlOverlay({
@@ -227,6 +260,41 @@ const mouseControlTool: ToolExecutor = {
       throw new Error(message)
     }
   },
+}
+
+async function createObservationRecovery(reason: string): Promise<ToolExecutionResult> {
+  const refreshed = await observeVisibleDesktop('controls', 100, true)
+  const observation = storeDesktopObservation({
+    activeWindow: refreshed.snapshot.activeWindow,
+    controls: refreshed.snapshot.controls,
+    priorityControls: refreshed.snapshot.priorityControls,
+    dialog: refreshed.snapshot.dialog,
+    taskbar: refreshed.snapshot.taskbar,
+    taskbars: refreshed.snapshot.taskbars,
+    controlCount: refreshed.snapshot.controlCount,
+    truncated: refreshed.snapshot.truncated,
+  })
+  const content = JSON.stringify({
+    actionNotPerformed: true,
+    reason,
+    observationId: observation.id,
+    revision: observation.revision,
+    validForMs: DESKTOP_OBSERVATION_TTL_MS,
+    activeWindow: refreshed.snapshot.activeWindow,
+    cursor: refreshed.snapshot.cursor,
+    screen: refreshed.snapshot.screen,
+    displays: refreshed.snapshot.displays,
+    priorityControls: refreshed.snapshot.priorityControls?.map(summarizeControl),
+    guidance: 'A new desktop screenshot and observationId were captured. Do not reuse the rejected coordinate. Inspect this screenshot at its native screen dimensions, then issue at most one new mouse or keyboard action.',
+  })
+  const protocol = createExecutionEnvelope('recovery', 'rejected', { actionNotPerformed: true, reason }, {
+    snapshot: { id: observation.id, revision: observation.revision, scope: 'desktop', capturedAt: new Date(observation.observedAt).toISOString() },
+    evidence: [{ type: 'structured', summary: reason }],
+    error: { code: 'OBSERVATION_REFRESH_REQUIRED', message: reason, retryable: true, requiresObservation: true },
+  })
+  return refreshed.imagePath
+    ? { content, images: [{ path: refreshed.imagePath, name: 'desktop-observation-recovery.png', mediaType: 'image/png' }], protocol }
+    : { content, protocol }
 }
 
 function parseSelector(value: unknown): ControlSelector | undefined {
@@ -283,10 +351,13 @@ function verifyVisibleResult(
     ? rawExpected as Record<string, unknown>
     : {}
   const checks: Record<string, boolean> = {}
+  const hasExplicitExpectation = (typeof expected.windowTitleIncludes === 'string' && expected.windowTitleIncludes.trim())
+    || expected.targetPresent !== undefined
+    || expected.targetEnabled !== undefined
   if (typeof expected.windowTitleIncludes === 'string' && expected.windowTitleIncludes.trim()) {
     checks.windowTitle = normalized(snapshot.activeWindow.title).includes(normalized(expected.windowTitleIncludes))
   } else {
-    checks.foregroundObserved = Boolean(snapshot.activeWindow.handle)
+    checks.foregroundObserved = hasExplicitExpectation ? Boolean(snapshot.activeWindow.handle) : false
   }
   if (selector && (expected.targetPresent !== undefined || expected.targetEnabled !== undefined)) {
     const matches = (snapshot.controls || []).filter((control) => !control.password && matchesSelector(control, selector))
@@ -297,7 +368,9 @@ function verifyVisibleResult(
   const changedWindow = snapshot.activeWindow.handle !== previous.activeWindow.handle
   const detail = verified
     ? `Visible result verified${changedWindow ? '; foreground window changed as observed.' : '.'}`
-    : `Visible result did not match the expected state${changedWindow ? '; a different foreground window is now visible.' : '.'}`
+    : hasExplicitExpectation
+      ? `Visible result did not match the expected state${changedWindow ? '; a different foreground window is now visible.' : '.'}`
+      : 'Action was dispatched, but no explicit expected result was supplied. Inspect the post-action screenshot before claiming success.'
   return { verified, detail, checks }
 }
 

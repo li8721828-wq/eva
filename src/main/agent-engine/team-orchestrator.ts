@@ -294,10 +294,9 @@ export class TeamOrchestrator {
     completedResults: Map<string, string>
   ): AsyncGenerator<TeamEvent> {
     const maxAttempts = 2
-    const executionAgent = this.selectExecutionAgent(worker, subtask)
-
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       if (this.abortController?.signal.aborted) return
+      const executionAgent = this.selectExecutionAgent(worker, subtask)
 
       subtask.status = 'in_progress'
       subtask.startedAt = subtask.startedAt || Date.now()

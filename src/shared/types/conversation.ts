@@ -1,6 +1,7 @@
 import type { AgentConfig } from './agent'
 import type { FileAccessGrant } from './file-access'
 import type { AgentSymposium } from './symposium'
+import type { ExecutionEnvelope } from './execution-protocol'
 
 export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
 export type ConversationExecutionStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
@@ -108,6 +109,7 @@ export interface ToolCall {
   arguments: Record<string, unknown>
   result?: string
   isError?: boolean
+  protocol?: ExecutionEnvelope
 }
 
 export interface ChatStreamEvent {
@@ -120,6 +122,7 @@ export interface ChatStreamEvent {
   toolCallId?: string
   toolResult?: string
   isError?: boolean
+  protocol?: ExecutionEnvelope
   error?: string
   finishReason?: string
   usage?: ChatUsage

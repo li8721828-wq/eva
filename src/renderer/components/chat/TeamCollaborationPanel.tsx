@@ -48,7 +48,7 @@ export function TeamCollaborationPanel() {
   if (!currentPlan || members.length === 0) return null
 
   return (
-    <section className="border-b border-violet-100 bg-violet-50/40 px-6 py-4">
+    <section className="border-b border-zinc-200 bg-zinc-50/70 px-6 py-4">
       <div className="mx-auto w-full max-w-5xl">
         <div className="mb-3 flex items-center gap-2 text-sm">
           <Users className="h-4 w-4 text-violet-600" />
@@ -56,7 +56,7 @@ export function TeamCollaborationPanel() {
           <span className="text-xs text-zinc-500">{members.length} assigned agent{members.length === 1 ? '' : 's'}</span>
           {isTaskRunning && <Badge variant="primary" className="ml-auto">Active</Badge>}
         </div>
-        <div className="divide-y divide-violet-100 border-y border-violet-100 bg-white/70">
+          <div className="eva-panel divide-y divide-zinc-100 bg-white">
           {members.map((member) => (
             <div key={member.id} className="flex min-w-0 items-center gap-4 px-4 py-3">
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-700">

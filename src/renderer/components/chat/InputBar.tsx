@@ -5,11 +5,12 @@ import { useAgentStore } from '@/stores/use-agent-store'
 import { useTaskStore } from '@/stores/use-task-store'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
 import { cn } from '@/lib/utils'
+import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, FileText, FolderOpen, FolderPlus, ImagePlus, Paperclip, Send, Settings2, Square, Trash2, X } from 'lucide-react'
-import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel, FileAccessGrant } from '../../../shared/types'
+import { Bot, FileText, FolderOpen, ImagePlus, Paperclip, Send, Settings2, Square, X } from 'lucide-react'
+import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 
 export interface InputBarProps {
@@ -49,7 +50,6 @@ export function InputBar({ className }: InputBarProps) {
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
-  const fileAccessGrants = currentConversation?.fileAccessGrants || []
   const assignedAgent = agents.find((agent) => agent.id === assignedAgentId)
 
   const symposiumMention = useMemo(() => {
@@ -164,7 +164,7 @@ export function InputBar({ className }: InputBarProps) {
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
     }
-    const useTeam = workMode === 'expert'
+    const useTeam = workMode === 'expert' && shouldUseExpertTeam(inputText)
     if (useTeam) {
       const goal = inputText.trim()
       if (!goal) return
@@ -321,6 +321,36 @@ export function InputBar({ className }: InputBarProps) {
     event.target.value = ''
   }
 
+  const addClipboardImages = useCallback(async (files: File[]) => {
+    const slots = 4 - referenceImages.length
+    if (slots <= 0) {
+      setAttachmentError('You can attach up to four reference images.')
+      return
+    }
+    const supported = files.filter((file) => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type)).slice(0, slots)
+    if (!supported.length) {
+      setAttachmentError('Use JPG, PNG, or WebP reference images.')
+      return
+    }
+    try {
+      const saved = await Promise.all(supported.map(async (file) => {
+        if (file.size > 12 * 1024 * 1024) throw new Error('Each reference image must be 12 MB or smaller.')
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read clipboard image.'))
+          reader.onerror = () => reject(new Error('Could not read clipboard image.'))
+          reader.readAsDataURL(file)
+        })
+        const stored = await window.eva.file.saveClipboardImage({ dataUrl, mediaType: file.type as ChatImageAttachment['mediaType'] })
+        return { ...stored, mediaType: file.type as ChatImageAttachment['mediaType'] }
+      }))
+      setReferenceImages([...referenceImages, ...saved])
+      setAttachmentError(null)
+    } catch (error) {
+      setAttachmentError(error instanceof Error ? error.message : 'Could not attach clipboard image.')
+    }
+  }, [referenceImages, setReferenceImages])
+
   const addDocumentPaths = useCallback(async (paths: string[]) => {
     if (!paths.length) return
     const uniquePaths = paths.filter((filePath) => filePath && !documentAttachments.some((attachment) => attachment.path === filePath))
@@ -361,7 +391,7 @@ export function InputBar({ className }: InputBarProps) {
       event.preventDefault()
       const images = pastedFiles.filter((file) => file.type.startsWith('image/'))
       const documents = pastedFiles.filter((file) => !file.type.startsWith('image/'))
-      if (images.length) addReferenceFiles(images)
+      if (images.length) void addClipboardImages(images)
       void addDocumentPaths(documents.map((file) => window.eva.file.getPath(file)).filter(Boolean))
     }
   }
@@ -401,34 +431,6 @@ export function InputBar({ className }: InputBarProps) {
     await setConversationPermissions(conversation.id, permission, conversation.fileAccessGrants || [])
   }
 
-  const addFolderGrant = async () => {
-    if (!currentConversation) return
-    const path = await window.eva.file.selectFolder()
-    if (!path || fileAccessGrants.some((grant) => grant.path === path)) return
-    void setConversationPermissions(currentConversation.id, 'granted-folders', [
-      ...fileAccessGrants,
-      { path, access: 'read-write' },
-    ])
-  }
-
-  const updateFolderGrant = (path: string, access: FileAccessGrant['access']) => {
-    if (!currentConversation) return
-    void setConversationPermissions(
-      currentConversation.id,
-      'granted-folders',
-      fileAccessGrants.map((grant) => (grant.path === path ? { ...grant, access } : grant))
-    )
-  }
-
-  const removeFolderGrant = (path: string) => {
-    if (!currentConversation) return
-    void setConversationPermissions(
-      currentConversation.id,
-      'granted-folders',
-      fileAccessGrants.filter((grant) => grant.path !== path)
-    )
-  }
-
   return (
     <div
       className={cn(
@@ -436,7 +438,7 @@ export function InputBar({ className }: InputBarProps) {
         className,
       )}
     >
-      <div className="w-full rounded-xl shadow-[0_18px_40px_-28px_rgba(39,42,58,0.44),0_3px_10px_rgba(39,42,58,0.07)]">
+      <div className="w-full rounded-lg border border-zinc-200 bg-white shadow-[0_8px_24px_-22px_rgba(39,48,84,0.42)]">
         <div
           className={cn(
             'chat-composer relative isolate box-border min-w-0 overflow-visible rounded-xl border border-[rgba(99,102,115,0.14)] bg-transparent transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-[rgba(82,86,100,0.24)]',
@@ -448,7 +450,7 @@ export function InputBar({ className }: InputBarProps) {
         >
           <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={addReferenceImages} />
           {referenceImages.length > 0 && (
-            <div className="flex flex-wrap gap-2 rounded-t-[11px] border-b border-zinc-100 bg-[#fdfdff] px-4 py-3">
+            <div className="flex flex-wrap gap-2 rounded-t-[7px] border-b border-zinc-100 bg-white px-4 py-3">
               {referenceImages.map((image) => (
                 <div key={image.path} className="group relative h-16 w-16 overflow-hidden rounded-md border border-zinc-200 bg-zinc-100">
                   <ReferenceImagePreview image={image} className="h-full w-full" />
@@ -492,13 +494,13 @@ export function InputBar({ className }: InputBarProps) {
               </button>
             </div>
           )}
-          <div className="flex min-h-16 items-end gap-3 rounded-t-[11px] bg-[#fdfdff] px-4 py-3">
+            <div className="flex min-h-16 items-end gap-3 rounded-t-[7px] bg-white px-4 py-3">
             <Button
               variant="ghost"
               size="icon"
               className="mb-0.5 h-8 w-8 shrink-0 text-zinc-400 hover:text-zinc-700"
-              title="Attach file"
-              aria-label="Attach files or folders"
+              title="Attach files or folders. Paste a screenshot into the message box with Ctrl+V."
+              aria-label="Attach files or folders; screenshots can be pasted into the message box"
               onClick={selectAttachments}
               disabled={isSymposiumRunning || isSymposiumConversation}
             >
@@ -616,7 +618,7 @@ export function InputBar({ className }: InputBarProps) {
 
           {attachmentError && <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">{attachmentError}</div>}
 
-          <div className="flex min-h-10 items-center justify-between gap-3 rounded-b-[11px] border-t border-zinc-100 bg-[#fafbfe] px-4 py-1.5 text-xs text-zinc-500">
+          <div className="flex min-h-10 items-center justify-between gap-3 rounded-b-[7px] border-t border-zinc-100 bg-zinc-50/70 px-4 py-1.5 text-xs text-zinc-500">
             <div className="flex min-w-0 items-center gap-1.5">
               {isSymposiumConversation ? (
                 <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-700"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
@@ -683,33 +685,6 @@ export function InputBar({ className }: InputBarProps) {
             </div>
           </div>
 
-          {currentConversation && permissionLevel === 'granted-folders' && (
-            <div className="flex flex-wrap items-center gap-2 rounded-b-[11px] border-t border-zinc-100 bg-[#fafbfe] px-4 py-2.5">
-              {fileAccessGrants.map((grant) => (
-                <div key={grant.path} className="flex max-w-full items-center gap-1.5 rounded-md border border-zinc-200 bg-zinc-50 py-1 pl-2 pr-1 text-xs text-zinc-600">
-                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-violet-500" />
-                  <span className="max-w-[200px] truncate" title={grant.path}>{grant.path}</span>
-                  <Select
-                    value={grant.access}
-                    onChange={(event) => updateFolderGrant(grant.path, event.target.value as FileAccessGrant['access'])}
-                    options={[
-                      { value: 'read', label: 'Read' },
-                      { value: 'read-write', label: 'Read & write' },
-                    ]}
-                    className="h-6 min-w-[92px] rounded border-transparent bg-transparent px-1 text-[11px] shadow-none hover:bg-white focus-visible:border-zinc-300"
-                    aria-label={`File access for ${grant.path}`}
-                  />
-                  <button type="button" onClick={() => removeFolderGrant(grant.path)} className="rounded p-1 text-zinc-400 hover:bg-red-50 hover:text-red-600" title="Remove folder access" aria-label="Remove folder access">
-                    <Trash2 className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
-              <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2 text-xs text-violet-700 hover:text-violet-800" onClick={() => void addFolderGrant()}>
-                <FolderPlus className="h-3.5 w-3.5" />
-                Add folder
-              </Button>
-            </div>
-          )}
         </div>
       </div>
     </div>

@@ -1,8 +1,18 @@
 import type { ChatUsage } from './conversation'
+import type { ExecutionEnvelope } from './execution-protocol'
 
 export type AgentRole = 'leader' | 'researcher' | 'coder' | 'reviewer' | 'tester' | 'custom'
 export type AgentModelPreference = 'reasoning' | 'coding' | 'research' | 'fast'
-export type AgentOutputFormat = 'default' | 'concise' | 'structured' | 'markdown' | 'json' | 'custom'
+export type AgentOutputFormat = 'default' | 'concise' | 'structured' | 'markdown' | 'claude' | 'json' | 'custom'
+/** Visual treatment for the Agent's final Markdown responses. */
+export type AgentOutputStyle = 'balanced' | 'compact' | 'editorial' | 'technical' | 'claude'
+/** Keep prose visually consistent. Code blocks always use a monospace face. */
+export type AgentOutputFont = 'system' | 'macos' | 'serif' | 'mono'
+/** Prose color palette for the Agent's final Markdown responses. */
+export type AgentOutputColor = 'slate' | 'ink' | 'violet' | 'forest' | 'claude'
+/** Stable prose scale presets, applied consistently across Markdown elements. */
+export type AgentOutputFontSize = 'small' | 'medium' | 'large' | 'xlarge'
+export type AgentOutputTextEffect = 'none' | 'three-d' | 'floating' | 'crystal'
 
 export interface AgentModelCandidate {
   /** Saved model connection ID. It remains usable even when hidden from chat. */
@@ -20,6 +30,16 @@ export interface AgentConfig {
   outputFormat?: AgentOutputFormat
   /** Per-agent response format requirements when outputFormat is custom. */
   outputFormatInstructions?: string
+  /** Presentation theme consumed by the Markdown renderer. */
+  outputStyle?: AgentOutputStyle
+  /** Prose font choice consumed by the Markdown renderer. */
+  outputFont?: AgentOutputFont
+  /** Prose color choice consumed by the Markdown renderer. */
+  outputColor?: AgentOutputColor
+  /** Prose size choice consumed by the Markdown renderer. */
+  outputFontSize?: AgentOutputFontSize
+  /** Decorative treatment limited to headings and strong emphasis. */
+  outputTextEffect?: AgentOutputTextEffect
   /** Request and display provider-supplied reasoning when the model supports it. */
   showThinking?: boolean
   model: string
@@ -28,6 +48,8 @@ export interface AgentConfig {
   modelCandidates?: AgentModelCandidate[]
   /** Runtime preference used when the team orchestrator selects among assigned models. */
   modelPreference?: AgentModelPreference
+  /** Model pools this agent may delegate sub-tasks to through the model-pool tool. */
+  modelPoolIds?: string[]
   /** This member was generated for one team task and is not a saved reusable agent. */
   taskScoped?: boolean
   tools: string[]
@@ -53,6 +75,7 @@ export interface AgentEvent {
     name: string
     result: string
     isError: boolean
+    protocol?: ExecutionEnvelope
   }
   error?: string
   usage?: ChatUsage

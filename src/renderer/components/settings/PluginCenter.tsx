@@ -10,7 +10,7 @@ function PermissionPills({ plugin }: { plugin: Pick<InstalledPlugin, 'permission
   return (
     <div className="flex flex-wrap gap-1.5">
       {plugin.permissions.map((permission) => (
-        <span key={permission} className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600">
+        <span key={permission} className="rounded bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600">
           {PLUGIN_PERMISSIONS[permission]}
         </span>
       ))}
@@ -215,7 +215,7 @@ export function PluginCenter() {
           <p className="text-sm font-semibold text-zinc-900">Web search service</p>
           <p className="mt-1 text-xs leading-5 text-zinc-500">Agent permission is configured in Agents. Choose one provider here to decide where permitted web searches are sent.</p>
         </div>
-        <div className={cn('rounded-full px-3 py-1.5 text-xs font-medium', searchServiceReady ? 'bg-emerald-50 text-emerald-700' : activeSearchProvider ? 'bg-amber-50 text-amber-700' : 'bg-zinc-100 text-zinc-600')}>
+        <div className={cn('eva-status', searchServiceReady ? 'eva-status--success' : activeSearchProvider ? 'eva-status--warning' : 'eva-status--neutral')}>
           {searchServiceReady
             ? `Active: ${activeSearchProvider?.name}`
             : activeSearchProvider
@@ -242,8 +242,8 @@ export function PluginCenter() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-sm font-semibold text-zinc-900">{plugin.name}</h4>
-                      {isSearchProviderPluginId(plugin.id) && <span className="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Search provider</span>}
-                      <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', plugin.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-100 text-zinc-500')}>
+                      {isSearchProviderPluginId(plugin.id) && <span className="rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Search provider</span>}
+                      <span className={cn('eva-status px-2 py-0.5 text-[11px]', plugin.enabled ? 'eva-status--success' : 'eva-status--neutral')}>
                         {plugin.enabled ? 'Enabled' : 'Disabled'}
                       </span>
                     </div>

@@ -33,6 +33,7 @@ export interface DesktopDialog {
 
 export interface DesktopObservation {
   id: string
+  revision: number
   observedAt: number
   activeWindow: {
     handle: number
@@ -79,15 +80,19 @@ export interface DesktopControlSession {
   steps: DesktopSessionStep[]
 }
 
-const OBSERVATION_TTL_MS = 15_000
+// Visual model review and user-authorized desktop actions can take several
+// minutes. Keep the observation bounded, but do not expire it mid-review.
+export const DESKTOP_OBSERVATION_TTL_MS = 5 * 60_000
 const SESSION_TTL_MS = 30 * 60_000
 const DEFAULT_STEP_BUDGET = 100
 const observations = new Map<string, DesktopObservation>()
 const sessions = new Map<string, DesktopControlSession>()
+let nextRevision = 0
 
 export function storeDesktopObservation(snapshot: Omit<DesktopObservation, 'id' | 'observedAt'>): DesktopObservation {
   const observation: DesktopObservation = {
     id: `desktop_${randomUUID()}`,
+    revision: ++nextRevision,
     observedAt: Date.now(),
     ...snapshot,
   }
@@ -102,15 +107,15 @@ export function getFreshDesktopObservation(id: unknown): DesktopObservation {
   }
   const observation = observations.get(id)
   if (!observation) throw new Error('The desktop observation is unavailable. Observe the visible desktop again before acting.')
-  if (Date.now() - observation.observedAt > OBSERVATION_TTL_MS) {
+  if (Date.now() - observation.observedAt > DESKTOP_OBSERVATION_TTL_MS) {
     observations.delete(id)
-    throw new Error('The desktop observation has expired after 15 seconds. Observe again before acting.')
+    throw new Error('The desktop observation has expired after 5 minutes. Observe again before acting; do not reuse the old target.')
   }
   return observation
 }
 
 function pruneExpiredObservations(): void {
-  const threshold = Date.now() - OBSERVATION_TTL_MS
+  const threshold = Date.now() - DESKTOP_OBSERVATION_TTL_MS
   for (const [id, observation] of observations) {
     if (observation.observedAt < threshold) observations.delete(id)
   }

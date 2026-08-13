@@ -240,6 +240,7 @@ export class ContextManager {
     if (tools.some((tool) => tool.name === 'manage_goal')) internalCapabilities.push('Goal control: call manage_goal to inspect, pause, continue, or cancel this conversation\'s Goal. Use it whenever the user asks to control Goal work; do not redirect them to Task Center as a substitute.')
     if (tools.some((tool) => tool.name === 'create_execution_plan')) internalCapabilities.push('Execution planning: call create_execution_plan when a structured plan is needed before work.')
     if (tools.some((tool) => tool.name === 'apply_spec_template')) internalCapabilities.push('Specification templates: call apply_spec_template when an existing template provides useful structure.')
+    if (tools.some((tool) => tool.name === 'delegate_to_model_pool')) internalCapabilities.push('Model pool delegation: keep ownership of the user request, then call delegate_to_model_pool for a bounded independent analysis, specialist draft, review, or multimodal task. The selected pool automatically receives the owning Agent\'s recent task context, tool results, and available images. Vision/Image routes receive those images by default; text routes receive the same context as text. Give the delegated model the desired outcome, verify its result against available evidence, and synthesize the final response yourself.')
     if (internalCapabilities.length) {
       parts.push('Internal capabilities available to this conversation:')
       internalCapabilities.forEach((capability) => parts.push(`- ${capability}`))
@@ -249,6 +250,9 @@ export class ContextManager {
     }
     parts.push('Each agent can have its own permitted tools and candidate model connections. The runtime chooses only from that agent\'s configured candidates; a connection hidden from the chat picker can still be assigned to an agent.')
     parts.push('Never claim that Eva lacks a capability without checking the tools and permissions listed below. State only the capabilities currently available to this agent.')
+    parts.push('')
+    parts.push('--- Response Presentation ---')
+    parts.push(this.buildOutputPresentationGuidance(agentConfig))
     parts.push('')
     parts.push('--- Evidence and Action Integrity ---')
     parts.push('Separate verified facts, inferences, and suggestions. Never invent a source, citation, file path, command output, external action, test result, collaboration result, or real-time fact.')
@@ -260,13 +264,14 @@ export class ContextManager {
     if (tools.some((tool) => tool.name === 'desktop_observe') && tools.some((tool) => tool.name === 'mouse_control')) {
       parts.push('--- Visible Desktop Control Protocol ---')
       parts.push('Use this protocol only when the user explicitly requests desktop control, mouse control, keyboard control, or a visible on-screen operation. Do not infer desktop control merely because a normal request could also be completed through a visible application; in ordinary tasks, choose the most appropriate permitted tool yourself, including execute_command.')
-      parts.push('For an explicitly requested desktop-control task, start desktop_session for a multi-step task and follow this loop: desktop_observe -> mouse_control or keyboard_control -> desktop_observe verification. If visible control is blocked or unreliable, explain the observed limitation and ask the user before switching to a command, browser automation, or another non-visible fallback. Never silently substitute a background/system action for a requested visible action.')
-      parts.push('Act only on controls returned by the most recent desktop_observe result. Prefer semantic taskbar or foreground controls over coordinates. Do not close, minimize, or rearrange unrelated applications just to reveal another one. Do not claim a visible action occurred unless mouse_control or keyboard_control returned a verified result.')
+      parts.push('For an explicitly requested desktop-control task, use a strict closed loop: desktop_observe -> inspect the resulting screenshot and structured controls -> perform exactly one mouse_control or keyboard_control action -> inspect its automatic post-action screenshot and structured result -> choose the next action or correction. Do not issue a second desktop action until the previous result has been observed. The agent runtime enforces this one-action cycle. If visible control is blocked or unreliable, explain the observed limitation and ask the user before switching to a command, browser automation, or another non-visible fallback. Never silently substitute a background/system action for a requested visible action.')
+      parts.push('Apply that same loop to every visible application task, including menus, dialogs, new sheets, tabs, forms, canvas controls, and tables. Do not claim that a requested UI change occurred because a click or key was sent; require either an explicit structured verification or a visual-model result from the post-action screenshot. keyboard_control paste_table is only an optional bulk-data action when the user specifically needs grid values entered; it is not the default solution for a general desktop task.')
+      parts.push('desktop_observe includes a point-in-time screenshot of the complete visible virtual desktop across all displays. Coordinates are native virtual-desktop pixels: never scale coordinates from a resized chat preview, and never send a point outside the returned screen bounds. Use that screenshot to understand the whole screen, but treat structured controls as limited to the foreground window and taskbars. Act only on controls returned by the most recent desktop_observe result. Prefer semantic taskbar or foreground controls over coordinates. Do not close, minimize, or rearrange unrelated applications just to reveal another one. Do not claim a visible action occurred unless mouse_control or keyboard_control returned a verified result.')
       parts.push('If the required target is not visible, input is unavailable, or the visible result cannot be verified, stop and report the limitation. Wait for the user\'s approval before using any non-visible fallback.')
     }
     if (tools.some((tool) => tool.name === 'browser_control')) {
       parts.push('--- Browser Control Protocol ---')
-      parts.push('browser_control is a general browser primitive. Open an isolated visible HTTPS session, observe accessible fields, then interact only with selectors returned by observe. For canvas-rendered pages such as spreadsheets, call observe_visual, inspect its screenshot, then use click_at, type_at, scroll_at, or press_key with its visualObservationId and screenshot-relative coordinates. Re-observe after every meaningful visual change; never guess coordinates or reuse expired observations. Never read or fill password fields, bypass login/CAPTCHA/MFA, or submit a form without explicit user approval and confirmSubmit: true. form_fill_workflow is a separate higher-level workflow and must not be conflated with browser_control.')
+      parts.push('browser_control is a general browser primitive. For ordinary web pages, use observe plus DOM selectors, the accessibility tree, and page-supported browser APIs; this is semantic access and does not require screenshots. Interact only with selectors or accessibility nodes returned by observe. Canvas is only a pixel surface unless the page exposes an accessibility tree, DOM proxy, or an application-specific API. For a canvas page, first look for those semantic interfaces. Call observe_visual and use screenshot-relative canvas coordinates only when no semantic interface is available; it is a visual fallback, not the default browser path. Re-observe after every meaningful visual change; never guess coordinates or reuse expired observations. Never read or fill password fields, bypass login/CAPTCHA/MFA, or submit a form without explicit user approval and confirmSubmit: true. form_fill_workflow is a separate higher-level workflow and must not be conflated with browser_control.')
     }
     parts.push(`Current agent model: ${agentConfig.providerId} / ${agentConfig.model}`)
     if (agentConfig.modelCandidates?.length) {
@@ -297,5 +302,18 @@ export class ContextManager {
     }
 
     return parts.join('\n')
+  }
+
+  private buildOutputPresentationGuidance(agent: AgentConfig): string {
+    const format = agent.outputFormat || 'default'
+    const custom = agent.outputFormatInstructions?.trim()
+    const base = 'Write as a highly capable, thoughtful person speaking naturally with the user: clear, calm, logical, and with good judgment. Markdown is a reading aid, not a rigid template: use headings, lists, tables, quotes, or code only when they genuinely improve reading. Prefer a natural conversational flow over formulaic “summary, details, conclusion” framing. Keep typography-like emphasis sparse: do not bold every label, do not make each sentence a list item, and do not repeat the same conclusion at the beginning and end. Keep paragraphs focused and let the structure follow the task.'
+    if (format === 'concise') return `${base} Prefer a short answer with only the detail needed to act.`
+    if (format === 'structured') return `${base} For multi-part answers, use a small number of meaningful headings and flat lists. Do not add headings for trivial replies.`
+    if (format === 'markdown') return `${base} Use standard GitHub-flavored Markdown where it improves clarity.`
+    if (format === 'claude') return `${base} Use a Claude-inspired communication style: begin directly with the useful answer, then develop the reasoning in natural short paragraphs. Be warm but not performative, precise without sounding bureaucratic, and candid about uncertainty. Prefer prose over excessive headings; use a short list only where parallel items are genuinely easier to compare. Keep emphasis rare and meaningful.`
+    if (format === 'json') return 'The user configured JSON output for this Agent. Return valid JSON only when the current request can be answered as data; otherwise explain that JSON is unsuitable instead of inventing a schema.'
+    if (format === 'custom' && custom) return `${base} Additional user preference: ${custom}`
+    return base
   }
 }

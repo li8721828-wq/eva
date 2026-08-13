@@ -8,6 +8,12 @@ import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/t
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import type { ModelPoolEntry } from '../../shared/types/model-pool'
+import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
+import { getStorage } from '../storage'
+import { providerRegistry } from '../providers'
+import { ModelRouter } from '../services/model-router'
+import { modelHealthService } from '../services/model-health-service'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -62,10 +68,14 @@ interface CompletedToolResult {
   result: string
   isError: boolean
   images?: ToolResultImage[]
+  protocol?: ExecutionEnvelope
 }
 
 const MAX_TOOL_REVIEW_IMAGES = 4
-const MAX_TOOL_REVIEW_IMAGE_BYTES = 12 * 1024 * 1024
+// A complete virtual desktop can include multiple high-resolution displays.
+// Keep this distinct from ordinary user attachment limits so desktop_observe
+// does not silently drop a valid multi-display PNG before visual analysis.
+const MAX_TOOL_REVIEW_IMAGE_BYTES = 32 * 1024 * 1024
 const TEAM_DELEGATION_TOOL: ToolDefinition = {
   name: 'delegate_to_team',
   description: 'Delegate a complex multi-step task to Eva\'s internal specialist team. Use this when work benefits from separate research, implementation, review, or testing. The team returns a consolidated result; do not ask the user to switch modes.',
@@ -108,6 +118,27 @@ const SPEC_TOOL: ToolDefinition = {
   description: 'Expand a reusable Eva specification template into an implementation brief. Use only when a matching template will add useful structure.',
   parameters: { type: 'object', properties: { templateId: { type: 'string', description: 'Template identifier.' }, parameters: { type: 'object', description: 'Template parameter values.' } }, required: ['templateId'] },
 }
+
+function modelPoolDelegationTool(allowedPoolIds?: string[]): ToolDefinition | undefined {
+  if (!allowedPoolIds?.length) return undefined
+  const pools = getStorage().config.get('modelPools').filter((pool) => allowedPoolIds.includes(pool.id))
+  if (!pools.length) return undefined
+  const availablePools = pools.map((pool) => `${pool.name} (id: ${pool.id}; capabilities: ${[...new Set(pool.entries.flatMap((entry) => entry.capabilities))].join(', ') || 'none'})`).join('; ')
+  return {
+    name: 'delegate_to_model_pool',
+    description: `Delegate one bounded subtask to an authorized model pool. The owning Agent automatically shares recent task context, tool results, and available images. Vision/Image routes receive images by default; set includeImages=false to omit them. Delegated models cannot use files, terminal, browser, or desktop tools. Available pools: ${availablePools}.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        poolId: { type: 'string', enum: pools.map((pool) => pool.id), description: 'Pool ID selected for this subtask.' },
+        capability: { type: 'string', enum: ['language', 'reasoning', 'code', 'vision', 'image', 'video', 'embedding'], description: 'Required capability within the selected pool.' },
+        task: { type: 'string', description: 'A self-contained subtask, relevant evidence, and desired answer format.' },
+        includeImages: { type: 'boolean', description: 'Optional override. Vision/Image routes include Agent images by default; set false to omit them.' },
+      },
+      required: ['poolId', 'capability', 'task'],
+    },
+  }
+}
 export class AgentRunner {
   private config: AgentRunnerConfig
   private abortController: AbortController | null = null
@@ -149,8 +180,10 @@ export class AgentRunner {
       }
 
       // Tool definitions filtered by agent's allowed tool list
+      const poolTool = agentConfig.tools.includes('delegate_to_model_pool') ? modelPoolDelegationTool(agentConfig.modelPoolIds) : undefined
       const toolDefs: ToolDefinition[] = [
-        ...toolRegistry.getDefinitionsByNames(agentConfig.tools),
+        ...toolRegistry.getDefinitionsByNames(agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool')),
+        ...(poolTool ? [poolTool] : []),
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
         ...(this.config.runTask ? [TASK_TOOL] : []),
         ...(this.config.runGoal ? [GOAL_TOOL] : []),
@@ -179,17 +212,35 @@ export class AgentRunner {
             timestamp: params.newMessage.timestamp || Date.now(),
           }
       const allHistory = [...params.messages, userMessage]
+      const primarySupportsVision = this.supportsVisionInput()
+      // Text-only OpenAI-compatible endpoints reject multimodal content with
+      // an opaque deserialization error. Strip image payloads at the final
+      // runner boundary even when a legacy/history path still contains them.
+      const safeHistory = primarySupportsVision
+        ? params.messages
+        : params.messages.map((message) => message.images?.length ? { ...message, images: undefined } : message)
+      const safeUserMessage = primarySupportsVision || !userMessage.images?.length
+        ? userMessage
+        : { ...userMessage, images: undefined }
+      const safeAllHistory = [...safeHistory, safeUserMessage]
       const hasImageInput = allHistory.some((message) => message.images?.some((image) => Boolean(image.dataUrl)))
       // Repeated read-only requests are common when a model re-evaluates a tool
       // result. Reuse the result during one ReAct run instead of re-reading the
       // same file/page/search result over and over.
       const readOnlyToolCache = new Map<string, CompletedToolResult>()
       const pendingWriteVerifications = new Set<string>()
+      let recentVisualAttachments: ToolResultImage[] = dedupeToolImages(
+        allHistory.flatMap((message) => (message.images || []).map((image) => ({
+          path: image.path,
+          name: image.name,
+          mediaType: image.mediaType,
+        }))),
+      ).slice(-8)
       let accumulatedUsage: ChatUsage | undefined
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
-        messages: allHistory,
+        messages: safeAllHistory,
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
@@ -242,6 +293,7 @@ export class AgentRunner {
         // Execute each tool call sequentially
         const toolResults = new Map<string, CompletedToolResult>()
 
+        let desktopActionExecuted = false
         for (const toolCall of response.toolCalls) {
           // Emit tool_call event
           yield {
@@ -253,7 +305,25 @@ export class AgentRunner {
             },
           }
 
+          const isDesktopAction = toolCall.name === 'mouse_control' || toolCall.name === 'keyboard_control'
+          if (isDesktopAction && desktopActionExecuted) {
+            const deferredResult: CompletedToolResult = {
+              result: 'Deferred: a desktop action already ran in this cycle. Inspect its automatic post-action screenshot and model-pool visual analysis before choosing the next desktop action.',
+              isError: false,
+            }
+            toolResults.set(toolCall.id, deferredResult)
+            yield {
+              type: 'tool_result',
+              toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: deferredResult.result, isError: false },
+            }
+            continue
+          }
+
           // Execute the tool
+          const visualAttachments = dedupeToolImages([
+            ...recentVisualAttachments,
+            ...Array.from(toolResults.values()).flatMap((toolResult) => toolResult.images || []),
+          ])
           const toolContext: ToolContext = {
             conversationId: this.config.conversationId,
             workspacePath,
@@ -262,6 +332,9 @@ export class AgentRunner {
             supportsVisionInput: this.supportsVisionInput(),
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
+            allowedModelPoolIds: agentConfig.modelPoolIds,
+            visualAttachments,
+            agentContext: this.buildModelPoolContext(messages, toolResults),
           }
           const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
           const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
@@ -270,6 +343,10 @@ export class AgentRunner {
           const result = this.normalizeToolResult(rawResult)
           if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           toolResults.set(toolCall.id, result)
+          if (isDesktopAction && !result.isError) desktopActionExecuted = true
+          if (result.images?.length) {
+            recentVisualAttachments = dedupeToolImages([...recentVisualAttachments, ...result.images]).slice(-8)
+          }
 
           const targetPath = this.resolveWorkspacePath(toolCall.arguments.path, workspacePath)
           if (!result.isError && (toolCall.name === 'write_file' || toolCall.name === 'edit_file') && targetPath) pendingWriteVerifications.add(targetPath)
@@ -283,6 +360,7 @@ export class AgentRunner {
               name: toolCall.name,
               result: result.result,
               isError: result.isError,
+              protocol: result.protocol,
             },
           }
         }
@@ -305,15 +383,50 @@ export class AgentRunner {
           })
         }
 
-        const desktopImages = this.supportsVisionInput()
-          ? await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe', 'browser_control'])
-          : []
-        if (desktopImages.length > 0) {
+        const visualToolImages = await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe', 'browser_control', 'mouse_control', 'keyboard_control'])
+        if (visualToolImages.length > 0 && this.supportsVisionInput()) {
           messages.push({
             role: 'user',
-            content: 'A desktop_observe or browser_control call supplied a screenshot of a visible surface. Use it only as visual evidence for that surface. For desktop screenshots, use the returned observationId with mouse_control or keyboard_control. For browser screenshots, use the returned visualObservationId with browser_control click_at, type_at, scroll_at, or press_key. In either case, observe again after each meaningful action and never infer hidden content.',
-            images: desktopImages,
+            content: 'A desktop, mouse, keyboard, or browser tool supplied visual evidence. For desktop tools, the image is the complete visible virtual desktop after the latest observation or action. First decide whether the requested visible outcome actually occurred. If it did not, identify only one corrective next action and observe again after it; never treat pointer arrival or input dispatch as success by itself. Use the returned observationId with mouse_control or keyboard_control for desktop actions. For browser screenshots, use the returned visualObservationId with browser_control click_at, type_at, scroll_at, or press_key. Do not infer pixels obscured by another window or continuous monitoring.',
+            images: visualToolImages,
           })
+        } else if (visualToolImages.length > 0) {
+          const desktopImages = await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe', 'mouse_control', 'keyboard_control'])
+          if (desktopImages.length > 0) {
+            const poolToolCallId = `model_pool_visual_${Date.now()}_${iteration}`
+            const poolIds = agentConfig.modelPoolIds || []
+            const poolToolCall = {
+              id: poolToolCallId,
+              name: 'delegate_to_model_pool',
+              arguments: {
+                poolId: poolIds[0] || 'authorized-vision-pool',
+                capability: 'vision',
+                includeImages: true,
+                task: 'Analyze the complete desktop screenshot after the latest Agent action. State whether the requested visible outcome occurred, visible evidence for or against it, and exactly one next corrective action if it did not.',
+                automatic: true,
+              },
+            }
+            yield { type: 'tool_call', toolCall: poolToolCall }
+            const analysis = await this.analyzeDesktopWithAuthorizedPool(desktopImages)
+            yield {
+              type: 'tool_result',
+              toolResult: {
+                toolCallId: poolToolCallId,
+                name: 'delegate_to_model_pool',
+                result: analysis || 'No authorized visual model pool could analyze the screenshot.',
+                isError: !analysis,
+              },
+            }
+            messages.push({
+              role: 'user',
+              content: analysis || 'A complete virtual-desktop screenshot was captured, but this text-only primary model has no authorized Vision or Image model pool to analyze it. Do not claim that the latest desktop action succeeded. Ask the user to authorize a visual model pool in Agent > Model access or select a vision-capable primary model.',
+            })
+          } else {
+            messages.push({
+              role: 'user',
+              content: 'A browser screenshot was captured, but this text-only primary model cannot inspect it. Do not guess visual coordinates; use a vision-capable primary model for visual browser interaction.',
+            })
+          }
         }
       }
 
@@ -324,6 +437,10 @@ export class AgentRunner {
       const finalVerificationNotice = pendingWriteVerifications.size > 0
         ? ` The following file writes remain unverified: ${this.formatPaths(pendingWriteVerifications)}. Do not call them correct, complete, or successfully verified; state that verification is still required.`
         : ''
+      const protocolResults = Array.from(toolResults.values()).map((toolResult) => toolResult.protocol).filter(Boolean)
+      if (protocolResults.length) {
+        messages.push({ role: 'user', content: `Structured execution protocol results (authoritative state; do not infer success from prose):\n${JSON.stringify(protocolResults).slice(0, 24_000)}` })
+      }
       messages.push({
         role: 'user',
         content: `You have reached the ${maxIter}-iteration tool-use limit. Do not call any more tools. Using only the results already available in this conversation, provide your concise final answer now. If the evidence is incomplete, state that clearly rather than retrying a tool.${finalVerificationNotice}`,
@@ -619,7 +736,7 @@ export class AgentRunner {
     try {
       const output = await tool.execute(toolCall.arguments, toolContext)
       if (typeof output === 'string') return { result: output, isError: false }
-      return { result: output.content, images: output.images, isError: false }
+      return { result: output.content, images: output.images, protocol: output.protocol, isError: false }
     } catch (err: any) {
       return { result: `Error: ${err?.message ?? String(err)}`, isError: true }
     }
@@ -665,9 +782,10 @@ export class AgentRunner {
     if (result.isError) return result
     // Some legacy executors return a textual failure instead of throwing. Do
     // not let that be mistaken for evidence that the requested action worked.
-    return /^(?:error|failed|failure|mouse control failed)\b/i.test(result.result.trim())
-      ? { ...result, isError: true }
-      : result
+    if (/^(?:error|failed|failure|mouse control failed)\b/i.test(result.result.trim())) {
+      return { ...result, isError: true, protocol: result.protocol ? { ...result.protocol, status: 'failed' } : undefined }
+    }
+    return result
   }
 
   private resolveWorkspacePath(value: unknown, workspacePath: string): string | undefined {
@@ -720,6 +838,85 @@ export class AgentRunner {
     return /(?:gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4-mini)/i.test(this.config.agentConfig.model)
   }
 
+  private buildModelPoolContext(
+    messages: ChatMessageInput[],
+    currentResults: Map<string, CompletedToolResult>,
+  ): string {
+    const recentMessages = messages
+      .slice(-12)
+      .map((message) => {
+        const role = message.role.toUpperCase()
+        const toolCalls = message.toolCalls?.length ? ` tool_calls=${JSON.stringify(message.toolCalls).slice(0, 2_000)}` : ''
+        return `[${role}] ${message.content.slice(0, 4_000)}${toolCalls}`
+      })
+      .join('\n')
+    const currentTools = Array.from(currentResults.entries())
+      .map(([id, result]) => `[tool:${id}] ${result.result.slice(0, 5_000)}`)
+      .join('\n')
+    return `${recentMessages}\n${currentTools}`.slice(-32_000)
+  }
+
+  /**
+   * Desktop screenshots are explicit user-authorized observations. When the
+   * primary model is text-only, use only the pools granted to this agent to
+   * turn that screenshot into a bounded visual handoff.
+   */
+  private async analyzeDesktopWithAuthorizedPool(
+    images: NonNullable<ChatMessageInput['images']>,
+  ): Promise<string | undefined> {
+    const poolIds = this.config.agentConfig.modelPoolIds || []
+    if (!poolIds.length) return undefined
+
+    const candidates: ModelPoolEntry[] = []
+    const seen = new Set<string>()
+    const router = new ModelRouter(getStorage().config.get('modelPools'), (entry) => Boolean(providerRegistry.get(entry.providerId)))
+    for (const poolId of poolIds) {
+      for (const capability of ['vision', 'image'] as const) {
+        const route = router.resolve({ poolId, capability })
+        for (const entry of [route.primary, ...route.fallbacks]) {
+          if (entry && !seen.has(entry.id)) {
+            seen.add(entry.id)
+            candidates.push(entry)
+          }
+        }
+      }
+    }
+    if (!candidates.length) return undefined
+
+    for (const entry of candidates) {
+      const provider = providerRegistry.get(entry.providerId)
+      if (!provider) continue
+      try {
+        const startedAt = Date.now()
+        const response = await provider.chatComplete({
+          model: entry.model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You analyze one user-authorized point-in-time screenshot of the complete Windows virtual desktop. Describe only visible pixels, including each display, desktop icons, taskbars, open windows, and relevant text. State uncertainty for small or unreadable content. Do not claim access to hidden windows, persistent monitoring, tools, or the computer outside this image.',
+            },
+            {
+              role: 'user',
+              content: 'Analyze this desktop screenshot for the primary assistant so it can answer the user or choose the next explicitly authorized desktop action.',
+              images,
+            },
+          ],
+          temperature: 0.1,
+          maxTokens: 4096,
+        })
+        if (response.content.trim()) {
+          modelHealthService.recordSuccess(entry.id, Date.now() - startedAt)
+          return `Visual analysis from the authorized desktop model ${entry.name} (${entry.providerId} / ${entry.model}):\n${response.content.trim()}`
+        }
+      } catch {
+        modelHealthService.recordFailure(entry.id)
+        // Try the next configured fallback without leaking provider internals
+        // into the primary model's desktop decision.
+      }
+    }
+    return undefined
+  }
+
   private async loadToolImages(
     toolCalls: CompletedToolCall[],
     toolResults: Map<string, CompletedToolResult>,
@@ -748,4 +945,14 @@ export class AgentRunner {
 
     return loaded
   }
+}
+
+function dedupeToolImages(images: ToolResultImage[]): ToolResultImage[] {
+  const seen = new Set<string>()
+  return images.filter((image) => {
+    const key = `${image.path}|${image.name}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }

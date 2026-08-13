@@ -1,9 +1,9 @@
 import { randomUUID } from 'crypto'
 import os from 'os'
 import path from 'path'
-import type { ToolContext, ToolExecutionResult, ToolExecutor } from './index'
+import { createExecutionEnvelope, type ToolContext, type ToolExecutionResult, type ToolExecutor } from './index'
 import type { DesktopBounds, DesktopControl, DesktopDialog } from './desktop-observation-store'
-import { getDesktopControlSession, recordDesktopControlStep, storeDesktopObservation } from './desktop-observation-store'
+import { DESKTOP_OBSERVATION_TTL_MS, getDesktopControlSession, recordDesktopControlStep, storeDesktopObservation } from './desktop-observation-store'
 import { runPowerShellScript } from './powershell-runner'
 import { updateDesktopControlOverlay } from '../services/desktop-control-overlay'
 
@@ -55,7 +55,7 @@ export function createDesktopMcpTools(): ToolExecutor[] {
 const desktopObserveTool: ToolExecutor = {
   definition: {
     name: 'desktop_observe',
-    description: 'Observe only the currently visible foreground Windows surface and visible taskbar. Returns a screenshot plus structured UI Automation data for foreground controls, taskbar launch buttons, names, roles, bounds, enabled state, and prioritized dialog actions. It cannot inspect background or occluded windows, and never reads password values.',
+    description: 'Capture the complete Windows virtual desktop as a screenshot, including all connected displays and taskbars. Also returns structured UI Automation data for the current foreground controls and taskbar launch buttons. The screenshot is a point-in-time visible-pixel capture, not continuous monitoring; password values are never read.',
     parameters: {
       type: 'object',
       properties: {
@@ -93,7 +93,10 @@ const desktopObserveTool: ToolExecutor = {
       })
       // Passive observations should not repaint the floating status card.
       // Only an explicitly started desktop session owns that overlay.
-      const observed = await observeVisibleDesktop(action, maxElements, Boolean(params.sessionId))
+      // An explicit desktop_observe request always includes the complete
+      // virtual-desktop screenshot. Sessions only add action auditing; they
+      // do not change what the user-authorized observation can see.
+      const observed = await observeVisibleDesktop(action, maxElements, true)
       const { snapshot, imagePath } = observed
       const observation = storeDesktopObservation({
         activeWindow: snapshot.activeWindow,
@@ -111,13 +114,15 @@ const desktopObserveTool: ToolExecutor = {
           kind: 'observe',
           summary: `Observed ${snapshot.activeWindow.title || snapshot.activeWindow.process || 'foreground window'}${snapshot.controls ? ` with ${snapshot.controlCount || 0} accessible controls` : ''}.`,
           observationId: observation.id,
+          revision: observation.revision,
         })
       }
       return {
         content: JSON.stringify({
           observationId: observation.id,
-          validForMs: 15_000,
-          visibleSurfaceOnly: true,
+          validForMs: DESKTOP_OBSERVATION_TTL_MS,
+          visibleSurfaceOnly: false,
+          screenshotScope: 'virtual_desktop',
           activeWindow: snapshot.activeWindow,
           cursor: snapshot.cursor,
           screen: snapshot.screen,
@@ -136,9 +141,17 @@ const desktopObserveTool: ToolExecutor = {
               ? 'The screenshot is supplied only to this vision-capable model on the next turn.'
               : 'This connection accepts text-only model input. The screenshot remains a local audit artifact; rely on the visible UI Automation controls and do not claim pixel-level text was read.',
           },
-          guidance: 'Coordinates use the virtual desktop shown in screen; negative positions and taskbars on another display are valid when included in displays and taskbars. Use semantic controls whenever possible: their clickPoint is the Windows-provided hit-tested point. This observation represents only the visible foreground window and visible taskbars. To open another application, prefer an observed taskbar button; do not close or rearrange unrelated applications.',
+          guidance: 'The screenshot is the complete visible virtual desktop at one point in time, including all displays, wallpaper, desktop icons, taskbars, and visible application pixels. Structured controls are limited to the foreground window and taskbars for safe interaction. Coordinates use the virtual desktop shown in screen; negative positions and secondary-display taskbars are valid when included in displays and taskbars. Use semantic controls whenever possible: their clickPoint is the Windows-provided hit-tested point. Do not infer content obscured by another window or treat this as continuous monitoring. To open another application, prefer an observed taskbar button; do not close or rearrange unrelated applications.',
         }),
-        images: imagePath ? [{ path: imagePath, name: 'visible-desktop.png', mediaType: 'image/png' }] : undefined,
+        images: imagePath ? [{ path: imagePath, name: 'virtual-desktop.png', mediaType: 'image/png' }] : undefined,
+        protocol: createExecutionEnvelope('observation', 'observed', { activeWindow: snapshot.activeWindow, controlCount: snapshot.controlCount }, {
+          sessionId: typeof params.sessionId === 'string' ? params.sessionId : undefined,
+          snapshot: { id: observation.id, revision: observation.revision, scope: 'desktop', capturedAt: new Date(observation.observedAt).toISOString() },
+          evidence: [
+            { type: 'structured', summary: `${snapshot.controlCount || 0} visible UI Automation controls` },
+            ...(imagePath ? [{ type: 'screenshot' as const, summary: 'Complete visible virtual desktop screenshot', sourceId: imagePath }] : []),
+          ],
+        }),
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -154,7 +167,8 @@ const desktopObserveTool: ToolExecutor = {
 }
 
 /**
- * Takes a consistent snapshot of only the foreground window. Consumers use
+ * Takes a consistent snapshot of the foreground controls plus a complete
+ * virtual-desktop screenshot. Consumers use
  * this after pointer actions to verify visible state instead of assuming that
  * a click succeeded.
  */
@@ -164,11 +178,11 @@ export async function observeVisibleDesktop(
   includeScreenshot = false,
 ): Promise<{ snapshot: DesktopSnapshot; imagePath?: string }> {
   let snapshot = await readDesktopSnapshot(action, maxElements)
-  let imagePath = includeScreenshot ? await captureVisibleDesktop() : undefined
+  let imagePath = includeScreenshot ? await captureVirtualDesktop() : undefined
   const confirmation = await readDesktopSnapshot('active_window', 1)
   if (confirmation.activeWindow.handle !== snapshot.activeWindow.handle) {
     snapshot = await readDesktopSnapshot(action, maxElements)
-    imagePath = includeScreenshot ? await captureVisibleDesktop() : undefined
+    imagePath = includeScreenshot ? await captureVirtualDesktop() : undefined
   }
   return { snapshot, imagePath }
 }
@@ -437,8 +451,8 @@ if ($payload.action -eq 'controls') {
   return JSON.parse(output) as DesktopSnapshot
 }
 
-async function captureVisibleDesktop(): Promise<string> {
-  const outputPath = path.join(os.tmpdir(), `eva-visible-desktop-${randomUUID()}.png`)
+async function captureVirtualDesktop(): Promise<string> {
+  const outputPath = path.join(os.tmpdir(), `eva-virtual-desktop-${randomUUID()}.png`)
   const encodedOutputPath = Buffer.from(outputPath, 'utf8').toString('base64')
   const script = `
 $ProgressPreference = 'SilentlyContinue'
@@ -460,6 +474,6 @@ Write-Output $outputPath
 `
   const { stdout, stderr } = await runPowerShellScript(script, { timeout: 15_000, maxBuffer: 16 * 1024 })
   const resultPath = stdout.trim()
-  if (!resultPath) throw new Error(stderr.trim() || 'PowerShell did not create a visible desktop screenshot')
+  if (!resultPath) throw new Error(stderr.trim() || 'PowerShell did not create a virtual desktop screenshot')
   return resultPath
 }

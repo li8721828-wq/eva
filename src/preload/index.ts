@@ -6,6 +6,7 @@ import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
+import type { ModelPool, ModelRouteRequest, ModelRouteResult } from '../shared/types/model-pool'
 import type { CostUsageReport, ModelRateCard } from '../shared/types/cost'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
@@ -109,6 +110,7 @@ export interface EvaAPI {
     selectFolder(): Promise<string | null>
     selectAttachments(): Promise<string[]>
     imagePreview(path: string): Promise<string | null>
+    saveClipboardImage(input: { dataUrl: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }): Promise<{ path: string; name: string; size: number }>
     getPath(file: File): string
   }
 
@@ -171,6 +173,12 @@ export interface EvaAPI {
     delete(id: string): Promise<void>
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
+  }
+
+  modelPool: {
+    list(): Promise<ModelPool[]>
+    save(pools: ModelPool[]): Promise<void>
+    route(request: ModelRouteRequest): Promise<ModelRouteResult>
   }
 
   cost: {
@@ -311,6 +319,7 @@ const evaAPI: EvaAPI = {
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
     selectAttachments: () => ipcRenderer.invoke(IPC.FILE_SELECT_ATTACHMENTS),
     imagePreview: (path) => ipcRenderer.invoke(IPC.FILE_IMAGE_PREVIEW, path),
+    saveClipboardImage: (input) => ipcRenderer.invoke(IPC.FILE_SAVE_CLIPBOARD_IMAGE, input),
     getPath: (file) => webUtils.getPathForFile(file),
   },
 
@@ -388,6 +397,12 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.PROVIDER_DELETE, id),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
+  },
+
+  modelPool: {
+    list: () => ipcRenderer.invoke(IPC.MODEL_POOL_LIST),
+    save: (entries) => ipcRenderer.invoke(IPC.MODEL_POOL_SAVE, entries),
+    route: (request) => ipcRenderer.invoke(IPC.MODEL_POOL_ROUTE, request),
   },
 
   cost: {

@@ -342,7 +342,7 @@ export function TaskWorkspacePanel() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <span className={cn('rounded-full px-2 py-1 text-[11px] font-medium', taskStatus === 'completed' ? 'bg-emerald-50 text-emerald-700' : taskStatus === 'failed' ? 'bg-red-50 text-red-700' : taskStatus ? 'bg-violet-50 text-violet-700' : 'bg-zinc-100 text-zinc-500')}>
+              <span className={cn('eva-status', taskStatus === 'completed' ? 'eva-status--success' : taskStatus === 'failed' ? 'eva-status--error' : taskStatus ? 'eva-status--active' : 'eva-status--neutral')}>
                 {statusLabel(taskStatus)}
               </span>
               {(taskIsRunning || taskIsPaused) && <>

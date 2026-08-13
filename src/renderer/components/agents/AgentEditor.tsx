@@ -46,6 +46,13 @@ export function AgentEditor({
   const [role, setRole] = useState<AgentRole>(agent?.role || 'custom')
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '')
   const [showThinking, setShowThinking] = useState(Boolean(agent?.showThinking))
+  const [outputFormat, setOutputFormat] = useState<NonNullable<AgentConfig['outputFormat']>>(agent?.outputFormat || 'default')
+  const [outputFormatInstructions, setOutputFormatInstructions] = useState(agent?.outputFormatInstructions || '')
+  const [outputStyle, setOutputStyle] = useState<NonNullable<AgentConfig['outputStyle']>>(agent?.outputStyle || 'balanced')
+  const [outputFont, setOutputFont] = useState<NonNullable<AgentConfig['outputFont']>>(agent?.outputFont || 'system')
+  const [outputColor, setOutputColor] = useState<NonNullable<AgentConfig['outputColor']>>(agent?.outputColor || 'slate')
+  const [outputFontSize, setOutputFontSize] = useState<NonNullable<AgentConfig['outputFontSize']>>(agent?.outputFontSize || 'medium')
+  const [outputTextEffect, setOutputTextEffect] = useState<NonNullable<AgentConfig['outputTextEffect']>>(agent?.outputTextEffect || 'none')
   const [providerId, setProviderId] = useState(agent?.providerId || defaultProviderId)
   const [model, setModel] = useState(agent?.model || defaultModel)
   const [temperature, setTemperature] = useState(agent?.temperature ?? 0.7)
@@ -61,6 +68,13 @@ export function AgentEditor({
       setRole(agent.role)
       setSystemPrompt(agent.systemPrompt)
       setShowThinking(Boolean(agent.showThinking))
+      setOutputFormat(agent.outputFormat || 'default')
+      setOutputFormatInstructions(agent.outputFormatInstructions || '')
+      setOutputStyle(agent.outputStyle || 'balanced')
+      setOutputFont(agent.outputFont || 'system')
+      setOutputColor(agent.outputColor || 'slate')
+      setOutputFontSize(agent.outputFontSize || 'medium')
+      setOutputTextEffect(agent.outputTextEffect || 'none')
       setProviderId(agent.providerId)
       setModel(agent.model)
       setTemperature(agent.temperature)
@@ -113,6 +127,13 @@ export function AgentEditor({
       role,
       systemPrompt,
       showThinking,
+      outputFormat,
+      outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '',
+      outputStyle,
+      outputFont,
+      outputColor,
+      outputFontSize,
+      outputTextEffect,
       providerId,
       model,
       temperature,
@@ -190,7 +211,21 @@ export function AgentEditor({
       </div>
 
       <OutputFormatPanel
+        outputFormat={outputFormat}
+        outputFormatInstructions={outputFormatInstructions}
+        outputStyle={outputStyle}
+        outputFont={outputFont}
+        outputColor={outputColor}
+        outputFontSize={outputFontSize}
+        outputTextEffect={outputTextEffect}
         showThinking={showThinking}
+        onOutputFormatChange={setOutputFormat}
+        onOutputFormatInstructionsChange={setOutputFormatInstructions}
+        onOutputStyleChange={setOutputStyle}
+        onOutputFontChange={setOutputFont}
+        onOutputColorChange={setOutputColor}
+        onOutputFontSizeChange={setOutputFontSize}
+        onOutputTextEffectChange={setOutputTextEffect}
         onShowThinkingChange={setShowThinking}
       />
 

@@ -32,7 +32,7 @@ app.whenReady().then(async () => {
   const projectIndexService = new ProjectIndexService(getStorage().projectIndexes, getStorage().workspaces)
 
   // 3. Create and populate tool registry
-  const toolRegistry = createToolRegistry(projectIndexService)
+  const toolRegistry = createToolRegistry(projectIndexService, providerRegistry)
 
   // 4. Load provider configs and register providers
   const providerConfigs = getStorage().config.getProviders()

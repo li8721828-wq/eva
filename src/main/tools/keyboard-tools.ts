@@ -1,9 +1,10 @@
-import type { ToolContext, ToolExecutor } from './index'
+import { createExecutionEnvelope, type ToolContext, type ToolExecutionResult, type ToolExecutor } from './index'
 import {
   getFreshDesktopObservation,
   recordDesktopControlStep,
   requireActiveDesktopControlSession,
   storeDesktopObservation,
+  DESKTOP_OBSERVATION_TTL_MS,
 } from './desktop-observation-store'
 import { observeVisibleDesktop } from './desktop-mcp-tools'
 import { runPowerShellScript } from './powershell-runner'
@@ -24,7 +25,7 @@ const KEY_CODES: Record<string, number> = {
   END: 0x23,
 }
 
-type KeyboardAction = 'type_text' | 'press_key'
+type KeyboardAction = 'type_text' | 'paste_table' | 'press_key'
 
 /** Inputs only into the foreground surface that was just observed. */
 export function createKeyboardTools(): ToolExecutor[] {
@@ -34,12 +35,13 @@ export function createKeyboardTools(): ToolExecutor[] {
 const keyboardControlTool: ToolExecutor = {
   definition: {
     name: 'keyboard_control',
-    description: 'Enter text or press a navigation key only in the currently visible foreground window after desktop_observe and mouse_control have focused the intended control. The tool revalidates the foreground window before input and observes again afterwards. It cannot read hidden or occluded content, and it never returns typed text.',
+    description: 'Enter text, paste a TSV table, or press a navigation key only in the currently visible foreground window after desktop_observe and mouse_control focus the target. For desktop spreadsheets and canvas grids, use paste_table after selecting the top-left cell: it pastes all rows and columns in one operation, then captures a verification screenshot.',
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['type_text', 'press_key'], description: 'Use type_text for the focused visible text field, or press_key for a navigation key.' },
+        action: { type: 'string', enum: ['type_text', 'paste_table', 'press_key'], description: 'Use type_text for one focused field, paste_table for TSV grid data, or press_key for navigation.' },
         text: { type: 'string', description: `Text to enter into the focused control (maximum ${MAX_TEXT_LENGTH} characters).` },
+        tsv: { type: 'string', description: 'Tab-separated data for paste_table, starting at the selected top-left grid cell.' },
         key: { type: 'string', enum: Object.keys(KEY_CODES), description: 'A keyboard key for press_key.' },
         observationId: { type: 'string', description: 'Required. The recent desktop_observe observationId for the current foreground window.' },
         sessionId: { type: 'string', description: 'Optional desktop_session id for a recorded visible-desktop workflow.' },
@@ -48,7 +50,7 @@ const keyboardControlTool: ToolExecutor = {
     },
   },
 
-  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string | ToolExecutionResult> {
     if (process.platform !== 'win32') throw new Error('Keyboard control is currently available only on Windows.')
     if (!context.fullFilesystemAccess) {
       throw new Error('Keyboard control requires Full filesystem access for this conversation.')
@@ -57,7 +59,7 @@ const keyboardControlTool: ToolExecutor = {
     const action = parseAction(params.action)
     const observation = getFreshDesktopObservation(params.observationId)
     const session = params.sessionId ? requireActiveDesktopControlSession(params.sessionId, context.conversationId) : undefined
-    const text = action === 'type_text' ? parseText(params.text) : undefined
+    const text = action === 'type_text' ? parseText(params.text) : action === 'paste_table' ? parseTable(params.tsv) : undefined
     const key = action === 'press_key' ? parseKey(params.key) : undefined
 
     updateDesktopControlOverlay({
@@ -70,7 +72,7 @@ const keyboardControlTool: ToolExecutor = {
     })
     const inputMethod = await sendKeyboardInput(observation.activeWindow.handle, text, key)
     await new Promise((resolve) => setTimeout(resolve, 180))
-    const checked = await observeVisibleDesktop('controls', 100, false)
+    const checked = await observeVisibleDesktop('controls', 100, true)
     const nextObservation = storeDesktopObservation({
       activeWindow: checked.snapshot.activeWindow,
       controls: checked.snapshot.controls,
@@ -86,7 +88,7 @@ const keyboardControlTool: ToolExecutor = {
     if (session) {
       recordDesktopControlStep(session.id, context.conversationId, {
         kind: 'action',
-        summary: action === 'type_text' ? `Entered ${text!.length} character(s) into the focused visible control.` : `Pressed ${key}.`,
+        summary: action === 'paste_table' ? `Pasted ${tableShape(text!).rows} row(s) x ${tableShape(text!).columns} column(s) into the selected visible grid cell.` : action === 'type_text' ? `Entered ${text!.length} character(s) into the focused visible control.` : `Pressed ${key}.`,
         observationId: observation.id,
       })
       recordDesktopControlStep(session.id, context.conversationId, {
@@ -104,32 +106,57 @@ const keyboardControlTool: ToolExecutor = {
       })
     }
 
-    return JSON.stringify({
+    const result = JSON.stringify({
       action,
       enteredCharacters: text?.length,
+      ...(action === 'paste_table' ? { table: tableShape(text!) } : {}),
       key,
       inputMethod,
       previousObservationId: observation.id,
       nextObservationId: nextObservation.id,
-      validForMs: 15_000,
+      validForMs: DESKTOP_OBSERVATION_TTL_MS,
       activeWindow: checked.snapshot.activeWindow,
       foregroundUnchanged,
       dialog: checked.snapshot.dialog,
       priorityControls: checked.snapshot.priorityControls,
-      guidance: 'Input was sent only to the focused visible foreground surface. Re-observe or use the returned nextObservationId before the next action; do not assume a canvas cell value unless it is visually available to the model.',
+      guidance: action === 'paste_table'
+        ? 'The TSV block was pasted from the selected top-left visible grid cell. A complete desktop screenshot is attached and must be visually checked before reporting that the table is correct.'
+        : 'Input was sent only to the focused visible foreground surface. Re-observe or use the returned nextObservationId before the next action; do not assume a canvas cell value unless it is visually available to the model.',
     })
+    if (!checked.imagePath) return result
+    return {
+      content: result,
+      images: [{ path: checked.imagePath, name: action === 'paste_table' ? 'table-paste-verification.png' : 'desktop-keyboard-verification.png', mediaType: 'image/png' }],
+      protocol: createExecutionEnvelope('action', action === 'press_key' ? 'dispatched' : 'unknown', { action, inputMethod, foregroundUnchanged, enteredCharacters: text?.length }, {
+        sessionId: session?.id,
+        snapshot: { id: nextObservation.id, revision: nextObservation.revision, scope: 'desktop', capturedAt: new Date().toISOString() },
+        evidence: [{ type: 'structured', summary: 'Keyboard input was dispatched; foreground focus was checked.' }, { type: 'screenshot', summary: 'Post-action desktop screenshot requires outcome verification.', sourceId: checked.imagePath }],
+      }),
+    }
   },
 }
 
 function parseAction(value: unknown): KeyboardAction {
-  if (value === 'type_text' || value === 'press_key') return value
-  throw new Error('action must be type_text or press_key.')
+  if (value === 'type_text' || value === 'paste_table' || value === 'press_key') return value
+  throw new Error('action must be type_text, paste_table, or press_key.')
 }
 
 function parseText(value: unknown): string {
   if (typeof value !== 'string' || !value.length) throw new Error('type_text requires non-empty text.')
   if (value.length > MAX_TEXT_LENGTH) throw new Error(`text exceeds the ${MAX_TEXT_LENGTH}-character limit.`)
   return value
+}
+
+function parseTable(value: unknown): string {
+  const text = parseText(value)
+  const shape = tableShape(text)
+  if (shape.rows > 200 || shape.columns > 50) throw new Error('paste_table supports at most 200 rows and 50 columns per action.')
+  return text
+}
+
+function tableShape(tsv: string): { rows: number; columns: number } {
+  const rows = tsv.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
+  return { rows: rows.length, columns: Math.max(...rows.map((row) => row.split('\t').length)) }
 }
 
 function parseKey(value: unknown): string {

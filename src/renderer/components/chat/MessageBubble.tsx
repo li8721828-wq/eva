@@ -2,13 +2,13 @@ import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import type { ChatMessage, ChatUsage } from '../../../shared/types'
+import type { AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, ChevronDown, BrainCircuit } from 'lucide-react'
-import { useState } from 'react'
+import { Bot, Wrench, Copy, Check, Heart, ChevronDown, BrainCircuit, ExternalLink } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
@@ -95,21 +95,61 @@ function ReasoningPanel({ content, streaming = false }: { content: string; strea
   )
 }
 
-export function MarkdownMessageContent({ content, className }: { content: string; className?: string }) {
+function markdownNodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(markdownNodeText).join('')
+  if (React.isValidElement<{ children?: ReactNode }>(node)) return markdownNodeText(node.props.children)
+  return ''
+}
+
+function MarkdownCodeBlock({ children, language }: { children: ReactNode; language?: string }) {
+  const [copied, setCopied] = useState(false)
+  const code = markdownNodeText(children).replace(/\n$/, '')
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(code)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1600)
+  }
+
   return (
-    <div className={cn('chat-message-markdown prose prose-sm max-w-none', className)}>
+    <div className="markdown-code-block group">
+      <div className="markdown-code-block__bar">
+        <span>{language || 'text'}</span>
+        <button type="button" onClick={() => void copy()} title="Copy code" aria-label="Copy code">
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  )
+}
+
+export function MarkdownMessageContent({ content, className, outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none' }: { content: string; className?: string; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect }) {
+  return (
+    <div className={cn('chat-message-markdown prose prose-sm max-w-none', `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={{
-          pre({ children, ...props }) {
-            return <div className="relative group"><pre {...props}>{children}</pre></div>
+          pre({ children }) {
+            const codeElement = React.Children.toArray(children).find(React.isValidElement)
+            const codeClassName = React.isValidElement<{ className?: string }>(codeElement) ? codeElement.props.className : undefined
+            const language = codeClassName?.match(/language-([^\s]+)/)?.[1]
+            return <MarkdownCodeBlock language={language}>{children}</MarkdownCodeBlock>
           },
           code({ children, className: codeClassName, ...props }) {
             if (!codeClassName) {
-              return <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs" {...props}>{children}</code>
+              return <code className="markdown-inline-code" {...props}>{children}</code>
             }
             return <code className={codeClassName} {...props}>{children}</code>
+          },
+          a({ href, children, ...props }) {
+            return <a href={href} target="_blank" rel="noreferrer noopener" {...props}>{children}<ExternalLink aria-hidden="true" className="markdown-external-link" /></a>
+          },
+          table({ children }) {
+            return <div className="markdown-table-wrap"><table>{children}</table></div>
           },
         }}
       >
@@ -141,6 +181,12 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const shouldShowReasoning = isStreaming || Boolean(
     message.agentId && agents.find((agent) => agent.id === message.agentId)?.showThinking
   )
+  const outputAgent = message.agentId ? agents.find((agent) => agent.id === message.agentId) : undefined
+  const outputStyle = outputAgent?.outputStyle || 'balanced'
+  const outputFont = outputAgent?.outputFont || 'system'
+  const outputColor = outputAgent?.outputColor || 'slate'
+  const outputFontSize = outputAgent?.outputFontSize || 'medium'
+  const outputTextEffect = outputAgent?.outputTextEffect || 'none'
 
   if (isUser) {
     return (
@@ -210,7 +256,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             </div>
           )}
           {shouldShowReasoning && <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />}
-          <MarkdownMessageContent content={message.content} />
+          <MarkdownMessageContent content={message.content} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} />
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>
 

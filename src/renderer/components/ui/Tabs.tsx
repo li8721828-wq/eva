@@ -99,7 +99,7 @@ function TabsTrigger({ value, children, className }: TabsTriggerProps) {
       tabIndex={isActive ? 0 : -1}
       aria-controls={`${baseId}-panel-${value}`}
       className={cn(
-        'px-4 py-2.5 text-sm font-medium transition-all duration-200 border-b-2 -mb-px',
+        'px-4 py-2.5 text-sm font-medium transition-colors duration-150 border-b-2 -mb-px',
         isActive
           ? 'border-violet-600 text-violet-600'
           : 'border-transparent text-zinc-500 hover:text-zinc-700',
