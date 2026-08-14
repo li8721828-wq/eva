@@ -438,11 +438,11 @@ export function InputBar({ className }: InputBarProps) {
         className,
       )}
     >
-      <div className="w-full rounded-lg border border-zinc-200 bg-white shadow-[0_8px_24px_-22px_rgba(39,48,84,0.42)]">
+      <div className="w-full">
         <div
           className={cn(
-            'chat-composer relative isolate box-border min-w-0 overflow-visible rounded-xl border border-[rgba(99,102,115,0.14)] bg-transparent transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-[rgba(82,86,100,0.24)]',
-            isDraggingAttachments && 'border-violet-400 bg-violet-50/30',
+            'chat-composer relative box-border min-w-0 overflow-visible rounded-lg border border-transparent bg-white shadow-[0_0_30px_-10px_rgba(53,62,104,0.22),0_0_12px_-4px_rgba(53,62,104,0.12),inset_0_1px_0_rgba(255,255,255,0.96)] transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-violet-100 focus-within:shadow-[0_0_34px_-9px_rgba(109,83,190,0.28),0_0_14px_-4px_rgba(53,62,104,0.14),inset_0_1px_0_rgba(255,255,255,0.98)]',
+            isDraggingAttachments && 'border-violet-200 bg-violet-50/40 shadow-[0_0_34px_-9px_rgba(109,83,190,0.28),0_0_14px_-4px_rgba(53,62,104,0.14),inset_0_1px_0_rgba(255,255,255,0.98)]',
           )}
           onDragOver={(event) => { event.preventDefault(); setIsDraggingAttachments(true) }}
           onDragLeave={() => setIsDraggingAttachments(false)}
@@ -466,7 +466,7 @@ export function InputBar({ className }: InputBarProps) {
             </div>
           )}
           {documentAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-2 border-b border-zinc-100 bg-[#fdfdff] px-4 py-3">
+            <div className="flex flex-wrap gap-2 rounded-t-[7px] border-b border-zinc-100 bg-white px-4 py-3">
               {documentAttachments.map((attachment) => (
                 <span key={attachment.path} className="inline-flex max-w-full items-center gap-2 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-xs text-zinc-700">
                   {attachment.kind === 'folder' ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-600" /> : <FileText className="h-3.5 w-3.5 shrink-0 text-violet-600" />}
@@ -477,7 +477,7 @@ export function InputBar({ className }: InputBarProps) {
             </div>
           )}
           {!isSymposiumConversation && assignedAgent && (
-            <div className="flex items-center justify-between gap-3 rounded-t-[11px] border-b border-violet-100 bg-violet-50/60 px-4 py-2">
+            <div className="flex items-center justify-between gap-3 rounded-t-[7px] border-b border-violet-100 bg-violet-50/60 px-4 py-2">
               <span className="inline-flex min-w-0 items-center gap-2 text-xs font-medium text-violet-800">
                 <Bot className="h-3.5 w-3.5 shrink-0" />
                 <span className="text-violet-500">Assigned agent</span>

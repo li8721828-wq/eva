@@ -237,13 +237,6 @@ html, body, #root {
   box-shadow: 0 10px 22px -22px rgba(77, 87, 176, 0.78);
 }
 
-.chat-composer {
-  border-color: rgba(193, 203, 233, 0.74) !important;
-  background: rgba(255, 255, 255, 0.8) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86), 0 14px 30px -26px rgba(38, 48, 103, 0.62) !important;
-  backdrop-filter: blur(16px);
-}
-
 .cost-center {
   background:
     linear-gradient(132deg, rgba(246, 248, 255, 0.94), rgba(251, 254, 255, 0.96) 48%, rgba(247, 252, 251, 0.94));

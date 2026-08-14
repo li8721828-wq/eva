@@ -256,6 +256,7 @@ export function registerSystemHandlers(
       }
     }
     getStorage().config.set('modelPools', pools)
+    void recordActivity({ category: 'system', action: 'model_pools.updated', status: 'success', summary: `Updated ${pools.length} model pools with ${pools.reduce((count, pool) => count + pool.entries.length, 0)} routes.` })
   })
   ipcMain.handle(IPC.MODEL_POOL_ROUTE, async (_event, request: ModelRouteRequest): Promise<ModelRouteResult> => {
     const router = new ModelRouter(getStorage().config.get('modelPools'), (entry) => Boolean(providerRegistry?.get(entry.providerId)))
@@ -277,12 +278,14 @@ export function registerSystemHandlers(
         isEnabled: true,
       })
     }
+    void recordActivity({ category: 'system', action: 'provider.saved', status: 'success', summary: `Saved model connection "${provider.name}".` })
   })
 
   ipcMain.handle(IPC.PROVIDER_DELETE, async (_event, id: string): Promise<void> => {
     getStorage().config.deleteProvider(id)
     getStorage().config.set('modelPools', getStorage().config.get('modelPools').map((pool) => ({ ...pool, entries: pool.entries.filter((entry) => entry.providerId !== id) })))
     providerRegistry?.unregister(id)
+    void recordActivity({ category: 'system', action: 'provider.deleted', status: 'info', summary: `Deleted model connection "${id}".` })
   })
 
   ipcMain.handle(

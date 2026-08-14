@@ -9,6 +9,9 @@ export interface ToolCatalogEntry {
 }
 
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
+  { id: 'create_runtime_proposal', label: 'Create runtime evolution proposal', description: 'Save an evidence-backed proposal for human review. It never performs the proposed change.', category: 'Integrations', risk: 'write' },
+  { id: 'diagnose_runtime', label: 'Diagnose Eva runtime', description: 'Analyze redacted runtime evidence and return read-only findings with recommendations.', category: 'Integrations', risk: 'read' },
+  { id: 'inspect_runtime', label: 'Inspect Eva runtime', description: 'Read a redacted snapshot of Agent, tool, plugin, model-route, and current-task activity state.', category: 'Integrations', risk: 'read' },
   { id: 'delegate_to_model_pool', label: 'Delegate to model pool', description: 'Send a bounded text or authorized image subtask to a selected model pool and return its result to the primary agent. Images require a Vision or Image route.', category: 'Integrations', risk: 'network' },
   { id: 'read_file', label: 'Read file', description: 'Read an authorized file or exact line range.', category: 'Files', risk: 'read' },
   { id: 'list_directory', label: 'List directory', description: 'List files and folders in an authorized location.', category: 'Files', risk: 'read' },
@@ -38,4 +41,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 20
+export const TOOL_CATALOG_VERSION = 23

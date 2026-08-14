@@ -7,6 +7,7 @@ import { registerActivityHandlers } from './activity'
 import { registerPluginHandlers } from './plugin'
 import { registerGitHandlers } from './git'
 import { registerCostHandlers } from './cost'
+import { registerRuntimeProposalHandlers } from './runtime-proposal'
 import type { FileService, TerminalService, ToolRegistry } from '../tools'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from '../services/project-index-service'
@@ -32,6 +33,7 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerConversationHandlers(chatServices)
   registerWorkspaceHandlers(services?.projectIndexService)
   registerActivityHandlers()
+  registerRuntimeProposalHandlers()
   registerAgentHandlers()
   registerPluginHandlers()
   registerGitHandlers()

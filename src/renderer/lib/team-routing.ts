@@ -7,6 +7,10 @@ export function shouldUseExpertTeam(input: string): boolean {
   const task = input.trim()
   if (!task) return false
 
+  // Capability questions should remain with the assigned Agent.
+  const capabilityQuestion = /\u4f60\u53ef\u4ee5.{0,12}(?:agent|\u667a\u80fd\u4f53)|(?:can|do)\s+you.{0,16}(?:team|agent)/i
+  if (capabilityQuestion.test(task)) return false
+
   const explicitTeamRequest = /(?:启动|组织|安排|调用|使用|交给|让).{0,12}(?:团队|多\s*(?:agent|智能体)|multi[-\s]?agent)|(?:use|start|organize|delegate to).{0,16}(?:team|multi[-\s]?agent)/i
   if (explicitTeamRequest.test(task)) return true
 

@@ -10,6 +10,7 @@ import { QqRemoteStore } from './qq-remote-store'
 import { PluginStore } from './plugin-store'
 import { TaskRunStore } from './task-run-store'
 import { ProjectIndexStore } from './project-index-store'
+import { RuntimeProposalStore } from './runtime-proposal-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -21,6 +22,7 @@ export class StorageManager {
   plugins: PluginStore
   taskRuns: TaskRunStore
   projectIndexes: ProjectIndexStore
+  runtimeProposals: RuntimeProposalStore
 
   private userDataPath: string
 
@@ -37,6 +39,7 @@ export class StorageManager {
     this.plugins = new PluginStore()
     this.taskRuns = new TaskRunStore(this.userDataPath)
     this.projectIndexes = new ProjectIndexStore(this.userDataPath)
+    this.runtimeProposals = new RuntimeProposalStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {

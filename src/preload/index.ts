@@ -14,6 +14,7 @@ import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activi
 import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
 import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from '../shared/types/plugin'
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
+import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -173,6 +174,11 @@ export interface EvaAPI {
     delete(id: string): Promise<void>
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
+  }
+
+  runtimeProposal: {
+    list(): Promise<RuntimeEvolutionProposal[]>
+    decide(id: string, status: 'approved' | 'rejected', decisionNote?: string): Promise<RuntimeEvolutionProposal>
   }
 
   modelPool: {
@@ -397,6 +403,11 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.PROVIDER_DELETE, id),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
+  },
+
+  runtimeProposal: {
+    list: () => ipcRenderer.invoke(IPC.RUNTIME_PROPOSAL_LIST),
+    decide: (id, status, decisionNote) => ipcRenderer.invoke(IPC.RUNTIME_PROPOSAL_DECIDE, id, status, decisionNote),
   },
 
   modelPool: {

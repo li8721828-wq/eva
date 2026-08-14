@@ -40,6 +40,7 @@ import { PluginCenter } from './PluginCenter'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
 import { ModelPoolPanel } from './ModelPoolPanel'
+import { RuntimeIntrospectionPanel } from './RuntimeIntrospectionPanel'
 import { uiCopy } from '@/lib/ui-copy'
 
 type ProviderType = ProviderConfigEntry['type']
@@ -499,6 +500,7 @@ export function SettingsDialog() {
           <TabsTrigger value="general">{copy.general}</TabsTrigger>
           <TabsTrigger value="models">{copy.models}</TabsTrigger>
           <TabsTrigger value="cost">{copy.cost}</TabsTrigger>
+          <TabsTrigger value="introspection">系统自省</TabsTrigger>
           <TabsTrigger value="agents">{copy.agents}</TabsTrigger>
           <TabsTrigger value="automation">{copy.automation}</TabsTrigger>
           <TabsTrigger value="plugins">{copy.plugins}</TabsTrigger>
@@ -772,6 +774,10 @@ export function SettingsDialog() {
 
         <TabsContent value="cost" className="settings-dialog__content">
           <CostCenter embedded />
+        </TabsContent>
+
+        <TabsContent value="introspection" className="settings-dialog__content">
+          <RuntimeIntrospectionPanel />
         </TabsContent>
 
         <TabsContent value="automation" className="settings-dialog__content">

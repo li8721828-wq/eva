@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { AgentConfig } from '../../shared/types/agent'
 import { getStorage } from '../storage'
+import { recordActivity } from '../services/activity-log'
 
 export function registerAgentHandlers(): void {
   ipcMain.handle(IPC.AGENT_LIST, async (): Promise<AgentConfig[]> => {
@@ -19,7 +20,7 @@ export function registerAgentHandlers(): void {
   ipcMain.handle(
     IPC.AGENT_CREATE,
     async (_event, data: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>): Promise<AgentConfig> => {
-      return getStorage().agents.createAgent({
+      const agent = await getStorage().agents.createAgent({
         name: data.name || 'New Agent',
         description: data.description || '',
         role: data.role || 'custom',
@@ -40,17 +41,23 @@ export function registerAgentHandlers(): void {
         temperature: data.temperature ?? 0.7,
         isBuiltIn: false,
       })
+      void recordActivity({ category: 'system', action: 'agent.created', status: 'success', summary: `Created Agent "${agent.name}".` })
+      return agent
     }
   )
 
   ipcMain.handle(
     IPC.AGENT_UPDATE,
     async (_event, id: string, data: Partial<AgentConfig>): Promise<AgentConfig> => {
-      return getStorage().agents.updateAgent(id, data)
+      const agent = await getStorage().agents.updateAgent(id, data)
+      void recordActivity({ category: 'system', action: 'agent.updated', status: 'success', summary: `Updated Agent "${agent.name}".` })
+      return agent
     }
   )
 
   ipcMain.handle(IPC.AGENT_DELETE, async (_event, id: string): Promise<void> => {
+    const agent = await getStorage().agents.getAgent(id)
     await getStorage().agents.deleteAgent(id)
+    if (agent) void recordActivity({ category: 'system', action: 'agent.deleted', status: 'info', summary: `Deleted Agent "${agent.name}".` })
   })
 }

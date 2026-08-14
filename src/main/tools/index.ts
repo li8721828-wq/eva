@@ -15,6 +15,9 @@ import { createProjectIndexTools } from './project-index-tools'
 import { createBrowserControlTools } from './browser-control-tools'
 import { createFormFillWorkflowTools } from './form-fill-workflow'
 import { createModelPoolTools } from './model-pool-tools'
+import { createRuntimeInspectionTools } from './runtime-inspection-tools'
+import { createRuntimeDiagnosticTools } from './runtime-diagnostic-tools'
+import { createRuntimeProposalTools } from './runtime-proposal-tools'
 import type { ProjectIndexService } from '../services/project-index-service'
 import type { ProviderRegistry } from '../providers'
 
@@ -154,6 +157,9 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   if (projectIndexService) {
     for (const tool of createProjectIndexTools(projectIndexService)) registry.register(tool)
   }
+  for (const tool of createRuntimeInspectionTools(registry)) registry.register(tool)
+  for (const tool of createRuntimeDiagnosticTools(registry)) registry.register(tool)
+  for (const tool of createRuntimeProposalTools(registry)) registry.register(tool)
 
   return registry
 }

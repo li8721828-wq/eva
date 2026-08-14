@@ -17,4 +17,8 @@ describe('tool catalog', () => {
   it('exposes exact file editing as a write tool', () => {
     expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'edit_file', category: 'Files', risk: 'write' }))
   })
+
+  it('marks runtime evolution proposals as review-only writes', () => {
+    expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'create_runtime_proposal', category: 'Integrations', risk: 'write' }))
+  })
 })

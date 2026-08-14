@@ -13,6 +13,10 @@ export const IPC = {
   ACTIVITY_LIST: 'activity:list',
   ACTIVITY_STREAM: 'activity:stream',
 
+  // Runtime evolution proposals (proposal-only; never execute a change)
+  RUNTIME_PROPOSAL_LIST: 'runtime-proposal:list',
+  RUNTIME_PROPOSAL_DECIDE: 'runtime-proposal:decide',
+
   // Workspace management
   WORKSPACE_LIST: 'workspace:list',
   WORKSPACE_CREATE: 'workspace:create',
