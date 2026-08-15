@@ -158,6 +158,7 @@ function normalizeAgent(value: unknown): AgentConfig {
     outputColor: raw.outputColor || 'slate',
     outputFontSize: raw.outputFontSize || 'medium',
     outputTextEffect: raw.outputTextEffect || 'none',
+    markdownRenderer: raw.markdownRenderer === 'classic' || raw.markdownRenderer === 'streamdown' ? raw.markdownRenderer : 'enhanced',
     showThinking: Boolean(raw.showThinking),
     model: typeof raw.model === 'string' ? raw.model : 'gpt-4o',
     providerId: typeof raw.providerId === 'string' ? raw.providerId : 'openai',

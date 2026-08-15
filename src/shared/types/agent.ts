@@ -3,16 +3,18 @@ import type { ExecutionEnvelope } from './execution-protocol'
 
 export type AgentRole = 'leader' | 'researcher' | 'coder' | 'reviewer' | 'tester' | 'custom'
 export type AgentModelPreference = 'reasoning' | 'coding' | 'research' | 'fast'
-export type AgentOutputFormat = 'default' | 'concise' | 'structured' | 'markdown' | 'claude' | 'json' | 'custom'
+export type AgentOutputFormat = 'none' | 'default' | 'concise' | 'structured' | 'markdown' | 'focus' | 'reading' | 'typora' | 'feishu' | 'claude' | 'json' | 'custom'
 /** Visual treatment for the Agent's final Markdown responses. */
-export type AgentOutputStyle = 'balanced' | 'compact' | 'editorial' | 'technical' | 'claude'
+export type AgentOutputStyle = 'none' | 'balanced' | 'compact' | 'editorial' | 'technical' | 'claude'
 /** Keep prose visually consistent. Code blocks always use a monospace face. */
 export type AgentOutputFont = 'system' | 'macos' | 'serif' | 'mono'
 /** Prose color palette for the Agent's final Markdown responses. */
 export type AgentOutputColor = 'slate' | 'ink' | 'violet' | 'forest' | 'claude'
 /** Stable prose scale presets, applied consistently across Markdown elements. */
-export type AgentOutputFontSize = 'small' | 'medium' | 'large' | 'xlarge'
+export type AgentOutputFontSize = 'xsmall' | 'small' | 'medium' | 'large' | 'xlarge' | '2xlarge' | '3xlarge'
 export type AgentOutputTextEffect = 'none' | 'three-d' | 'floating' | 'crystal'
+/** Markdown document renderer selected independently from the model's output guidance. */
+export type AgentMarkdownRenderer = 'enhanced' | 'classic' | 'streamdown'
 
 export interface AgentModelCandidate {
   /** Saved model connection ID. It remains usable even when hidden from chat. */
@@ -40,6 +42,8 @@ export interface AgentConfig {
   outputFontSize?: AgentOutputFontSize
   /** Decorative treatment limited to headings and strong emphasis. */
   outputTextEffect?: AgentOutputTextEffect
+  /** Visual renderer for final Markdown responses. */
+  markdownRenderer?: AgentMarkdownRenderer
   /** Request and display provider-supplied reasoning when the model supports it. */
   showThinking?: boolean
   model: string

@@ -63,11 +63,20 @@ function TreeNode({
     }
   }
 
+  const handleDragStart = (event: React.DragEvent<HTMLButtonElement>) => {
+    event.dataTransfer.effectAllowed = 'copy'
+    event.dataTransfer.setData('application/x-eva-workspace-path', node.path)
+    event.dataTransfer.setData('text/plain', node.path)
+  }
+
   return (
     <div>
       <button
+        draggable
         onClick={handleClick}
-        className="flex items-center gap-1.5 w-full px-3 py-1.5 text-sm text-left text-zinc-600 hover:bg-zinc-100 hover:text-zinc-800 rounded-md transition-all duration-200"
+        onDragStart={handleDragStart}
+        title={`拖动以附加到对话：${node.path}`}
+        className="flex w-full cursor-grab items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-zinc-600 transition-all duration-200 hover:bg-zinc-100 hover:text-zinc-800 active:cursor-grabbing"
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
       >
         {isDir && (

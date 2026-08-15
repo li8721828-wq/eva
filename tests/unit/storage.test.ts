@@ -353,4 +353,28 @@ describe('AgentStore', () => {
     const shippedPrompt = BUILT_IN_AGENTS.find((agent) => agent.name === 'Coding Assistant')!.systemPrompt
     expect(updated?.systemPrompt).toBe(shippedPrompt)
   })
+
+  it('persists the selected Markdown renderer and defaults older agents to enhanced', async () => {
+    const created = await store.createAgent({
+      name: 'Classic reader',
+      description: '',
+      role: 'custom',
+      systemPrompt: '',
+      model: 'gpt-4o',
+      providerId: 'openai',
+      tools: [],
+      maxIterations: 10,
+      temperature: 0.7,
+      isBuiltIn: false,
+      markdownRenderer: 'streamdown',
+    })
+
+    expect((await store.getAgent(created.id))?.markdownRenderer).toBe('streamdown')
+
+    await fs.promises.writeFile(path.join(tmpDir, 'agents.json'), JSON.stringify([{
+      ...created,
+      markdownRenderer: undefined,
+    }]), 'utf-8')
+    expect((await store.listAgents())[0].markdownRenderer).toBe('enhanced')
+  })
 })

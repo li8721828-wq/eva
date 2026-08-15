@@ -2,7 +2,8 @@ import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
-import type { AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage } from '../../../shared/types'
+import 'streamdown/styles.css'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
@@ -12,6 +13,7 @@ import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
+import { normalizeChatMarkdown } from '@/lib/markdown-display'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -126,12 +128,55 @@ function MarkdownCodeBlock({ children, language }: { children: ReactNode; langua
   )
 }
 
-export function MarkdownMessageContent({ content, className, outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none' }: { content: string; className?: string; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect }) {
+function StreamdownLink({ children, href, node: _node, ...props }: React.ComponentPropsWithoutRef<'a'> & { node?: unknown }) {
+  return <a href={href} target="_blank" rel="noreferrer noopener" {...props}>{children}<ExternalLink aria-hidden="true" className="markdown-external-link" /></a>
+}
+
+const streamdownComponents = { a: StreamdownLink }
+
+const StreamdownRenderer = React.lazy(async () => {
+  const { Streamdown } = await import('streamdown')
+  return { default: Streamdown }
+})
+
+function safeStreamdownUrl(url: string): string {
+  const normalized = url.trim()
+  return /^(https?:|mailto:)/i.test(normalized) || normalized.startsWith('/') || normalized.startsWith('#')
+    ? normalized
+    : ''
+}
+
+export function MarkdownMessageContent({ content, className, isStreaming = false, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced' }: { content: string; className?: string; isStreaming?: boolean; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer }) {
+  const markdownContent = normalizeChatMarkdown(content)
+  const markdownClassName = cn('chat-message-markdown prose prose-sm max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, className)
+
+  if (markdownRenderer === 'streamdown') {
+    return (
+      <div className={markdownClassName}>
+        <React.Suspense fallback={<div className="whitespace-pre-wrap">{markdownContent}</div>}>
+          <StreamdownRenderer
+            mode={isStreaming ? "streaming" : "static"}
+            isAnimating={isStreaming}
+            animated={false}
+            parseIncompleteMarkdown
+            skipHtml
+            urlTransform={safeStreamdownUrl}
+            controls={{ code: { copy: true, download: false }, table: false, mermaid: false }}
+            components={streamdownComponents}
+            className="streamdown-message-content"
+          >
+            {markdownContent}
+          </StreamdownRenderer>
+        </React.Suspense>
+      </div>
+    )
+  }
+
   return (
-    <div className={cn('chat-message-markdown prose prose-sm max-w-none', `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, className)}>
+    <div className={markdownClassName}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={isStreaming ? [] : [rehypeHighlight]}
         components={{
           pre({ children }) {
             const codeElement = React.Children.toArray(children).find(React.isValidElement)
@@ -151,9 +196,18 @@ export function MarkdownMessageContent({ content, className, outputStyle = 'bala
           table({ children }) {
             return <div className="markdown-table-wrap"><table>{children}</table></div>
           },
+          ul({ children }) {
+            return <ul className="markdown-list markdown-list--unordered">{children}</ul>
+          },
+          ol({ children }) {
+            return <ol className="markdown-list markdown-list--ordered">{children}</ol>
+          },
+          li({ children }) {
+            return <li className="markdown-list-item">{children}</li>
+          },
         }}
       >
-        {content}
+        {markdownContent}
       </ReactMarkdown>
     </div>
   )
@@ -164,6 +218,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
+  const conversationAgentId = useChatStore((state) => state.conversations.find((conversation) => conversation.id === message.conversationId)?.agentId)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
   const [copied, setCopied] = useState(false)
   const actionCopy = language === 'zh'
@@ -178,15 +233,22 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     window.setTimeout(() => setCopied(false), 1600)
   }
 
-  const shouldShowReasoning = isStreaming || Boolean(
-    message.agentId && agents.find((agent) => agent.id === message.agentId)?.showThinking
-  )
-  const outputAgent = message.agentId ? agents.find((agent) => agent.id === message.agentId) : undefined
+  // Pipeline output is system-authored, but it belongs to a user-selected
+  // conversation. Inherit that conversation's reader settings instead of
+  // falling back to the default renderer.
+  const outputAgent = message.agentId
+    ? agents.find((agent) => agent.id === message.agentId)
+    : message.agentName === '代码生成管线' && conversationAgentId && conversationAgentId !== '__auto__'
+      ? agents.find((agent) => agent.id === conversationAgentId)
+      : undefined
+  const shouldShowReasoning = isStreaming || Boolean(outputAgent?.showThinking)
   const outputStyle = outputAgent?.outputStyle || 'balanced'
+  const outputFormat = outputAgent?.outputFormat || 'default'
   const outputFont = outputAgent?.outputFont || 'system'
   const outputColor = outputAgent?.outputColor || 'slate'
   const outputFontSize = outputAgent?.outputFontSize || 'medium'
   const outputTextEffect = outputAgent?.outputTextEffect || 'none'
+  const markdownRenderer = outputAgent?.markdownRenderer || 'enhanced'
 
   if (isUser) {
     return (
@@ -246,7 +308,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
 
       {/* Content */}
       <div className="min-w-0 max-w-[52rem]">
-        <div className="chat-message-surface chat-assistant-message px-5 py-4">
+        <div className={cn('chat-message-surface chat-assistant-message px-5 py-4', `chat-assistant-message--format-${outputFormat}`)}>
           {message.agentName && (
             <div className="chat-agent-label mb-2.5 flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
@@ -256,7 +318,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             </div>
           )}
           {shouldShowReasoning && <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />}
-          <MarkdownMessageContent content={message.content} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} />
+          <MarkdownMessageContent content={message.content} isStreaming={isStreaming} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>
 

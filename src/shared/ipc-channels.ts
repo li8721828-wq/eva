@@ -7,15 +7,21 @@ export const IPC = {
   CONVERSATION_UPDATE: 'conversation:update',
   CONVERSATION_MESSAGE_UPDATE: 'conversation:message-update',
   CONVERSATION_MESSAGES_DELETE_FROM: 'conversation:messages-delete-from',
+  CONVERSATION_CONTINUE_FROM_HANDOFF: 'conversation:continue-from-handoff',
   CONVERSATION_CHANGED: 'conversation:changed',
 
   // Activity log
   ACTIVITY_LIST: 'activity:list',
   ACTIVITY_STREAM: 'activity:stream',
 
+  // Agent OS runtime kernel (read-only, redacted control-plane state)
+  RUNTIME_KERNEL_SNAPSHOT: 'runtime-kernel:snapshot',
+  RUNTIME_KERNEL_AUDIT_LIST: 'runtime-kernel:audit-list',
+
   // Runtime evolution proposals (proposal-only; never execute a change)
   RUNTIME_PROPOSAL_LIST: 'runtime-proposal:list',
   RUNTIME_PROPOSAL_DECIDE: 'runtime-proposal:decide',
+  RUNTIME_PROPOSAL_BEGIN_IMPLEMENTATION: 'runtime-proposal:begin-implementation',
 
   // Workspace management
   WORKSPACE_LIST: 'workspace:list',
@@ -43,6 +49,17 @@ export const IPC = {
   PLUGIN_LOCAL_SEARXNG_STATUS: 'plugin:local-searxng-status',
   PLUGIN_LOCAL_SEARXNG_INSTALL: 'plugin:local-searxng-install',
   PLUGIN_LOCAL_SEARXNG_STOP: 'plugin:local-searxng-stop',
+  CODE_PRODUCTION_STATUS: 'code-production:status',
+  CODE_PRODUCTION_WORKSPACES: 'code-production:workspaces',
+  CODE_PRODUCTION_RUNS: 'code-production:runs',
+  CODE_PRODUCTION_START: 'code-production:start',
+  CODE_PRODUCTION_CANCEL: 'code-production:cancel',
+  CODE_PRODUCTION_APPLY: 'code-production:apply',
+  CODE_PRODUCTION_DRAFT_LIST: 'code-production:draft-list',
+  CODE_PRODUCTION_DRAFT_CREATE: 'code-production:draft-create',
+  CODE_PRODUCTION_DRAFT_ADVANCE: 'code-production:draft-advance',
+  CODE_PRODUCTION_DRAFT_PROGRESS: 'code-production:draft-progress',
+  CODE_PRODUCTION_COMMAND: 'code-production:command',
 
   // 聊天（流式）
   CHAT_SEND: 'chat:send',

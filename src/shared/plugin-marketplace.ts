@@ -5,6 +5,33 @@ const PERMISSIONS: PluginPermission[] = ['filesystem-read', 'filesystem-write', 
 
 export const MARKETPLACE_PLUGINS: MarketplacePlugin[] = [
   {
+    id: 'code-production-pipeline',
+    name: '代码生成管线',
+    version: '1.0.0',
+    description: '运行已注册的确定性代码生成工作区，并提供受保护的交付计划和经审批的仅新增文件应用。',
+    author: 'Eva Labs',
+    category: 'developer-tools',
+    permissions: ['filesystem-read', 'filesystem-write', 'terminal'],
+    verified: true,
+    requirements: '需要一个包含 code-production-pipeline 的已批准外部仓库。生产应用还需要外部签发的审批记录，以及系统环境变量 PIPELINE_DELIVERY_APPROVAL_KEY。',
+    configuration: [
+      {
+        key: 'allowedProjectRoot',
+        label: '允许的项目根目录',
+        description: '所有管线、工作区、输出、审批和验证路径都必须解析到此目录内。',
+        type: 'path-directory',
+        required: true,
+      },
+      {
+        key: 'pipelineRoot',
+        label: '管线目录',
+        description: '允许项目根目录中的 code-production-pipeline 目录。',
+        type: 'path-directory',
+        required: true,
+      },
+    ],
+  },
+  {
     id: 'blender-connector',
     name: 'Blender Connector',
     version: '0.1.0',

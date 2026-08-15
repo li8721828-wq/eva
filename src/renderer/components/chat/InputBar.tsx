@@ -1,7 +1,6 @@
 import React, { useRef, useCallback, useEffect, useMemo, useState } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
-import { useAgentStore } from '@/stores/use-agent-store'
 import { useTaskStore } from '@/stores/use-task-store'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
 import { cn } from '@/lib/utils'
@@ -9,13 +8,23 @@ import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, FileText, FolderOpen, ImagePlus, Paperclip, Send, Settings2, Square, X } from 'lucide-react'
+import { Bot, FileText, FolderOpen, ImagePlus, Paperclip, Send, Settings2, Sparkles, Square, X } from 'lucide-react'
 import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel } from '../../../shared/types'
+import type { CodeProductionCommand } from '../../../shared/types/code-production-pipeline'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
+import { useShallow } from 'zustand/react/shallow'
 
 export interface InputBarProps {
   className?: string
 }
+
+const PIPELINE_COMMANDS: Array<{ command: CodeProductionCommand; label: string; description: string }> = [
+  { command: 'requirement', label: '/requirement', description: '固定本次需求输入，作为管线起点' },
+  { command: 'requirement-modeling', label: '/requirement-modeling', description: '确认原始需求并生成需求模型' },
+  { command: 'spec', label: '/spec', description: '确认需求模型并生成规格说明' },
+  { command: 'dsl', label: '/dsl', description: '确认规格说明并生成代码 DSL' },
+  { command: 'coding', label: '/coding', description: '确认 DSL 并生成候选代码文件' },
+]
 
 function getConnectionDisplayName(provider: ProviderConfigEntry): string {
   const defaultNames: Record<ProviderConfigEntry['type'], string> = {
@@ -30,13 +39,36 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, streamingByConversation, inputText, referenceImages, documentAttachments, setConversationAgent, setConversationPermissions, setInputText, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError } = useChatStore()
-  const isStreaming = Boolean(currentConversationId && streamingByConversation[currentConversationId]?.isStreaming)
-  const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore()
-  const { agents } = useAgentStore()
+  const { conversations, createConversation, currentConversationId, inputText, referenceImages, documentAttachments, setConversationPermissions, setInputText, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError } = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    createConversation: state.createConversation,
+    currentConversationId: state.currentConversationId,
+    inputText: state.inputText,
+    referenceImages: state.referenceImages,
+    documentAttachments: state.documentAttachments,
+    setConversationPermissions: state.setConversationPermissions,
+    setInputText: state.setInputText,
+    setReferenceImages: state.setReferenceImages,
+    setDocumentAttachments: state.setDocumentAttachments,
+    sendMessage: state.sendMessage,
+    abortStream: state.abortStream,
+    addMessage: state.addMessage,
+    setError: state.setError,
+  })))
+  const activeStream = useChatStore((state) => currentConversationId ? state.streamingByConversation[currentConversationId] : undefined)
+  const isStreaming = Boolean(activeStream?.isStreaming)
+  const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore(useShallow((state) => ({
+    activeProviderId: state.activeProviderId,
+    activeModel: state.activeModel,
+    settingsOpen: state.settingsOpen,
+    setActiveProvider: state.setActiveProvider,
+    setActiveModel: state.setActiveModel,
+    workMode: state.workMode,
+  })))
   const isTaskRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const isSymposiumRunning = useSymposiumStore((state) => Boolean(currentConversationId && state.runtimes[currentConversationId]?.status === 'running'))
-  const { startExpertTask, abortExpertTask } = useTaskStore()
+  const startExpertTask = useTaskStore((state) => state.startExpertTask)
+  const abortExpertTask = useTaskStore((state) => state.abortExpertTask)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
@@ -45,12 +77,11 @@ export function InputBar({ className }: InputBarProps) {
   const [isConversationSettingsOpen, setIsConversationSettingsOpen] = useState(false)
   const [caretPosition, setCaretPosition] = useState(0)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
-  const [assignedAgentId, setAssignedAgentId] = useState<string | null>(null)
+  const [activeCommandIndex, setActiveCommandIndex] = useState(0)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
-  const assignedAgent = agents.find((agent) => agent.id === assignedAgentId)
 
   const symposiumMention = useMemo(() => {
     if (!isSymposiumConversation) return null
@@ -74,34 +105,29 @@ export function InputBar({ className }: InputBarProps) {
     })
   }, [symposiumMention, symposiumMentionOptions])
 
-  const agentMention = useMemo(() => {
-    if (isSymposiumConversation) return null
-    const cursor = Math.min(caretPosition, inputText.length)
-    const beforeCursor = inputText.slice(0, cursor)
-    const match = beforeCursor.match(/(^|\s)@([^\s@]*)$/)
-    if (!match) return null
-    return {
-      query: match[2].toLowerCase(),
-      start: cursor - match[0].length + match[1].length,
-      cursor,
-    }
-  }, [caretPosition, inputText, isSymposiumConversation])
+  const slashCommand = useMemo(() => {
+    const match = inputText.match(/^\/([a-z-]*)$/i)
+    if (!match || isSymposiumConversation) return null
+    return match[1].toLowerCase()
+  }, [inputText, isSymposiumConversation])
 
-  const filteredAgentMentionOptions = useMemo(() => {
-    if (!agentMention) return []
-    return agents.filter((agent) => (
-      `${agent.name} ${agent.role} ${agent.description}`.toLowerCase().includes(agentMention.query)
-    )).slice(0, 8)
-  }, [agentMention, agents])
+  const filteredPipelineCommands = useMemo(() => {
+    if (slashCommand === null) return []
+    return PIPELINE_COMMANDS.filter((item) => item.command.includes(slashCommand))
+  }, [slashCommand])
+
+  const recognizedPipelineCommand = useMemo(() => {
+    const match = inputText.match(/^\/(requirement|requirement-modeling|spec|dsl|coding)(?=\s|$)/)
+    return match?.[0] || null
+  }, [inputText])
 
   useEffect(() => {
     setActiveMentionIndex(0)
-  }, [agentMention?.query, symposiumMention?.query, currentConversationId])
+  }, [symposiumMention?.query, currentConversationId])
 
   useEffect(() => {
-    const conversationAgentId = currentConversation?.agentId
-    setAssignedAgentId(conversationAgentId && conversationAgentId !== '__auto__' ? conversationAgentId : null)
-  }, [currentConversation?.agentId, currentConversationId])
+    setActiveCommandIndex(0)
+  }, [slashCommand])
 
   const modelChoices = useMemo(() => {
     const visibleProviders = savedProviders.filter((provider) => (
@@ -164,6 +190,33 @@ export function InputBar({ className }: InputBarProps) {
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
     }
+    const pipelineMatch = inputText.trim().match(/^\/(requirement|requirement-modeling|spec|dsl|coding)(?:\s+([\s\S]*))?$/)
+    if (pipelineMatch) {
+      const command = pipelineMatch[1] as CodeProductionCommand
+      if (referenceImages.length > 0) {
+        setError('需求命令暂不直接接收图片。请先将图片作为普通消息发送到对话。')
+        return
+      }
+      if (documentAttachments.length > 0 && command !== 'requirement') {
+        setError('只有 /requirement 需求输入阶段可以接收新附件；后续阶段使用已确认的原始需求文件。')
+        return
+      }
+      try {
+        const conversation = currentConversation || await createConversation()
+        await window.eva.codeProduction.runCommand({
+          conversationId: conversation.id,
+          command,
+          content: pipelineMatch[2]?.trim() || undefined,
+          attachments: documentAttachments,
+        })
+        setInputText('')
+        setDocumentAttachments([])
+      } catch (error) {
+        setError(error instanceof Error ? error.message : '代码生成命令执行失败。')
+      }
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
     const useTeam = workMode === 'expert' && shouldUseExpertTeam(inputText)
     if (useTeam) {
       const goal = inputText.trim()
@@ -180,12 +233,12 @@ export function InputBar({ className }: InputBarProps) {
       setReferenceImages([])
       await startExpertTask(goal, conversation.id)
     } else {
-      await sendMessage(assignedAgentId || '__auto__')
+      await sendMessage()
     }
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [addMessage, assignedAgentId, createConversation, currentConversation, inputText, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setError, setInputText, setReferenceImages, startExpertTask, workMode])
+  }, [addMessage, createConversation, currentConversation, documentAttachments, inputText, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setDocumentAttachments, setError, setInputText, setReferenceImages, startExpertTask, workMode])
 
   const insertSymposiumMention = useCallback((participant: typeof symposiumMentionOptions[number]) => {
     if (!symposiumMention) return
@@ -200,37 +253,33 @@ export function InputBar({ className }: InputBarProps) {
     })
   }, [inputText, setInputText, symposiumMention, symposiumMentionOptions])
 
-  const removeAgentMention = useCallback(() => {
-    if (!agentMention) return
-    const nextInput = `${inputText.slice(0, agentMention.start)}${inputText.slice(agentMention.cursor)}`.replace(/\s{2,}/g, ' ')
-    setInputText(nextInput)
-    setCaretPosition(agentMention.start)
+  const insertPipelineCommand = useCallback((command: CodeProductionCommand) => {
+    setInputText(`/${command} `)
+    setCaretPosition(command.length + 2)
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(agentMention.start, agentMention.start)
+      textareaRef.current?.setSelectionRange(command.length + 2, command.length + 2)
     })
-  }, [agentMention, inputText, setInputText])
-
-  const setAutoRouting = useCallback(() => {
-    removeAgentMention()
-    setAssignedAgentId(null)
-    if (currentConversation) void setConversationAgent(currentConversation.id, '__auto__')
-  }, [currentConversation, removeAgentMention, setConversationAgent])
-
-  const insertAgentMention = useCallback((agent: typeof agents[number]) => {
-    if (!agentMention) return
-    const nextInput = `${inputText.slice(0, agentMention.start)}${inputText.slice(agentMention.cursor)}`.replace(/\s{2,}/g, ' ')
-    setInputText(nextInput)
-    setAssignedAgentId(agent.id)
-    if (currentConversation) void setConversationAgent(currentConversation.id, agent.id)
-    setCaretPosition(agentMention.start)
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(agentMention.start, agentMention.start)
-    })
-  }, [agentMention, currentConversation, inputText, setConversationAgent, setInputText])
+  }, [setInputText])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (filteredPipelineCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setActiveCommandIndex((index) => (index + 1) % filteredPipelineCommands.length)
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setActiveCommandIndex((index) => (index - 1 + filteredPipelineCommands.length) % filteredPipelineCommands.length)
+        return
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        insertPipelineCommand((filteredPipelineCommands[activeCommandIndex] || filteredPipelineCommands[0]).command)
+        return
+      }
+    }
     if (filteredSymposiumMentionOptions.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -245,28 +294,6 @@ export function InputBar({ className }: InputBarProps) {
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault()
         insertSymposiumMention(filteredSymposiumMentionOptions[activeMentionIndex] || filteredSymposiumMentionOptions[0])
-        return
-      }
-    }
-    if (agentMention) {
-      const mentionOptionCount = filteredAgentMentionOptions.length + 1
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        setActiveMentionIndex((index) => (index + 1) % mentionOptionCount)
-        return
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        setActiveMentionIndex((index) => (index - 1 + mentionOptionCount) % mentionOptionCount)
-        return
-      }
-      if (e.key === 'Tab' || e.key === 'Enter') {
-        e.preventDefault()
-        if (activeMentionIndex === 0) setAutoRouting()
-        else {
-          const agent = filteredAgentMentionOptions[activeMentionIndex - 1] || filteredAgentMentionOptions[0]
-          if (agent) insertAgentMention(agent)
-        }
         return
       }
     }
@@ -375,6 +402,11 @@ export function InputBar({ className }: InputBarProps) {
   const handleAttachmentDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault()
     setIsDraggingAttachments(false)
+    const workspacePath = event.dataTransfer.getData('application/x-eva-workspace-path')
+    if (workspacePath) {
+      void addDocumentPaths([workspacePath])
+      return
+    }
     const files = Array.from(event.dataTransfer.files)
     const images = files.filter((file) => file.type.startsWith('image/'))
     const documents = files.filter((file) => !file.type.startsWith('image/'))
@@ -476,24 +508,6 @@ export function InputBar({ className }: InputBarProps) {
               ))}
             </div>
           )}
-          {!isSymposiumConversation && assignedAgent && (
-            <div className="flex items-center justify-between gap-3 rounded-t-[7px] border-b border-violet-100 bg-violet-50/60 px-4 py-2">
-              <span className="inline-flex min-w-0 items-center gap-2 text-xs font-medium text-violet-800">
-                <Bot className="h-3.5 w-3.5 shrink-0" />
-                <span className="text-violet-500">Assigned agent</span>
-                <span className="truncate">{assignedAgent.name}</span>
-              </span>
-              <button
-                type="button"
-                onClick={setAutoRouting}
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-violet-500 transition-colors hover:bg-violet-100 hover:text-violet-800"
-                title="Return to automatic agent routing"
-                aria-label="Return to automatic agent routing"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
             <div className="flex min-h-16 items-end gap-3 rounded-t-[7px] bg-white px-4 py-3">
             <Button
               variant="ghost"
@@ -507,19 +521,30 @@ export function InputBar({ className }: InputBarProps) {
             {referenceImages.length || documentAttachments.length ? <ImagePlus className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
             </Button>
 
-            <textarea
-              ref={textareaRef}
-              value={inputText}
-              onChange={handleInput}
-              onKeyDown={handleKeyDown}
-              onClick={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-              onKeyUp={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
-              onPaste={handlePaste}
-              placeholder={isSymposiumRunning ? 'Participants are responding to the shared discussion...' : currentConversation?.symposium ? 'Add your perspective to the shared discussion' : 'Ask Eva to write, debug, or explain code'}
-              rows={1}
-              disabled={isSymposiumRunning}
-              className="chat-composer__textarea max-h-[200px] min-h-[32px] flex-1 resize-none bg-transparent py-1.5 text-sm leading-5 text-zinc-900 placeholder:text-zinc-400 focus:outline-none"
-            />
+            <div className="relative min-h-[32px] flex-1">
+              {recognizedPipelineCommand && (
+                <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words py-1.5 text-sm leading-5 text-zinc-900">
+                  <span className="text-violet-600">{recognizedPipelineCommand}</span>
+                  {inputText.slice(recognizedPipelineCommand.length)}
+                </div>
+              )}
+              <textarea
+                ref={textareaRef}
+                value={inputText}
+                onChange={handleInput}
+                onKeyDown={handleKeyDown}
+                onClick={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
+                onKeyUp={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
+                onPaste={handlePaste}
+                placeholder={isSymposiumRunning ? 'Participants are responding to the shared discussion...' : currentConversation?.symposium ? 'Add your perspective to the shared discussion' : 'Ask Eva to write, debug, or explain code'}
+                rows={1}
+                disabled={isSymposiumRunning}
+                className={cn(
+                  'chat-composer__textarea relative z-10 max-h-[200px] min-h-[32px] w-full resize-none bg-transparent py-1.5 text-sm leading-5 placeholder:text-zinc-400 focus:outline-none',
+                  recognizedPipelineCommand ? 'text-transparent caret-zinc-900 selection:bg-violet-200 selection:text-transparent' : 'text-zinc-900',
+                )}
+              />
+            </div>
 
             {isStreaming || isTaskRunning ? (
               <button
@@ -547,6 +572,34 @@ export function InputBar({ className }: InputBarProps) {
               </button>
             )}
           </div>
+
+          {filteredPipelineCommands.length > 0 && !isSymposiumRunning && (
+            <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(460px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+                <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+                代码生成管线
+              </div>
+              {filteredPipelineCommands.map((item, index) => (
+                <button
+                  key={item.command}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => insertPipelineCommand(item.command)}
+                  className={cn(
+                    'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
+                    index === activeCommandIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50'
+                  )}
+                >
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700"><Sparkles className="h-3.5 w-3.5" /></span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-mono text-sm font-medium">{item.label}</span>
+                    <span className="block truncate text-xs text-zinc-500">{item.description}</span>
+                  </span>
+                </button>
+              ))}
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">上下箭头选择，Enter 或 Tab 填入命令。</div>
+            </div>
+          )}
 
           {symposiumMention && !isSymposiumRunning && filteredSymposiumMentionOptions.length > 0 && (
             <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(360px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
@@ -576,7 +629,7 @@ export function InputBar({ className }: InputBarProps) {
             </div>
           )}
 
-          {agentMention && !isSymposiumRunning && (
+          {/* Per-conversation agent switching is intentionally hidden for now.
             <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(380px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
               <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Set the agent for this conversation</div>
               <button
@@ -615,6 +668,7 @@ export function InputBar({ className }: InputBarProps) {
               <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">Your selection is kept for this conversation.</div>
             </div>
           )}
+          */}
 
           {attachmentError && <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">{attachmentError}</div>}
 

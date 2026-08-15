@@ -2,8 +2,10 @@ import React, { useEffect, useState } from 'react'
 import type { Conversation } from '../../../shared/types'
 import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
+import { useAppStore } from '@/stores/use-app-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { cn } from '@/lib/utils'
+import { useShallow } from 'zustand/react/shallow'
 import { AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageSquare, Plus, Trash2, UsersRound, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
@@ -87,7 +89,16 @@ export interface ConversationListProps {
 }
 
 export function ConversationList({ className }: ConversationListProps) {
-  const { conversations, currentConversationId, createConversation, deleteConversation, archiveConversation, restoreConversation, selectConversation } = useChatStore()
+  const setCurrentView = useAppStore((state) => state.setCurrentView)
+  const { conversations, currentConversationId, createConversation, deleteConversation, archiveConversation, restoreConversation, selectConversation } = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    currentConversationId: state.currentConversationId,
+    createConversation: state.createConversation,
+    deleteConversation: state.deleteConversation,
+    archiveConversation: state.archiveConversation,
+    restoreConversation: state.restoreConversation,
+    selectConversation: state.selectConversation,
+  })))
   const {
     workspaces,
     setActiveWorkspaceId,
@@ -101,6 +112,11 @@ export function ConversationList({ className }: ConversationListProps) {
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null)
   const [workspaceToDelete, setWorkspaceToDelete] = useState<Workspace | null>(null)
   const [qqStatus, setQqStatus] = useState<QqRemoteStatus>({ state: 'disabled', message: 'QQ remote control is disabled.' })
+
+  const handleSelect = async (id: string) => {
+    setCurrentView('chat')
+    await selectConversation(id)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -172,7 +188,7 @@ export function ConversationList({ className }: ConversationListProps) {
                   key={conversation.id}
                   conversation={conversation}
                   isSelected={currentConversationId === conversation.id}
-                  onSelect={(id) => void selectConversation(id)}
+                  onSelect={(id) => void handleSelect(id)}
                   onArchive={(id) => void archiveConversation(id)}
                   onRestore={(id) => void restoreConversation(id)}
                   onDelete={setConversationToDelete}
@@ -235,7 +251,7 @@ export function ConversationList({ className }: ConversationListProps) {
                       key={conversation.id}
                       conversation={conversation}
                       isSelected={currentConversationId === conversation.id}
-                      onSelect={(id) => void selectConversation(id)}
+                      onSelect={(id) => void handleSelect(id)}
                       onArchive={(id) => void archiveConversation(id)}
                       onRestore={(id) => void restoreConversation(id)}
                       onDelete={setConversationToDelete}
@@ -265,7 +281,7 @@ export function ConversationList({ className }: ConversationListProps) {
                   key={conversation.id}
                   conversation={conversation}
                   isSelected={currentConversationId === conversation.id}
-                  onSelect={(id) => void selectConversation(id)}
+                  onSelect={(id) => void handleSelect(id)}
                   onArchive={(id) => void archiveConversation(id)}
                   onRestore={(id) => void restoreConversation(id)}
                   onDelete={setConversationToDelete}
@@ -294,7 +310,7 @@ export function ConversationList({ className }: ConversationListProps) {
                     conversation={conversation}
                     archived
                     isSelected={false}
-                    onSelect={(id) => void selectConversation(id)}
+                    onSelect={(id) => void handleSelect(id)}
                     onArchive={(id) => void archiveConversation(id)}
                     onRestore={(id) => void restoreConversation(id)}
                     onDelete={setConversationToDelete}

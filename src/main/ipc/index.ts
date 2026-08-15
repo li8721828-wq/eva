@@ -35,7 +35,7 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerActivityHandlers()
   registerRuntimeProposalHandlers()
   registerAgentHandlers()
-  registerPluginHandlers()
+  registerPluginHandlers(services?.providerRegistry, services?.projectIndexService)
   registerGitHandlers()
   registerCostHandlers()
   const taskServices: TaskServices | undefined = services

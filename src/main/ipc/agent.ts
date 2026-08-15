@@ -32,6 +32,7 @@ export function registerAgentHandlers(): void {
         outputColor: data.outputColor || 'slate',
         outputFontSize: data.outputFontSize || 'medium',
         outputTextEffect: data.outputTextEffect || 'none',
+        markdownRenderer: data.markdownRenderer === 'classic' || data.markdownRenderer === 'streamdown' ? data.markdownRenderer : 'enhanced',
         showThinking: Boolean(data.showThinking),
         model: data.model || 'gpt-4o',
         providerId: data.providerId || 'openai',

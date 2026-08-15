@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@source "../../node_modules/streamdown/dist/*.js";
 
 :root {
   --bg-sidebar: #f7f7ff;
@@ -628,18 +629,30 @@ html, body, #root {
   margin-bottom: 0.9rem;
 }
 
-.chat-message-markdown ul,
-.chat-message-markdown ol {
+.chat-message-markdown .markdown-list {
   margin: 0.95rem 0 1.05rem;
-  padding-left: 1.7rem;
+  padding-left: 1.25rem;
+  list-style-position: outside;
 }
 
-.chat-message-markdown li + li {
+.chat-message-markdown .markdown-list--unordered {
+  list-style-type: disc;
+}
+
+.chat-message-markdown .markdown-list--ordered {
+  list-style-type: decimal;
+}
+
+.chat-message-markdown .markdown-list-item {
+  padding-left: 0.18rem;
+}
+
+.chat-message-markdown .markdown-list-item + .markdown-list-item {
   margin-top: 0.38rem;
 }
 
-.chat-message-markdown li::marker {
-  color: #7c5ccf;
+.chat-message-markdown .markdown-list-item::marker {
+  color: #718096;
   font-weight: 400;
 }
 
@@ -757,6 +770,191 @@ html, body, #root {
   background: #fbfcff;
 }
 
+/* Focused reading, Typora, and Feishu each apply a distinct document-oriented Markdown treatment. */
+.chat-message-markdown--format-focus {
+  max-width: 46rem;
+  color: #293548;
+  line-height: 1.78;
+}
+
+.chat-message-markdown--format-focus :is(h1, h2, h3, h4) {
+  border-left: 0;
+  color: #1d2939;
+  font-weight: 650;
+  line-height: 1.42;
+}
+
+.chat-message-markdown--format-focus h1 {
+  margin-top: 1.9rem;
+  margin-bottom: 0.6rem;
+  padding: 0 0 0.48rem;
+  border-bottom: 1px solid #d8e1ec;
+  font-size: 1.42em;
+}
+
+.chat-message-markdown--format-focus h2 {
+  margin-top: 1.55rem;
+  margin-bottom: 0.5rem;
+  padding-left: 0;
+  font-size: 1.2em;
+}
+
+.chat-message-markdown--format-focus h3 {
+  margin-top: 1.2rem;
+  margin-bottom: 0.4rem;
+  font-size: 1.06em;
+}
+
+.chat-message-markdown--format-focus p {
+  margin-bottom: 0.95rem;
+}
+
+.chat-message-markdown--format-focus :is(ul, ol) {
+  margin: 0.95rem 0 1.1rem;
+}
+
+.chat-message-markdown--format-focus .markdown-list {
+  padding-left: 1.15rem;
+}
+
+.chat-message-markdown--format-focus strong {
+  color: #182437;
+  font-weight: 650;
+}
+
+.chat-message-markdown--format-focus blockquote {
+  border-left-color: #93a8c3;
+  background: #f6f8fb;
+  color: #40536b;
+}
+
+.chat-message-markdown--format-reading {
+  max-width: 44rem;
+  color: #273142;
+  font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  line-height: 1.82;
+}
+
+.chat-message-markdown--format-reading :is(h1, h2, h3, h4) {
+  border-left: 0;
+  color: #1d2736;
+  font-weight: 650;
+  line-height: 1.42;
+}
+
+.chat-message-markdown--format-reading h1 {
+  margin-top: 2rem;
+  margin-bottom: 0.65rem;
+  padding: 0 0 0.5rem;
+  border-bottom: 1px solid #dbe3ee;
+  font-size: 1.45em;
+}
+
+.chat-message-markdown--format-reading h2 {
+  margin-top: 1.7rem;
+  margin-bottom: 0.55rem;
+  padding-left: 0;
+  font-size: 1.22em;
+}
+
+.chat-message-markdown--format-reading h3 {
+  margin-top: 1.35rem;
+  margin-bottom: 0.45rem;
+  font-size: 1.08em;
+}
+
+.chat-message-markdown--format-reading h4 {
+  margin-top: 1.15rem;
+  margin-bottom: 0.4rem;
+  font-size: 1em;
+}
+
+.chat-message-markdown--format-reading p {
+  margin-bottom: 1.1rem;
+}
+
+.chat-message-markdown--format-reading p + p,
+.chat-message-markdown--format-reading ul + p,
+.chat-message-markdown--format-reading ol + p {
+  margin-top: 1.1rem;
+}
+
+.chat-message-markdown--format-reading :is(ul, ol) {
+  margin: 1.1rem 0 1.25rem;
+}
+
+.chat-message-markdown--format-reading strong {
+  color: #162033;
+  font-weight: 650;
+}
+
+.chat-message-markdown--format-reading .markdown-inline-code {
+  border-color: #dbe3ee;
+  background: #f4f7fb;
+  color: #28364a;
+}
+
+.chat-message-markdown--format-reading blockquote {
+  border-left-color: #8fa3bf;
+  background: #f7f9fc;
+  color: #46566d;
+}
+
+.chat-assistant-message--format-reading .chat-usage-summary {
+  border-top-color: #d6e0ec;
+  color: #64748b;
+}
+
+.chat-message-markdown--format-typora {
+  color: #333333;
+  font-family: "Helvetica Neue", "Segoe UI", Arial, sans-serif;
+  line-height: 1.7;
+}
+
+.chat-message-markdown--format-typora :is(h1, h2, h3, h4) {
+  border-left: 0;
+  color: #1f1f1f;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.chat-message-markdown--format-typora h1 {
+  padding: 0 0 0.4rem;
+  border-bottom: 1px solid #e5e5e5;
+  font-size: 1.55em;
+}
+
+.chat-message-markdown--format-typora h2 { padding-left: 0; font-size: 1.32em; }
+.chat-message-markdown--format-typora h3 { font-size: 1.14em; }
+.chat-message-markdown--format-typora blockquote { border-left-color: #d8d8d8; background: #fafafa; color: #555555; }
+.chat-message-markdown--format-typora .markdown-inline-code { border-color: #e7e7e7; background: #f6f6f6; color: #333333; }
+.chat-message-markdown--format-typora .markdown-code-block { border-color: #e1e1e1; background: #282c34; }
+.chat-message-markdown--format-typora .markdown-table-wrap { border-color: #dfdfdf; }
+.chat-message-markdown--format-typora th { background: #f6f6f6; }
+
+.chat-message-markdown--format-feishu {
+  color: #1f2329;
+  font-family: "PingFang SC", "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+  line-height: 1.68;
+}
+
+.chat-message-markdown--format-feishu :is(h1, h2, h3, h4) {
+  border-left: 0;
+  color: #1f2329;
+  font-weight: 600;
+  line-height: 1.42;
+}
+
+.chat-message-markdown--format-feishu h1 { padding-left: 0; font-size: 1.5em; }
+.chat-message-markdown--format-feishu h2 { padding-left: 0; font-size: 1.24em; }
+.chat-message-markdown--format-feishu h3 { font-size: 1.06em; }
+.chat-message-markdown--format-feishu blockquote { border-left-color: #3370ff; background: #f5f6f7; color: #4e5969; }
+.chat-message-markdown--format-feishu .markdown-inline-code { border-color: transparent; background: #f2f3f5; color: #1f2329; }
+.chat-message-markdown--format-feishu .markdown-code-block { border-color: #e5e6eb; background: #1f2329; }
+.chat-message-markdown--format-feishu .markdown-table-wrap { border-color: #dee0e3; border-radius: 4px; }
+.chat-message-markdown--format-feishu th { background: #f5f6f7; }
+.chat-message-markdown--format-feishu :is(th, td) { border-color: #dee0e3; }
+
 @media (max-width: 640px) {
   .chat-message-markdown {
     font-size: 0.9rem;
@@ -772,10 +970,13 @@ html, body, #root {
 }
 
 /* Applied after style and responsive defaults so each agent's saved prose scale wins. */
+.chat-message-markdown--font-size-xsmall { font-size: 0.8125rem; }
 .chat-message-markdown--font-size-small { font-size: 0.875rem; }
 .chat-message-markdown--font-size-medium { font-size: 0.9375rem; }
 .chat-message-markdown--font-size-large { font-size: 1rem; }
 .chat-message-markdown--font-size-xlarge { font-size: 1.0625rem; }
+.chat-message-markdown--font-size-2xlarge { font-size: 1.125rem; }
+.chat-message-markdown--font-size-3xlarge { font-size: 1.25rem; }
 
 .text-effect-preview { display: inline-block; }
 .text-effect-preview--three-d { color: #6551a3; text-shadow: 1px 1px 0 #ddd6fe, 2px 2px 0 #c4b5fd; }
@@ -814,6 +1015,254 @@ html, body, #root {
   .agent-card,
   .agent-card:hover,
   .agent-card:active { transform: none; transition: none; }
+}
+
+/* The classic renderer deliberately owns document typography. It mirrors the
+   lighter, open reading rhythm used before the visual theme controls existed. */
+.chat-message-markdown--renderer-classic {
+  max-width: none;
+  color: #2e3a50;
+  font-family: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.82;
+}
+
+.chat-message-markdown--renderer-classic :is(h1, h2, h3, h4) {
+  border-left: 0;
+  color: #263246;
+  font-weight: 650;
+  line-height: 1.45;
+  text-shadow: none;
+  transform: none;
+  animation: none;
+  -webkit-text-stroke: 0;
+}
+
+.chat-message-markdown--renderer-classic h1 {
+  margin: 2.1rem 0 0.9rem;
+  padding: 0 0 0.5rem;
+  border-bottom: 1px solid #dbe3ee;
+  font-size: 1.32em;
+}
+
+.chat-message-markdown--renderer-classic h2 {
+  margin: 1.85rem 0 0.72rem;
+  padding-left: 0;
+  font-size: 1.14em;
+}
+
+.chat-message-markdown--renderer-classic h3 {
+  margin: 1.35rem 0 0.52rem;
+  font-size: 1.02em;
+}
+
+.chat-message-markdown--renderer-classic h4 {
+  margin: 1.15rem 0 0.4rem;
+  font-size: 1em;
+}
+
+.chat-message-markdown--renderer-classic p {
+  margin-bottom: 0.95rem;
+}
+
+.chat-message-markdown--renderer-classic p + p,
+.chat-message-markdown--renderer-classic ul + p,
+.chat-message-markdown--renderer-classic ol + p {
+  margin-top: 0.95rem;
+}
+
+.chat-message-markdown--renderer-classic .markdown-list {
+  margin: 0.95rem 0 1.05rem;
+  padding-left: 1.5rem;
+}
+
+.chat-message-markdown--renderer-classic .markdown-list-item {
+  padding-left: 0.12rem;
+}
+
+.chat-message-markdown--renderer-classic .markdown-list-item + .markdown-list-item {
+  margin-top: 0.32rem;
+}
+
+.chat-message-markdown--renderer-classic .markdown-list-item::marker {
+  color: #66758b;
+}
+
+.chat-message-markdown--renderer-classic strong {
+  color: #263246;
+  font-weight: 650;
+  text-shadow: none;
+}
+
+.chat-message-markdown--renderer-classic .markdown-inline-code {
+  border: 0;
+  border-bottom: 1px solid #d9e1ec;
+  border-radius: 3px;
+  background: #f5f7fa;
+  color: #4b5d76;
+}
+
+.chat-message-markdown--renderer-classic blockquote {
+  border-left-color: #c8d3e2;
+  background: transparent;
+  color: #526176;
+}
+
+.chat-message-markdown--renderer-classic .markdown-table-wrap {
+  margin: 1.45rem 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.chat-message-markdown--renderer-classic table {
+  font-size: 0.94em;
+  line-height: 1.62;
+}
+
+.chat-message-markdown--renderer-classic th,
+.chat-message-markdown--renderer-classic td {
+  min-width: 0;
+  padding: 0.58rem 0.7rem;
+  border: 0;
+  border-bottom: 1px solid #e3e8f0;
+}
+
+.chat-message-markdown--renderer-classic th {
+  background: transparent;
+  color: #31415b;
+  font-weight: 600;
+}
+
+.chat-message-markdown--renderer-classic tbody tr:last-child td {
+  border-bottom: 1px solid #e3e8f0;
+}
+
+.chat-message-markdown--renderer-classic tbody tr:hover td {
+  background: transparent;
+}
+
+/* Classic documents use a light editor surface so code belongs to the same
+   quiet paper-like reading environment instead of interrupting it with black. */
+.chat-message-markdown--renderer-classic .markdown-code-block {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(140deg, rgba(251, 250, 255, 0.98), rgba(239, 236, 255, 0.94) 54%, rgba(229, 243, 255, 0.9));
+  box-shadow:
+    0 28px 60px -40px rgba(72, 59, 139, 0.52),
+    0 12px 26px -18px rgba(70, 129, 177, 0.3),
+    0 2px 5px -3px rgba(100, 85, 172, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -12px 22px -20px rgba(108, 88, 183, 0.38);
+  backdrop-filter: blur(14px) saturate(1.08);
+  transition: background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block::before {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  content: "";
+  background: linear-gradient(112deg, rgba(255, 255, 255, 0.62), transparent 33%, rgba(216, 207, 255, 0.24) 66%, rgba(174, 221, 255, 0.2));
+  pointer-events: none;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block > * {
+  position: relative;
+  z-index: 1;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block:hover {
+  background: linear-gradient(140deg, #ffffff, rgba(239, 236, 255, 0.98) 54%, rgba(229, 243, 255, 0.95));
+  box-shadow:
+    0 31px 64px -40px rgba(72, 59, 139, 0.58),
+    0 13px 28px -18px rgba(70, 129, 177, 0.34),
+    0 2px 5px -3px rgba(100, 85, 172, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    inset 0 -12px 22px -20px rgba(108, 88, 183, 0.44);
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block__bar {
+  min-height: 2.45rem;
+  border-bottom: 0;
+  background: rgba(232, 227, 255, 0.82);
+  color: #5f598b;
+  box-shadow: 0 14px 23px -27px rgba(78, 64, 151, 0.68), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  letter-spacing: 0.035em;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block__bar button {
+  border: 0;
+  border-radius: 5px;
+  color: #5c5789;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block__bar button:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #4e477d;
+  box-shadow: 0 3px 7px -5px rgba(76, 62, 149, 0.42), inset 0 1px 0 #ffffff;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block pre {
+  background: rgba(255, 255, 255, 0.68) !important;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block pre code,
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs {
+  color: #34405b;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-comment {
+  color: #99a5b9;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-keyword,
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-type {
+  color: #705cdb;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-string {
+  color: #168b78;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-number,
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-attr {
+  color: #4f7cbd;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-function,
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-title,
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-selector-class {
+  color: #4a72bf;
+}
+
+.chat-message-markdown--renderer-classic .markdown-code-block .hljs-built_in {
+  color: #825bd2;
+}
+
+/* Streamdown handles incomplete Markdown during streaming. The visual system
+   stays consistent with Eva and animations are deliberately disabled in React. */
+.chat-message-markdown--renderer-streamdown [data-streamdown] {
+  color: inherit;
+  font: inherit;
+}
+
+.chat-message-markdown--renderer-streamdown [data-streamdown] pre {
+  margin: 1.2rem 0;
+  border: 1px solid #dbe3ef;
+  border-radius: 6px;
+  background: #111827;
+}
+
+.chat-message-markdown--renderer-streamdown [data-streamdown] pre code {
+  color: #e5edf9;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.65;
 }
 
 .chat-usage-summary {

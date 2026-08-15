@@ -620,10 +620,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
       data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope']; permissionLevel?: Conversation['permissionLevel']; fileAccessGrants?: Conversation['fileAccessGrants']; symposium?: Conversation['symposium'] }
     ): Promise<Conversation> => {
       const workspace = data.workspaceId ? await getStorage().workspaces.get(data.workspaceId) : null
+      // New conversations inherit a deterministic starting agent. Explicit
+      // selections, including __auto__, always take precedence.
+      const defaultAgent = data.agentId ? null : (await getStorage().agents.listAgents())[0]
       const conversation = await getStorage().conversations.createConversation({
         title: data.title || 'New Conversation',
         titleSource: data.title && data.title !== 'New Conversation' ? 'manual' : 'auto',
-        agentId: data.agentId || '',
+        agentId: data.agentId || defaultAgent?.id || '__auto__',
         mode: data.mode || 'normal',
         workspaceId: workspace?.id,
         accessScope: workspace ? 'workspace' : data.accessScope,

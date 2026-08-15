@@ -15,6 +15,8 @@ import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../sha
 import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from '../shared/types/plugin'
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
+import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
+import type { ApplyCodeProductionRunInput, CodeProductionDraft, CodeProductionDraftProgress, CodeProductionDraftStageId, CodeProductionPluginStatus, CodeProductionRun, CodeProductionWorkspace, RunCodeProductionCommandInput, StartCodeProductionRunInput } from '../shared/types/code-production-pipeline'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -49,9 +51,10 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt'>>): Promise<void>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt' | 'contextHandoff'>>): Promise<void>
     updateMessage(conversationId: string, messageId: string, data: Partial<Pick<ChatMessage, 'favorited'>>): Promise<void>
     deleteMessagesFrom(conversationId: string, messageId: string): Promise<void>
+    continueFromHandoff(conversationId: string): Promise<Conversation>
     onChanged(callback: EventCallback<string>): Unsubscribe
   }
 
@@ -179,6 +182,12 @@ export interface EvaAPI {
   runtimeProposal: {
     list(): Promise<RuntimeEvolutionProposal[]>
     decide(id: string, status: 'approved' | 'rejected', decisionNote?: string): Promise<RuntimeEvolutionProposal>
+    beginImplementation(id: string, conversationId: string): Promise<RuntimeEvolutionProposal>
+  }
+
+  runtimeKernel: {
+    snapshot(): Promise<RuntimeKernelSnapshot>
+    listAudit(limit?: number): Promise<RuntimeKernelAuditRecord[]>
   }
 
   modelPool: {
@@ -213,6 +222,20 @@ export interface EvaAPI {
     installLocalSearxng(): Promise<LocalSearxngStatus>
     stopLocalSearxng(): Promise<LocalSearxngStatus>
   }
+
+  codeProduction: {
+    status(): Promise<CodeProductionPluginStatus>
+    workspaces(): Promise<CodeProductionWorkspace[]>
+    runs(): Promise<CodeProductionRun[]>
+    start(input: StartCodeProductionRunInput): Promise<CodeProductionRun>
+    cancel(runId: string): Promise<CodeProductionRun>
+    apply(input: ApplyCodeProductionRunInput): Promise<CodeProductionRun>
+    listDrafts(): Promise<CodeProductionDraft[]>
+    createDraft(conversationId: string): Promise<CodeProductionDraft>
+    advanceDraft(draftId: string, stageId: CodeProductionDraftStageId): Promise<CodeProductionDraft>
+    runCommand(input: RunCodeProductionCommandInput): Promise<CodeProductionDraft>
+    onDraftProgress(callback: EventCallback<CodeProductionDraftProgress>): Unsubscribe
+  }
 }
 
 const evaAPI: EvaAPI = {
@@ -241,6 +264,7 @@ const evaAPI: EvaAPI = {
     update: (id, data) => ipcRenderer.invoke(IPC.CONVERSATION_UPDATE, id, data),
     updateMessage: (conversationId, messageId, data) => ipcRenderer.invoke(IPC.CONVERSATION_MESSAGE_UPDATE, conversationId, messageId, data),
     deleteMessagesFrom: (conversationId, messageId) => ipcRenderer.invoke(IPC.CONVERSATION_MESSAGES_DELETE_FROM, conversationId, messageId),
+    continueFromHandoff: (conversationId) => ipcRenderer.invoke(IPC.CONVERSATION_CONTINUE_FROM_HANDOFF, conversationId),
     onChanged: (callback) => onStream(IPC.CONVERSATION_CHANGED, callback),
   },
 
@@ -408,6 +432,12 @@ const evaAPI: EvaAPI = {
   runtimeProposal: {
     list: () => ipcRenderer.invoke(IPC.RUNTIME_PROPOSAL_LIST),
     decide: (id, status, decisionNote) => ipcRenderer.invoke(IPC.RUNTIME_PROPOSAL_DECIDE, id, status, decisionNote),
+    beginImplementation: (id, conversationId) => ipcRenderer.invoke(IPC.RUNTIME_PROPOSAL_BEGIN_IMPLEMENTATION, id, conversationId),
+  },
+
+  runtimeKernel: {
+    snapshot: () => ipcRenderer.invoke(IPC.RUNTIME_KERNEL_SNAPSHOT),
+    listAudit: (limit) => ipcRenderer.invoke(IPC.RUNTIME_KERNEL_AUDIT_LIST, limit),
   },
 
   modelPool: {
@@ -441,6 +471,20 @@ const evaAPI: EvaAPI = {
     getLocalSearxngStatus: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STATUS),
     installLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_INSTALL),
     stopLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STOP),
+  },
+
+  codeProduction: {
+    status: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_STATUS),
+    workspaces: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_WORKSPACES),
+    runs: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_RUNS),
+    start: (input) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_START, input),
+    cancel: (runId) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_CANCEL, runId),
+    apply: (input) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_APPLY, input),
+    listDrafts: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_DRAFT_LIST),
+    createDraft: (conversationId) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_DRAFT_CREATE, conversationId),
+    advanceDraft: (draftId, stageId) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_DRAFT_ADVANCE, draftId, stageId),
+    runCommand: (input) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_COMMAND, input),
+    onDraftProgress: (callback) => onStream(IPC.CODE_PRODUCTION_DRAFT_PROGRESS, callback),
   },
 }
 

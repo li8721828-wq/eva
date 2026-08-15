@@ -6,7 +6,8 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { ConversationList } from './ConversationList'
 import { ModeSelector } from './ModeSelector'
-import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus, UsersRound } from 'lucide-react'
+import { Plus, Settings, PanelLeftClose, PanelLeft, Bot, FolderPlus, UsersRound, Workflow } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 
 export interface SidebarProps {
   className?: string
@@ -15,9 +16,19 @@ export interface SidebarProps {
 
 export function Sidebar({ className, style }: SidebarProps) {
   const { sidebarCollapsed, toggleSidebar, setSettingsOpen, agentManagerOpen, setAgentManagerOpen, setCurrentView } =
-    useAppStore()
-  const { createConversation } = useChatStore()
-  const { addWorkspace, addWorkspaceAtPath } = useWorkspaceStore()
+    useAppStore(useShallow((state) => ({
+      sidebarCollapsed: state.sidebarCollapsed,
+      toggleSidebar: state.toggleSidebar,
+      setSettingsOpen: state.setSettingsOpen,
+      agentManagerOpen: state.agentManagerOpen,
+      setAgentManagerOpen: state.setAgentManagerOpen,
+      setCurrentView: state.setCurrentView,
+    })))
+  const createConversation = useChatStore((state) => state.createConversation)
+  const { addWorkspace, addWorkspaceAtPath } = useWorkspaceStore(useShallow((state) => ({
+    addWorkspace: state.addWorkspace,
+    addWorkspaceAtPath: state.addWorkspaceAtPath,
+  })))
   const [isDraggingFolder, setIsDraggingFolder] = useState(false)
   const [dropMessage, setDropMessage] = useState<string | null>(null)
   const dragDepth = useRef(0)
@@ -109,6 +120,9 @@ export function Sidebar({ className, style }: SidebarProps) {
         <Button variant="ghost" size="icon" title="Agent Symposium" onClick={() => setCurrentView('symposium')}>
           <UsersRound className="h-4 w-4" />
         </Button>
+        <Button variant="ghost" size="icon" title="Code production pipeline" onClick={() => setCurrentView('code-production')}>
+          <Workflow className="h-4 w-4" />
+        </Button>
         <Button
           variant="ghost"
           size="icon"
@@ -183,6 +197,15 @@ export function Sidebar({ className, style }: SidebarProps) {
         >
           <UsersRound className="h-4 w-4" />
           <span>Agent Symposium</span>
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-9 w-full justify-start gap-2.5 px-3"
+          onClick={() => setCurrentView('code-production')}
+        >
+          <Workflow className="h-4 w-4" />
+          <span>代码生成</span>
         </Button>
         <Button variant="ghost" size="sm" className="h-9 w-full justify-start gap-2.5 px-3" onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />

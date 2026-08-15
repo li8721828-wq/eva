@@ -53,6 +53,7 @@ export function AgentEditor({
   const [outputColor, setOutputColor] = useState<NonNullable<AgentConfig['outputColor']>>(agent?.outputColor || 'slate')
   const [outputFontSize, setOutputFontSize] = useState<NonNullable<AgentConfig['outputFontSize']>>(agent?.outputFontSize || 'medium')
   const [outputTextEffect, setOutputTextEffect] = useState<NonNullable<AgentConfig['outputTextEffect']>>(agent?.outputTextEffect || 'none')
+  const [markdownRenderer, setMarkdownRenderer] = useState<NonNullable<AgentConfig['markdownRenderer']>>(agent?.markdownRenderer || 'enhanced')
   const [providerId, setProviderId] = useState(agent?.providerId || defaultProviderId)
   const [model, setModel] = useState(agent?.model || defaultModel)
   const [temperature, setTemperature] = useState(agent?.temperature ?? 0.7)
@@ -75,6 +76,7 @@ export function AgentEditor({
       setOutputColor(agent.outputColor || 'slate')
       setOutputFontSize(agent.outputFontSize || 'medium')
       setOutputTextEffect(agent.outputTextEffect || 'none')
+      setMarkdownRenderer(agent.markdownRenderer || 'enhanced')
       setProviderId(agent.providerId)
       setModel(agent.model)
       setTemperature(agent.temperature)
@@ -134,6 +136,7 @@ export function AgentEditor({
       outputColor,
       outputFontSize,
       outputTextEffect,
+      markdownRenderer,
       providerId,
       model,
       temperature,
@@ -218,6 +221,7 @@ export function AgentEditor({
         outputColor={outputColor}
         outputFontSize={outputFontSize}
         outputTextEffect={outputTextEffect}
+        markdownRenderer={markdownRenderer}
         showThinking={showThinking}
         onOutputFormatChange={setOutputFormat}
         onOutputFormatInstructionsChange={setOutputFormatInstructions}
@@ -226,6 +230,16 @@ export function AgentEditor({
         onOutputColorChange={setOutputColor}
         onOutputFontSizeChange={setOutputFontSize}
         onOutputTextEffectChange={setOutputTextEffect}
+        onMarkdownRendererChange={(renderer) => {
+          setMarkdownRenderer(renderer)
+          if (renderer === 'classic') {
+            setOutputStyle('none')
+            setOutputFont('system')
+            setOutputColor('slate')
+            setOutputFontSize('medium')
+            setOutputTextEffect('none')
+          }
+        }}
         onShowThinkingChange={setShowThinking}
       />
 

@@ -11,11 +11,13 @@ import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
 import { TaskWorkspacePanel } from '@/components/tasks/TaskWorkspacePanel'
 import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
+import { CodeProductionWorkspace } from '@/components/code-production/CodeProductionWorkspace'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
 import { AppTitlebar } from '@/components/layout/AppTitlebar'
 import { Button } from '@/components/ui/Button'
 import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 
 // Lazy-loaded heavy components
 const TerminalPanel = lazy(() => import('@/components/terminal/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
@@ -73,11 +75,34 @@ const App: React.FC = () => {
     setSidebarWidth,
     setRightPanelWidth,
     setTaskNoteHeight,
-  } = useAppStore()
+  } = useAppStore(useShallow((state) => ({
+    rightPanelVisible: state.rightPanelVisible,
+    toggleRightPanel: state.toggleRightPanel,
+    setRightPanelVisible: state.setRightPanelVisible,
+    terminalVisible: state.terminalVisible,
+    workspacePath: state.workspacePath,
+    loadConfig: state.loadConfig,
+    agentManagerOpen: state.agentManagerOpen,
+    setAgentManagerOpen: state.setAgentManagerOpen,
+    settingsOpen: state.settingsOpen,
+    currentView: state.currentView,
+    language: state.language,
+    sidebarCollapsed: state.sidebarCollapsed,
+    sidebarWidth: state.sidebarWidth,
+    rightPanelWidth: state.rightPanelWidth,
+    taskNoteHeight: state.taskNoteHeight,
+    setSidebarWidth: state.setSidebarWidth,
+    setRightPanelWidth: state.setRightPanelWidth,
+    setTaskNoteHeight: state.setTaskNoteHeight,
+  })))
 
-  const { loadConversations, currentConversationId, refreshConversation } = useChatStore()
-  const { loadAgents } = useAgentStore()
-  const { loadWorkspaces } = useWorkspaceStore()
+  const { loadConversations, currentConversationId, refreshConversation } = useChatStore(useShallow((state) => ({
+    loadConversations: state.loadConversations,
+    currentConversationId: state.currentConversationId,
+    refreshConversation: state.refreshConversation,
+  })))
+  const loadAgents = useAgentStore((state) => state.loadAgents)
+  const loadWorkspaces = useWorkspaceStore((state) => state.loadWorkspaces)
   const [activeResize, setActiveResize] = useState<ResizeTarget | null>(null)
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   const sidebarWidthRef = useRef(sidebarWidth)
@@ -189,7 +214,7 @@ const App: React.FC = () => {
       <div className="flex flex-1 flex-col min-w-0">
         <div className={settingsOpen ? 'hidden' : 'flex min-h-0 min-w-0 flex-1'} aria-hidden={settingsOpen || undefined}>
           <div className="min-h-0 min-w-0 flex-1">
-            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
+            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : currentView === 'code-production' ? <CodeProductionWorkspace /> : <ChatPanel className="h-full" />}
           </div>
 
           {/* Right Panel Toggle */}
