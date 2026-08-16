@@ -11,7 +11,6 @@ import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
 import { TaskWorkspacePanel } from '@/components/tasks/TaskWorkspacePanel'
 import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
-import { CodeProductionWorkspace } from '@/components/code-production/CodeProductionWorkspace'
 import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
 import { AppTitlebar } from '@/components/layout/AppTitlebar'
@@ -214,7 +213,7 @@ const App: React.FC = () => {
       <div className="flex flex-1 flex-col min-w-0">
         <div className={settingsOpen ? 'hidden' : 'flex min-h-0 min-w-0 flex-1'} aria-hidden={settingsOpen || undefined}>
           <div className="min-h-0 min-w-0 flex-1">
-            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : currentView === 'code-production' ? <CodeProductionWorkspace /> : <ChatPanel className="h-full" />}
+            {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
           </div>
 
           {/* Right Panel Toggle */}

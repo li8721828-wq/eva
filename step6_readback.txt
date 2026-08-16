@@ -1,0 +1,4 @@
+paras: 95 tables: 1
+first: Title | 大语言模型微调技术研究综述：方法、对齐、数据与评测
+last: [29] LI X, ZHANG T, DUBOIS Y, et al. Alp
+tbl: 6 x 6 | 方法 超大模型、简单任务

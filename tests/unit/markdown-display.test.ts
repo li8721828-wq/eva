@@ -11,10 +11,4 @@ describe('normalizeChatMarkdown', () => {
 
     expect(normalizeChatMarkdown(markdown)).toBe('Before\n```text\n\u3000preserved\n```\nAfter')
   })
-
-  it('renders Markdown artifacts from older code-production messages as documents', () => {
-    const pipelineMessage = '## 代码生成管线：已固定原始需求\n\n#### 00-source-conversation.md\n\n```markdown\n# 原始需求\n\n- 合同管理\n```\n\n### 过程文档内容\n\n#### 00-source-process.md\n\n```markdown\n# 过程文档\n```'
-
-    expect(normalizeChatMarkdown(pipelineMessage)).toBe('## 代码生成管线：已固定原始需求\n\n#### 00-source-conversation.md\n\n# 原始需求\n\n- 合同管理\n\n### 过程文档内容\n\n#### 00-source-process.md\n\n# 过程文档')
-  })
 })

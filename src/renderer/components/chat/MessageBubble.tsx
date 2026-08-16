@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, ChevronDown, BrainCircuit, ExternalLink } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, ChevronDown, BrainCircuit, CircleAlert, ExternalLink, SearchCheck } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -128,6 +128,28 @@ function MarkdownCodeBlock({ children, language }: { children: ReactNode; langua
   )
 }
 
+const progressPresentation = {
+  thinking: { icon: BrainCircuit, tone: 'text-zinc-600', iconTone: 'bg-violet-100 text-violet-600' },
+  finding: { icon: SearchCheck, tone: 'text-zinc-600', iconTone: 'bg-sky-100 text-sky-600' },
+  action: { icon: Wrench, tone: 'text-zinc-600', iconTone: 'bg-emerald-100 text-emerald-600' },
+  issue: { icon: CircleAlert, tone: 'text-rose-700', iconTone: 'bg-rose-100 text-rose-600' },
+} as const
+
+function ProgressUpdateMessage({ message }: { message: ChatMessage }) {
+  const presentation = progressPresentation[message.progressKind!]
+  const Icon = presentation.icon
+  return (
+    <article className="flex max-w-[46rem] items-start gap-2.5 py-2" aria-label="Eva 工作进展">
+      <span className={cn('mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full', presentation.iconTone)}>
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      <div className="min-w-0 pt-0.5">
+        <MarkdownMessageContent content={message.content} className={cn('text-[13px] leading-6', presentation.tone)} />
+      </div>
+    </article>
+  )
+}
+
 function StreamdownLink({ children, href, node: _node, ...props }: React.ComponentPropsWithoutRef<'a'> & { node?: unknown }) {
   return <a href={href} target="_blank" rel="noreferrer noopener" {...props}>{children}<ExternalLink aria-hidden="true" className="markdown-external-link" /></a>
 }
@@ -218,7 +240,6 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
-  const conversationAgentId = useChatStore((state) => state.conversations.find((conversation) => conversation.id === message.conversationId)?.agentId)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
   const [copied, setCopied] = useState(false)
   const actionCopy = language === 'zh'
@@ -233,14 +254,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     window.setTimeout(() => setCopied(false), 1600)
   }
 
-  // Pipeline output is system-authored, but it belongs to a user-selected
-  // conversation. Inherit that conversation's reader settings instead of
-  // falling back to the default renderer.
   const outputAgent = message.agentId
     ? agents.find((agent) => agent.id === message.agentId)
-    : message.agentName === '代码生成管线' && conversationAgentId && conversationAgentId !== '__auto__'
-      ? agents.find((agent) => agent.id === conversationAgentId)
-      : undefined
+    : undefined
   const shouldShowReasoning = isStreaming || Boolean(outputAgent?.showThinking)
   const outputStyle = outputAgent?.outputStyle || 'balanced'
   const outputFormat = outputAgent?.outputFormat || 'default'
@@ -249,6 +265,8 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const outputFontSize = outputAgent?.outputFontSize || 'medium'
   const outputTextEffect = outputAgent?.outputTextEffect || 'none'
   const markdownRenderer = outputAgent?.markdownRenderer || 'enhanced'
+
+  if (message.progressKind) return <ProgressUpdateMessage message={message} />
 
   if (isUser) {
     return (
@@ -333,8 +351,12 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
           </div>
         )}
 
-        {/* Tool calls */}
-        {message.toolCalls?.length ? <ToolCallGroupView toolCalls={message.toolCalls} className="mt-3" /> : null}
+        {message.toolCalls?.length ? (
+          <details className="mt-3 border-t border-zinc-100 pt-2">
+            <summary className="cursor-pointer text-xs font-medium text-zinc-400 hover:text-zinc-600">技术执行明细（{message.toolCalls.length} 项）</summary>
+            <ToolCallGroupView toolCalls={message.toolCalls} className="mt-2" />
+          </details>
+        ) : null}
       </div>
     </article>
   )

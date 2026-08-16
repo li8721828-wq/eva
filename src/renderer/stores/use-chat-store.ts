@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, ExecutionTraceEntry, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { RequirementProgress } from '../../shared/types/requirement-engineering'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
 
@@ -8,13 +9,20 @@ export interface ConversationStreamState {
   content: string
   reasoningContent: string
   toolCalls: ToolCall[]
+  executionTrace: ExecutionTraceEntry[]
   status: string
   startedAt: number | null
   lastActivityAt: number | null
 }
 
+export interface RequirementProgressState {
+  startedAt: number
+  current: RequirementProgress
+  steps: RequirementProgress[]
+}
+
 function createIdleStream(): ConversationStreamState {
-  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], status: '', startedAt: null, lastActivityAt: null }
+  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], status: '', startedAt: null, lastActivityAt: null }
 }
 
 interface ChatState {
@@ -23,6 +31,7 @@ interface ChatState {
   messages: ChatMessage[]
   isConversationLoading: boolean
   streamingByConversation: Record<string, ConversationStreamState>
+  requirementProgressByConversation: Record<string, RequirementProgressState>
   inputText: string
   referenceImages: ChatImageAttachment[]
   documentAttachments: ChatDocumentAttachment[]
@@ -37,6 +46,9 @@ interface ChatState {
   setReferenceImages: (images: ChatImageAttachment[]) => void
   setDocumentAttachments: (attachments: ChatDocumentAttachment[]) => void
   setError: (error: string | null) => void
+  startRequirementProgress: (conversationId: string, message: string) => void
+  updateRequirementProgress: (progress: RequirementProgress) => void
+  finishRequirementProgress: (conversationId: string) => void
   updateMessageFavorite: (messageId: string, favorited: boolean) => Promise<void>
   deleteMessagesFrom: (messageId: string) => Promise<void>
   regenerateFromMessage: (messageId: string) => Promise<void>
@@ -78,6 +90,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   isConversationLoading: false,
   streamingByConversation: {},
+  requirementProgressByConversation: {},
   inputText: '',
   referenceImages: [],
   documentAttachments: [],
@@ -91,6 +104,39 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setReferenceImages: (images) => set({ referenceImages: images }),
   setDocumentAttachments: (attachments) => set({ documentAttachments: attachments }),
   setError: (error) => set({ error }),
+  startRequirementProgress: (conversationId, message) => {
+    const progress: RequirementProgress = { conversationId, stage: 'source', message }
+    set((state) => ({
+      requirementProgressByConversation: {
+        ...state.requirementProgressByConversation,
+        [conversationId]: { startedAt: Date.now(), current: progress, steps: [progress] },
+      },
+    }))
+  },
+  updateRequirementProgress: (progress) => set((state) => {
+    const previous = state.requirementProgressByConversation[progress.conversationId]
+    const steps = previous?.steps || []
+    const existingIndex = progress.document
+      ? steps.findIndex((item) => item.document?.id === progress.document?.id)
+      : steps.findIndex((item) => item.stage === progress.stage && !item.document)
+    const nextSteps = existingIndex < 0
+      ? [...steps, progress]
+      : steps.map((item, index) => index === existingIndex ? progress : item)
+    return {
+      requirementProgressByConversation: {
+        ...state.requirementProgressByConversation,
+        [progress.conversationId]: {
+          startedAt: previous?.startedAt || Date.now(),
+          current: progress,
+          steps: nextSteps,
+        },
+      },
+    }
+  }),
+  finishRequirementProgress: (conversationId) => set((state) => {
+    const { [conversationId]: _finished, ...requirementProgressByConversation } = state.requirementProgressByConversation
+    return { requirementProgressByConversation }
+  }),
 
   updateMessageFavorite: async (messageId, favorited) => {
     const conversationId = get().currentConversationId
@@ -340,7 +386,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const existingConversation = convId
       ? get().conversations.find((item) => item.id === convId)
       : null
-    const requestedAgentId = agentId || existingConversation?.agentId || '__auto__'
+    // Let the main process assign the configured primary Agent to a brand-new
+    // conversation. Existing conversations always retain their own Agent.
+    const requestedAgentId = agentId || existingConversation?.agentId
 
     // Create conversation if none exists
     if (!convId) {
@@ -397,7 +445,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       documentAttachments: [],
       streamingByConversation: {
         ...s.streamingByConversation,
-        [convId!]: { isStreaming: true, content: '', toolCalls: [], status: 'Preparing the request...', startedAt: Date.now(), lastActivityAt: Date.now() },
+        [convId!]: { isStreaming: true, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], status: '正在准备请求...', startedAt: Date.now(), lastActivityAt: Date.now() },
       },
       error: null,
     }))
@@ -432,6 +480,53 @@ export const useChatStore = create<ChatState>((set, get) => ({
     switch (event.type) {
       case 'thinking': {
         set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
+        break
+      }
+
+      case 'execution_trace': {
+        if (event.executionTrace) {
+          set((s) => {
+            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const latest = event.executionTrace![event.executionTrace!.length - 1]
+            return {
+              streamingByConversation: {
+                ...s.streamingByConversation,
+                [conversationId]: {
+                  ...stream,
+                  isStreaming: true,
+                  executionTrace: event.executionTrace!,
+                  status: latest?.title || stream.status,
+                  lastActivityAt: Date.now(),
+                },
+              },
+            }
+          })
+        }
+        break
+      }
+
+      case 'progress': {
+        if (!event.content || !event.progressKind) break
+        const progressMessage: ChatMessage = {
+          id: event.messageId || generateId(),
+          conversationId,
+          role: 'assistant',
+          content: event.content,
+          progressKind: event.progressKind,
+          timestamp: Date.now(),
+        }
+        set((s) => ({
+          messages: s.currentConversationId === conversationId ? [...s.messages, progressMessage] : s.messages,
+          streamingByConversation: {
+            ...s.streamingByConversation,
+            [conversationId]: {
+              ...(s.streamingByConversation[conversationId] || createIdleStream()),
+              isStreaming: true,
+              status: event.content!,
+              lastActivityAt: Date.now(),
+            },
+          },
+        }))
         break
       }
 
@@ -505,6 +600,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             role: 'assistant',
             content: finalContent,
             reasoningContent: stream.reasoningContent || undefined,
+            executionTrace: stream.executionTrace.length > 0 ? stream.executionTrace : undefined,
             toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,
             usage: event.usage,
             timestamp: Date.now(),
@@ -529,6 +625,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           conversationId,
           role: 'assistant',
           content: `⚠️ Error: ${errorMsg}`,
+          executionTrace: get().streamingByConversation[conversationId]?.executionTrace,
           timestamp: Date.now(),
         }
         set((s) => ({

@@ -2,13 +2,14 @@ import React, { useRef, useEffect, useLayoutEffect, useState, useMemo, useCallba
 import type { ChatMessage, ChatUsage } from '../../../shared/types'
 import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
-import { MessageBubble } from './MessageBubble'
-import { ToolCallGroupView } from './ToolCallView'
+import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
+import { RequirementClarificationCard } from './RequirementClarificationCard'
 import { WelcomeScreen } from './WelcomeScreen'
-import { ChevronsDown, Loader2 } from 'lucide-react'
+import { CheckCircle2, ChevronsDown, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
+import type { RequirementClarificationAnswer, RequirementRun } from '../../../shared/types/requirement-engineering'
 
 const PAGE_SIZE = 100
 const CONVERSATION_SCROLL_STORAGE_KEY = 'eva.conversation-scroll-positions.v2'
@@ -82,13 +83,13 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, currentConversationId, isConversationLoading, streamingByConversation } = useChatStore()
+  const { messages, currentConversationId, isConversationLoading, streamingByConversation, requirementProgressByConversation } = useChatStore()
   const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
   const isStreaming = Boolean(stream?.isStreaming)
   const streamingContent = stream?.content || ''
   const streamingReasoningContent = stream?.reasoningContent || ''
-  const streamingToolCalls = stream?.toolCalls || []
-  const streamingStatus = stream?.status || ''
+  const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
+  const isRequirementRunning = Boolean(requirementProgress)
   const { rightPanelVisible, rightPanelWidth, language } = useAppStore()
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const scrollAreaRef = useRef<HTMLDivElement>(null)
@@ -109,6 +110,64 @@ export function MessageList({ className }: MessageListProps) {
   const [scrollIndicatorVisible, setScrollIndicatorVisible] = useState(false)
   const [scrollIndicator, setScrollIndicator] = useState<ScrollIndicator>({ top: 0, height: 100 })
   const [canJumpToBottom, setCanJumpToBottom] = useState(false)
+  const [awaitingClarification, setAwaitingClarification] = useState<RequirementRun | null>(null)
+  const [awaitingSpecResolution, setAwaitingSpecResolution] = useState<RequirementRun | null>(null)
+
+  const loadAwaitingClarification = useCallback(async () => {
+    if (!currentConversationId) {
+      setAwaitingClarification(null)
+      setAwaitingSpecResolution(null)
+      return
+    }
+    try {
+      const runs = await window.eva.requirements.listRuns(currentConversationId)
+      setAwaitingClarification(runs.find((run) => run.status === 'awaiting-clarification') || null)
+      setAwaitingSpecResolution(runs.find((run) => run.status === 'awaiting-spec-resolution') || null)
+    } catch {
+      setAwaitingClarification(null)
+      setAwaitingSpecResolution(null)
+    }
+  }, [currentConversationId])
+
+  useEffect(() => {
+    void loadAwaitingClarification()
+  }, [loadAwaitingClarification, messages.length, requirementProgress])
+
+  const submitClarificationAnswers = useCallback(async (answers: RequirementClarificationAnswer[]) => {
+    if (!awaitingClarification) return
+    const chat = useChatStore.getState()
+    chat.startRequirementProgress(awaitingClarification.conversationId, '正在读取你确认的澄清选项')
+    try {
+      await window.eva.requirements.answer({ conversationId: awaitingClarification.conversationId, runId: awaitingClarification.id, answers })
+      await chat.refreshConversation(awaitingClarification.conversationId)
+      await loadAwaitingClarification()
+    } finally {
+      chat.finishRequirementProgress(awaitingClarification.conversationId)
+    }
+  }, [awaitingClarification, loadAwaitingClarification])
+
+  const abortClarificationAnalysis = useCallback(async () => {
+    if (!awaitingClarification) return
+    await window.eva.requirements.abort(awaitingClarification.conversationId)
+  }, [awaitingClarification])
+
+  const submitSpecificationResolution = useCallback(async (answers: RequirementClarificationAnswer[]) => {
+    if (!awaitingSpecResolution) return
+    const chat = useChatStore.getState()
+    chat.startRequirementProgress(awaitingSpecResolution.conversationId, '正在保存规格阻塞的处置选择')
+    try {
+      await window.eva.requirements.resolveSpec({ conversationId: awaitingSpecResolution.conversationId, runId: awaitingSpecResolution.id, answers })
+      await chat.refreshConversation(awaitingSpecResolution.conversationId)
+      await loadAwaitingClarification()
+    } finally {
+      chat.finishRequirementProgress(awaitingSpecResolution.conversationId)
+    }
+  }, [awaitingSpecResolution, loadAwaitingClarification])
+
+  const abortSpecificationResolution = useCallback(async () => {
+    if (!awaitingSpecResolution) return
+    await window.eva.requirements.abort(awaitingSpecResolution.conversationId)
+  }, [awaitingSpecResolution])
 
   const updateScrollAffordances = useCallback((scrollArea: HTMLDivElement, reveal = false) => {
     const overflow = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)
@@ -450,7 +509,7 @@ export function MessageList({ className }: MessageListProps) {
     }
   }, [isStreaming, streamingContent, streamingReasoningContent])
 
-  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning) {
+  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !isRequirementRunning) {
     return <WelcomeScreen className={className} />
   }
 
@@ -500,24 +559,55 @@ export function MessageList({ className }: MessageListProps) {
 
         {virtualRange.bottomSpacer > 0 && <div aria-hidden="true" style={{ height: virtualRange.bottomSpacer }} />}
 
-        {isStreaming && (
-          <div className="flex items-center gap-2 px-0 py-1 text-sm text-zinc-500">
-            <Loader2 className={cn('h-4 w-4 text-violet-500', SMOOTH_SPIN_CLASS)} />
-            <span>{streamingStatus || 'Working...'}</span>
-          </div>
+        {requirementProgress && (
+          <section className="mb-8 max-w-2xl border-l-2 border-violet-500 bg-violet-50/50 px-4 py-3.5" role="status" aria-live="polite" aria-label="需求工程执行进度">
+            <div className="flex items-center gap-2 text-sm font-medium text-zinc-900">
+              <Loader2 className={cn('h-4 w-4 text-violet-600', SMOOTH_SPIN_CLASS)} />
+              <span>需求工程</span>
+            </div>
+            <ol className="mt-3 space-y-2">
+              {requirementProgress.steps.map((step) => {
+                const isCurrent = !step.document && step.stage === requirementProgress.current.stage
+                return (
+                  <li key={step.document?.id || `${step.stage}-${step.message}`} className="flex items-center gap-2 text-sm">
+                    {isCurrent
+                      ? <Loader2 className={cn('h-3.5 w-3.5 shrink-0 text-violet-600', SMOOTH_SPIN_CLASS)} />
+                      : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+                    <span className={cn(isCurrent ? 'font-medium text-violet-800' : 'text-zinc-600')}>{step.message}</span>
+                  </li>
+                )
+              })}
+            </ol>
+            {requirementProgress.steps.filter((step) => step.document).map((step) => (
+              <details key={step.document!.id} open className="mt-3 border-t border-violet-100 pt-3">
+                <summary className="cursor-pointer text-sm font-medium text-violet-800">{step.document!.title}</summary>
+                <MarkdownMessageContent content={step.document!.content} className="mt-2 text-zinc-700" />
+              </details>
+            ))}
+          </section>
+        )}
+
+        {awaitingClarification && !requirementProgress && (
+          <RequirementClarificationCard
+            run={awaitingClarification}
+            onSubmit={submitClarificationAnswers}
+            onAbort={abortClarificationAnalysis}
+          />
+        )}
+
+        {awaitingSpecResolution && !requirementProgress && (
+          <RequirementClarificationCard
+            run={awaitingSpecResolution}
+            mode="specification"
+            onSubmit={submitSpecificationResolution}
+            onAbort={abortSpecificationResolution}
+          />
         )}
 
         {isTeamRunning && (
           <div className="flex items-center gap-2 px-0 py-1 text-sm text-zinc-500">
             <Loader2 className={cn('h-4 w-4 text-violet-500', SMOOTH_SPIN_CLASS)} />
             <span>Expert Team is planning and assigning work...</span>
-          </div>
-        )}
-
-        {/* Streaming tool calls */}
-        {isStreaming && streamingToolCalls.length > 0 && (
-          <div className="px-0 py-2">
-            <ToolCallGroupView toolCalls={streamingToolCalls} />
           </div>
         )}
 

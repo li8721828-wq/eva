@@ -8,9 +8,8 @@ import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, FileText, FolderOpen, ImagePlus, Paperclip, Send, Settings2, Sparkles, Square, X } from 'lucide-react'
+import { Bot, ClipboardList, FileText, FolderOpen, ImagePlus, Paperclip, Send, Settings2, Square, X } from 'lucide-react'
 import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel } from '../../../shared/types'
-import type { CodeProductionCommand } from '../../../shared/types/code-production-pipeline'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -18,13 +17,25 @@ export interface InputBarProps {
   className?: string
 }
 
-const PIPELINE_COMMANDS: Array<{ command: CodeProductionCommand; label: string; description: string }> = [
-  { command: 'requirement', label: '/requirement', description: '固定本次需求输入，作为管线起点' },
-  { command: 'requirement-modeling', label: '/requirement-modeling', description: '确认原始需求并生成需求模型' },
-  { command: 'spec', label: '/spec', description: '确认需求模型并生成规格说明' },
-  { command: 'dsl', label: '/dsl', description: '确认规格说明并生成代码 DSL' },
-  { command: 'coding', label: '/coding', description: '确认 DSL 并生成候选代码文件' },
-]
+const SLASH_COMMANDS = [
+  {
+    command: 'requirement',
+    label: '/requirement',
+    description: '开始需求分析、代码分析、澄清与评测',
+  },
+  {
+    command: 'requirement-modeling',
+    label: '/requirement-modeling',
+    description: '将已明确需求建模为标准化规格与验收文档',
+  },
+  {
+    command: 'spec',
+    label: '/spec',
+    description: '基于需求建模和代码证据构建并校验实施规格',
+  },
+] as const
+
+const COMMAND_INPUT_SEPARATOR = '\u3000'
 
 function getConnectionDisplayName(provider: ProviderConfigEntry): string {
   const defaultNames: Record<ProviderConfigEntry['type'], string> = {
@@ -39,7 +50,7 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, inputText, referenceImages, documentAttachments, setConversationPermissions, setInputText, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError } = useChatStore(useShallow((state) => ({
+  const { conversations, createConversation, currentConversationId, inputText, referenceImages, documentAttachments, setConversationPermissions, setInputText, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError, startRequirementProgress, updateRequirementProgress, finishRequirementProgress } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     createConversation: state.createConversation,
     currentConversationId: state.currentConversationId,
@@ -54,6 +65,9 @@ export function InputBar({ className }: InputBarProps) {
     abortStream: state.abortStream,
     addMessage: state.addMessage,
     setError: state.setError,
+    startRequirementProgress: state.startRequirementProgress,
+    updateRequirementProgress: state.updateRequirementProgress,
+    finishRequirementProgress: state.finishRequirementProgress,
   })))
   const activeStream = useChatStore((state) => currentConversationId ? state.streamingByConversation[currentConversationId] : undefined)
   const isStreaming = Boolean(activeStream?.isStreaming)
@@ -78,6 +92,7 @@ export function InputBar({ className }: InputBarProps) {
   const [caretPosition, setCaretPosition] = useState(0)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const [activeCommandIndex, setActiveCommandIndex] = useState(0)
+  const [isRequirementSubmitting, setIsRequirementSubmitting] = useState(false)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
@@ -107,17 +122,16 @@ export function InputBar({ className }: InputBarProps) {
 
   const slashCommand = useMemo(() => {
     const match = inputText.match(/^\/([a-z-]*)$/i)
-    if (!match || isSymposiumConversation) return null
-    return match[1].toLowerCase()
+    return !isSymposiumConversation && match ? match[1].toLowerCase() : null
   }, [inputText, isSymposiumConversation])
 
-  const filteredPipelineCommands = useMemo(() => {
+  const filteredSlashCommands = useMemo(() => {
     if (slashCommand === null) return []
-    return PIPELINE_COMMANDS.filter((item) => item.command.includes(slashCommand))
+    return SLASH_COMMANDS.filter((item) => item.command.startsWith(slashCommand))
   }, [slashCommand])
 
-  const recognizedPipelineCommand = useMemo(() => {
-    const match = inputText.match(/^\/(requirement|requirement-modeling|spec|dsl|coding)(?=\s|$)/)
+  const selectedSlashCommand = useMemo(() => {
+    const match = inputText.match(/^\/(?:requirement(?:-modeling)?|spec)(?=\s|$)/i)
     return match?.[0] || null
   }, [inputText])
 
@@ -128,6 +142,18 @@ export function InputBar({ className }: InputBarProps) {
   useEffect(() => {
     setActiveCommandIndex(0)
   }, [slashCommand])
+
+  useEffect(() => {
+    if (!selectedSlashCommand || (inputText !== selectedSlashCommand && inputText !== `${selectedSlashCommand} `)) return
+    const nextInput = `${selectedSlashCommand}${COMMAND_INPUT_SEPARATOR}`
+    setInputText(nextInput)
+    setCaretPosition(nextInput.length)
+    requestAnimationFrame(() => {
+      textareaRef.current?.setSelectionRange(nextInput.length, nextInput.length)
+    })
+  }, [inputText, selectedSlashCommand, setInputText])
+
+  useEffect(() => window.eva.requirements.onProgress((_event, progress) => updateRequirementProgress(progress)), [updateRequirementProgress])
 
   const modelChoices = useMemo(() => {
     const visibleProviders = savedProviders.filter((provider) => (
@@ -175,7 +201,7 @@ export function InputBar({ className }: InputBarProps) {
   }, [activeProviderId, activeModel, settingsOpen])
 
   const handleSend = useCallback(async () => {
-    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming || isTaskRunning || isSymposiumRunning) return
+    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming || isTaskRunning || isSymposiumRunning || isRequirementSubmitting) return
     if (currentConversation?.symposium) {
       if (referenceImages.length > 0) {
         setError('Reference images are not supported inside Agent Symposium yet.')
@@ -190,29 +216,98 @@ export function InputBar({ className }: InputBarProps) {
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
     }
-    const pipelineMatch = inputText.trim().match(/^\/(requirement|requirement-modeling|spec|dsl|coding)(?:\s+([\s\S]*))?$/)
-    if (pipelineMatch) {
-      const command = pipelineMatch[1] as CodeProductionCommand
-      if (referenceImages.length > 0) {
-        setError('需求命令暂不直接接收图片。请先将图片作为普通消息发送到对话。')
+    const specificationMatch = inputText.trim().match(/^\/spec$/i)
+    if (specificationMatch) {
+      if (referenceImages.length > 0 || documentAttachments.length > 0) {
+        setError('规格构建使用已完成的需求建模和代码证据，请先移除当前附件或图片。')
         return
       }
-      if (documentAttachments.length > 0 && command !== 'requirement') {
-        setError('只有 /requirement 需求输入阶段可以接收新附件；后续阶段使用已确认的原始需求文件。')
-        return
-      }
+      setIsRequirementSubmitting(true)
+      let requirementConversationId: string | null = null
       try {
         const conversation = currentConversation || await createConversation()
-        await window.eva.codeProduction.runCommand({
+        requirementConversationId = conversation.id
+        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/spec', timestamp: Date.now() })
+        setInputText('')
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+        startRequirementProgress(conversation.id, '正在读取需求建模成果并核对代码证据')
+        await window.eva.requirements.spec({ conversationId: conversation.id })
+        await useChatStore.getState().refreshConversation(conversation.id)
+      } catch (error) {
+        setError(error instanceof Error ? error.message : '规格构建执行失败。')
+      } finally {
+        setIsRequirementSubmitting(false)
+        if (requirementConversationId) finishRequirementProgress(requirementConversationId)
+      }
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
+    const requirementModelingMatch = inputText.trim().match(/^\/requirement-modeling$/i)
+    if (requirementModelingMatch) {
+      if (referenceImages.length > 0 || documentAttachments.length > 0) {
+        setError('需求建模直接使用已确认的最终需求，请先移除当前附件或图片。')
+        return
+      }
+      setIsRequirementSubmitting(true)
+      let requirementConversationId: string | null = null
+      try {
+        const conversation = currentConversation || await createConversation()
+        requirementConversationId = conversation.id
+        addMessage({
+          id: crypto.randomUUID(),
           conversationId: conversation.id,
-          command,
-          content: pipelineMatch[2]?.trim() || undefined,
+          role: 'user',
+          content: '/requirement-modeling',
+          timestamp: Date.now(),
+        })
+        setInputText('')
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+        startRequirementProgress(conversation.id, '正在读取已确认需求并选择建模标准')
+        await window.eva.requirements.model({ conversationId: conversation.id })
+        await useChatStore.getState().refreshConversation(conversation.id)
+      } catch (error) {
+        setError(error instanceof Error ? error.message : '需求建模执行失败。')
+      } finally {
+        setIsRequirementSubmitting(false)
+        if (requirementConversationId) finishRequirementProgress(requirementConversationId)
+      }
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
+    const requirementMatch = inputText.trim().match(/^\/requirement(?:\s+([\s\S]*))?$/i)
+    if (requirementMatch) {
+      if (referenceImages.length > 0) {
+        setError('需求工程暂不直接接收图片，请先用普通对话描述图片内容或附加需求文档。')
+        return
+      }
+      setIsRequirementSubmitting(true)
+      let requirementConversationId: string | null = null
+      try {
+        const conversation = currentConversation || await createConversation()
+        requirementConversationId = conversation.id
+        addMessage({
+          id: crypto.randomUUID(),
+          conversationId: conversation.id,
+          role: 'user',
+          content: inputText.trim(),
           attachments: documentAttachments,
+          timestamp: Date.now(),
         })
         setInputText('')
         setDocumentAttachments([])
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+        startRequirementProgress(conversation.id, '正在读取需求输入和附件')
+        await window.eva.requirements.submit({
+          conversationId: conversation.id,
+          content: requirementMatch[1]?.trim(),
+          attachments: documentAttachments,
+        })
+        await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
-        setError(error instanceof Error ? error.message : '代码生成命令执行失败。')
+        setError(error instanceof Error ? error.message : '需求工程执行失败。')
+      } finally {
+        setIsRequirementSubmitting(false)
+        if (requirementConversationId) finishRequirementProgress(requirementConversationId)
       }
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
@@ -238,7 +333,7 @@ export function InputBar({ className }: InputBarProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [addMessage, createConversation, currentConversation, documentAttachments, inputText, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setDocumentAttachments, setError, setInputText, setReferenceImages, startExpertTask, workMode])
+  }, [addMessage, createConversation, currentConversation, currentConversationId, documentAttachments, finishRequirementProgress, inputText, isRequirementSubmitting, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setDocumentAttachments, setError, setInputText, setReferenceImages, startExpertTask, startRequirementProgress, workMode])
 
   const insertSymposiumMention = useCallback((participant: typeof symposiumMentionOptions[number]) => {
     if (!symposiumMention) return
@@ -253,30 +348,31 @@ export function InputBar({ className }: InputBarProps) {
     })
   }, [inputText, setInputText, symposiumMention, symposiumMentionOptions])
 
-  const insertPipelineCommand = useCallback((command: CodeProductionCommand) => {
-    setInputText(`/${command} `)
-    setCaretPosition(command.length + 2)
+  const insertSlashCommand = useCallback((command: typeof SLASH_COMMANDS[number]['command']) => {
+    const nextInput = `/${command}${COMMAND_INPUT_SEPARATOR}`
+    setInputText(nextInput)
+    setCaretPosition(nextInput.length)
     requestAnimationFrame(() => {
       textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(command.length + 2, command.length + 2)
+      textareaRef.current?.setSelectionRange(nextInput.length, nextInput.length)
     })
   }, [setInputText])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (filteredPipelineCommands.length > 0) {
+    if (filteredSlashCommands.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setActiveCommandIndex((index) => (index + 1) % filteredPipelineCommands.length)
+        setActiveCommandIndex((index) => (index + 1) % filteredSlashCommands.length)
         return
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
-        setActiveCommandIndex((index) => (index - 1 + filteredPipelineCommands.length) % filteredPipelineCommands.length)
+        setActiveCommandIndex((index) => (index - 1 + filteredSlashCommands.length) % filteredSlashCommands.length)
         return
       }
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault()
-        insertPipelineCommand((filteredPipelineCommands[activeCommandIndex] || filteredPipelineCommands[0]).command)
+        insertSlashCommand((filteredSlashCommands[activeCommandIndex] || filteredSlashCommands[0]).command)
         return
       }
     }
@@ -313,6 +409,10 @@ export function InputBar({ className }: InputBarProps) {
   }
 
   const handleStop = () => {
+    if (isRequirementSubmitting && currentConversationId) {
+      void window.eva.requirements.abort(currentConversationId)
+      return
+    }
     if (workMode === 'expert' && isTaskRunning) {
       void abortExpertTask(currentConversationId || undefined)
       return
@@ -516,16 +616,16 @@ export function InputBar({ className }: InputBarProps) {
               title="Attach files or folders. Paste a screenshot into the message box with Ctrl+V."
               aria-label="Attach files or folders; screenshots can be pasted into the message box"
               onClick={selectAttachments}
-              disabled={isSymposiumRunning || isSymposiumConversation}
+              disabled={isSymposiumRunning || isSymposiumConversation || isRequirementSubmitting}
             >
             {referenceImages.length || documentAttachments.length ? <ImagePlus className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
             </Button>
 
             <div className="relative min-h-[32px] flex-1">
-              {recognizedPipelineCommand && (
+              {selectedSlashCommand && (
                 <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words py-1.5 text-sm leading-5 text-zinc-900">
-                  <span className="text-violet-600">{recognizedPipelineCommand}</span>
-                  {inputText.slice(recognizedPipelineCommand.length)}
+                  <span className="font-medium text-violet-600">{selectedSlashCommand}</span>
+                  {inputText.slice(selectedSlashCommand.length)}
                 </div>
               )}
               <textarea
@@ -538,20 +638,20 @@ export function InputBar({ className }: InputBarProps) {
                 onPaste={handlePaste}
                 placeholder={isSymposiumRunning ? 'Participants are responding to the shared discussion...' : currentConversation?.symposium ? 'Add your perspective to the shared discussion' : 'Ask Eva to write, debug, or explain code'}
                 rows={1}
-                disabled={isSymposiumRunning}
+                disabled={isSymposiumRunning || isRequirementSubmitting}
                 className={cn(
                   'chat-composer__textarea relative z-10 max-h-[200px] min-h-[32px] w-full resize-none bg-transparent py-1.5 text-sm leading-5 placeholder:text-zinc-400 focus:outline-none',
-                  recognizedPipelineCommand ? 'text-transparent caret-zinc-900 selection:bg-violet-200 selection:text-transparent' : 'text-zinc-900',
+                  selectedSlashCommand ? 'text-transparent caret-zinc-900 selection:bg-violet-200 selection:text-transparent' : 'text-zinc-900',
                 )}
               />
             </div>
 
-            {isStreaming || isTaskRunning ? (
+            {isStreaming || isTaskRunning || isRequirementSubmitting ? (
               <button
                 className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-red-500 text-white transition-colors hover:bg-red-600"
                 onClick={handleStop}
-                title={isTaskRunning ? 'Stop team' : 'Stop'}
-                aria-label={isTaskRunning ? 'Stop team' : 'Stop generating'}
+                title={isRequirementSubmitting ? '停止需求工程' : isTaskRunning ? 'Stop team' : 'Stop'}
+                aria-label={isRequirementSubmitting ? '停止需求工程' : isTaskRunning ? 'Stop team' : 'Stop generating'}
               >
                 <Square className="h-3.5 w-3.5" />
               </button>
@@ -559,45 +659,43 @@ export function InputBar({ className }: InputBarProps) {
               <button
                 className={cn(
                   'mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors',
-                   inputText.trim() || referenceImages.length > 0 || documentAttachments.length > 0
+                   !isRequirementSubmitting && (inputText.trim() || referenceImages.length > 0 || documentAttachments.length > 0)
                     ? 'bg-violet-600 text-white hover:bg-violet-700'
                     : 'bg-zinc-100 text-zinc-400'
                 )}
                 onClick={handleSend}
-                 disabled={isSymposiumRunning || (!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0)}
-                title={currentConversation?.symposium ? 'Send to all discussion participants' : 'Send'}
-                aria-label={currentConversation?.symposium ? 'Send to all discussion participants' : 'Send message'}
+                 disabled={isSymposiumRunning || isRequirementSubmitting || (!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0)}
+                title={isRequirementSubmitting ? '需求工程正在执行' : currentConversation?.symposium ? 'Send to all discussion participants' : 'Send'}
+                aria-label={isRequirementSubmitting ? '需求工程正在执行' : currentConversation?.symposium ? 'Send to all discussion participants' : 'Send message'}
               >
                 <Send className="h-4 w-4" />
               </button>
             )}
           </div>
 
-          {filteredPipelineCommands.length > 0 && !isSymposiumRunning && (
-            <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(460px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
-              <div className="flex items-center gap-2 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
-                <Sparkles className="h-3.5 w-3.5 text-violet-500" />
-                代码生成管线
+          {filteredSlashCommands.length > 0 && !isSymposiumRunning && (
+            <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(440px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
+              <div className="flex items-center gap-2 px-3 py-2 text-[11px] font-medium text-zinc-500">
+                <ClipboardList className="h-3.5 w-3.5 text-violet-500" />
+                对话命令
               </div>
-              {filteredPipelineCommands.map((item, index) => (
+              {filteredSlashCommands.map((item, index) => (
                 <button
                   key={item.command}
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => insertPipelineCommand(item.command)}
+                  onClick={() => insertSlashCommand(item.command)}
                   className={cn(
                     'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
-                    index === activeCommandIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50'
+                    index === activeCommandIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50',
                   )}
                 >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700"><Sparkles className="h-3.5 w-3.5" /></span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-mono text-sm font-medium">{item.label}</span>
-                    <span className="block truncate text-xs text-zinc-500">{item.description}</span>
-                  </span>
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700"><ClipboardList className="h-3.5 w-3.5" /></span>
+                  <span className="min-w-0 flex-1"><span className="block font-mono text-sm font-medium">{item.label}</span><span className="block truncate text-xs text-zinc-500">{item.description}</span></span>
+                  <span className="shrink-0 text-[11px] text-zinc-400">Enter</span>
                 </button>
               ))}
-              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">上下箭头选择，Enter 或 Tab 填入命令。</div>
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">方向键选择，Enter 或 Tab 填入命令。</div>
             </div>
           )}
 
@@ -678,18 +776,18 @@ export function InputBar({ className }: InputBarProps) {
                 <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-700"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
               ) : (
                 <div className="w-[min(290px,34vw)] min-w-[190px]">
-                  <Select
-                    value={activeModelChoice}
-                    onChange={(event) => void handleModelChoiceChange(event.target.value)}
-                    options={modelChoiceOptions}
-                    disabled={isSymposiumRunning || modelChoices.length === 0}
-                    className="h-7 rounded-md border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 shadow-none hover:bg-white/75 hover:text-zinc-800 focus:border-[rgba(99,102,115,0.16)] focus:bg-white/80 focus:shadow-[0_5px_14px_-12px_rgba(39,42,58,0.35)] focus:ring-0 focus-visible:border-[rgba(99,102,115,0.16)] focus-visible:ring-0"
-                    menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 shadow-[0_16px_36px_-26px_rgba(39,42,58,0.38),0_5px_12px_-10px_rgba(39,42,58,0.1)]"
-                    optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
-                    selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
-                    aria-label="Select model connection and model"
-                    title="Select a saved connection and model"
-                  />
+                    <Select
+                      value={activeModelChoice}
+                      onChange={(event) => void handleModelChoiceChange(event.target.value)}
+                      options={modelChoiceOptions}
+                      disabled={isSymposiumRunning || modelChoices.length === 0}
+                      className="h-7 rounded-md border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 shadow-none hover:bg-white/75 hover:text-zinc-800 focus:border-[rgba(99,102,115,0.16)] focus:bg-white/80 focus:shadow-[0_5px_14px_-12px_rgba(39,42,58,0.35)] focus:ring-0 focus-visible:border-[rgba(99,102,115,0.16)] focus-visible:ring-0"
+                      menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 shadow-[0_16px_36px_-26px_rgba(39,42,58,0.38),0_5px_12px_-10px_rgba(39,42,58,0.1)]"
+                      optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
+                      selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
+                      aria-label="Select model connection and model"
+                      title="Select a saved connection and model"
+                    />
                 </div>
               )}
             </div>

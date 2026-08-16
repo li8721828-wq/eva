@@ -69,11 +69,18 @@ function TreeNode({
     event.dataTransfer.setData('text/plain', node.path)
   }
 
+  const handleContextMenu = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    void window.eva.file.showContextMenu({ path: node.path, workspacePath, isDirectory: isDir })
+      .catch((error) => console.error('Failed to open file context menu:', error))
+  }
+
   return (
     <div>
       <button
         draggable
         onClick={handleClick}
+        onContextMenu={handleContextMenu}
         onDragStart={handleDragStart}
         title={`拖动以附加到对话：${node.path}`}
         className="flex w-full cursor-grab items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-zinc-600 transition-all duration-200 hover:bg-zinc-100 hover:text-zinc-800 active:cursor-grabbing"

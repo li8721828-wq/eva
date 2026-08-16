@@ -59,6 +59,10 @@ export function registerAgentHandlers(): void {
   ipcMain.handle(IPC.AGENT_DELETE, async (_event, id: string): Promise<void> => {
     const agent = await getStorage().agents.getAgent(id)
     await getStorage().agents.deleteAgent(id)
+    if (getStorage().config.get('primaryChatAgentId') === id) {
+      const fallbackAgent = (await getStorage().agents.listAgents())[0]
+      getStorage().config.set('primaryChatAgentId', fallbackAgent?.id || null)
+    }
     if (agent) void recordActivity({ category: 'system', action: 'agent.deleted', status: 'info', summary: `Deleted Agent "${agent.name}".` })
   })
 }

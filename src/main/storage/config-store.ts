@@ -28,6 +28,8 @@ export interface AppConfig {
   providers: ProviderConfigEntry[]
   activeProviderId: string
   activeModel: string
+  /** Agent used when a new standard conversation does not make an explicit selection. */
+  primaryChatAgentId: string | null
   modelPools: ModelPool[]
   /** @deprecated Legacy singleton pool, migrated into modelPools on startup. */
   modelPool?: ModelPoolEntry[]
@@ -76,6 +78,7 @@ const DEFAULTS: AppConfig = {
   providers: DEFAULT_PROVIDERS,
   activeProviderId: 'openai',
   activeModel: 'gpt-4o',
+  primaryChatAgentId: null,
   modelPools: [],
   maxIterations: DEFAULT_MAX_ITERATIONS,
   temperature: DEFAULT_TEMPERATURE,

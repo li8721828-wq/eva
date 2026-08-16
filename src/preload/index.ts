@@ -16,7 +16,7 @@ import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from 
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
-import type { ApplyCodeProductionRunInput, CodeProductionDraft, CodeProductionDraftProgress, CodeProductionDraftStageId, CodeProductionPluginStatus, CodeProductionRun, CodeProductionWorkspace, RunCodeProductionCommandInput, StartCodeProductionRunInput } from '../shared/types/code-production-pipeline'
+import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -115,6 +115,7 @@ export interface EvaAPI {
     selectAttachments(): Promise<string[]>
     imagePreview(path: string): Promise<string | null>
     saveClipboardImage(input: { dataUrl: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }): Promise<{ path: string; name: string; size: number }>
+    showContextMenu(input: { path: string; workspacePath?: string; isDirectory: boolean }): Promise<void>
     getPath(file: File): string
   }
 
@@ -223,19 +224,18 @@ export interface EvaAPI {
     stopLocalSearxng(): Promise<LocalSearxngStatus>
   }
 
-  codeProduction: {
-    status(): Promise<CodeProductionPluginStatus>
-    workspaces(): Promise<CodeProductionWorkspace[]>
-    runs(): Promise<CodeProductionRun[]>
-    start(input: StartCodeProductionRunInput): Promise<CodeProductionRun>
-    cancel(runId: string): Promise<CodeProductionRun>
-    apply(input: ApplyCodeProductionRunInput): Promise<CodeProductionRun>
-    listDrafts(): Promise<CodeProductionDraft[]>
-    createDraft(conversationId: string): Promise<CodeProductionDraft>
-    advanceDraft(draftId: string, stageId: CodeProductionDraftStageId): Promise<CodeProductionDraft>
-    runCommand(input: RunCodeProductionCommandInput): Promise<CodeProductionDraft>
-    onDraftProgress(callback: EventCallback<CodeProductionDraftProgress>): Unsubscribe
+  requirements: {
+    listRuns(conversationId?: string): Promise<RequirementRun[]>
+    submit(input: SubmitRequirementInput): Promise<RequirementRun>
+    answer(input: SubmitClarificationAnswersInput): Promise<RequirementRun>
+    model(input: SubmitRequirementModelingInput): Promise<RequirementRun>
+    spec(input: SubmitSpecificationInput): Promise<RequirementRun>
+    resolveSpec(input: SubmitSpecificationResolutionInput): Promise<RequirementRun>
+    abort(conversationId: string): Promise<void>
+    showDocumentContextMenu(document: Pick<RequirementDocument, 'path'>): Promise<void>
+    onProgress(callback: EventCallback<RequirementProgress>): Unsubscribe
   }
+
 }
 
 const evaAPI: EvaAPI = {
@@ -350,6 +350,7 @@ const evaAPI: EvaAPI = {
     selectAttachments: () => ipcRenderer.invoke(IPC.FILE_SELECT_ATTACHMENTS),
     imagePreview: (path) => ipcRenderer.invoke(IPC.FILE_IMAGE_PREVIEW, path),
     saveClipboardImage: (input) => ipcRenderer.invoke(IPC.FILE_SAVE_CLIPBOARD_IMAGE, input),
+    showContextMenu: (input) => ipcRenderer.invoke(IPC.FILE_CONTEXT_MENU, input),
     getPath: (file) => webUtils.getPathForFile(file),
   },
 
@@ -473,19 +474,18 @@ const evaAPI: EvaAPI = {
     stopLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STOP),
   },
 
-  codeProduction: {
-    status: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_STATUS),
-    workspaces: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_WORKSPACES),
-    runs: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_RUNS),
-    start: (input) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_START, input),
-    cancel: (runId) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_CANCEL, runId),
-    apply: (input) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_APPLY, input),
-    listDrafts: () => ipcRenderer.invoke(IPC.CODE_PRODUCTION_DRAFT_LIST),
-    createDraft: (conversationId) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_DRAFT_CREATE, conversationId),
-    advanceDraft: (draftId, stageId) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_DRAFT_ADVANCE, draftId, stageId),
-    runCommand: (input) => ipcRenderer.invoke(IPC.CODE_PRODUCTION_COMMAND, input),
-    onDraftProgress: (callback) => onStream(IPC.CODE_PRODUCTION_DRAFT_PROGRESS, callback),
+  requirements: {
+    listRuns: (conversationId) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_LIST, conversationId),
+    submit: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_SUBMIT, input),
+    answer: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_CLARIFICATION_ANSWER, input),
+    model: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_MODELING_SUBMIT, input),
+    spec: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, input),
+    resolveSpec: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
+    abort: (conversationId) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_ABORT, conversationId),
+    showDocumentContextMenu: (document) => ipcRenderer.invoke(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, document),
+    onProgress: (callback) => onStream(IPC.REQUIREMENT_PROGRESS, callback),
   },
+
 }
 
 contextBridge.exposeInMainWorld('eva', evaAPI)

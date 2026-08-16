@@ -8,6 +8,7 @@ import { registerPluginHandlers } from './plugin'
 import { registerGitHandlers } from './git'
 import { registerCostHandlers } from './cost'
 import { registerRuntimeProposalHandlers } from './runtime-proposal'
+import { registerRequirementEngineeringHandlers } from './requirement-engineering'
 import type { FileService, TerminalService, ToolRegistry } from '../tools'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from '../services/project-index-service'
@@ -35,7 +36,8 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerActivityHandlers()
   registerRuntimeProposalHandlers()
   registerAgentHandlers()
-  registerPluginHandlers(services?.providerRegistry, services?.projectIndexService)
+  registerPluginHandlers()
+  if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService)
   registerGitHandlers()
   registerCostHandlers()
   const taskServices: TaskServices | undefined = services

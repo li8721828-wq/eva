@@ -49,17 +49,17 @@ export const IPC = {
   PLUGIN_LOCAL_SEARXNG_STATUS: 'plugin:local-searxng-status',
   PLUGIN_LOCAL_SEARXNG_INSTALL: 'plugin:local-searxng-install',
   PLUGIN_LOCAL_SEARXNG_STOP: 'plugin:local-searxng-stop',
-  CODE_PRODUCTION_STATUS: 'code-production:status',
-  CODE_PRODUCTION_WORKSPACES: 'code-production:workspaces',
-  CODE_PRODUCTION_RUNS: 'code-production:runs',
-  CODE_PRODUCTION_START: 'code-production:start',
-  CODE_PRODUCTION_CANCEL: 'code-production:cancel',
-  CODE_PRODUCTION_APPLY: 'code-production:apply',
-  CODE_PRODUCTION_DRAFT_LIST: 'code-production:draft-list',
-  CODE_PRODUCTION_DRAFT_CREATE: 'code-production:draft-create',
-  CODE_PRODUCTION_DRAFT_ADVANCE: 'code-production:draft-advance',
-  CODE_PRODUCTION_DRAFT_PROGRESS: 'code-production:draft-progress',
-  CODE_PRODUCTION_COMMAND: 'code-production:command',
+
+  // Requirement engineering workflow
+  REQUIREMENT_RUN_LIST: 'requirement:run-list',
+  REQUIREMENT_RUN_SUBMIT: 'requirement:submit',
+  REQUIREMENT_CLARIFICATION_ANSWER: 'requirement:clarification-answer',
+  REQUIREMENT_MODELING_SUBMIT: 'requirement:modeling-submit',
+  REQUIREMENT_SPECIFICATION_SUBMIT: 'requirement:specification-submit',
+  REQUIREMENT_SPECIFICATION_RESOLUTION: 'requirement:specification-resolution',
+  REQUIREMENT_RUN_ABORT: 'requirement:abort',
+  REQUIREMENT_DOCUMENT_CONTEXT_MENU: 'requirement:document-context-menu',
+  REQUIREMENT_PROGRESS: 'requirement:progress',
 
   // 聊天（流式）
   CHAT_SEND: 'chat:send',
@@ -108,6 +108,7 @@ export const IPC = {
   FILE_SELECT_ATTACHMENTS: 'file:select-attachments',
   FILE_IMAGE_PREVIEW: 'file:image-preview',
   FILE_SAVE_CLIPBOARD_IMAGE: 'file:save-clipboard-image',
+  FILE_CONTEXT_MENU: 'file:context-menu',
 
   // 终端
   TERMINAL_CREATE: 'terminal:create',

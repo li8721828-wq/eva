@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatUsage, ToolCall, ChatStreamEvent } from '../../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTraceEntry, ProgressUpdateKind } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -81,6 +81,75 @@ const INTERNAL_TASK_TIMEOUT_MS = 3 * 60 * 1000
 function compactToolResult(result: string): string {
   if (result.length <= MAX_PERSISTED_TOOL_RESULT_CHARS) return result
   return `${result.slice(0, MAX_PERSISTED_TOOL_RESULT_CHARS)}\n\n[Tool output truncated for conversation storage: ${result.length} characters total]`
+}
+
+function redactExecutionText(value: string): string {
+  return value
+    .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1=[已隐藏]')
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [已隐藏]')
+}
+
+function summarizeExecutionText(value: unknown, limit = 260): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const normalized = redactExecutionText(value.replace(/\s+/g, ' ').trim())
+  if (!normalized) return undefined
+  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
+}
+
+function extractProgressUpdates(content: string): Array<{ kind: ProgressUpdateKind; content: string }> {
+  const updates: Array<{ kind: ProgressUpdateKind; content: string }> = []
+  const tagPattern = /<eva-progress(?:\s+kind=["'](thinking|finding|action|issue)["'])?\s*>([\s\S]*?)<\/eva-progress>/gi
+  let match: RegExpExecArray | null
+  while ((match = tagPattern.exec(content))) {
+    const summary = summarizeExecutionText(match[2], 520)
+    if (summary) updates.push({ kind: (match[1]?.toLowerCase() as ProgressUpdateKind | undefined) || 'thinking', content: summary })
+  }
+  if (updates.length > 0) return updates
+
+  // Some OpenAI-compatible providers omit text around tool calls. When a
+  // provider does return an untagged natural-language note, preserve it as a
+  // visible progress update instead of discarding useful context.
+  const fallback = summarizeExecutionText(content.replace(/<\/?eva-progress[^>]*>/gi, ''), 520)
+  return fallback ? [{ kind: 'thinking', content: fallback }] : []
+}
+
+function executionActionTitle(toolNames: string[]): string {
+  const names = new Set(toolNames)
+  if (names.has('manage_goal') || names.has('run_goal') || names.has('run_task')) return '正在推进任务计划并核对完成状态'
+  if (names.has('write_file') || names.has('edit_file') || names.has('blender_run_script')) return '正在落地方案并更新项目产物'
+  if (names.has('execute_command')) return '正在执行验证并确认实际结果'
+  if (names.has('web_search') || names.has('read_web_page')) return '正在补充外部资料并核对依据'
+  if (names.has('search_code') || names.has('search_files') || names.has('project_search')) return '正在定位关键位置并核查影响范围'
+  if (names.has('read_file') || names.has('list_directory') || names.has('file_info') || names.has('project_index_status')) return '正在核查项目现状和已有资料'
+  return '正在执行本阶段必要操作'
+}
+
+function executionActionOutcome(toolNames: string[], results: Array<{ name: string; result: string; isError: boolean }>): string {
+  const names = new Set(toolNames)
+  const completed = results.filter((result) => !result.isError)
+  const failed = results.length - completed.length
+  if (failed > 0) return `本阶段有 ${failed} 项操作未完成，已保留有效结果并调整后续处理方向。`
+  if (names.has('manage_goal')) {
+    const goalResult = results.find((result) => result.name === 'manage_goal')?.result || ''
+    const progress = goalResult.match(/Progress:\s*([^\n.]+)/i)?.[1]
+    return progress ? `任务计划已推进，当前进度 ${progress.trim()}。` : '任务计划已推进，正在根据完成情况安排后续工作。'
+  }
+  if (names.has('write_file') || names.has('edit_file') || names.has('blender_run_script')) return `已完成 ${completed.length} 项项目更新，接下来会核对产物是否满足目标。`
+  if (names.has('execute_command')) return '已获得实际验证结果，正在判断是否需要修正方案。'
+  if (names.has('web_search') || names.has('read_web_page')) return '已补充外部资料，正在结合项目约束判断其适用性。'
+  if (names.has('search_code') || names.has('search_files') || names.has('project_search')) return '已定位相关位置，正在评估范围、依赖和可行路径。'
+  if (names.has('read_file') || names.has('list_directory') || names.has('file_info') || names.has('project_index_status')) return `已完成 ${completed.length} 项资料与项目核查，正在归纳对当前决策有影响的事实。`
+  return `已完成 ${completed.length} 项必要操作，正在评估结果并决定下一步。`
+}
+
+function executionThinkingLabel(content?: string): string {
+  const normalized = (content || '').toLowerCase()
+  if (normalized.includes('preparing the response')) return '正在理解请求并确定执行方式'
+  if (normalized.includes('reviewing the tool results')) return '正在根据已获得的结果调整下一步'
+  if (normalized.includes('reviewing progress')) return '正在检查已获得的证据是否足够'
+  if (normalized.includes('continuing with an expanded')) return '需要补充证据，继续执行后续步骤'
+  if (normalized.includes('synthesizing')) return '正在汇总已验证的结果'
+  return '正在分析当前进展并决定下一步'
 }
 
 function selectAutoAgent(agents: AgentConfig[], content: string): AgentConfig | null {
@@ -620,9 +689,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
       data: { title?: string; agentId?: string; mode?: 'normal' | 'expert' | 'goal'; workspaceId?: string; workspacePath?: string; accessScope?: Conversation['accessScope']; permissionLevel?: Conversation['permissionLevel']; fileAccessGrants?: Conversation['fileAccessGrants']; symposium?: Conversation['symposium'] }
     ): Promise<Conversation> => {
       const workspace = data.workspaceId ? await getStorage().workspaces.get(data.workspaceId) : null
-      // New conversations inherit a deterministic starting agent. Explicit
+      // New conversations inherit the configured primary chat Agent. Explicit
       // selections, including __auto__, always take precedence.
-      const defaultAgent = data.agentId ? null : (await getStorage().agents.listAgents())[0]
+      const availableAgents = data.agentId ? [] : await getStorage().agents.listAgents()
+      const primaryAgentId = getStorage().config.get('primaryChatAgentId')
+      const defaultAgent = data.agentId
+        ? null
+        : availableAgents.find((agent) => agent.id === primaryAgentId) || availableAgents[0]
       const conversation = await getStorage().conversations.createConversation({
         title: data.title || 'New Conversation',
         titleSource: data.title && data.title !== 'New Conversation' ? 'manual' : 'auto',
@@ -1087,22 +1160,144 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
         let runError: string | null = null
+        let pendingModelText = ''
+        let latestProgressContent = ''
+        const executionTrace: ExecutionTraceEntry[] = []
+        let currentAction: {
+          entry: ExecutionTraceEntry
+          toolNames: string[]
+          results: Array<{ name: string; result: string; isError: boolean }>
+        } | null = null
 
+        const emitExecutionTrace = (): void => {
+          if (!win.isDestroyed()) {
+            win.webContents.send(IPC.CHAT_STREAM, {
+              conversationId,
+              type: 'execution_trace',
+              executionTrace: executionTrace.map((entry) => ({ ...entry })),
+            } satisfies ChatStreamEvent)
+          }
+        }
+        const addTraceEntry = (entry: Omit<ExecutionTraceEntry, 'id' | 'timestamp'>): ExecutionTraceEntry => {
+          const traceEntry: ExecutionTraceEntry = {
+            ...entry,
+            id: uuidv4(),
+            timestamp: Date.now(),
+          }
+          executionTrace.push(traceEntry)
+          emitExecutionTrace()
+          return traceEntry
+        }
+        const completeActiveNonToolTraceEntries = (): void => {
+          let changed = false
+          for (const entry of executionTrace) {
+            if (entry.status === 'active' && entry.kind !== 'tool') {
+              entry.status = 'completed'
+              changed = true
+            }
+          }
+          if (changed) emitExecutionTrace()
+        }
+        const completeCurrentAction = (): void => {
+          if (!currentAction) return
+          const failed = currentAction.results.filter((result) => result.isError).length
+          currentAction.entry.status = failed > 0 ? 'failed' : 'completed'
+          currentAction.entry.title = failed > 0 ? '本阶段出现问题，正在调整处理方向' : '本阶段行动已完成'
+          currentAction.entry.detail = executionActionOutcome(currentAction.toolNames, currentAction.results)
+          emitExecutionTrace()
+          if (failed > 0) {
+            addTraceEntry({
+              kind: 'issue',
+              status: 'failed',
+              title: '已识别执行阻塞，后续会避开或修正该路径',
+            })
+          } else {
+            addTraceEntry({
+              kind: 'observation',
+              status: 'completed',
+              title: '已获得阶段性结论，正在据此调整下一步',
+            })
+          }
+          currentAction = null
+        }
+
+        const publishProgress = async (kind: ProgressUpdateKind, content: string): Promise<void> => {
+          const summary = summarizeExecutionText(content, 520)
+          if (!summary || summary === latestProgressContent) return
+          latestProgressContent = summary
+          const progressMessage: ChatMessage = {
+            id: uuidv4(),
+            conversationId,
+            role: 'assistant',
+            content: summary,
+            progressKind: kind,
+            agentId: effectiveAgentConfig.id,
+            agentName: effectiveAgentConfig.name,
+            timestamp: Date.now(),
+          }
+          await convStore.addMessage(conversationId, progressMessage)
+          if (!win.isDestroyed()) {
+            win.webContents.send(IPC.CHAT_STREAM, {
+              conversationId,
+              type: 'progress',
+              messageId: progressMessage.id,
+              content: summary,
+              progressKind: kind,
+            } satisfies ChatStreamEvent)
+          }
+        }
+        const publishPendingModelProgress = async (): Promise<void> => {
+          const updates = extractProgressUpdates(pendingModelText)
+          pendingModelText = ''
+          for (const update of updates) await publishProgress(update.kind, update.content)
+        }
+
+        addTraceEntry({
+          kind: 'plan',
+          status: 'active',
+          title: '正在理解目标并制定首轮处理方向',
+        })
         const primarySupportsVision = primaryModelSupportsVision(effectiveAgentConfig, provider)
         const runnerHistory = primarySupportsVision ? historyMessages : historyMessages.map((history) => history.images?.length ? { ...history, images: undefined } : history)
         const runnerMessage = imageContext ? { ...userChatMessage, images: undefined } : userChatMessage
         for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage })) {
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
-            // Text events are streaming deltas. The final done event replaces
-            // this accumulated draft with the canonical response content.
-            assistantContent += agentEvent.content
+            // Tool-using turns may contain a concise progress note before the
+            // tool calls. Hold it until we know whether it is a progress update
+            // or the final response, so the two do not get mixed together.
+            pendingModelText += agentEvent.content
+            continue
           }
           if (agentEvent.type === 'reasoning' && agentEvent.content) {
             assistantReasoningContent += agentEvent.content
           }
+          if (agentEvent.type === 'thinking') {
+            completeCurrentAction()
+            completeActiveNonToolTraceEntries()
+            addTraceEntry({
+              kind: 'activity',
+              status: 'active',
+              title: executionThinkingLabel(agentEvent.content),
+            })
+          }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
+            await publishPendingModelProgress()
             allToolCalls.push(agentEvent.toolCall)
+            if (!currentAction) {
+              completeActiveNonToolTraceEntries()
+              currentAction = {
+                entry: addTraceEntry({
+                  kind: 'tool',
+                  status: 'active',
+                  title: executionActionTitle([agentEvent.toolCall.name]),
+                }),
+                toolNames: [],
+                results: [],
+              }
+            }
+            currentAction.toolNames.push(agentEvent.toolCall.name)
+            currentAction.entry.title = executionActionTitle(currentAction.toolNames)
             void recordActivity({
               category: 'tool',
               action: 'tool.started',
@@ -1114,6 +1309,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
             allToolResults.push(agentEvent.toolResult)
+            currentAction?.results.push({
+              name: agentEvent.toolResult.name,
+              result: agentEvent.toolResult.result,
+              isError: agentEvent.toolResult.isError,
+            })
             void recordActivity({
               category: 'tool',
               action: 'tool.completed',
@@ -1124,11 +1324,38 @@ export function registerConversationHandlers(services?: ChatServices): void {
             }, win)
           }
           if (agentEvent.type === 'done') {
-            if (agentEvent.content) assistantContent = agentEvent.content
+            // A response without tools is the final answer. Flush its buffered
+            // text through the ordinary message stream before finalizing it.
+            if (pendingModelText) {
+              const finalText = pendingModelText.replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '').trim()
+              pendingModelText = ''
+              if (finalText) send({ type: 'text', content: finalText })
+            }
+            if (agentEvent.content) {
+              assistantContent = agentEvent.content
+                .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '')
+                .trim()
+              agentEvent.content = assistantContent
+            }
             assistantUsage = agentEvent.usage
+            completeCurrentAction()
+            completeActiveNonToolTraceEntries()
+            addTraceEntry({
+              kind: 'result',
+              status: 'completed',
+              title: '已完成本次处理，正在整理回复',
+            })
           }
           if (agentEvent.type === 'error') {
             runError = agentEvent.error || 'The model response failed.'
+            completeCurrentAction()
+            completeActiveNonToolTraceEntries()
+            addTraceEntry({
+              kind: 'issue',
+              status: 'failed',
+              title: '执行过程中遇到问题',
+              detail: summarizeExecutionText(runError),
+            })
           }
 
           // Forward event to renderer
@@ -1158,6 +1385,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           role: 'assistant',
           content: runError && !assistantContent && allToolCalls.length === 0 ? `Error: ${runError}` : assistantContent,
           reasoningContent: assistantReasoningContent || undefined,
+          executionTrace: executionTrace.length > 0 ? executionTrace : undefined,
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
           agentName: effectiveAgentConfig.name,

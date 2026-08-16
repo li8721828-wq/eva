@@ -12,7 +12,7 @@ import { Input } from '@/components/ui/Input'
 import { ModelAccessPanel } from './ModelAccessPanel'
 import { ToolAccessPanel } from './ToolAccessPanel'
 import { OutputFormatPanel } from './OutputFormatPanel'
-import { AlertTriangle, Bot, Braces, ChevronLeft, Cpu, Pencil, Plus, Search, Trash2, Wrench } from 'lucide-react'
+import { AlertTriangle, Bot, Braces, Check, ChevronLeft, Cpu, Pencil, Plus, Search, Trash2, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 type WorkspaceView = 'details' | 'create' | 'edit' | 'tools' | 'models' | 'output' | 'confirm-delete'
@@ -48,7 +48,7 @@ function roleLabel(role: AgentConfig['role'], copy: typeof uiCopy.en.agents) {
   return labels[role]
 }
 
-function AgentCard({ agent, onOpen, copy }: { agent: AgentConfig; onOpen: () => void; copy: typeof uiCopy.en.agents }) {
+function AgentCard({ agent, isPrimaryChatAgent, onOpen, copy }: { agent: AgentConfig; isPrimaryChatAgent: boolean; onOpen: () => void; copy: typeof uiCopy.en.agents }) {
   const candidates = agent.modelCandidates?.length ? agent.modelCandidates : [{ providerId: agent.providerId, model: agent.model }]
   const tools = Array.isArray(agent.tools) ? agent.tools : []
   const previewTools = tools.slice(0, 3)
@@ -63,8 +63,11 @@ function AgentCard({ agent, onOpen, copy }: { agent: AgentConfig; onOpen: () => 
         <span className={cn('flex h-9 w-9 items-center justify-center rounded-lg', agent.isBuiltIn ? 'bg-violet-50 text-violet-600' : 'bg-cyan-50 text-cyan-700')}>
           {agent.isBuiltIn ? <Bot className="h-4.5 w-4.5" /> : <Braces className="h-4.5 w-4.5" />}
         </span>
-        <span className={cn('rounded px-2.5 py-1 text-[11px] font-medium', agent.isBuiltIn ? 'bg-zinc-100 text-zinc-500' : 'bg-cyan-50 text-cyan-700')}>
-          {agent.isBuiltIn ? copy.builtInBadge : copy.customBadge}
+        <span className="flex items-center gap-1.5">
+          {isPrimaryChatAgent && <span className="rounded bg-violet-100 px-2.5 py-1 text-[11px] font-medium text-violet-700">{copy.primaryChatAgentBadge}</span>}
+          <span className={cn('rounded px-2.5 py-1 text-[11px] font-medium', agent.isBuiltIn ? 'bg-zinc-100 text-zinc-500' : 'bg-cyan-50 text-cyan-700')}>
+            {agent.isBuiltIn ? copy.builtInBadge : copy.customBadge}
+          </span>
         </span>
       </div>
 
@@ -99,7 +102,7 @@ function findScrollableParent(element: HTMLElement | null) {
 
 /** Agent workspace with in-module configuration navigation. */
 export function AgentManagementWorkspace({ className }: AgentManagementWorkspaceProps) {
-  const { agents, createAgent, updateAgent, deleteAgent } = useAgentStore()
+  const { agents, primaryChatAgentId, setPrimaryChatAgent, createAgent, updateAgent, deleteAgent } = useAgentStore()
   const { activeProviderId, activeModel, language } = useAppStore()
   const copy = uiCopy[language].agents
   const [view, setView] = useState<WorkspaceView>('details')
@@ -139,6 +142,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
 
   const builtInAgents = filteredAgents.filter((agent) => agent.isBuiltIn)
   const customAgents = filteredAgents.filter((agent) => !agent.isBuiltIn)
+  const primaryChatAgent = agents.find((agent) => agent.id === primaryChatAgentId)
 
   const rememberListScroll = useCallback(() => {
     listScrollParentRef.current = findScrollableParent(workspaceRef.current)
@@ -265,6 +269,14 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     }
   }, [editingAgent, showThinking, outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, updateAgent])
 
+  const handleSetPrimaryChatAgent = useCallback(async (agent: AgentConfig) => {
+    try {
+      await setPrimaryChatAgent(agent.id)
+    } catch (error) {
+      console.error('Failed to set primary chat Agent:', error)
+    }
+  }, [setPrimaryChatAgent])
+
   const handleConfirmDelete = useCallback(async () => {
     if (!agentToDelete) return
     try {
@@ -279,6 +291,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const candidates = detailAgent?.modelCandidates?.length
     ? detailAgent.modelCandidates
     : detailAgent ? [{ providerId: detailAgent.providerId, model: detailAgent.model }] : []
+  const detailIsPrimaryChatAgent = detailAgent?.id === primaryChatAgentId
 
   const renderDetail = () => {
     if (!detailAgent) return null
@@ -294,16 +307,20 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 id="dialog-title" className="text-lg font-semibold text-zinc-900">{agentDisplayName(detailAgent, copy)}</h2>
                   <span className="rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">{roleLabel(detailAgent.role, copy)}</span>
+                  {detailIsPrimaryChatAgent && <span className="rounded bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">{copy.primaryChatAgentBadge}</span>}
                 </div>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">{detailAgent.description || copy.noDescription}</p>
               </div>
             </div>
-            {!detailAgent.isBuiltIn && (
-              <div className="flex shrink-0 gap-1">
+            <div className="flex shrink-0 items-center gap-1">
+              {!detailIsPrimaryChatAgent && <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void handleSetPrimaryChatAgent(detailAgent)}><Check className="h-3.5 w-3.5" />{copy.setPrimaryChatAgent}</Button>}
+              {!detailAgent.isBuiltIn && (
+                <>
                 <Button variant="ghost" size="icon" onClick={() => setView('edit')} title={copy.edit} aria-label={copy.edit}><Pencil className="h-4 w-4" /></Button>
                 <Button variant="ghost" size="icon" className="text-zinc-400 hover:bg-red-50 hover:text-red-600" onClick={() => { setAgentToDelete(detailAgent); setView('confirm-delete') }} title={copy.delete} aria-label={copy.delete}><Trash2 className="h-4 w-4" /></Button>
-              </div>
-            )}
+                </>
+              )}
+            </div>
           </div>
         </div>
 
@@ -456,14 +473,22 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
           </div>
         </header>
 
+        <section className="flex min-h-16 items-center justify-between gap-4 border-b border-[var(--ui-border)] py-4">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-600"><Bot className="h-4 w-4" /></span>
+            <div className="min-w-0"><p className="text-xs font-medium text-zinc-500">{copy.primaryChatAgent}</p><p className="truncate text-sm font-semibold text-zinc-800">{primaryChatAgent ? agentDisplayName(primaryChatAgent, copy) : copy.noMatch}</p></div>
+          </div>
+          {primaryChatAgent && <Button variant="outline" size="sm" onClick={() => openDetails(primaryChatAgent)}>{copy.managePrimaryChatAgent}</Button>}
+        </section>
+
         <section className="pt-8">
           <div className="mb-4 flex items-center gap-3"><h3 className="text-sm font-semibold text-zinc-800">{copy.builtIn}</h3><span className="rounded bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-700">{builtInAgents.length}</span></div>
-          {builtInAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{builtInAgents.map((agent) => <AgentCard key={agent.id} agent={agent} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <p className="py-8 text-sm text-zinc-500">{copy.noMatch}</p>}
+          {builtInAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{builtInAgents.map((agent) => <AgentCard key={agent.id} agent={agent} isPrimaryChatAgent={agent.id === primaryChatAgentId} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <p className="py-8 text-sm text-zinc-500">{copy.noMatch}</p>}
         </section>
 
         <section className="mt-9 border-t border-[var(--ui-border)] pt-8">
           <div className="mb-4 flex items-center justify-between gap-3"><div className="flex items-center gap-3"><h3 className="text-sm font-semibold text-zinc-800">{copy.custom}</h3><span className="rounded bg-cyan-50 px-2 py-0.5 text-xs font-medium text-cyan-700">{customAgents.length}</span></div><button type="button" onClick={openCreate} className="text-sm font-medium text-violet-700 hover:text-violet-900">{copy.specialist}</button></div>
-          {customAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{customAgents.map((agent) => <AgentCard key={agent.id} agent={agent} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <button type="button" onClick={openCreate} className="flex min-h-32 w-full items-center justify-center rounded-lg border border-dashed border-[var(--ui-border-strong)] bg-white/65 p-6 text-sm font-medium text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-50/50">{copy.specialist}</button>}
+          {customAgents.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{customAgents.map((agent) => <AgentCard key={agent.id} agent={agent} isPrimaryChatAgent={agent.id === primaryChatAgentId} copy={copy} onOpen={() => openDetails(agent)} />)}</div> : <button type="button" onClick={openCreate} className="flex min-h-32 w-full items-center justify-center rounded-lg border border-dashed border-[var(--ui-border-strong)] bg-white/65 p-6 text-sm font-medium text-violet-700 transition-colors hover:border-violet-300 hover:bg-violet-50/50">{copy.specialist}</button>}
         </section>
       </div>
     </div>

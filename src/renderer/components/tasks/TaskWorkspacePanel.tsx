@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BarChart3,
   CheckCircle2,
+  ClipboardList,
   Circle,
   CircleX,
   FileText,
@@ -22,6 +23,7 @@ import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { EMPTY_EXPERT_TASK, EMPTY_GOAL_TASK, useTaskStore } from '@/stores/use-task-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
+import type { RequirementDocument, RequirementRun } from '../../../shared/types/requirement-engineering'
 
 type StepItem = {
   id: string
@@ -77,6 +79,20 @@ function statusLabel(status?: TaskRunStatus) {
   }[status]
 }
 
+function groupRequirementDocuments(documents: RequirementDocument[]): Array<[number, RequirementDocument[]]> {
+  const byRound = new Map<number, RequirementDocument[]>()
+  for (const document of documents) {
+    const group = byRound.get(document.round) || []
+    group.push(document)
+    byRound.set(document.round, group)
+  }
+  return [...byRound.entries()].sort(([left], [right]) => left - right)
+}
+
+function processDocumentName(document: RequirementDocument): string {
+  return document.title.replace(/^第\s*\d+\s*轮\s*/, '').trim() || document.title
+}
+
 export function TaskWorkspacePanel() {
   const {
     currentFile,
@@ -95,9 +111,11 @@ export function TaskWorkspacePanel() {
   const resumeGoal = useTaskStore((state) => state.resumeGoal)
   const [snapshot, setSnapshot] = useState<TaskRunSnapshot | null>(null)
   const [artifacts, setArtifacts] = useState<TaskArtifactItem[]>([])
+  const [requirementRuns, setRequirementRuns] = useState<RequirementRun[]>([])
   const [loading, setLoading] = useState(false)
   const [taskView, setTaskView] = useState<'plan' | 'usage'>('plan')
   const [showAllSteps, setShowAllSteps] = useState(false)
+  const [showAllArtifacts, setShowAllArtifacts] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [cancelling, setCancelling] = useState(false)
 
@@ -115,7 +133,7 @@ export function TaskWorkspacePanel() {
   }, [liveExpertTask.currentPlan, liveGoalProgress, snapshot])
   const completedSteps = steps.filter((step) => step.status === 'completed').length
   const visibleSteps = showAllSteps ? steps : steps.slice(0, 5)
-  const visibleArtifacts = artifacts.slice(0, 3)
+  const visibleArtifacts = showAllArtifacts ? artifacts : artifacts.slice(0, 3)
   const taskGoal = liveExpertTask.currentPlan?.goal || liveGoalProgress?.goal || snapshot?.goal
   const taskIsPaused = liveGoalTask.isPaused || snapshot?.status === 'paused' || snapshot?.status === 'interrupted'
   const taskStatus = taskIsPaused
@@ -142,27 +160,44 @@ export function TaskWorkspacePanel() {
     if (!currentConversationId) {
       setSnapshot(null)
       setArtifacts([])
+      setRequirementRuns([])
       return
     }
     setLoading(true)
     try {
-      const [nextSnapshot, runs] = await Promise.all([
+      const [nextSnapshot, runs, nextRequirementRuns] = await Promise.all([
         window.eva.task.getSnapshot(currentConversationId),
         activeWorkspaceId ? window.eva.task.listArtifacts(activeWorkspaceId) : Promise.resolve([]),
+        window.eva.requirements.listRuns(currentConversationId),
       ])
       setSnapshot(nextSnapshot)
       const run = runs.find((item) => item.conversationId === currentConversationId)
       setArtifacts(run?.files || [])
+      setRequirementRuns(nextRequirementRuns)
     } catch (error) {
       console.error('Failed to load task workspace:', error)
       setSnapshot(null)
       setArtifacts([])
+      setRequirementRuns([])
     } finally {
       setLoading(false)
     }
   }, [activeWorkspaceId, currentConversationId])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  useEffect(() => {
+    setShowAllArtifacts(false)
+  }, [currentConversationId])
+
+  useEffect(() => {
+    if (rightPanelTab !== 'requirements') return
+    void refresh()
+  }, [messages.length, refresh, rightPanelTab])
+
+  useEffect(() => window.eva.requirements.onProgress((_event, progress) => {
+    if (progress.conversationId === currentConversationId) void refresh()
+  }), [currentConversationId, refresh])
 
   useEffect(() => {
     setTaskView('plan')
@@ -188,6 +223,11 @@ export function TaskWorkspacePanel() {
   }
 
   const openSelectedFile = () => setRightPanelTab('editor')
+
+  const openRequirementDocument = (document: RequirementDocument) => {
+    setCurrentFile({ path: document.path, content: document.content, language: 'markdown' })
+    setRightPanelTab('editor')
+  }
 
   const stopTask = async () => {
     if (!currentConversationId || stopping) return
@@ -258,6 +298,15 @@ export function TaskWorkspacePanel() {
         </button>
         <button
           type="button"
+          role="tab"
+          aria-selected={rightPanelTab === 'requirements'}
+          onClick={() => setRightPanelTab('requirements')}
+          className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'requirements' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
+        >
+          <ClipboardList className="h-3.5 w-3.5" /> 需求
+        </button>
+        <button
+          type="button"
           onClick={() => { setRightPanelTab('tasks'); setTaskView((view) => view === 'usage' ? 'plan' : 'usage') }}
           className={cn('ml-auto flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'tasks' && taskView === 'usage' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
           title={taskView === 'usage' ? 'Show task plan' : 'Show conversation usage'}
@@ -278,6 +327,44 @@ export function TaskWorkspacePanel() {
       </div>
 
       {rightPanelTab === 'files' && <FileExplorer className="min-h-0 flex-1" onFileSelect={() => setRightPanelTab('editor')} />}
+
+      {rightPanelTab === 'requirements' && (
+        <div className="task-workspace-note__content min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          <div className="border-b border-indigo-100/80 pb-4">
+            <h2 className="text-sm font-semibold text-zinc-800">需求工程文档</h2>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">当前对话的分析、澄清与评测文档。点击文档在便签中打开。</p>
+          </div>
+
+          {requirementRuns.length === 0 ? (
+            <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
+              <ClipboardList className="mb-3 h-6 w-6 text-violet-300" />
+              <p className="font-medium text-zinc-700">还没有需求工程文档</p>
+              <p className="mt-1">在对话中输入 <code className="rounded bg-zinc-100 px-1 py-0.5 text-[11px] text-zinc-700">/requirement</code> 开始。</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-indigo-100/80">
+              {requirementRuns.map((run) => <section key={run.id} className="py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-zinc-800">需求工程记录</h3>
+                  <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', run.status === 'ready-for-implementation' ? 'bg-emerald-50 text-emerald-700' : run.status === 'ready-for-specification' && run.specQualityScore === undefined ? 'bg-emerald-50 text-emerald-700' : run.status === 'failed' || run.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700')}>{run.status === 'ready-for-implementation' || run.specQualityScore !== undefined ? `${run.specQualityScore || 0}/${run.specQualityThreshold || 85}` : `${run.qualityScore}/${run.qualityThreshold}`}</span>
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">{run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
+                <div className="mt-4 space-y-4">
+                  {groupRequirementDocuments(run.documents).map(([round, documents]) => <section key={round} aria-label={`第 ${round} 轮过程文档`}>
+                    <h4 className="mb-1.5 text-xs font-semibold text-zinc-700">第 {round} 轮</h4>
+                    <div className="space-y-1">
+                      {documents.map((document) => <button key={document.id} type="button" onClick={() => openRequirementDocument(document)} onContextMenu={(event) => { event.preventDefault(); void window.eva.requirements.showDocumentContextMenu(document).catch((error) => console.error('Failed to open requirement document menu:', error)) }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={document.path}>
+                        <FileText className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+                        <span className="min-w-0 flex-1 truncate">{processDocumentName(document)}</span>
+                      </button>)}
+                    </div>
+                  </section>)}
+                </div>
+              </section>)}
+            </div>
+          )}
+        </div>
+      )}
 
       {rightPanelTab === 'editor' && currentFile && <CodeEditor className="min-h-0 flex-1" filePath={currentFile.path} content={currentFile.content} language={currentFile.language} />}
 
@@ -395,11 +482,11 @@ export function TaskWorkspacePanel() {
             </div>
             {artifacts.length > 0 && (
               <div className="space-y-1">
-                {visibleArtifacts.map((artifact) => <button key={artifact.id} type="button" onClick={() => void openArtifact(artifact)} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={artifact.path}>
+                {visibleArtifacts.map((artifact) => <button key={artifact.id} type="button" onClick={() => void openArtifact(artifact)} onContextMenu={(event) => { event.preventDefault(); if (!artifact.path) return; void window.eva.file.showContextMenu({ path: artifact.path, ...(resolvedWorkspacePath ? { workspacePath: resolvedWorkspacePath } : {}), isDirectory: false }).catch((error) => console.error('Failed to open task artifact menu:', error)) }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={artifact.path}>
                   <FileText className="h-4 w-4 shrink-0 text-violet-400" />
                   <span className="min-w-0 flex-1 truncate">{artifact.title}</span>
                 </button>)}
-                {artifacts.length > visibleArtifacts.length && <p className="px-2 pt-1 text-xs text-zinc-400">+{artifacts.length - visibleArtifacts.length} more files</p>}
+                {artifacts.length > 3 && <button type="button" onClick={() => setShowAllArtifacts((show) => !show)} className="mt-1 px-2 text-xs font-medium text-violet-700 hover:text-violet-900">{showAllArtifacts ? '收起到 3 个文件' : `显示全部 ${artifacts.length} 个文件`}</button>}
               </div>
             )}
           </section>

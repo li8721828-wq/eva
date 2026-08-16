@@ -9,6 +9,33 @@ import { AgentRunner } from './agent-runner'
 import { ContextManager } from './context'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
+const GOAL_ABSOLUTE_MAX_ITERATIONS = 100
+
+export interface GoalStepIterationBudget {
+  initialIterations: number
+  extensionIterations: number
+  maxIterations: number
+}
+
+/**
+ * Assign an initial execution budget without lowering the Agent's configured
+ * ceiling. Repair work commonly needs several inspect-edit-test passes, while
+ * read-only investigation usually reaches a useful conclusion sooner.
+ */
+export function goalStepIterationBudget(step: Pick<GoalStep, 'description'>, agentMaximum: number): GoalStepIterationBudget {
+  const description = step.description.toLowerCase()
+  const maximum = Math.max(1, Math.min(GOAL_ABSOLUTE_MAX_ITERATIONS, agentMaximum || GOAL_ABSOLUTE_MAX_ITERATIONS))
+  const repairWork = /\b(fix|repair|debug|compile|build|test|verify|failure|error)\b|修复|调试|编译|构建|测试|验证|报错/.test(description)
+  const investigation = /\b(read|inspect|analyze|analyse|research|search|review|explore)\b|阅读|查看|分析|调研|搜索|审查|探索/.test(description)
+  const initialIterations = repairWork ? 36 : investigation ? 16 : 20
+  const extensionIterations = repairWork ? 16 : 12
+  return {
+    initialIterations: Math.min(maximum, initialIterations),
+    extensionIterations: Math.min(maximum, extensionIterations),
+    maxIterations: maximum,
+  }
+}
+
 export type GoalEvent =
   | { type: 'goal_started'; goal: string }
   | { type: 'plan_created'; steps: GoalStep[] }
@@ -358,6 +385,7 @@ Rules:
     step: GoalStep,
     previousResults: GoalStep[]
   ): AsyncGenerator<GoalEvent> {
+    const adaptiveToolBudget = goalStepIterationBudget(step, this.config.agentConfig.maxIterations)
     const runner = new AgentRunner({
       conversationId: this.config.conversationId,
       agentConfig: this.config.agentConfig,
@@ -369,6 +397,7 @@ Rules:
       fullFilesystemAccess: this.config.fullFilesystemAccess,
       fileService: this.config.fileService,
       terminalService: this.config.terminalService,
+      adaptiveToolBudget,
     })
     this.currentRunner = runner
 

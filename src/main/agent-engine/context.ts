@@ -113,10 +113,13 @@ export class ContextManager {
   buildContext(options: ContextOptions): ChatMessageInput[] {
     const { agentConfig, messages, workspacePath, fileAccessGrants, fullFilesystemAccess, tools } = options
     const maxTokens = options.maxContextTokens ?? CONTEXT_WINDOW_TOKENS
+    // Progress notes are for the user to follow execution. They are not new
+    // task evidence and should not consume the model's working context.
+    const modelMessages = messages.filter((message) => !message.progressKind)
 
     const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools)
     const rawHistoryBudget = Math.max(0, maxTokens - this.estimateTokens(baseSystemPrompt) - CONTEXT_SAFETY_TOKENS)
-    const history = this.compressHistory(messages, rawHistoryBudget)
+    const history = this.compressHistory(modelMessages, rawHistoryBudget)
     const systemPrompt = history.memory ? `${baseSystemPrompt}\n\n${history.memory}` : baseSystemPrompt
 
     const systemMessage: ChatMessageInput = {
@@ -253,6 +256,7 @@ export class ContextManager {
     parts.push('')
     parts.push('--- Response Presentation ---')
     parts.push(this.buildOutputPresentationGuidance(agentConfig))
+    parts.push('When tools are needed, you may send a short, natural user-visible work update before the next action using <eva-progress>content</eva-progress>. Use it only when there is something worth telling the user: a new understanding, concrete evidence, an important tradeoff, uncertainty, a change of approach, a useful intermediate result, or a real obstacle. Write one to three calm, natural sentences as a thoughtful collaborator, not as a checklist or tool log. Say what you learned or are weighing, why it matters, and what you will do next when relevant. Do not invent certainty, expose private chain-of-thought, repeat unchanged status, or use eva-progress tags in a final answer that needs no tools.')
     parts.push('')
     parts.push('--- Evidence and Action Integrity ---')
     parts.push('Separate verified facts, inferences, and suggestions. Never invent a source, citation, file path, command output, external action, test result, collaboration result, or real-time fact.')

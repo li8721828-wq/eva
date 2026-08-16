@@ -26,7 +26,7 @@ interface AppState {
   currentView: AppView
   artifactWorkspaceId: string | null
   rightPanelVisible: boolean
-  rightPanelTab: 'tasks' | 'files' | 'editor'
+  rightPanelTab: 'tasks' | 'files' | 'requirements' | 'editor'
   terminalVisible: boolean
   settingsOpen: boolean
   agentManagerOpen: boolean
@@ -50,7 +50,7 @@ interface AppState {
   closeTaskArtifacts: () => void
   toggleRightPanel: () => void
   setRightPanelVisible: (visible: boolean) => void
-  setRightPanelTab: (tab: 'tasks' | 'files' | 'editor') => void
+  setRightPanelTab: (tab: 'tasks' | 'files' | 'requirements' | 'editor') => void
   toggleTerminal: () => void
   setSettingsOpen: (open: boolean) => void
   setAgentManagerOpen: (open: boolean) => void

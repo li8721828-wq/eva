@@ -1,4 +1,4 @@
-import { app, ipcMain, dialog, BrowserWindow } from 'electron'
+import { app, ipcMain, dialog, BrowserWindow, clipboard, Menu, shell } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { SpecTemplate } from '../../shared/types/spec'
 import type { ProviderConfigEntry } from '../storage/config-store'
@@ -100,6 +100,7 @@ export function registerSystemHandlers(
         return fileService.listDirectory(dirPath, workspacePath)
       }
       if (!fs.existsSync(dirPath)) return []
+      if (!fs.statSync(dirPath).isDirectory()) return []
       const entries = fs.readdirSync(dirPath, { withFileTypes: true })
       return entries
         .filter((e) => !e.name.startsWith('.'))
@@ -169,6 +170,38 @@ export function registerSystemHandlers(
       return null
     }
   })
+
+  ipcMain.handle(
+    IPC.FILE_CONTEXT_MENU,
+    async (event, input: { path: string; workspacePath?: string; isDirectory: boolean }): Promise<void> => {
+      if (!input?.path) throw new Error('A file path is required.')
+      const workspacePath = input.workspacePath || ''
+      const fileInfo = fileService && workspacePath
+        ? await fileService.getFileInfo(input.path, workspacePath)
+        : fs.statSync(input.path)
+      const isDirectory = 'isDirectory' in fileInfo ? fileInfo.isDirectory : fileInfo.isDirectory()
+      // Task artifacts store paths relative to their workspace. FileExplorer
+      // passes absolute paths, but both need the same native context menu.
+      const requestedPath = workspacePath && !path.isAbsolute(input.path)
+        ? path.resolve(workspacePath, input.path)
+        : input.path
+      const resolvedPath = await fs.promises.realpath(requestedPath)
+      const fileName = path.basename(resolvedPath)
+      const content = isDirectory
+        ? null
+        : fileService && workspacePath
+          ? await fileService.readFile(input.path, workspacePath)
+          : await fs.promises.readFile(resolvedPath, 'utf8')
+      const menu = Menu.buildFromTemplate([
+        { label: '在文件资源管理器中显示', click: () => shell.showItemInFolder(resolvedPath) },
+        { type: 'separator' },
+        { label: '复制名称', click: () => clipboard.writeText(fileName) },
+        { label: '复制完整路径', click: () => clipboard.writeText(resolvedPath) },
+        ...(content === null ? [] : [{ label: '复制文件内容', click: () => clipboard.writeText(content) }]),
+      ])
+      menu.popup({ window: BrowserWindow.fromWebContents(event.sender) || undefined })
+    }
+  )
 
   // ── Terminal handlers ──────────────────────────────────────────────────────
 

@@ -37,6 +37,17 @@ export interface AgentRunnerConfig {
   manageGoal?: (action: 'status' | 'pause' | 'resume' | 'cancel') => Promise<string>
   createExecutionPlan?: (goal: string) => Promise<string>
   applySpecTemplate?: (templateId: string, parameters: Record<string, string>) => Promise<string>
+  /** Goal-only budget that can grow after the model explicitly asks for more evidence. */
+  adaptiveToolBudget?: AdaptiveToolBudget
+}
+
+export interface AdaptiveToolBudget {
+  /** Initial number of model/tool cycles before the first continuation check. */
+  initialIterations: number
+  /** Additional cycles granted after each justified continuation. */
+  extensionIterations: number
+  /** Absolute cap for this run. It may not exceed the Agent configuration. */
+  maxIterations: number
 }
 
 export interface ToolApprovalRequest {
@@ -72,6 +83,7 @@ interface CompletedToolResult {
 }
 
 const MAX_TOOL_REVIEW_IMAGES = 4
+const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'])
 // A complete virtual desktop can include multiple high-resolution displays.
 // Keep this distinct from ordinary user attachment limits so desktop_observe
 // does not silently drop a valid multi-display PNG before visual analysis.
@@ -170,7 +182,14 @@ export class AgentRunner {
 
     try {
       const { agentConfig, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
-      const maxIter = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
+      const configuredMaxIterations = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
+      const adaptiveToolBudget = this.config.adaptiveToolBudget
+      const maxIter = adaptiveToolBudget
+        ? Math.max(1, Math.min(configuredMaxIterations, adaptiveToolBudget.maxIterations))
+        : configuredMaxIterations
+      let nextBudgetCheck = adaptiveToolBudget
+        ? Math.max(1, Math.min(maxIter, adaptiveToolBudget.initialIterations))
+        : maxIter
       if (agentConfig.showThinking && !this.config.provider.supportsReasoning(agentConfig.model)) {
         yield {
           type: 'error',
@@ -290,11 +309,56 @@ export class AgentRunner {
           return
         }
 
-        // Execute each tool call sequentially
+        // A model may request several independent reads in one turn. Execute
+        // only a wholly read-only batch in parallel; any mutation, terminal,
+        // browser, or desktop action keeps the original strict ordering.
         const toolResults = new Map<string, CompletedToolResult>()
-
-        let desktopActionExecuted = false
-        for (const toolCall of response.toolCalls) {
+        const parallelReadBatch = response.toolCalls.length > 1
+          && response.toolCalls.every((toolCall) => PARALLEL_SAFE_READ_TOOL_NAMES.has(toolCall.name))
+        if (parallelReadBatch) {
+          const visualAttachments = dedupeToolImages(recentVisualAttachments)
+          const baseContext: ToolContext = {
+            conversationId: this.config.conversationId,
+            workspacePath,
+            fileAccessGrants,
+            fullFilesystemAccess,
+            supportsVisionInput: this.supportsVisionInput(),
+            fileService: this.config.fileService,
+            terminalService: this.config.terminalService,
+            allowedModelPoolIds: agentConfig.modelPoolIds,
+            visualAttachments,
+            agentContext: this.buildModelPoolContext(messages, toolResults),
+          }
+          for (const toolCall of response.toolCalls) {
+            yield {
+              type: 'tool_call',
+              toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments },
+            }
+          }
+          const completedBatch = await Promise.all(response.toolCalls.map(async (toolCall) => {
+            const cacheKey = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
+            const cached = readOnlyToolCache.get(cacheKey)
+            const rawResult = cached || await this.executeTool(toolCall, baseContext)
+            const result = cached || this.normalizeToolResult(rawResult)
+            if (!cached) readOnlyToolCache.set(cacheKey, result)
+            return { toolCall, result }
+          }))
+          for (const { toolCall, result } of completedBatch) {
+            toolResults.set(toolCall.id, result)
+            yield {
+              type: 'tool_result',
+              toolResult: {
+                toolCallId: toolCall.id,
+                name: toolCall.name,
+                result: result.result,
+                isError: result.isError,
+                protocol: result.protocol,
+              },
+            }
+          }
+        } else {
+          let desktopActionExecuted = false
+          for (const toolCall of response.toolCalls) {
           // Emit tool_call event
           yield {
             type: 'tool_call',
@@ -364,6 +428,7 @@ export class AgentRunner {
             },
           }
         }
+        }
 
         // Append assistant tool_calls + tool results to message history
         messages = this.appendToolMessages(messages, response.toolCalls, toolResults)
@@ -426,6 +491,38 @@ export class AgentRunner {
               role: 'user',
               content: 'A browser screenshot was captured, but this text-only primary model cannot inspect it. Do not guess visual coordinates; use a vision-capable primary model for visual browser interaction.',
             })
+          }
+        }
+
+        // Goal steps should not blindly consume their maximum tool budget. At
+        // each checkpoint the model first decides whether the evidence is
+        // sufficient. The existing message history stays intact if it needs
+        // another bounded block of tool calls.
+        if (adaptiveToolBudget && iteration + 1 >= nextBudgetCheck && nextBudgetCheck < maxIter) {
+          yield { type: 'thinking', content: `Reviewing progress after ${iteration + 1} tool cycles...` }
+          const decision = yield* this.executeLLMCall([
+            ...messages,
+            {
+              role: 'user',
+              content: `You have completed ${iteration + 1} model-and-tool cycles for this task. Do not call tools in this response. Decide whether the work can now be completed with the evidence already collected.\n\nReply with exactly one of:\nFINAL: followed by the concise, complete result for the user.\nCONTINUE: followed by a short reason why additional tool evidence is essential.\n\nChoose CONTINUE only when a specific unresolved fact, failed verification, or necessary change still requires tools. Do not continue merely to improve wording.`,
+            },
+          ], [])
+          accumulatedUsage = this.mergeUsage(accumulatedUsage, decision.usage)
+          const decisionContent = decision.content.trim()
+          if (/^CONTINUE\s*:/i.test(decisionContent)) {
+            nextBudgetCheck = Math.min(maxIter, nextBudgetCheck + Math.max(1, adaptiveToolBudget.extensionIterations))
+            messages.push({ role: 'assistant', content: decisionContent })
+            messages.push({
+              role: 'user',
+              content: `Continuation approved. You may use tools again, but focus only on the unresolved evidence described above. The next review is after ${nextBudgetCheck} total tool cycles.`,
+            })
+            yield { type: 'thinking', content: `Continuing with an expanded budget of ${nextBudgetCheck} tool cycles.` }
+            continue
+          }
+          const finalContent = decisionContent.replace(/^FINAL\s*:\s*/i, '').trim()
+          if (finalContent) {
+            yield { type: 'done', content: finalContent, usage: accumulatedUsage }
+            return
           }
         }
       }

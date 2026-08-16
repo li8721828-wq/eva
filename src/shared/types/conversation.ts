@@ -55,6 +55,10 @@ export interface ChatMessage {
   attachmentContext?: string
   /** Provider-supplied reasoning shown separately from the final answer. */
   reasoningContent?: string
+  /** Safe, user-visible execution record for this response. */
+  executionTrace?: ExecutionTraceEntry[]
+  /** A concise, user-visible progress update emitted while work is underway. */
+  progressKind?: ProgressUpdateKind
   /** Files and folders the user attached to this message. Their contents stay local. */
   attachments?: ChatDocumentAttachment[]
   /** Local image references selected explicitly by the user. Base64 data is never persisted. */
@@ -112,10 +116,28 @@ export interface ToolCall {
   protocol?: ExecutionEnvelope
 }
 
+export type ExecutionTraceKind = 'plan' | 'activity' | 'tool' | 'observation' | 'issue' | 'result'
+export type ExecutionTraceStatus = 'active' | 'completed' | 'failed'
+export type ProgressUpdateKind = 'thinking' | 'finding' | 'action' | 'issue'
+
+/**
+ * A concise, verifiable progress event. This intentionally contains a
+ * summary of work performed rather than provider chain-of-thought.
+ */
+export interface ExecutionTraceEntry {
+  id: string
+  kind: ExecutionTraceKind
+  status: ExecutionTraceStatus
+  title: string
+  detail?: string
+  timestamp: number
+  toolCallId?: string
+}
+
 export interface ChatStreamEvent {
   /** The conversation that owns this stream event. */
   conversationId?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'done' | 'error'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'progress' | 'done' | 'error'
   messageId?: string
   content?: string
   toolCall?: Partial<ToolCall>
@@ -123,6 +145,8 @@ export interface ChatStreamEvent {
   toolResult?: string
   isError?: boolean
   protocol?: ExecutionEnvelope
+  executionTrace?: ExecutionTraceEntry[]
+  progressKind?: ProgressUpdateKind
   error?: string
   finishReason?: string
   usage?: ChatUsage

@@ -3,10 +3,12 @@ import type { AgentConfig } from '../../shared/types'
 
 interface AgentState {
   agents: AgentConfig[]
+  primaryChatAgentId: string | null
   selectedAgentId: string | null
   editingAgent: AgentConfig | null
 
   setAgents: (agents: AgentConfig[]) => void
+  setPrimaryChatAgent: (id: string) => Promise<void>
   setSelectedAgentId: (id: string | null) => void
   getSelectedAgent: () => AgentConfig | undefined
   setEditingAgent: (agent: AgentConfig | null) => void
@@ -21,18 +23,35 @@ interface AgentState {
 
 export const useAgentStore = create<AgentState>((set, get) => ({
   agents: [],
+  primaryChatAgentId: null,
   selectedAgentId: null,
   editingAgent: null,
 
   setAgents: (agents) => set({ agents }),
+  setPrimaryChatAgent: async (id) => {
+    if (!get().agents.some((agent) => agent.id === id)) {
+      throw new Error('The selected Agent is no longer available.')
+    }
+    await window.eva.config.set('primaryChatAgentId', id)
+    set({ primaryChatAgentId: id })
+  },
   setSelectedAgentId: (id) => set({ selectedAgentId: id }),
   getSelectedAgent: () => get().agents.find((a) => a.id === get().selectedAgentId),
   setEditingAgent: (agent) => set({ editingAgent: agent }),
 
   loadAgents: async () => {
     try {
-      const list = await window.eva.agent.list()
-      set({ agents: list })
+      const [list, configuredPrimaryId] = await Promise.all([
+        window.eva.agent.list(),
+        window.eva.config.get<string | null>('primaryChatAgentId'),
+      ])
+      const primaryChatAgentId = list.some((agent) => agent.id === configuredPrimaryId)
+        ? configuredPrimaryId
+        : list[0]?.id || null
+      if (primaryChatAgentId !== configuredPrimaryId) {
+        await window.eva.config.set('primaryChatAgentId', primaryChatAgentId)
+      }
+      set({ agents: list, primaryChatAgentId })
       // Select first agent if none selected
       if (!get().selectedAgentId && list.length > 0) {
         set({ selectedAgentId: list[0].id })
@@ -73,11 +92,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   deleteAgent: async (id) => {
     try {
       await window.eva.agent.delete(id)
-      set((s) => ({
-        agents: s.agents.filter((a) => a.id !== id),
-        selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
-        editingAgent: s.editingAgent?.id === id ? null : s.editingAgent,
-      }))
+      set((s) => {
+        const agents = s.agents.filter((agent) => agent.id !== id)
+        return {
+          agents,
+          primaryChatAgentId: s.primaryChatAgentId === id ? agents[0]?.id || null : s.primaryChatAgentId,
+          selectedAgentId: s.selectedAgentId === id ? null : s.selectedAgentId,
+          editingAgent: s.editingAgent?.id === id ? null : s.editingAgent,
+        }
+      })
     } catch (err) {
       console.error('Failed to delete agent:', err)
       throw err

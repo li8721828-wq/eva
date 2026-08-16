@@ -165,6 +165,7 @@ export class OpenAIProvider implements LLMProvider {
             messages: toOpenAIMessages(params.messages),
             tools: toOpenAITools(params.tools),
             stream: false,
+            ...(this.type === 'deepseek' && params.reasoning ? { thinking: { type: params.reasoning.enabled ? 'enabled' : 'disabled' } } : {}),
             temperature: params.temperature,
             max_tokens: params.maxTokens,
           },
@@ -184,8 +185,9 @@ export class OpenAIProvider implements LLMProvider {
       arguments: JSON.parse(tc.function.arguments || '{}'),
     }))
 
+    const message = choice.message as typeof choice.message & { reasoning_content?: string }
     return {
-      content: choice.message.content || '',
+      content: message.content || message.reasoning_content || '',
       toolCalls,
       usage: this.mapUsage(response.usage),
     }
