@@ -99,7 +99,7 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
     <section>
       <div><h2 className="text-base font-semibold text-zinc-900">Markdown 渲染器</h2><p className="mt-1 text-sm leading-6 text-zinc-500">决定回复在对话中的视觉排版，不改变模型生成的内容。</p></div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2">{markdownRenderers.map((renderer) => <ChoiceRow key={renderer.value} selected={markdownRenderer === renderer.value} icon={renderer.icon} label={renderer.label} description={renderer.description} onClick={() => onMarkdownRendererChange(renderer.value)} />)}</div>
-      {markdownRenderer === 'classic' ? <p className="mt-3 text-xs leading-5 text-zinc-500">经典文档已接管阅读外观。选择它时，阅读样式、字体、色调、字号和艺术字会恢复默认，避免叠加冲突。</p> : null}
+      {markdownRenderer === 'classic' ? <p className="mt-3 text-xs leading-5 text-zinc-500">经典文档保留开放式排版与浅色代码主题；阅读样式、字体、色调和字号仍按此智能体的设置生效。</p> : null}
       {markdownRenderer === 'streamdown' ? <p className="mt-3 text-xs leading-5 text-zinc-500">仅在模型输出过程中启用流式修复；关闭逐字动画，避免高频闪动。回复完成后自动切为静态渲染。</p> : null}
     </section>
 
@@ -109,7 +109,7 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
       {outputFormat === 'custom' && <div className="mt-4 rounded-md bg-zinc-50 p-3.5"><label className="mb-1.5 block text-xs font-medium text-zinc-700">写作偏好</label><Textarea value={outputFormatInstructions} onChange={(event) => onOutputFormatInstructionsChange(event.target.value)} placeholder="例如：先给结论，再简要说明关键取舍。" rows={3} className="bg-white text-sm" /><p className="mt-1.5 text-xs leading-5 text-zinc-500">这是一条偏好，而不是固定格式；智能体仍会根据任务调整回答。</p></div>}
     </section>
 
-    {markdownRenderer === 'enhanced' ? <section className="border-t border-zinc-100 pt-7">
+    {markdownRenderer !== 'streamdown' ? <section className="border-t border-zinc-100 pt-7">
       <div><h2 className="text-base font-semibold text-zinc-900">阅读样式</h2><p className="mt-1 text-sm leading-6 text-zinc-500">统一正文、标题、列表、表格和代码的密度，避免同一段回复忽大忽小。</p></div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2">{visualStyles.map((style) => <ChoiceRow key={style.value} selected={outputStyle === style.value} label={style.label} description={style.description} onClick={() => onOutputStyleChange(style.value)} />)}</div>
       <div className="mt-4 flex flex-wrap gap-2">{fontOptions.map((font) => <button key={font.value} type="button" onClick={() => onOutputFontChange(font.value)} className={cn('rounded-md border px-3 py-2 text-sm transition-colors', outputFont === font.value ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300', font.className)}>{font.label}</button>)}</div>

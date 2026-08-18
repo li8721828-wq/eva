@@ -5,7 +5,7 @@ import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
 import { RequirementClarificationCard } from './RequirementClarificationCard'
 import { WelcomeScreen } from './WelcomeScreen'
-import { CheckCircle2, ChevronsDown, Loader2 } from 'lucide-react'
+import { CheckCircle2, ChevronsDown, CircleAlert, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
@@ -19,11 +19,27 @@ const SCROLL_FOLLOW_THRESHOLD = 72
 const SMOOTH_SPIN_CLASS = 'animate-spin'
 const ESTIMATED_MESSAGE_HEIGHT = 180
 const VIRTUAL_OVERSCAN = 900
+const VIRTUAL_SCROLL_UPDATE_THRESHOLD = 80
+const SCROLL_AFFORDANCE_UPDATE_INTERVAL = 80
 const JUMP_TO_BOTTOM_THRESHOLD = 240
 
 type ScrollIndicator = { top: number; height: number }
 
 type RenderItem = { id: string; kind: 'message'; message: ChatMessage }
+
+function RequirementElapsedTime({ startedAt }: { startedAt: number }) {
+  const getElapsedSeconds = () => Math.max(0, Math.floor((Date.now() - startedAt) / 1000))
+  const [elapsed, setElapsed] = useState(getElapsedSeconds)
+
+  useEffect(() => {
+    const updateElapsed = () => setElapsed(getElapsedSeconds())
+    updateElapsed()
+    const timer = window.setInterval(updateElapsed, 1000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+
+  return <span className="ml-auto text-xs font-normal tabular-nums text-zinc-500">已运行 {elapsed}s</span>
+}
 
 function loadSavedScrollPositions() {
   if (typeof window === 'undefined') return
@@ -98,6 +114,7 @@ export function MessageList({ className }: MessageListProps) {
   const pendingRestoreRef = useRef<string | null>(currentConversationId)
   const scrollPersistTimerRef = useRef<number | null>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const lastScrollAffordanceUpdateAtRef = useRef(0)
   const followStreamRef = useRef(true)
   const lastScrollTopRef = useRef(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
@@ -237,17 +254,25 @@ export function MessageList({ className }: MessageListProps) {
       return
     }
 
-    saveScrollPosition()
     lastScrollTopRef.current = scrollArea.scrollTop
     if (scrollPersistTimerRef.current !== null) window.clearTimeout(scrollPersistTimerRef.current)
     scrollPersistTimerRef.current = window.setTimeout(() => {
+      saveScrollPosition()
       persistScrollPositions()
       scrollPersistTimerRef.current = null
     }, 320)
-    setScrollTop(scrollArea.scrollTop)
+    setScrollTop((previous) => (
+      Math.abs(previous - scrollArea.scrollTop) >= VIRTUAL_SCROLL_UPDATE_THRESHOLD
+        ? scrollArea.scrollTop
+        : previous
+    ))
     setViewportHeight(scrollArea.clientHeight)
     followStreamRef.current = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight <= SCROLL_FOLLOW_THRESHOLD
-    updateScrollAffordances(scrollArea, true)
+    const now = performance.now()
+    if (now - lastScrollAffordanceUpdateAtRef.current >= SCROLL_AFFORDANCE_UPDATE_INTERVAL) {
+      lastScrollAffordanceUpdateAtRef.current = now
+      updateScrollAffordances(scrollArea, true)
+    }
   }
 
   const handleScroll = () => {
@@ -525,8 +550,8 @@ export function MessageList({ className }: MessageListProps) {
       >
       <div
         className={cn(
-          'flex w-full flex-col px-12 py-10',
-          rightPanelVisible && 'mx-auto max-w-4xl'
+          'flex w-full flex-col px-8 py-10',
+          rightPanelVisible && 'mx-auto max-w-[72rem]'
         )}
       >
         {/* Load more button for long conversations */}
@@ -560,19 +585,22 @@ export function MessageList({ className }: MessageListProps) {
         {virtualRange.bottomSpacer > 0 && <div aria-hidden="true" style={{ height: virtualRange.bottomSpacer }} />}
 
         {requirementProgress && (
-          <section className="mb-8 max-w-2xl border-l-2 border-violet-500 bg-violet-50/50 px-4 py-3.5" role="status" aria-live="polite" aria-label="需求工程执行进度">
+          <section className="mb-8 w-full max-w-none border-l-2 border-violet-500 bg-violet-50/50 px-4 py-3.5" role="status" aria-live="polite" aria-label="需求工程执行进度">
             <div className="flex items-center gap-2 text-sm font-medium text-zinc-900">
               <Loader2 className={cn('h-4 w-4 text-violet-600', SMOOTH_SPIN_CLASS)} />
+              <RequirementElapsedTime startedAt={requirementProgress.startedAt} />
               <span>需求工程</span>
             </div>
             <ol className="mt-3 space-y-2">
               {requirementProgress.steps.map((step) => {
-                const isCurrent = !step.document && step.stage === requirementProgress.current.stage
+                const isCurrent = step.phase === 'started' || (!step.document && step.stage === requirementProgress.current.stage)
                 return (
                   <li key={step.document?.id || `${step.stage}-${step.message}`} className="flex items-center gap-2 text-sm">
                     {isCurrent
                       ? <Loader2 className={cn('h-3.5 w-3.5 shrink-0 text-violet-600', SMOOTH_SPIN_CLASS)} />
-                      : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
+                      : step.phase === 'failed'
+                        ? <CircleAlert className="h-3.5 w-3.5 shrink-0 text-rose-600" />
+                        : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
                     <span className={cn(isCurrent ? 'font-medium text-violet-800' : 'text-zinc-600')}>{step.message}</span>
                   </li>
                 )
@@ -580,7 +608,12 @@ export function MessageList({ className }: MessageListProps) {
             </ol>
             {requirementProgress.steps.filter((step) => step.document).map((step) => (
               <details key={step.document!.id} open className="mt-3 border-t border-violet-100 pt-3">
-                <summary className="cursor-pointer text-sm font-medium text-violet-800">{step.document!.title}</summary>
+                <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-violet-800">
+                  {step.phase === 'started' ? <Loader2 className={cn('h-3.5 w-3.5 text-violet-600', SMOOTH_SPIN_CLASS)} /> : step.phase === 'failed' ? <CircleAlert className="h-3.5 w-3.5 text-rose-600" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />}
+                  <span>{step.document!.title}</span>
+                  {step.phase === 'started' && <span className="text-xs font-normal text-violet-600">正在生成</span>}
+                  {step.phase === 'failed' && <span className="text-xs font-normal text-rose-600">生成失败</span>}
+                </summary>
                 <MarkdownMessageContent content={step.document!.content} className="mt-2 text-zinc-700" />
               </details>
             ))}

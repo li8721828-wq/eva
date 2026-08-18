@@ -230,16 +230,7 @@ export function AgentEditor({
         onOutputColorChange={setOutputColor}
         onOutputFontSizeChange={setOutputFontSize}
         onOutputTextEffectChange={setOutputTextEffect}
-        onMarkdownRendererChange={(renderer) => {
-          setMarkdownRenderer(renderer)
-          if (renderer === 'classic') {
-            setOutputStyle('none')
-            setOutputFont('system')
-            setOutputColor('slate')
-            setOutputFontSize('medium')
-            setOutputTextEffect('none')
-          }
-        }}
+        onMarkdownRendererChange={setMarkdownRenderer}
         onShowThinkingChange={setShowThinking}
       />
 

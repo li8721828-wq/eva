@@ -1,11 +1,13 @@
 import { app, BrowserWindow, clipboard, Menu, shell, type WebContents } from 'electron'
+import { execFile } from 'child_process'
 import fs from 'fs/promises'
 import path from 'path'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
+import { promisify } from 'util'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from './project-index-service'
 import type { Conversation } from '../../shared/types/conversation'
-import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementProgress, RequirementRun, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
+import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementProgress, RequirementRun, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { getStorage } from '../storage'
 import { buildDocumentAttachmentContext } from './document-attachment-service'
 import { recordActivity } from './activity-log'
@@ -13,6 +15,23 @@ import { recordActivity } from './activity-log'
 const QUALITY_THRESHOLD = 80
 const SPEC_QUALITY_THRESHOLD = 85
 const MAX_CONTEXT_CHARS = 48_000
+const execFileAsync = promisify(execFile)
+
+interface ParsedDslField {
+  name: string
+  type: string
+}
+
+interface ParsedDslAggregate {
+  name: string
+  fields: ParsedDslField[]
+}
+
+interface ParsedDomainDsl {
+  domain: string
+  aggregates: ParsedDslAggregate[]
+  rules: string[]
+}
 const REQUIREMENT_CLARIFICATION_POLICY = `澄清仅面向需求本身：业务目标、用户角色与权限、业务规则、数据含义、流程边界、异常业务场景、验收标准和合规约束。不得向用户询问技术实现方案、接口、数据库表或字段映射、框架能力、代码模块或其他实现细节。代码分析只能作为内部证据：技术冲突应记录为实现风险或由 AI 自行推理，不得转换为用户澄清问题。`
 const REQUIREMENT_DIMENSIONS = [
   ['scope', '范围与目标'],
@@ -79,6 +98,7 @@ export class RequirementEngineeringService {
     const answers = this.validateClarificationAnswers(run.clarificationQuestions, input.answers)
     const conversation = await getStorage().conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
+    await this.ensureWorkspacePackage(run, conversation)
 
     const controller = new AbortController()
     const submission = this.advance(run, conversation, this.formatClarificationAnswers(answers), onProgress, controller.signal)
@@ -102,6 +122,7 @@ export class RequirementEngineeringService {
     }
     const conversation = await getStorage().conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
+    await this.ensureWorkspacePackage(run, conversation)
 
     const controller = new AbortController()
     const submission = this.modelRequirementsInternal(run, conversation, onProgress, controller.signal)
@@ -121,21 +142,40 @@ export class RequirementEngineeringService {
     }
     const conversation = await getStorage().conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
-    let run = (await this.list(input.conversationId)).find((item) => item.status === 'ready-for-specification' || item.status === 'ready-for-implementation')
-    if (!run) run = (await this.importExistingModelingRun(conversation)) || undefined
+    const allConversations = await getStorage().conversations.listConversations()
+    const conversationsById = new Map(allConversations.map((item) => [item.id, item]))
+    const normalizeWorkspacePath = (value?: string): string | undefined => {
+      if (!value) return undefined
+      try { return path.resolve(value).toLowerCase() } catch { return undefined }
+    }
+    const targetPaths = new Set([
+      normalizeWorkspacePath(conversation.workspacePath),
+      normalizeWorkspacePath(conversation.gitRepositoryPath),
+      normalizeWorkspacePath(conversation.gitWorktreePath),
+    ].filter((value): value is string => Boolean(value)))
+    const isSameWorkspace = (run: RequirementRun): boolean => {
+      const owner = conversationsById.get(run.conversationId)
+      if (!owner) return false
+      if (conversation.workspaceId && owner.workspaceId && conversation.workspaceId === owner.workspaceId) return true
+      const ownerPaths = [owner.workspacePath, owner.gitRepositoryPath, owner.gitWorktreePath]
+        .map(normalizeWorkspacePath)
+        .filter((value): value is string => Boolean(value))
+      return ownerPaths.some((value) => targetPaths.has(value))
+    }
+    let run = (await this.list())
+      .find((item) => (
+        (item.status === 'ready-for-specification' || item.status === 'ready-for-implementation')
+        && isSameWorkspace(item)
+      ))
     if (!run) {
-      throw new Error('当前对话没有需求建模成果。请返回已完成需求建模的原对话，再执行 /spec。')
+      run = await this.importWorkspaceModelingRun(conversation)
     }
-    let hasModeling = run.documents.some((document) => document.stage === 'modeling')
-    if (!hasModeling) {
-      const importedRun = await this.importExistingModelingRun(conversation)
-      if (importedRun) {
-        run = importedRun
-        hasModeling = true
-      }
+    if (!run) {
+      throw new Error('当前工作区没有已完成的需求建模成果。请先执行 /requirement-modeling，再执行 /spec。')
     }
-    if (!hasModeling) {
-      throw new Error('没有找到可导入的需求建模文档。请在当前对话提供建模成果或执行 /requirement-modeling。')
+    await this.ensureWorkspacePackage(run, conversation)
+    if (!run.documents.some((document) => document.stage === 'modeling')) {
+      throw new Error('当前需求运行没有持久化的建模文档。请先完成 /requirement-modeling，再执行 /spec。')
     }
     const controller = new AbortController()
     const submission = this.buildSpecificationInternal(run, conversation, onProgress, controller.signal)
@@ -191,6 +231,7 @@ export class RequirementEngineeringService {
   private async submitInternal(input: SubmitRequirementInput, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
     const conversation = await getStorage().conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
+    this.requireProjectWorkspace(conversation)
     const active = (await this.list(input.conversationId)).find((run) => run.status === 'awaiting-clarification' || run.status === 'analyzing')
     const text = input.content?.trim() || ''
     if (active && active.status === 'awaiting-clarification') {
@@ -198,6 +239,602 @@ export class RequirementEngineeringService {
     }
     if (!text && !input.attachments?.length) throw new Error('Add a requirement description or attach at least one document after /requirement.')
     return this.start(conversation, input, onProgress, signal)
+  }
+
+  /**
+   * Imports a versioned requirement-model package already present in the
+   * selected project. This is deliberately restricted to the fixed
+   * requirements/.../01-requirement-model convention; conversation text is
+   * never considered a modeling artifact.
+   */
+  private async importWorkspaceModelingRun(conversation: Conversation): Promise<RequirementRun | undefined> {
+    const workspacePath = conversation.gitWorktreePath || conversation.workspacePath
+    if (!workspacePath) return undefined
+
+    const workspaceRoot = path.resolve(workspacePath)
+    const requirementsRoot = path.join(workspaceRoot, 'requirements')
+    const isWithinWorkspace = (candidate: string): boolean => {
+      const relative = path.relative(workspaceRoot, candidate)
+      return Boolean(relative) && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)
+    }
+    const isDirectory = async (candidate: string): Promise<boolean> => {
+      try { return (await fs.stat(candidate)).isDirectory() } catch { return false }
+    }
+    const readMarkdownFiles = async (directory: string): Promise<Array<{ name: string; path: string; content: string }>> => {
+      const files: Array<{ name: string; path: string; content: string }> = []
+      const visit = async (current: string, depth: number): Promise<void> => {
+        if (files.length >= 24 || depth > 2) return
+        let entries
+        try { entries = await fs.readdir(current, { withFileTypes: true }) } catch { return }
+        for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+          if (files.length >= 24) return
+          const candidate = path.join(current, entry.name)
+          if (!isWithinWorkspace(candidate)) continue
+          if (entry.isDirectory()) {
+            await visit(candidate, depth + 1)
+            continue
+          }
+          if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue
+          try {
+            const stat = await fs.stat(candidate)
+            if (stat.size === 0 || stat.size > 512_000) continue
+            const content = await fs.readFile(candidate, 'utf8')
+            if (content.trim()) files.push({ name: entry.name, path: candidate, content })
+          } catch {
+            // Ignore files that disappear or cannot be decoded while scanning.
+          }
+        }
+      }
+      await visit(directory, 0)
+      return files
+    }
+
+    const packages: Array<{ packageDirectory: string; modelingDirectory: string; modifiedAt: number }> = []
+    const addPackage = async (packageDirectory: string): Promise<void> => {
+      const modelingDirectory = path.join(packageDirectory, '01-requirement-model')
+      if (!isWithinWorkspace(modelingDirectory) || !(await isDirectory(modelingDirectory))) return
+      try {
+        packages.push({ packageDirectory, modelingDirectory, modifiedAt: (await fs.stat(modelingDirectory)).mtimeMs })
+      } catch {
+        // Ignore packages that change during scanning.
+      }
+    }
+    await addPackage(requirementsRoot)
+    try {
+      const entries = await fs.readdir(requirementsRoot, { withFileTypes: true })
+      for (const entry of entries) {
+        if (entry.isDirectory()) await addPackage(path.join(requirementsRoot, entry.name))
+      }
+    } catch {
+      return undefined
+    }
+
+    const selectedPackage = packages.sort((left, right) => right.modifiedAt - left.modifiedAt)[0]
+    if (!selectedPackage) return undefined
+    const modelingFiles = await readMarkdownFiles(selectedPackage.modelingDirectory)
+    if (modelingFiles.length === 0) return undefined
+
+    const sourceCandidates = ['需求文档.md', 'README.md', 'EARS需求规格.md']
+    let sourceFile: { name: string; path: string; content: string } | undefined
+    for (const name of sourceCandidates) {
+      const candidate = path.join(selectedPackage.packageDirectory, name)
+      if (!isWithinWorkspace(candidate)) continue
+      try {
+        const stat = await fs.stat(candidate)
+        if (!stat.isFile() || stat.size === 0 || stat.size > 512_000) continue
+        const content = await fs.readFile(candidate, 'utf8')
+        if (content.trim()) {
+          sourceFile = { name, path: candidate, content }
+          break
+        }
+      } catch {
+        // Try the next conventional source file.
+      }
+    }
+
+    const now = new Date().toISOString()
+    const run: RequirementRun = {
+      id: randomUUID(), conversationId: conversation.id, conversationTitle: conversation.title,
+      status: 'ready-for-specification', round: 1, qualityScore: QUALITY_THRESHOLD,
+      qualityThreshold: QUALITY_THRESHOLD, documents: [], evaluations: [], clarificationQuestions: [], createdAt: now, updatedAt: now,
+      workspaceOutputPath: path.join(selectedPackage.packageDirectory, '02-specification'),
+    }
+    await fs.mkdir(this.runDirectory(run.id), { recursive: true })
+    const fallbackRequirement = modelingFiles.map((file) => `## ${file.name}\n\n${file.content}`).join('\n\n')
+    const requirementContent = sourceFile?.content || fallbackRequirement
+    await this.addDocument(
+      run,
+      'requirement-analysis',
+      'final-merged',
+      'Workspace requirement source',
+      `# Workspace requirement source\n\nSource: \`${sourceFile?.path || selectedPackage.modelingDirectory}\`\n\n${requirementContent.slice(0, MAX_CONTEXT_CHARS)}\n`,
+    )
+    for (const [index, file] of modelingFiles.entries()) {
+      await this.addDocument(
+        run,
+        'modeling',
+        `workspace-${index + 1}`,
+        `Workspace modeling: ${file.name}`,
+        `# ${file.name}\n\nSource: \`${file.path}\`\n\n${file.content}\n`,
+      )
+    }
+    const mergedModeling = [
+      '# Workspace final requirement modeling',
+      `Source directory: \`${selectedPackage.modelingDirectory}\``,
+      ...modelingFiles.map((file) => `## ${file.name}\n\n${file.content}`),
+    ].join('\n\n').slice(0, MAX_CONTEXT_CHARS)
+    await this.addDocument(run, 'modeling', 'final-merged', 'Workspace final requirement modeling', `${mergedModeling}\n`)
+    await this.persist(run)
+    await getStorage().conversations.addMessage(conversation.id, {
+      id: randomUUID(), role: 'assistant', agentName: 'Specification',
+      content: `Imported workspace modeling package from \`${selectedPackage.modelingDirectory}\`. /spec is using these persisted workspace files, not conversation history.`,
+      timestamp: Date.now(),
+    })
+    return run
+  }
+
+  async buildDsl(input: SubmitDslInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
+    if (this.activeSubmissions.has(input.conversationId)) {
+      throw new Error('当前需求工程正在处理中，请等待本轮完成。')
+    }
+    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    if (!conversation) throw new Error('Conversation not found.')
+    const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation')
+    if (!run) throw new Error('当前工作区没有通过 /spec 的最终实施规格，请先完成 /spec。')
+    if (run.dslStatus === 'generating') throw new Error('当前工作区的 DSL 正在生成，请等待本轮完成。')
+    const finalSpec = [...run.documents].reverse().find((document) => document.stage === 'specification' && document.dimension === 'implementation-ready')
+    if (!finalSpec) throw new Error('没有找到最终实施规格，无法生成 DSL。请先完成 /spec。')
+    await this.ensureWorkspacePackage(run, conversation)
+    if (!run.workspaceOutputPath) throw new Error('无法定位需求包的 02-specification 输出目录。')
+    run.dslOutputPath = run.dslOutputPath || path.join(run.workspacePackagePath!, 'dsl')
+    run.dslStatus = 'generating'
+
+    const controller = new AbortController()
+    const submission = this.buildDslInternal(run, conversation, finalSpec, onProgress, controller.signal)
+    this.activeSubmissions.set(input.conversationId, submission)
+    this.abortControllers.set(input.conversationId, controller)
+    try {
+      return await submission
+    } finally {
+      this.activeSubmissions.delete(input.conversationId)
+      this.abortControllers.delete(input.conversationId)
+    }
+  }
+
+  private async buildDslInternal(run: RequirementRun, conversation: Conversation, finalSpec: RequirementDocument, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
+    const generatedDocuments: RequirementDocument[] = []
+    const publish = async (document: RequirementDocument) => {
+      generatedDocuments.push(document)
+      await this.persist(run)
+      await this.persistDocuments(conversation.id, [document], 'DSL')
+    }
+    try {
+      await this.persist(run)
+      await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/dsl')
+      this.throwIfAborted(signal)
+      const specificationDocuments = run.documents
+        .filter((document) => document.stage === 'specification' || document.stage === 'spec-validation')
+        .map((document) => `## ${document.title}\n${document.content}`)
+        .join('\n\n')
+        .slice(0, MAX_CONTEXT_CHARS)
+      const sourcePack = `# Final implementation specification\n${finalSpec.content}\n\n# Supporting specification documents\n${specificationDocuments}`
+
+      await this.snapshotUpstream(run, 'dsl', [{ name: 'implementation-specification.md', content: finalSpec.content }])
+      this.reportProgress(onProgress, run, 'dsl', '正在读取最终实施规格并建立 DSL 输入边界')
+      const plan = await this.generateDocument(
+        run,
+        'dsl',
+        'dsl-plan',
+        'DSL generation plan',
+        `Create a concise DSL generation plan from the supplied implementation specification. Identify the domain name, bounded contexts, entities, commands, events, invariants, relationships, and traceability IDs. Do not invent technical APIs or database details. Return Markdown only.\n\n${sourcePack}`,
+        signal,
+        onProgress,
+      )
+      await publish(plan)
+
+      this.reportProgress(onProgress, run, 'dsl', '正在生成领域语言中间文档')
+      const domainLanguage = await this.generateDocument(
+        run,
+        'dsl',
+        'domain-language',
+        'Domain language model',
+        `Turn the implementation specification and DSL plan into a reviewable domain-language model. Include a glossary, entities and attributes, commands, events, policies/invariants, and traceability back to FR/AC identifiers. Mark unresolved facts as OPEN rather than guessing. Return Markdown only.\n\n# DSL plan\n${plan.content}\n\n${sourcePack}`,
+        signal,
+        onProgress,
+      )
+      await publish(domainLanguage)
+
+      this.reportProgress(onProgress, run, 'dsl', '正在生成固定格式的领域语言 DSL 文件')
+      const dslDocument = await this.generateDocument(
+        run,
+        'dsl',
+        'dsl-final',
+        'Domain language DSL',
+        `Generate the final domain language file from the approved specification and domain-language model. Output only plain text, never Markdown fences or commentary. Use this stable syntax: first line 'domain <Name>', second line 'version 1', then blocks such as 'entity <Name> { ... }', 'command <Name> { ... }', 'event <Name> { ... }', and 'rule <Name>: ...'. Keep identifiers ASCII in PascalCase or camelCase, preserve business wording in quoted descriptions, and add 'trace: FR-xxx' or 'trace: AC-xxx' where evidence exists. Use 'OPEN:' for unresolved items.\n\n# Domain-language model\n${domainLanguage.content}\n\n# Implementation specification\n${finalSpec.content}`,
+        signal,
+        onProgress,
+      )
+      await publish(dslDocument)
+
+      const dslContent = this.extractDslContent(dslDocument.content)
+      if (!dslDocument.workspacePath || !dslDocument.workspacePath.toLowerCase().endsWith('.dsl')) {
+        throw new Error('DSL 输出路径未正确初始化。')
+      }
+      await fs.mkdir(run.dslOutputPath!, { recursive: true })
+      dslDocument.content = dslContent
+      await fs.writeFile(dslDocument.path, dslContent, 'utf8')
+      await fs.writeFile(dslDocument.workspacePath, dslContent, 'utf8')
+      run.dslStatus = 'ready'
+      await this.persist(run)
+      await getStorage().conversations.addMessage(conversation.id, {
+        id: randomUUID(), role: 'assistant', agentName: 'DSL',
+        content: `## DSL 阶段完成\n\n领域语言中间文档和最终 DSL 文件已保存到：\`${run.dslOutputPath}\`\n\n最终文件：\`${dslDocument.workspacePath}\``,
+        timestamp: Date.now(),
+      })
+      this.reportProgress(onProgress, run, 'complete', 'DSL 已生成并保存，可供后续领域语言流程读取')
+      void recordActivity({ category: 'agent', action: 'requirement.dsl-generated', status: 'success', summary: 'Generated DSL artifacts from the implementation specification.', conversationId: conversation.id })
+      return run
+    } catch (error) {
+      run.dslStatus = 'failed'
+      await this.persist(run)
+      this.reportProgress(onProgress, run, 'failed', signal?.aborted ? 'DSL 生成已停止，已生成的中间文档已保存' : 'DSL 生成失败，已生成的中间文档已保存')
+      if (signal?.aborted) return run
+      throw error
+    }
+  }
+
+  /**
+   * Runs the post-DSL boundary without a provider call. The DSL snapshot is
+   * normalized into the pipeline's semantic package, then verified and passed
+   * to the repository's deterministic Java adapter in an isolated directory.
+   */
+  async buildCoding(input: SubmitCodingInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
+    if (this.activeSubmissions.has(input.conversationId)) {
+      throw new Error('The requirement workflow is already processing this conversation. Wait for it to finish first.')
+    }
+    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    if (!conversation) throw new Error('Conversation not found.')
+    const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation')
+    if (!run?.dslOutputPath || run.dslStatus !== 'ready') {
+      throw new Error('No completed DSL package is available in this workspace. Run /dsl before /coding.')
+    }
+    if (run.codingStatus === 'generating') {
+      throw new Error('Deterministic code generation is already running for this workspace.')
+    }
+    if (run.codingStatus === 'ready' && run.codingOutputPath) {
+      const manifestPath = path.join(run.codingOutputPath, 'codegen-manifest.json')
+      try {
+        const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as { sourceDslSha256?: string; status?: string }
+        const currentDsl = await fs.readFile(this.finalDslPath(run), 'utf8')
+        const currentHash = createHash('sha256').update(currentDsl).digest('hex')
+        if (manifest.status === 'completed' && manifest.sourceDslSha256 === currentHash) {
+          await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/coding')
+          await getStorage().conversations.addMessage(conversation.id, {
+            id: randomUUID(), role: 'assistant', agentName: 'Coding',
+            content: `## Deterministic code generation reused\n\nThe persisted DSL has not changed, so the verified code package is reused at \`${run.codingOutputPath}\`.`,
+            timestamp: Date.now(),
+          })
+          this.reportProgress(onProgress, run, 'complete', 'Reused the verified deterministic code generation result')
+          return run
+        }
+      } catch {
+        // Regenerate into a new content-addressed directory when the prior result is incomplete.
+      }
+    }
+
+    const controller = new AbortController()
+    const submission = this.buildCodingInternal(run, conversation, onProgress, controller.signal)
+    this.activeSubmissions.set(input.conversationId, submission)
+    this.abortControllers.set(input.conversationId, controller)
+    try {
+      return await submission
+    } finally {
+      this.activeSubmissions.delete(input.conversationId)
+      this.abortControllers.delete(input.conversationId)
+    }
+  }
+
+  private async buildCodingInternal(run: RequirementRun, conversation: Conversation, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
+    const generatedDocuments: RequirementDocument[] = []
+    try {
+      const configuredWorkspacePath = conversation.gitWorktreePath || conversation.workspacePath
+      if (!configuredWorkspacePath) throw new Error('A project workspace is required for /coding.')
+      const workspaceRoot = path.resolve(configuredWorkspacePath)
+      if (workspaceRoot === path.parse(workspaceRoot).root) throw new Error('A project workspace is required for /coding.')
+      const dslPath = this.finalDslPath(run)
+      this.assertWithinDirectory(dslPath, run.workspacePackagePath || path.resolve(run.dslOutputPath!))
+      const dslContent = await fs.readFile(dslPath, 'utf8')
+      const dslHash = createHash('sha256').update(dslContent).digest('hex')
+      const packageDirectory = run.workspacePackagePath || path.dirname(path.resolve(run.dslOutputPath!))
+      this.assertWithinDirectory(packageDirectory, workspaceRoot)
+      const outputRoot = path.join(packageDirectory, 'coding', 'output', 'runs', dslHash)
+      const intermediateRoot = path.join(packageDirectory, 'coding', 'intermediate', 'runs', dslHash)
+      this.assertWithinDirectory(outputRoot, workspaceRoot)
+      this.assertWithinDirectory(intermediateRoot, workspaceRoot)
+      run.codingOutputPath = outputRoot
+      run.codingStatus = 'generating'
+      await this.persist(run)
+      await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/coding')
+
+      const manifest = await this.addDocument(
+        run,
+        'coding',
+        'codegen-manifest',
+        'Deterministic code generation manifest',
+        `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', status: 'running' }, null, 2)}\n`,
+      )
+      generatedDocuments.push(manifest)
+      await this.persist(run)
+      onProgress?.({ conversationId: run.conversationId, runId: run.id, stage: 'coding', message: 'Preparing deterministic code generation', document: manifest, phase: 'started' })
+
+      this.throwIfAborted(signal)
+      this.reportProgress(onProgress, run, 'coding', 'Parsing the persisted DSL file')
+      const parsedDsl = this.parseDomainDsl(dslContent)
+      const semanticDslPath = path.join(intermediateRoot, '01-semantic-dsl')
+      await this.snapshotUpstream(run, 'coding', [{ name: 'domain-language.dsl', content: dslContent }])
+      const inputPath = path.join(intermediateRoot, '00-input')
+      await this.writeDeterministicFile(path.join(inputPath, 'domain-language.dsl'), dslContent)
+      await this.writeSemanticDslPackage(semanticDslPath, parsedDsl, dslContent, dslHash)
+      const semanticDocument = await this.addDocument(
+        run,
+        'coding',
+        'semantic-dsl',
+        'Semantic DSL package',
+        `# Semantic DSL package\n\nSource DSL: \`${dslPath}\`\n\nPath: \`${semanticDslPath}\`\n\nAggregates: ${parsedDsl.aggregates.length}\nRules: ${parsedDsl.rules.length}\n`,
+      )
+      generatedDocuments.push(semanticDocument)
+      await this.persist(run)
+      onProgress?.({ conversationId: run.conversationId, runId: run.id, stage: 'coding', message: 'Semantic DSL package created', document: semanticDocument, phase: 'completed' })
+
+      this.throwIfAborted(signal)
+      const pipelineRoot = path.join(workspaceRoot, 'code-production-pipeline')
+      const python = process.platform === 'win32' ? 'python.exe' : 'python3'
+      const targetModelPath = path.join(intermediateRoot, '02-generation-ir', 'target-model.yaml')
+      await this.writeDeterministicFile(targetModelPath, `${JSON.stringify({
+        schema_version: '1.0',
+        target_id: `eva-${this.toJavaPackageSegment(parsedDsl.domain)}-reference`,
+        approval_status: 'approved-for-non-production-reference-output',
+        production_output: false,
+        java_package: `com.cmcc.xcerp.generated.${this.toJavaPackageSegment(parsedDsl.domain)}`,
+        overwrite_policy: 'refuse-non-empty-output',
+      }, null, 2)}\n`)
+
+      this.reportProgress(onProgress, run, 'coding', 'Validating semantic DSL and building deterministic generation IR')
+      const validation = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_semantic_dsl.py'), semanticDslPath], workspaceRoot, signal)
+      const irPath = path.join(intermediateRoot, '02-generation-ir', 'generation-ir.yaml')
+      const transform = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'transformers', 'dsl_to_generation_ir.py'), semanticDslPath, '--output', irPath], workspaceRoot, signal)
+      const irValidation = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_generation_ir.py'), irPath, '--dsl-package', semanticDslPath], workspaceRoot, signal)
+      const irContent = await fs.readFile(irPath, 'utf8')
+      const irDocument = await this.addDocument(run, 'coding', 'generation-ir', 'Deterministic generation IR', irContent)
+      generatedDocuments.push(irDocument)
+      await this.persist(run)
+      onProgress?.({ conversationId: run.conversationId, runId: run.id, stage: 'coding', message: 'Generation IR validated', document: irDocument, phase: 'completed' })
+
+      this.throwIfAborted(signal)
+      this.reportProgress(onProgress, run, 'coding', 'Generating isolated Java code with the deterministic adapter')
+      const generatedCodePath = path.join(outputRoot, '03-generated-code')
+      const adapter = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'generic_semantic_java_adapter.py'), '--ir', irPath, '--target-model', targetModelPath, '--output', generatedCodePath], workspaceRoot, signal)
+      const verification = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'verify_generic_semantic_java_output.py'), generatedCodePath], workspaceRoot, signal)
+      const generationResult = await fs.readFile(path.join(generatedCodePath, 'generation-result.yaml'), 'utf8')
+      const resultDocument = await this.addDocument(run, 'coding', 'generation-result', 'Generated Java code package', generationResult)
+      generatedDocuments.push(resultDocument)
+      const verificationContent = [
+        '# Deterministic code generation verification',
+        '',
+        'AI involvement after DSL: none',
+        `Source DSL SHA-256: \`${dslHash}\``,
+        '',
+        '## Commands',
+        '',
+        `- Semantic DSL validation: ${validation}`,
+        `- DSL to generation IR: ${transform}`,
+        `- IR validation: ${irValidation}`,
+        `- Java adapter: ${adapter}`,
+        `- Java verification: ${verification}`,
+      ].join('\n') + '\n'
+      const verificationDocument = await this.addDocument(run, 'coding', 'verification', 'Code generation verification', verificationContent)
+      generatedDocuments.push(verificationDocument)
+
+      manifest.content = `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', adapter: 'generic-semantic-java', status: 'completed' }, null, 2)}\n`
+      await fs.writeFile(manifest.path, manifest.content, 'utf8')
+      if (manifest.workspacePath) await fs.writeFile(manifest.workspacePath, manifest.content, 'utf8')
+      run.codingStatus = 'ready'
+      await this.persist(run)
+      await this.persistDocuments(conversation.id, generatedDocuments, 'Coding')
+      await getStorage().conversations.addMessage(conversation.id, {
+        id: randomUUID(), role: 'assistant', agentName: 'Coding',
+        content: `## Deterministic code generation completed\n\nNo model was called after DSL. The isolated generated Java package, IR, manifest, and verification report are in \`${outputRoot}\`.`,
+        timestamp: Date.now(),
+      })
+      this.reportProgress(onProgress, run, 'complete', 'Deterministic code generation and verification completed')
+      void recordActivity({ category: 'agent', action: 'requirement.coding-generated', status: 'success', summary: 'Generated and verified code from the persisted DSL without AI.', conversationId: conversation.id })
+      return run
+    } catch (error) {
+      run.codingStatus = 'failed'
+      await this.persist(run)
+      this.reportProgress(onProgress, run, 'failed', signal?.aborted ? 'Deterministic code generation stopped; preserved artifacts remain available' : 'Deterministic code generation failed; preserved artifacts remain available')
+      if (signal?.aborted) return run
+      throw error
+    }
+  }
+
+  private parseDomainDsl(content: string): ParsedDomainDsl {
+    const domainMatch = content.match(/^\s*domain\s+([A-Za-z][A-Za-z0-9]*)\s*$/im)
+    if (!domainMatch) throw new Error('The DSL must start with a valid ASCII domain identifier.')
+    const aggregates: ParsedDslAggregate[] = []
+    const seenAggregates = new Set<string>()
+    const entityPattern = /^\s*entity\s+([A-Za-z][A-Za-z0-9]*)\s*\{([\s\S]*?)^\s*\}/gim
+    for (const match of content.matchAll(entityPattern)) {
+      const name = match[1]
+      if (seenAggregates.has(name)) throw new Error(`Duplicate DSL entity: ${name}`)
+      seenAggregates.add(name)
+      const fields: ParsedDslField[] = []
+      const seenFields = new Set<string>()
+      for (const line of match[2].split(/\r?\n/)) {
+        const field = line.trim().match(/^([A-Za-z][A-Za-z0-9_]*)\s*:\s*([A-Za-z][A-Za-z0-9_<>?,]*)/)
+        if (!field || ['trace', 'description'].includes(field[1].toLowerCase())) continue
+        if (seenFields.has(field[1])) throw new Error(`Duplicate field '${field[1]}' in entity ${name}`)
+        seenFields.add(field[1])
+        fields.push({ name: field[1], type: field[2] })
+      }
+      aggregates.push({ name, fields })
+    }
+    if (aggregates.length === 0) throw new Error('The DSL does not define any entity blocks to generate code from.')
+    const rules = [...content.matchAll(/^\s*rule\s+([A-Za-z][A-Za-z0-9_]*)\s*:/gim)].map((match) => match[1])
+    return { domain: domainMatch[1], aggregates, rules }
+  }
+
+  private async writeSemanticDslPackage(directory: string, parsed: ParsedDomainDsl, sourceContent: string, sourceHash: string): Promise<void> {
+    const aggregateIds = parsed.aggregates.map((_, index) => `DSL-AGG-${String(index + 1).padStart(3, '0')}`)
+    let fieldIndex = 0
+    const domain = {
+      aggregates: parsed.aggregates.map((aggregate, aggregateIndex) => ({
+        id: aggregateIds[aggregateIndex],
+        name: aggregate.name,
+        semantic_fields: aggregate.fields.map((field) => ({
+          id: `DSL-FIELD-${String(++fieldIndex).padStart(3, '0')}`,
+          name: field.name,
+          type: field.type,
+          trace_to: ['SPEC-001'],
+        })),
+        trace_to: ['SPEC-001'],
+      })),
+      excluded_capabilities: [],
+      asset_constraints: [],
+    }
+    const allElementIds = domain.aggregates.flatMap((aggregate) => [aggregate.id, ...aggregate.semantic_fields.map((field) => field.id)])
+    const manifest = {
+      schema_version: '1.0',
+      package: {
+        package_id: `DSL-${this.toJavaPackageSegment(parsed.domain).toUpperCase()}-001`,
+        module: parsed.domain,
+        source_spec_release: 'implementation-ready',
+        status: 'approved-for-core-generation-ir',
+      },
+      inputs: { required: ['domain-language.dsl'] },
+      input_sha256: { 'domain-language.dsl': sourceHash },
+      artifacts: {
+        domain: 'domain.yaml',
+        state_machine: 'state-machine.yaml',
+        rules: 'rules.yaml',
+        authorization: 'authorization.yaml',
+        integration: 'integration.yaml',
+        generation_map: 'generation-map.yaml',
+      },
+      open_item_gates: [{ id: 'OPEN-001', description: 'No physical production target is approved.' }],
+      generation_scope: { allowed: ['isolated-reference-java'], prohibited: ['production-write', 'schema-migration'] },
+      traceability: { required_chain: 'SPEC-* -> DSL-* -> GEN-* -> CODE-* -> TEST-*' },
+    }
+    const rules = { rules: parsed.rules.map((name, index) => ({ id: `DSL-RULE-${String(index + 1).padStart(3, '0')}`, name, trace_to: ['SPEC-001'] })) }
+    const generationMap = {
+      targets: domain.aggregates.map((aggregate, index) => ({
+        id: `GEN-${String(index + 1).padStart(3, '0')}`,
+        dsl_elements: [aggregate.id, ...aggregate.semantic_fields.map((field) => field.id)],
+        blocked_by: [],
+        generator_capabilities: ['isolated-reference-java'],
+        required_ir_sections: ['aggregates'],
+        trace_to: ['SPEC-001'],
+      })),
+      non_generatable: [{ id: 'GEN-OPEN-001', blocked_by: 'OPEN-001', reason: 'Production delivery requires a separately approved target model.' }],
+    }
+    const files: Record<string, unknown> = {
+      'dsl-manifest.yaml': manifest,
+      'domain.yaml': domain,
+      'state-machine.yaml': { state_machines: [] },
+      'rules.yaml': rules,
+      'authorization.yaml': { authorization: {} },
+      'integration.yaml': { integrations: [], blocked_contracts: [] },
+      'generation-map.yaml': generationMap,
+    }
+    await this.writeDeterministicFile(path.join(directory, 'domain-language.dsl'), sourceContent)
+    for (const [name, document] of Object.entries(files)) {
+      await this.writeDeterministicFile(path.join(directory, name), `${JSON.stringify(document, null, 2)}\n`)
+    }
+  }
+
+  private async runPipelineCommand(executable: string, args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
+    this.throwIfAborted(signal)
+    try {
+      const { stdout, stderr } = await execFileAsync(executable, args, { cwd, windowsHide: true, maxBuffer: 256 * 1024 })
+      this.throwIfAborted(signal)
+      return [stdout, stderr].map((value) => value.trim()).filter(Boolean).join('\n') || 'completed'
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      throw new Error(`Deterministic pipeline command failed: ${detail}`)
+    }
+  }
+
+  private async writeDeterministicFile(filePath: string, content: string): Promise<void> {
+    try {
+      const existing = await fs.readFile(filePath, 'utf8')
+      if (existing !== content) throw new Error(`Existing deterministic artifact differs: ${filePath}`)
+      return
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('Existing deterministic artifact differs:')) throw error
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.writeFile(filePath, content, 'utf8')
+  }
+
+  private toJavaPackageSegment(value: string): string {
+    const normalized = value.replace(/[^A-Za-z0-9]/g, '').toLowerCase()
+    return normalized || 'generated'
+  }
+
+  private assertWithinDirectory(candidate: string, directory: string): void {
+    const relative = path.relative(path.resolve(directory), path.resolve(candidate))
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`Path escapes the project workspace: ${candidate}`)
+    }
+  }
+
+  private async findWorkspaceRun(conversation: Conversation, status: RequirementRun['status']): Promise<RequirementRun | undefined> {
+    const allConversations = await getStorage().conversations.listConversations()
+    const conversationsById = new Map(allConversations.map((item) => [item.id, item]))
+    const normalize = (value?: string): string | undefined => {
+      if (!value) return undefined
+      try { return path.resolve(value).toLowerCase() } catch { return undefined }
+    }
+    const targetPaths = new Set([
+      normalize(conversation.workspacePath),
+      normalize(conversation.gitRepositoryPath),
+      normalize(conversation.gitWorktreePath),
+    ].filter((value): value is string => Boolean(value)))
+    return (await this.list()).find((run) => {
+      if (run.status !== status) return false
+      const owner = conversationsById.get(run.conversationId)
+      if (!owner) return false
+      if (conversation.workspaceId && owner.workspaceId && conversation.workspaceId === owner.workspaceId) return true
+      return [owner.workspacePath, owner.gitRepositoryPath, owner.gitWorktreePath]
+        .map(normalize)
+        .some((value) => Boolean(value && targetPaths.has(value)))
+    })
+  }
+
+  private async resolveWorkspaceSpecificationPath(conversation: Conversation): Promise<string | undefined> {
+    const workspacePath = conversation.gitWorktreePath || conversation.workspacePath
+    if (!workspacePath) return undefined
+    const requirementsRoot = path.join(path.resolve(workspacePath), 'requirements')
+    const candidates: Array<{ packageDirectory: string; modifiedAt: number }> = []
+    const addCandidate = async (packageDirectory: string): Promise<void> => {
+      const modelingDirectory = path.join(packageDirectory, '01-requirement-model')
+      try {
+        const stat = await fs.stat(modelingDirectory)
+        if (stat.isDirectory()) candidates.push({ packageDirectory, modifiedAt: stat.mtimeMs })
+      } catch {
+        // The workspace may not use the versioned requirements convention.
+      }
+    }
+    await addCandidate(requirementsRoot)
+    try {
+      const entries = await fs.readdir(requirementsRoot, { withFileTypes: true })
+      for (const entry of entries) if (entry.isDirectory()) await addCandidate(path.join(requirementsRoot, entry.name))
+    } catch {
+      return undefined
+    }
+    const selected = candidates.sort((left, right) => right.modifiedAt - left.modifiedAt)[0]
+    return selected ? path.join(selected.packageDirectory, '02-specification') : undefined
   }
 
   /**
@@ -249,8 +886,9 @@ export class RequirementEngineeringService {
       }
     }
 
-    const conversationEvidence = relevantMessages.slice(-8).map((message) => message.content).join('\n\n').slice(0, MAX_CONTEXT_CHARS)
-    if (importedFiles.length === 0 && !conversationEvidence) return undefined
+    // A chat transcript is not a durable modeling artifact. Only import
+    // explicit Markdown files produced by an earlier workflow.
+    if (importedFiles.length === 0) return undefined
 
     const now = new Date().toISOString()
     const run: RequirementRun = {
@@ -262,7 +900,6 @@ export class RequirementEngineeringService {
     const importedRequirement = [
       '# 从既有对话导入的需求建模输入',
       '以下材料由当前对话或任务产物导入。规格构建会保留其来源，并在检测中明确任何缺口。',
-      conversationEvidence || '当前对话没有可导入的文字结论，以下建模文件为主要输入。',
       ...importedFiles.map((file) => `## ${file.name}\n来源：\`${file.path}\`\n\n${file.content}`),
     ].join('\n\n').slice(0, MAX_CONTEXT_CHARS)
     await this.addDocument(run, 'requirement-analysis', 'final-merged', '导入的最终需求与建模输入', `${importedRequirement}\n`)
@@ -270,8 +907,6 @@ export class RequirementEngineeringService {
       for (const file of importedFiles.slice(0, 24)) {
         await this.addDocument(run, 'modeling', `imported-${path.basename(file.name, path.extname(file.name)).replace(/[^\w-]+/g, '-').slice(0, 48) || 'document'}`, `导入建模文档：${file.name}`, `# 导入建模文档：${file.name}\n\n来源：\`${file.path}\`\n\n${file.content}\n`)
       }
-    } else {
-      await this.addDocument(run, 'modeling', 'imported-conversation-model', '导入的需求建模结论', `# 导入的需求建模结论\n\n${conversationEvidence}\n`)
     }
     await this.persist(run)
     await getStorage().conversations.addMessage(conversation.id, {
@@ -291,6 +926,7 @@ export class RequirementEngineeringService {
 
     const generatedDocuments: RequirementDocument[] = []
     try {
+      await this.snapshotUpstream(run, 'requirement-modeling', [{ name: 'final-requirement.md', content: finalRequirement.content }])
       await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/requirement-modeling')
       this.throwIfAborted(signal)
       this.reportProgress(onProgress, run, 'modeling', '正在根据最终明确需求选择合适的建模标准')
@@ -320,6 +956,19 @@ export class RequirementEngineeringService {
         ))
       }
 
+      const finalModeling = await this.addDocument(
+        run,
+        'modeling',
+        'final-merged',
+        'Final requirement modeling',
+        [
+          '# Final requirement modeling',
+          'This document is the final output of /requirement-modeling and the only modeling input for /spec.',
+          ...generatedDocuments.map((document) => `## ${document.title}\n\n${document.content}`),
+        ].join('\n\n'),
+      )
+      generatedDocuments.push(finalModeling)
+
       await this.persist(run)
       await this.persistDocuments(conversation.id, generatedDocuments)
       await getStorage().conversations.addMessage(conversation.id, {
@@ -346,7 +995,10 @@ export class RequirementEngineeringService {
 
   private async buildSpecificationInternal(run: RequirementRun, conversation: Conversation, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
     const finalRequirement = [...run.documents].reverse().find((document) => document.stage === 'requirement-analysis' && document.dimension === 'final-merged')
-    const modelingDocuments = run.documents.filter((document) => document.stage === 'modeling')
+    const finalModeling = [...run.documents].reverse().find((document) => document.stage === 'modeling' && document.dimension === 'final-merged')
+    const modelingDocuments = finalModeling
+      ? [finalModeling]
+      : run.documents.filter((document) => document.stage === 'modeling')
     if (!finalRequirement || modelingDocuments.length === 0) throw new Error('规格构建缺少最终明确需求或需求建模成果。')
 
     const generatedDocuments: RequirementDocument[] = []
@@ -369,6 +1021,10 @@ export class RequirementEngineeringService {
       const priorCodeAnalysis = [...run.documents].reverse().find((document) => document.stage === 'code-analysis')
       const resolutionDocuments = run.documents.filter((document) => document.stage === 'spec-validation' && document.dimension === 'resolution-answers')
       const sourcePack = this.specificationSourcePack(finalRequirement, modelingDocuments, priorCodeAnalysis, codeEvidence, resolutionDocuments)
+      await this.snapshotUpstream(run, 'spec', [
+        { name: 'final-requirement.md', content: finalRequirement.content },
+        ...modelingDocuments.map((document, index) => ({ name: `requirement-model-${index + 1}.md`, content: document.content })),
+      ])
 
       this.reportProgress(onProgress, run, 'specification', '正在确定规格表达方式与追溯范围')
       const plan = await this.generateDocument(run, 'specification', 'specification-plan', '规格构建方案', this.specificationPlanPrompt(sourcePack), signal, onProgress)
@@ -532,8 +1188,9 @@ export class RequirementEngineeringService {
 
   private async start(conversation: Conversation, input: SubmitRequirementInput, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
     const now = new Date().toISOString()
+    const runId = randomUUID()
     const run: RequirementRun = {
-      id: randomUUID(),
+      id: runId,
       conversationId: conversation.id,
       conversationTitle: conversation.title,
       status: 'analyzing',
@@ -543,8 +1200,14 @@ export class RequirementEngineeringService {
       documents: [],
       evaluations: [],
       clarificationQuestions: [],
+      workspacePackagePath: this.createWorkspacePackagePath(conversation, input.content || conversation.title, runId),
+      workspaceOutputPath: undefined,
       createdAt: now,
       updatedAt: now,
+    }
+    if (run.workspacePackagePath) {
+      run.workspaceOutputPath = path.join(run.workspacePackagePath, 'spec', 'output')
+      await this.initializeRmsdPackage(run)
     }
     await fs.mkdir(this.runDirectory(run.id), { recursive: true })
     this.reportProgress(onProgress, run, 'source', '正在读取需求输入和附件')
@@ -709,13 +1372,34 @@ export class RequirementEngineeringService {
   }
 
   private async generateDocument(run: RequirementRun, stage: RequirementDocumentStage, dimension: string, title: string, prompt: string, signal?: AbortSignal, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementDocument> {
-    const content = await this.complete(prompt, signal)
-    const document = await this.addDocument(run, stage, dimension, title, `# ${title}\n\n${content.trim()}\n`)
+    const pendingContent = `# ${title}\n\n> 正在生成此文档，完成后会自动更新。\n`
+    const document = await this.addDocument(run, stage, dimension, title, pendingContent)
+    await this.persist(run)
+    onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `正在生成${title}`, document, phase: 'started' })
+    let content: string
+    try {
+      content = await this.complete(prompt, signal)
+    } catch (error) {
+      onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `生成${title}失败`, document, phase: 'failed' })
+      throw error
+    }
+    document.content = `# ${title}\n\n${content.trim()}\n`
+    await fs.writeFile(document.path, document.content, 'utf8')
+    if (document.workspacePath) await fs.writeFile(document.workspacePath, document.content, 'utf8')
     // The workspace panel reads the manifest, so persist each completed
     // document before reporting progress instead of waiting for the round end.
     await this.persist(run)
     onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `已生成${title}`, document })
+    onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `已生成${title}`, document, phase: 'completed' })
     return document
+  }
+
+  private extractDslContent(content: string): string {
+    const fenced = content.match(/```(?:dsl|domain-language)?\s*([\s\S]*?)```/i)
+    const source = (fenced?.[1] || content).replace(/^\s*#.*\n+/, '').trim()
+    const lines = source.split(/\r?\n/)
+    const domainIndex = lines.findIndex((line) => /^\s*domain\s+\S+/i.test(line))
+    return `${(domainIndex >= 0 ? lines.slice(domainIndex) : lines).join('\n').trim()}\n`
   }
 
   private async complete(prompt: string, signal?: AbortSignal): Promise<string> {
@@ -1003,7 +1687,12 @@ export class RequirementEngineeringService {
     const fileName = `${String(run.round).padStart(2, '0')}-${stage}-${dimension}${suffix}.md`
     const filePath = path.join(this.runDirectory(run.id), fileName)
     await fs.writeFile(filePath, content, 'utf8')
-    const document: RequirementDocument = { id, runId: run.id, round: run.round, stage, dimension, title, path: filePath, content, createdAt: new Date().toISOString() }
+    const workspacePath = this.workspaceDocumentPath(run, stage, dimension, fileName)
+    if (workspacePath) {
+      await fs.mkdir(path.dirname(workspacePath), { recursive: true })
+      await fs.writeFile(workspacePath, content, 'utf8')
+    }
+    const document: RequirementDocument = { id, runId: run.id, round: run.round, stage, dimension, title, path: filePath, workspacePath, content, createdAt: new Date().toISOString() }
     run.documents.push(document)
     return document
   }
@@ -1059,6 +1748,164 @@ export class RequirementEngineeringService {
   private runsRoot(): string { return path.join(app.getPath('userData'), 'requirement-engineering', 'runs') }
   private runDirectory(id: string): string { return path.join(this.runsRoot(), id) }
 
+  private createWorkspacePackagePath(conversation: Conversation, name: string, runId: string): string | undefined {
+    const configuredWorkspacePath = conversation.gitWorktreePath || conversation.workspacePath
+    if (!configuredWorkspacePath) return undefined
+    const workspaceRoot = path.resolve(configuredWorkspacePath)
+    if (workspaceRoot === path.parse(workspaceRoot).root) return undefined
+    const packageDirectory = path.join(workspaceRoot, '.eva', 'RMSD', this.requirementPackageName(name, runId))
+    this.assertWithinDirectory(packageDirectory, workspaceRoot)
+    return packageDirectory
+  }
+
+  private requireProjectWorkspace(conversation: Conversation): string {
+    const configuredWorkspacePath = conversation.gitWorktreePath || conversation.workspacePath
+    if (!configuredWorkspacePath || !configuredWorkspacePath.trim()) {
+      throw new Error('需求工程必须绑定项目工作区。请先在左侧选择或添加 xcerp-app-arc 项目，再新建对话后执行 /requirement。')
+    }
+    const workspaceRoot = path.resolve(configuredWorkspacePath)
+    if (workspaceRoot === path.parse(workspaceRoot).root) {
+      throw new Error('需求工程不能将磁盘根目录作为工作区。请选择具体的项目目录后重试。')
+    }
+    return workspaceRoot
+  }
+
+  private async ensureWorkspacePackage(run: RequirementRun, conversation: Conversation): Promise<void> {
+    const needsSync = !run.workspacePackagePath || run.documents.some((document) => !document.workspacePath)
+    if (!run.workspacePackagePath) {
+      run.workspacePackagePath = this.createWorkspacePackagePath(conversation, run.conversationTitle, run.id)
+      run.workspaceOutputPath = run.workspacePackagePath ? path.join(run.workspacePackagePath, 'spec', 'output') : undefined
+    }
+    if (run.workspacePackagePath) await this.initializeRmsdPackage(run)
+    if (!run.workspaceOutputPath) {
+      this.requireProjectWorkspace(conversation)
+      throw new Error('无法创建当前项目的需求产物目录。')
+    }
+    if (!needsSync) return
+    await this.publishExistingDocuments(run)
+    await this.persist(run)
+  }
+
+  private requirementPackageName(name: string, runId: string): string {
+    const base = name
+      .replace(/^\s*\/requirement\s*/i, '')
+      .split(/\r?\n/)[0]
+      .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 48)
+    return base && !/^new conversation$/i.test(base) ? base : `requirement-${runId.slice(0, 8)}`
+  }
+
+  private async initializeRmsdPackage(run: RequirementRun): Promise<void> {
+    const root = run.workspacePackagePath
+    if (!root) return
+    const stages = ['requirement', 'requirement-modeling', 'spec', 'dsl', 'coding']
+    for (const stage of stages) {
+      for (const bucket of ['upstream', 'intermediate', 'output']) {
+        await fs.mkdir(path.join(root, stage, bucket), { recursive: true })
+      }
+      await fs.writeFile(path.join(root, stage, 'ARTIFACT-CONTRACT.md'), this.stageArtifactContract(stage), 'utf8')
+    }
+    await fs.writeFile(path.join(root, 'RMSD-STANDARD.md'), this.rmsdStandard(), 'utf8')
+  }
+
+  private async snapshotUpstream(run: RequirementRun, stage: 'requirement-modeling' | 'spec' | 'dsl' | 'coding', sources: Array<{ name: string; content: string }>): Promise<void> {
+    if (!run.workspacePackagePath) return
+    const upstream = path.join(run.workspacePackagePath, stage, 'upstream')
+    await fs.mkdir(upstream, { recursive: true })
+    for (const source of sources) {
+      const name = source.name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-').slice(0, 120)
+      await fs.writeFile(path.join(upstream, name), source.content, 'utf8')
+    }
+  }
+
+  private finalDslPath(run: RequirementRun): string {
+    const finalDsl = [...run.documents].reverse().find((document) => document.stage === 'dsl' && document.dimension === 'dsl-final')
+    if (finalDsl?.workspacePath) return path.resolve(finalDsl.workspacePath)
+    return path.resolve(run.dslOutputPath || '', 'output', 'domain-language.dsl')
+  }
+
+  private rmsdStandard(): string {
+    return `# RMSD Artifact Standard\n\nEach requirement package is an isolated, project-local pipeline. Every stage has \`upstream\`, \`intermediate\`, and \`output\` directories. Downstream stages may read only the preceding stage's \`output\` snapshot.\n\n- Markdown artifacts are UTF-8 and begin with a level-one title.\n- Final requirement, model, and implementation specification are Markdown.\n- Final DSL is UTF-8 plain text named \`domain-language.dsl\`.\n- Deterministic code artifacts use JSON or YAML and record the source DSL SHA-256.\n- \`ARTIFACT-CONTRACT.md\` in each stage defines its required intermediate and output artifacts.\n`
+  }
+
+  private stageArtifactContract(stage: string): string {
+    const contracts: Record<string, string> = {
+      requirement: 'Input: user requirement and attachments. Intermediate: source, analysis, code evidence, clarifications, evaluations. Output: final-requirement.md.',
+      'requirement-modeling': 'Input: requirement/output/final-requirement.md. Intermediate: modeling-plan and selected standard models. Output: final-requirement-model.md.',
+      spec: 'Input: final requirement and requirement model. Intermediate: specification plan, business and code-aligned specifications, traceability, validation. Output: implementation-specification.md.',
+      dsl: 'Input: implementation specification. Intermediate: DSL plan and domain-language review model. Output: domain-language.dsl.',
+      coding: 'Input: domain-language.dsl. Intermediate: semantic DSL and generation IR. Output: deterministic generated code, manifests, and verification report.',
+    }
+    return `# ${stage} Artifact Contract\n\n${contracts[stage]}\n\nAll files are UTF-8. Outputs are immutable inputs for the next stage; unresolved facts must be marked OPEN rather than inferred.\n`
+  }
+
+  private workspaceDocumentPath(run: RequirementRun, stage: RequirementDocumentStage, dimension: string, fileName: string): string | undefined {
+    const stageName = stage === 'source' || stage === 'requirement-analysis' || stage === 'code-analysis' || stage === 'clarification' || stage === 'evaluation'
+      ? 'requirement'
+      : stage === 'modeling'
+        ? 'requirement-modeling'
+        : stage === 'specification' || stage === 'spec-validation'
+          ? 'spec'
+          : stage
+    const outputDocument = (stageName === 'requirement' && stage === 'requirement-analysis' && dimension === 'final-merged')
+      || (stageName === 'requirement-modeling' && dimension === 'final-merged')
+      || (stageName === 'spec' && stage === 'specification' && dimension === 'implementation-ready')
+      || (stageName === 'dsl' && dimension === 'dsl-final')
+    const workspaceRoot = stageName === 'coding'
+      ? (dimension === 'semantic-dsl' || dimension === 'generation-ir' ? this.codingIntermediateRoot(run) : run.codingOutputPath)
+      : run.workspacePackagePath
+        ? path.join(run.workspacePackagePath, stageName, outputDocument ? 'output' : 'intermediate')
+        : undefined
+    if (!workspaceRoot) return undefined
+
+    const workspaceFileName = stage === 'requirement-analysis' && dimension === 'final-merged'
+      ? 'final-requirement.md'
+      : stage === 'modeling' && dimension === 'final-merged'
+        ? 'final-requirement-model.md'
+        : stage === 'specification' && dimension === 'implementation-ready'
+          ? 'implementation-specification.md'
+        : stage === 'dsl'
+      ? dimension === 'dsl-plan'
+        ? '01-dsl-plan.md'
+        : dimension === 'domain-language'
+          ? '02-domain-language.md'
+          : dimension === 'dsl-final'
+            ? 'domain-language.dsl'
+            : fileName
+      : stage === 'coding'
+        ? dimension === 'codegen-manifest'
+          ? 'codegen-manifest.json'
+          : dimension === 'semantic-dsl'
+            ? '01-semantic-dsl/README.md'
+            : dimension === 'generation-ir'
+              ? '02-generation-ir/generation-ir.yaml'
+              : dimension === 'generation-result'
+                ? '03-generated-code/generation-result.yaml'
+                : dimension === 'verification'
+                  ? '04-verification/verification.md'
+                  : fileName
+        : fileName
+    return path.join(workspaceRoot, workspaceFileName)
+  }
+
+  private codingIntermediateRoot(run: RequirementRun): string | undefined {
+    if (!run.codingOutputPath) return undefined
+    const relative = path.relative(path.join(path.dirname(path.dirname(path.dirname(run.codingOutputPath))), 'output'), run.codingOutputPath)
+    return path.join(path.dirname(path.dirname(path.dirname(run.codingOutputPath))), 'intermediate', relative)
+  }
+
+  private async publishExistingDocuments(run: RequirementRun): Promise<void> {
+    for (const document of run.documents) {
+      const workspacePath = this.workspaceDocumentPath(run, document.stage, document.dimension, path.basename(document.path))
+      if (!workspacePath) continue
+      await fs.mkdir(path.dirname(workspacePath), { recursive: true })
+      await fs.writeFile(workspacePath, document.content, 'utf8')
+      document.workspacePath = workspacePath
+    }
+  }
+
   private async resolveDocumentPath(requestedPath: string): Promise<string> {
     const runsRoot = path.resolve(this.runsRoot())
     const filePath = path.resolve(requestedPath)
@@ -1104,7 +1951,9 @@ export class RequirementEngineeringService {
     }
     const ready = run.status === 'ready-for-specification'
     const questions = run.clarificationQuestions.length ? `\n\n待澄清问题：\n${run.clarificationQuestions.map((question) => `- ${question.question}`).join('\n')}` : ''
-    const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${ready ? '需求已明确，可进入规格阶段。' : '等待你在下方选择澄清选项。'}\n文档目录：\`${this.runDirectory(run.id)}\`${questions}\n\n${ready ? '下一阶段将基于这些持久化文档生成规格说明。' : '请在对话中的澄清卡片完成选择，然后点击“提交确认”继续。'}`
+    const projectDirectory = run.workspaceOutputPath ? path.dirname(run.workspaceOutputPath) : undefined
+    const projectLocation = projectDirectory ? `项目产物目录：\`${projectDirectory}\`\n` : ''
+    const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${ready ? '需求已明确，可进入规格阶段。' : '等待你在下方选择澄清选项。'}\n${projectLocation}运行档案：\`${this.runDirectory(run.id)}\`${questions}\n\n${ready ? '下一阶段将基于项目中的持久化文档生成规格说明。' : '请在对话中的澄清卡片完成选择，然后点击“提交确认”继续。'}`
     await getStorage().conversations.addMessage(conversationId, { id: randomUUID(), role: 'assistant', agentName: '需求工程', content, timestamp: Date.now() })
   }
 }

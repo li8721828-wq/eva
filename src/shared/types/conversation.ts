@@ -7,6 +7,13 @@ export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'ful
 export type ConversationExecutionStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 export type ConversationTitleSource = 'auto' | 'manual' | 'system'
 
+export interface ChatMessageReference {
+  messageId: string
+  role: 'user' | 'assistant'
+  content: string
+  authorName?: string
+}
+
 export interface Conversation {
   id: string
   title: string
@@ -75,6 +82,8 @@ export interface ChatMessage {
   usage?: ChatUsage
   /** User-curated assistant response, retained in the conversation record. */
   favorited?: boolean
+  /** A user-selected prior message that should be supplied as focused context. */
+  quotedMessage?: ChatMessageReference
   timestamp: number
 }
 

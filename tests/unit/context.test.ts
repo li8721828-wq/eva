@@ -123,6 +123,8 @@ describe('ContextManager', () => {
       expect(prompt).toContain('Never invent a source')
       expect(prompt).toContain('current information could not be verified')
       expect(prompt).toContain('checked with read_file')
+      expect(prompt).toContain('never for labels or isolated keywords')
+      expect(prompt).toContain('render file names, table names, field names, and ordinary identifiers as normal text')
     })
 
     it('does not inject legacy output-format rules into the system prompt', () => {
@@ -175,6 +177,32 @@ describe('ContextManager', () => {
 
       expect(result).toHaveLength(21)
       expect(result[1].content).toBe('turn 0')
+    })
+  })
+
+  describe('quoted message context', () => {
+    it('supplies the selected reference with the current user request', () => {
+      const agent: AgentConfig = {
+        id: 'quote-agent', name: 'Quote Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+      const result = cm.buildContext({
+        agentConfig: agent,
+        workspacePath: 'C:\\workspace',
+        tools: [],
+        messages: [{
+          id: 'current-message', conversationId: 'conversation', role: 'user',
+          content: 'Continue the task from the quoted message.', timestamp: 1,
+          quotedMessage: {
+            messageId: 'previous-message', role: 'assistant', content: 'Implement the account reconciliation report.',
+          },
+        }],
+      })
+
+      expect(result[1].content).toContain('User-selected conversation reference - required context')
+      expect(result[1].content).toContain('Implement the account reconciliation report.')
+      expect(result[1].content).toContain('Continue the task from the quoted message.')
     })
   })
 })

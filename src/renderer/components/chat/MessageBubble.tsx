@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, ChevronDown, BrainCircuit, CircleAlert, ExternalLink, SearchCheck } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, CircleAlert, ExternalLink, SearchCheck } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -26,9 +26,15 @@ function CopyButton({ text }: { text: string }) {
 
   return (
     <button
+      type="button"
       onClick={handleCopy}
       aria-label="Copy message"
-      className="absolute right-2 top-2 p-1 rounded bg-zinc-200/80 text-zinc-500 hover:text-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity"
+      className={cn(
+        'mt-1 mr-1 inline-flex h-6 w-6 self-end items-center justify-center rounded-md transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-100',
+        copied
+          ? 'text-[#91acd7] opacity-100'
+          : 'text-[#a9bee2] opacity-0 group-hover:opacity-100 hover:text-[#91acd7] focus-visible:opacity-100 focus-visible:text-[#91acd7]',
+      )}
       title="Copy"
     >
       {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
@@ -241,6 +247,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
+  const setQuotedMessage = useChatStore((state) => state.setQuotedMessage)
   const [copied, setCopied] = useState(false)
   const actionCopy = language === 'zh'
     ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成', remove: '删除回复', confirm: '删除这条回复及其后续内容吗？' }
@@ -252,6 +259,16 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     await navigator.clipboard.writeText(message.content)
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1600)
+  }
+
+  const quoteCurrentMessage = () => {
+    if (message.role !== 'user' && message.role !== 'assistant') return
+    setQuotedMessage({
+      messageId: message.id,
+      role: message.role,
+      content: message.content.slice(0, 16_000),
+      authorName: message.agentName,
+    })
   }
 
   const outputAgent = message.agentId
@@ -274,36 +291,52 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
         className={cn('flex justify-end', className)}
         style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
       >
-        <div className="chat-message-surface chat-user-message group relative ml-auto flex min-h-12 max-w-[72%] flex-col px-5 py-3.5 pr-12">
-          {/* Agent name label */}
-          {message.agentName && (
-            <Badge variant="primary" className="mb-1">
-              {message.agentName}
-            </Badge>
-          )}
-          <div
-            className="chat-user-message__content cursor-text select-text text-[15px] leading-7 whitespace-pre-wrap"
-            style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
-            contentEditable
-            suppressContentEditableWarning
-            spellCheck={false}
-            onBeforeInput={(event) => event.preventDefault()}
-            onPaste={(event) => event.preventDefault()}
-            onDrop={(event) => event.preventDefault()}
-            onCut={(event) => event.preventDefault()}
-          >
-            {message.content}
-          </div>
-          <CopyButton text={message.content} />
-          {message.images?.length ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {message.images.map((image) => (
-                <ReferenceImagePreview key={image.path} image={image} className="h-20 w-20 rounded-md border border-white/25" />
-              ))}
+        <div className="group ml-auto flex max-w-[72%] flex-col items-end">
+          <div className="chat-message-surface chat-user-message flex min-h-16 max-w-full flex-col px-6 py-4">
+            {/* Agent name label */}
+            {message.agentName && (
+              <Badge variant="primary" className="mb-1">
+                {message.agentName}
+              </Badge>
+            )}
+            <div
+              className="chat-user-message__content cursor-text select-text whitespace-pre-wrap"
+              style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+              contentEditable
+              suppressContentEditableWarning
+              spellCheck={false}
+              onBeforeInput={(event) => event.preventDefault()}
+              onPaste={(event) => event.preventDefault()}
+              onDrop={(event) => event.preventDefault()}
+              onCut={(event) => event.preventDefault()}
+            >
+              {message.content}
             </div>
-          ) : null}
-          {/* Tool calls */}
-          {message.toolCalls?.length ? <ToolCallGroupView toolCalls={message.toolCalls} className="mt-3" /> : null}
+            {message.quotedMessage ? (
+              <div className="mt-3 flex max-w-full items-start gap-2 border-l-2 border-[#cdddf1] bg-white/45 px-3 py-2 text-left text-xs leading-5 text-[#59718f]">
+                <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#8da7cc]" aria-hidden="true" />
+                <div className="min-w-0">
+                  <div className="font-medium text-[#7189aa]">引用{message.quotedMessage.role === 'assistant' ? '助手' : '用户'}消息</div>
+                  <div className="truncate">{message.quotedMessage.content}</div>
+                </div>
+              </div>
+            ) : null}
+            {message.images?.length ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {message.images.map((image) => (
+                  <ReferenceImagePreview key={image.path} image={image} className="h-20 w-20 rounded-md border border-white/25" />
+                ))}
+              </div>
+            ) : null}
+            {/* Tool calls */}
+            {message.toolCalls?.length ? <ToolCallGroupView toolCalls={message.toolCalls} className="mt-3" /> : null}
+          </div>
+          <div className="message-actions mt-1 flex items-center gap-0.5 self-end opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <button type="button" onClick={quoteCurrentMessage} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title="引用消息" aria-label="引用消息">
+              <Quote className="h-3.5 w-3.5" />引用
+            </button>
+            <CopyButton text={message.content} />
+          </div>
         </div>
       </article>
     )
@@ -325,8 +358,8 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
       </div>
 
       {/* Content */}
-      <div className="min-w-0 max-w-[52rem]">
-        <div className={cn('chat-message-surface chat-assistant-message px-5 py-4', `chat-assistant-message--format-${outputFormat}`)}>
+      <div className="min-w-0 max-w-[66rem]">
+        <div className={cn('chat-message-surface chat-assistant-message py-4 pl-3 pr-5', `chat-assistant-message--format-${outputFormat}`)}>
           {message.agentName && (
             <div className="chat-agent-label mb-2.5 flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
@@ -342,6 +375,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
 
         {!isStreaming && !isTool && (
           <div className="message-actions mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+            <button type="button" onClick={quoteCurrentMessage} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title="引用消息" aria-label="引用消息">
+              <Quote className="h-3.5 w-3.5" />引用
+            </button>
             <button type="button" onClick={() => void handleCopyAssistant()} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.copy} aria-label={actionCopy.copy}>
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? actionCopy.copied : actionCopy.copy}
             </button>

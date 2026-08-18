@@ -8,7 +8,7 @@ import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, ClipboardList, FileText, FolderOpen, ImagePlus, Paperclip, Send, Settings2, Square, X } from 'lucide-react'
+import { Bot, ClipboardList, FileText, FolderOpen, Quote, Send, Settings2, Square, X } from 'lucide-react'
 import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useShallow } from 'zustand/react/shallow'
@@ -33,9 +33,29 @@ const SLASH_COMMANDS = [
     label: '/spec',
     description: '基于需求建模和代码证据构建并校验实施规格',
   },
+  {
+    command: 'dsl',
+    label: '/dsl',
+    description: 'Use the completed specification to generate domain-language DSL files',
+  },
+  {
+    command: 'coding',
+    label: '/coding',
+    description: 'Generate and verify isolated Java code from the persisted DSL without AI',
+  },
+  {
+    command: 'file',
+    label: '/file',
+    description: '添加一个或多个文件到当前消息',
+  },
+  {
+    command: 'folder',
+    label: '/folder',
+    description: '添加一个文件夹到当前消息',
+  },
 ] as const
 
-const COMMAND_INPUT_SEPARATOR = '\u3000'
+const COMMAND_INPUT_SEPARATOR = ' '
 
 function getConnectionDisplayName(provider: ProviderConfigEntry): string {
   const defaultNames: Record<ProviderConfigEntry['type'], string> = {
@@ -50,15 +70,17 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, inputText, referenceImages, documentAttachments, setConversationPermissions, setInputText, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError, startRequirementProgress, updateRequirementProgress, finishRequirementProgress } = useChatStore(useShallow((state) => ({
+  const { conversations, createConversation, currentConversationId, inputText, quotedMessage, referenceImages, documentAttachments, setConversationPermissions, setInputText, setQuotedMessage, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError, startRequirementProgress, updateRequirementProgress, finishRequirementProgress } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     createConversation: state.createConversation,
     currentConversationId: state.currentConversationId,
     inputText: state.inputText,
+    quotedMessage: state.quotedMessage,
     referenceImages: state.referenceImages,
     documentAttachments: state.documentAttachments,
     setConversationPermissions: state.setConversationPermissions,
     setInputText: state.setInputText,
+    setQuotedMessage: state.setQuotedMessage,
     setReferenceImages: state.setReferenceImages,
     setDocumentAttachments: state.setDocumentAttachments,
     sendMessage: state.sendMessage,
@@ -84,7 +106,6 @@ export function InputBar({ className }: InputBarProps) {
   const startExpertTask = useTaskStore((state) => state.startExpertTask)
   const abortExpertTask = useTaskStore((state) => state.abortExpertTask)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const imageInputRef = useRef<HTMLInputElement>(null)
   const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDraggingAttachments, setIsDraggingAttachments] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
@@ -92,7 +113,9 @@ export function InputBar({ className }: InputBarProps) {
   const [caretPosition, setCaretPosition] = useState(0)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const [activeCommandIndex, setActiveCommandIndex] = useState(0)
-  const [isRequirementSubmitting, setIsRequirementSubmitting] = useState(false)
+  const isRequirementSubmitting = useChatStore((state) => Boolean(
+    currentConversationId && state.requirementProgressByConversation[currentConversationId]
+  ))
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
@@ -131,7 +154,7 @@ export function InputBar({ className }: InputBarProps) {
   }, [slashCommand])
 
   const selectedSlashCommand = useMemo(() => {
-    const match = inputText.match(/^\/(?:requirement(?:-modeling)?|spec)(?=\s|$)/i)
+    const match = inputText.match(/^\/(?:requirement(?:-modeling)?|spec|dsl|coding)(?=\s|$)/i)
     return match?.[0] || null
   }, [inputText])
 
@@ -210,8 +233,59 @@ export function InputBar({ className }: InputBarProps) {
       try {
         await window.eva.symposium.continue({ conversationId: currentConversation.id, content: inputText.trim() })
         setInputText('')
+        setQuotedMessage(null)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'Could not continue the Symposium.')
+      }
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
+    const codingMatch = inputText.trim().match(/^\/coding$/i)
+    if (codingMatch) {
+      if (referenceImages.length > 0 || documentAttachments.length > 0) {
+        setError('Code generation uses the persisted DSL. Remove current attachments or images first.')
+        return
+      }
+      let requirementConversationId: string | null = null
+      try {
+        const conversation = currentConversation || await createConversation()
+        requirementConversationId = conversation.id
+        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/coding', timestamp: Date.now() })
+        setInputText('')
+        setQuotedMessage(null)
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+        startRequirementProgress(conversation.id, 'Preparing deterministic code generation from the persisted DSL')
+        await window.eva.requirements.coding({ conversationId: conversation.id })
+        await useChatStore.getState().refreshConversation(conversation.id)
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'Deterministic code generation failed.')
+      } finally {
+        if (requirementConversationId) finishRequirementProgress(requirementConversationId)
+      }
+      if (textareaRef.current) textareaRef.current.style.height = 'auto'
+      return
+    }
+    const dslMatch = inputText.trim().match(/^\/dsl$/i)
+    if (dslMatch) {
+      if (referenceImages.length > 0 || documentAttachments.length > 0) {
+        setError('DSL generation uses the completed specification. Remove current attachments or images first.')
+        return
+      }
+      let requirementConversationId: string | null = null
+      try {
+        const conversation = currentConversation || await createConversation()
+        requirementConversationId = conversation.id
+        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/dsl', timestamp: Date.now() })
+        setInputText('')
+        setQuotedMessage(null)
+        if (textareaRef.current) textareaRef.current.style.height = 'auto'
+        startRequirementProgress(conversation.id, '正在读取已完成的最终实施规格')
+        await window.eva.requirements.dsl({ conversationId: conversation.id })
+        await useChatStore.getState().refreshConversation(conversation.id)
+      } catch (error) {
+        setError(error instanceof Error ? error.message : 'DSL generation failed.')
+      } finally {
+        if (requirementConversationId) finishRequirementProgress(requirementConversationId)
       }
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
@@ -222,13 +296,13 @@ export function InputBar({ className }: InputBarProps) {
         setError('规格构建使用已完成的需求建模和代码证据，请先移除当前附件或图片。')
         return
       }
-      setIsRequirementSubmitting(true)
       let requirementConversationId: string | null = null
       try {
         const conversation = currentConversation || await createConversation()
         requirementConversationId = conversation.id
         addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/spec', timestamp: Date.now() })
         setInputText('')
+        setQuotedMessage(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取需求建模成果并核对代码证据')
         await window.eva.requirements.spec({ conversationId: conversation.id })
@@ -236,7 +310,6 @@ export function InputBar({ className }: InputBarProps) {
       } catch (error) {
         setError(error instanceof Error ? error.message : '规格构建执行失败。')
       } finally {
-        setIsRequirementSubmitting(false)
         if (requirementConversationId) finishRequirementProgress(requirementConversationId)
       }
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -248,7 +321,6 @@ export function InputBar({ className }: InputBarProps) {
         setError('需求建模直接使用已确认的最终需求，请先移除当前附件或图片。')
         return
       }
-      setIsRequirementSubmitting(true)
       let requirementConversationId: string | null = null
       try {
         const conversation = currentConversation || await createConversation()
@@ -261,6 +333,7 @@ export function InputBar({ className }: InputBarProps) {
           timestamp: Date.now(),
         })
         setInputText('')
+        setQuotedMessage(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取已确认需求并选择建模标准')
         await window.eva.requirements.model({ conversationId: conversation.id })
@@ -268,7 +341,6 @@ export function InputBar({ className }: InputBarProps) {
       } catch (error) {
         setError(error instanceof Error ? error.message : '需求建模执行失败。')
       } finally {
-        setIsRequirementSubmitting(false)
         if (requirementConversationId) finishRequirementProgress(requirementConversationId)
       }
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -280,7 +352,6 @@ export function InputBar({ className }: InputBarProps) {
         setError('需求工程暂不直接接收图片，请先用普通对话描述图片内容或附加需求文档。')
         return
       }
-      setIsRequirementSubmitting(true)
       let requirementConversationId: string | null = null
       try {
         const conversation = currentConversation || await createConversation()
@@ -294,6 +365,7 @@ export function InputBar({ className }: InputBarProps) {
           timestamp: Date.now(),
         })
         setInputText('')
+        setQuotedMessage(null)
         setDocumentAttachments([])
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取需求输入和附件')
@@ -306,7 +378,6 @@ export function InputBar({ className }: InputBarProps) {
       } catch (error) {
         setError(error instanceof Error ? error.message : '需求工程执行失败。')
       } finally {
-        setIsRequirementSubmitting(false)
         if (requirementConversationId) finishRequirementProgress(requirementConversationId)
       }
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
@@ -325,6 +396,7 @@ export function InputBar({ className }: InputBarProps) {
         timestamp: Date.now(),
       })
       setInputText('')
+      setQuotedMessage(null)
       setReferenceImages([])
       await startExpertTask(goal, conversation.id)
     } else {
@@ -333,7 +405,7 @@ export function InputBar({ className }: InputBarProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [addMessage, createConversation, currentConversation, currentConversationId, documentAttachments, finishRequirementProgress, inputText, isRequirementSubmitting, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setDocumentAttachments, setError, setInputText, setReferenceImages, startExpertTask, startRequirementProgress, workMode])
+  }, [addMessage, createConversation, currentConversation, currentConversationId, documentAttachments, finishRequirementProgress, inputText, isRequirementSubmitting, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setDocumentAttachments, setError, setInputText, setQuotedMessage, setReferenceImages, startExpertTask, startRequirementProgress, workMode])
 
   const insertSymposiumMention = useCallback((participant: typeof symposiumMentionOptions[number]) => {
     if (!symposiumMention) return
@@ -347,16 +419,6 @@ export function InputBar({ className }: InputBarProps) {
       textareaRef.current?.setSelectionRange(nextCaretPosition, nextCaretPosition)
     })
   }, [inputText, setInputText, symposiumMention, symposiumMentionOptions])
-
-  const insertSlashCommand = useCallback((command: typeof SLASH_COMMANDS[number]['command']) => {
-    const nextInput = `/${command}${COMMAND_INPUT_SEPARATOR}`
-    setInputText(nextInput)
-    setCaretPosition(nextInput.length)
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus()
-      textareaRef.current?.setSelectionRange(nextInput.length, nextInput.length)
-    })
-  }, [setInputText])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (filteredSlashCommands.length > 0) {
@@ -443,11 +505,6 @@ export function InputBar({ className }: InputBarProps) {
     setAttachmentError(validationMessage)
   }, [referenceImages, setReferenceImages])
 
-  const addReferenceImages = (event: React.ChangeEvent<HTMLInputElement>) => {
-    addReferenceFiles(Array.from(event.target.files || []))
-    event.target.value = ''
-  }
-
   const addClipboardImages = useCallback(async (files: File[]) => {
     const slots = 4 - referenceImages.length
     if (slots <= 0) {
@@ -495,9 +552,25 @@ export function InputBar({ className }: InputBarProps) {
     if (uniquePaths.length > additions.length) setAttachmentError('You can attach up to 20 files or folders at once.')
   }, [documentAttachments, setDocumentAttachments])
 
-  const selectAttachments = () => {
-    void window.eva.file.selectAttachments().then(addDocumentPaths).catch(() => setAttachmentError('Could not select attachments.'))
-  }
+  const insertSlashCommand = useCallback((command: typeof SLASH_COMMANDS[number]['command']) => {
+    if (command === 'file' || command === 'folder') {
+      setInputText('')
+      setCaretPosition(0)
+      requestAnimationFrame(() => textareaRef.current?.focus())
+      const selection = command === 'file'
+        ? window.eva.file.selectFiles()
+        : window.eva.file.selectFolder().then((path) => path ? [path] : [])
+      void selection.then(addDocumentPaths).catch(() => setAttachmentError('Could not select attachments.'))
+      return
+    }
+    const nextInput = `/${command}${COMMAND_INPUT_SEPARATOR}`
+    setInputText(nextInput)
+    setCaretPosition(nextInput.length)
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus()
+      textareaRef.current?.setSelectionRange(nextInput.length, nextInput.length)
+    })
+  }, [addDocumentPaths, setInputText])
 
   const handleAttachmentDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault()
@@ -580,7 +653,29 @@ export function InputBar({ className }: InputBarProps) {
           onDragLeave={() => setIsDraggingAttachments(false)}
           onDrop={handleAttachmentDrop}
         >
-          <input ref={imageInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="sr-only" onChange={addReferenceImages} />
+          {quotedMessage && (
+            <div className="flex min-w-0 items-start gap-2.5 rounded-t-[7px] border-b border-violet-100 bg-violet-50/55 px-4 py-2.5">
+              <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-semibold text-violet-700">
+                  {quotedMessage.role === 'user' ? '引用用户消息' : '引用助手消息'}
+                  {quotedMessage.authorName ? ` · ${quotedMessage.authorName}` : ''}
+                </div>
+                <div className="mt-0.5 truncate text-xs text-zinc-600">
+                  {quotedMessage.content.replace(/\s+/g, ' ').trim() || '(空消息)'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuotedMessage(null)}
+                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-400 transition-colors hover:bg-white/80 hover:text-zinc-700"
+                title="取消引用"
+                aria-label="取消引用"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           {referenceImages.length > 0 && (
             <div className="flex flex-wrap gap-2 rounded-t-[7px] border-b border-zinc-100 bg-white px-4 py-3">
               {referenceImages.map((image) => (
@@ -609,18 +704,6 @@ export function InputBar({ className }: InputBarProps) {
             </div>
           )}
             <div className="flex min-h-16 items-end gap-3 rounded-t-[7px] bg-white px-4 py-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="mb-0.5 h-8 w-8 shrink-0 text-zinc-400 hover:text-zinc-700"
-              title="Attach files or folders. Paste a screenshot into the message box with Ctrl+V."
-              aria-label="Attach files or folders; screenshots can be pasted into the message box"
-              onClick={selectAttachments}
-              disabled={isSymposiumRunning || isSymposiumConversation || isRequirementSubmitting}
-            >
-            {referenceImages.length || documentAttachments.length ? <ImagePlus className="h-4 w-4" /> : <Paperclip className="h-4 w-4" />}
-            </Button>
-
             <div className="relative min-h-[32px] flex-1">
               {selectedSlashCommand && (
                 <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words py-1.5 text-sm leading-5 text-zinc-900">
@@ -640,7 +723,7 @@ export function InputBar({ className }: InputBarProps) {
                 rows={1}
                 disabled={isSymposiumRunning || isRequirementSubmitting}
                 className={cn(
-                  'chat-composer__textarea relative z-10 max-h-[200px] min-h-[32px] w-full resize-none bg-transparent py-1.5 text-sm leading-5 placeholder:text-zinc-400 focus:outline-none',
+                  'chat-composer__textarea relative z-10 max-h-[200px] min-h-[32px] w-full resize-none bg-transparent py-1.5 text-base leading-5 placeholder:text-zinc-400 focus:outline-none',
                   selectedSlashCommand ? 'text-transparent caret-zinc-900 selection:bg-violet-200 selection:text-transparent' : 'text-zinc-900',
                 )}
               />

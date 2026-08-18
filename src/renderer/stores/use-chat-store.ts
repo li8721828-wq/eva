@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, Conversation, ConversationPermissionLevel, ExecutionTraceEntry, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTraceEntry, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
 import type { RequirementProgress } from '../../shared/types/requirement-engineering'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
@@ -33,6 +33,7 @@ interface ChatState {
   streamingByConversation: Record<string, ConversationStreamState>
   requirementProgressByConversation: Record<string, RequirementProgressState>
   inputText: string
+  quotedMessage: ChatMessageReference | null
   referenceImages: ChatImageAttachment[]
   documentAttachments: ChatDocumentAttachment[]
   error: string | null
@@ -43,6 +44,7 @@ interface ChatState {
   setMessages: (messages: ChatMessage[]) => void
   addMessage: (message: ChatMessage) => void
   setInputText: (text: string) => void
+  setQuotedMessage: (message: ChatMessageReference | null) => void
   setReferenceImages: (images: ChatImageAttachment[]) => void
   setDocumentAttachments: (attachments: ChatDocumentAttachment[]) => void
   setError: (error: string | null) => void
@@ -92,6 +94,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streamingByConversation: {},
   requirementProgressByConversation: {},
   inputText: '',
+  quotedMessage: null,
   referenceImages: [],
   documentAttachments: [],
   error: null,
@@ -101,11 +104,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setMessages: (messages) => set({ messages }),
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
   setInputText: (text) => set({ inputText: text }),
+  setQuotedMessage: (message) => set({ quotedMessage: message }),
   setReferenceImages: (images) => set({ referenceImages: images }),
   setDocumentAttachments: (attachments) => set({ documentAttachments: attachments }),
   setError: (error) => set({ error }),
   startRequirementProgress: (conversationId, message) => {
-    const progress: RequirementProgress = { conversationId, stage: 'source', message }
+    const progress: RequirementProgress = { conversationId, stage: 'source', message, phase: 'started' }
     set((state) => ({
       requirementProgressByConversation: {
         ...state.requirementProgressByConversation,
@@ -193,7 +197,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         accessScope: workspace ? 'workspace' : 'full',
         permissionLevel: workspace ? 'workspace' : 'full-access',
         fileAccessGrants: [],
-        workspacePath: workspace?.path || '',
+        ...(workspace?.path ? { workspacePath: workspace.path } : {}),
       })
       set((s) => ({
         conversations: [conv, ...s.conversations],
@@ -377,7 +381,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (agentId) => {
-    const { inputText, referenceImages, documentAttachments, currentConversationId } = get()
+    const { inputText, quotedMessage, referenceImages, documentAttachments, currentConversationId } = get()
     if ((!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
 
     const messageContent = inputText.trim() || (referenceImages.length ? 'Create an editable Blender model from the attached reference images.' : 'Read and analyze the attached files.')
@@ -433,6 +437,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversationId: convId,
       role: 'user',
       content: messageContent,
+      quotedMessage: quotedMessage || undefined,
       attachments: documentAttachments,
       images: referenceImages,
       timestamp: Date.now(),
@@ -441,6 +446,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       messages: [...s.messages, userMessage],
       inputText: '',
+      quotedMessage: null,
       referenceImages: [],
       documentAttachments: [],
       streamingByConversation: {
@@ -451,7 +457,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     try {
-      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments)
+      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined)
     } catch (err) {
       console.error('Failed to send message:', err)
       set((s) => ({

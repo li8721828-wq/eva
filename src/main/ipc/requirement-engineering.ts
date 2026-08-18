@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from '../services/project-index-service'
-import type { SubmitClarificationAnswersInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
+import type { SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { RequirementEngineeringService } from '../services/requirement-engineering-service'
 
 export function registerRequirementEngineeringHandlers(providers: ProviderRegistry, projectIndex?: ProjectIndexService): void {
@@ -19,6 +19,12 @@ export function registerRequirementEngineeringHandlers(providers: ProviderRegist
   })
   ipcMain.handle(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, async (event, input: SubmitSpecificationInput) => {
     return service.buildSpecification(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
+  })
+  ipcMain.handle(IPC.REQUIREMENT_DSL_SUBMIT, async (event, input: SubmitDslInput) => {
+    return service.buildDsl(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
+  })
+  ipcMain.handle(IPC.REQUIREMENT_CODING_SUBMIT, async (event, input: SubmitCodingInput) => {
+    return service.buildCoding(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
   })
   ipcMain.handle(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, async (event, input: SubmitSpecificationResolutionInput) => {
     return service.resolveSpecificationBlockers(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))

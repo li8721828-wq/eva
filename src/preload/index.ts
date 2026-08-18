@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type { AgentConfig } from '../shared/types/agent'
-import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatStreamEvent } from '../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatStreamEvent } from '../shared/types/conversation'
 import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
@@ -16,7 +16,7 @@ import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from 
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
-import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
+import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -60,7 +60,7 @@ export interface EvaAPI {
 
   // 聊天
   chat: {
-    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[]): Promise<void>
+    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[], quotedMessage?: ChatMessageReference): Promise<void>
     onStream(callback: EventCallback<ChatStreamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
   }
@@ -112,6 +112,7 @@ export interface EvaAPI {
     tree(path: string, workspacePath?: string): Promise<Array<{ name: string; path: string; isDirectory: boolean }>>
     search(path: string, query: string, workspacePath?: string): Promise<string[]>
     selectFolder(): Promise<string | null>
+    selectFiles(): Promise<string[]>
     selectAttachments(): Promise<string[]>
     imagePreview(path: string): Promise<string | null>
     saveClipboardImage(input: { dataUrl: string; mediaType: 'image/jpeg' | 'image/png' | 'image/webp' }): Promise<{ path: string; name: string; size: number }>
@@ -230,6 +231,8 @@ export interface EvaAPI {
     answer(input: SubmitClarificationAnswersInput): Promise<RequirementRun>
     model(input: SubmitRequirementModelingInput): Promise<RequirementRun>
     spec(input: SubmitSpecificationInput): Promise<RequirementRun>
+    dsl(input: SubmitDslInput): Promise<RequirementRun>
+    coding(input: SubmitCodingInput): Promise<RequirementRun>
     resolveSpec(input: SubmitSpecificationResolutionInput): Promise<RequirementRun>
     abort(conversationId: string): Promise<void>
     showDocumentContextMenu(document: Pick<RequirementDocument, 'path'>): Promise<void>
@@ -270,8 +273,8 @@ const evaAPI: EvaAPI = {
 
   // 聊天
   chat: {
-    send: (conversationId, message, agentId, images, attachments) => {
-      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments })
+    send: (conversationId, message, agentId, images, attachments, quotedMessage) => {
+      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments, quotedMessage })
       return Promise.resolve()
     },
     onStream: (callback) => onStream(IPC.CHAT_STREAM, callback),
@@ -347,6 +350,7 @@ const evaAPI: EvaAPI = {
     tree: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_TREE, path, workspacePath),
     search: (path, query, workspacePath) => ipcRenderer.invoke(IPC.FILE_SEARCH, query, workspacePath),
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
+    selectFiles: () => ipcRenderer.invoke(IPC.FILE_SELECT_FILES),
     selectAttachments: () => ipcRenderer.invoke(IPC.FILE_SELECT_ATTACHMENTS),
     imagePreview: (path) => ipcRenderer.invoke(IPC.FILE_IMAGE_PREVIEW, path),
     saveClipboardImage: (input) => ipcRenderer.invoke(IPC.FILE_SAVE_CLIPBOARD_IMAGE, input),
@@ -480,6 +484,8 @@ const evaAPI: EvaAPI = {
     answer: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_CLARIFICATION_ANSWER, input),
     model: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_MODELING_SUBMIT, input),
     spec: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, input),
+    dsl: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_DSL_SUBMIT, input),
+    coding: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_CODING_SUBMIT, input),
     resolveSpec: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
     abort: (conversationId) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_ABORT, conversationId),
     showDocumentContextMenu: (document) => ipcRenderer.invoke(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, document),

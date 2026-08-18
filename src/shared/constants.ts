@@ -2,7 +2,7 @@ import type { AgentConfig, AgentRole } from './types/agent'
 import type { ModelInfo } from './types/provider'
 
 export const APP_NAME = 'Eva'
-export const APP_VERSION = '0.1.71'
+export const APP_VERSION = '0.1.72'
 
 export const DEFAULT_MAX_ITERATIONS = 100
 export const DEFAULT_TEMPERATURE = 0.7

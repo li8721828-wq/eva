@@ -225,7 +225,7 @@ export function TaskWorkspacePanel() {
   const openSelectedFile = () => setRightPanelTab('editor')
 
   const openRequirementDocument = (document: RequirementDocument) => {
-    setCurrentFile({ path: document.path, content: document.content, language: 'markdown' })
+    setCurrentFile({ path: document.workspacePath || document.path, content: document.content, language: 'markdown' })
     setRightPanelTab('editor')
   }
 
@@ -349,11 +349,26 @@ export function TaskWorkspacePanel() {
                   <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', run.status === 'ready-for-implementation' ? 'bg-emerald-50 text-emerald-700' : run.status === 'ready-for-specification' && run.specQualityScore === undefined ? 'bg-emerald-50 text-emerald-700' : run.status === 'failed' || run.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700')}>{run.status === 'ready-for-implementation' || run.specQualityScore !== undefined ? `${run.specQualityScore || 0}/${run.specQualityThreshold || 85}` : `${run.qualityScore}/${run.qualityThreshold}`}</span>
                 </div>
                 <p className="mt-1 text-xs text-zinc-500">{run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
-                <div className="mt-4 space-y-4">
+                 {run.workspaceOutputPath && (
+                   <p className="mt-2 truncate text-[11px] text-zinc-400" title={run.workspaceOutputPath}>
+                     规格中间文档：{run.workspaceOutputPath}
+                   </p>
+                 )}
+                 {run.dslOutputPath && (
+                   <p className="mt-1 truncate text-[11px] text-zinc-400" title={run.dslOutputPath}>
+                     DSL 输出目录：{run.dslOutputPath}
+                   </p>
+                 )}
+                 {run.codingOutputPath && (
+                   <p className="mt-1 truncate text-[11px] text-zinc-400" title={run.codingOutputPath}>
+                     代码生成输出：{run.codingOutputPath}
+                   </p>
+                 )}
+                 <div className="mt-4 space-y-4">
                   {groupRequirementDocuments(run.documents).map(([round, documents]) => <section key={round} aria-label={`第 ${round} 轮过程文档`}>
                     <h4 className="mb-1.5 text-xs font-semibold text-zinc-700">第 {round} 轮</h4>
                     <div className="space-y-1">
-                      {documents.map((document) => <button key={document.id} type="button" onClick={() => openRequirementDocument(document)} onContextMenu={(event) => { event.preventDefault(); void window.eva.requirements.showDocumentContextMenu(document).catch((error) => console.error('Failed to open requirement document menu:', error)) }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={document.path}>
+                       {documents.map((document) => <button key={document.id} type="button" onClick={() => openRequirementDocument(document)} onContextMenu={(event) => { event.preventDefault(); void window.eva.requirements.showDocumentContextMenu(document).catch((error) => console.error('Failed to open requirement document menu:', error)) }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={document.workspacePath || document.path}>
                         <FileText className="h-3.5 w-3.5 shrink-0 text-violet-400" />
                         <span className="min-w-0 flex-1 truncate">{processDocumentName(document)}</span>
                       </button>)}

@@ -153,6 +153,11 @@ export function registerSystemHandlers(
     return result.filePaths[0] || null
   })
 
+  ipcMain.handle(IPC.FILE_SELECT_FILES, async (): Promise<string[]> => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] })
+    return result.canceled ? [] : result.filePaths
+  })
+
   ipcMain.handle(IPC.FILE_SELECT_ATTACHMENTS, async (): Promise<string[]> => {
     const result = await dialog.showOpenDialog({ properties: ['openFile', 'openDirectory', 'multiSelections'] })
     return result.canceled ? [] : result.filePaths

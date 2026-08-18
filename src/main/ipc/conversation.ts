@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTraceEntry, ProgressUpdateKind } from '../../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTraceEntry, ProgressUpdateKind } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -104,13 +104,7 @@ function extractProgressUpdates(content: string): Array<{ kind: ProgressUpdateKi
     const summary = summarizeExecutionText(match[2], 520)
     if (summary) updates.push({ kind: (match[1]?.toLowerCase() as ProgressUpdateKind | undefined) || 'thinking', content: summary })
   }
-  if (updates.length > 0) return updates
-
-  // Some OpenAI-compatible providers omit text around tool calls. When a
-  // provider does return an untagged natural-language note, preserve it as a
-  // visible progress update instead of discarding useful context.
-  const fallback = summarizeExecutionText(content.replace(/<\/?eva-progress[^>]*>/gi, ''), 520)
-  return fallback ? [{ kind: 'thinking', content: fallback }] : []
+  return updates
 }
 
 function executionActionTitle(toolNames: string[]): string {
@@ -706,7 +700,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         permissionLevel: data.permissionLevel || (workspace ? 'workspace' : 'full-access'),
         fileAccessGrants: data.fileAccessGrants || [],
         symposium: data.symposium,
-        workspacePath: data.workspacePath ?? workspace?.path ?? getStorage().config.get('workspacePath'),
+        workspacePath: workspace?.path || data.workspacePath?.trim() || getStorage().config.get('workspacePath'),
       })
       void recordActivity({
         category: 'conversation',
@@ -812,7 +806,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(
     IPC.CHAT_SEND,
-    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[] }) => {
+    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[]; quotedMessage?: ChatMessageReference }) => {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
@@ -901,6 +895,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           attachmentContext: [documentContext, imageContext].filter(Boolean).join('\n\n') || undefined,
           attachments: payload.attachments,
           images: referenceImages,
+          quotedMessage: payload.quotedMessage,
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, { ...userChatMessage, images: persistableImages(referenceImages) })
