@@ -120,6 +120,7 @@ export const IPC = {
   TERMINAL_OUTPUT: 'terminal:output',
   TERMINAL_RESIZE: 'terminal:resize',
   TERMINAL_DESTROY: 'terminal:destroy',
+  TERMINAL_PANEL_VISIBILITY: 'terminal:panel-visibility',
   MENU_TOGGLE_TERMINAL: 'menu:toggle-terminal',
 
   WINDOW_MINIMIZE: 'window:minimize',

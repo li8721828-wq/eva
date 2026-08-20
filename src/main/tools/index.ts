@@ -95,6 +95,8 @@ export interface FileEntry {
 
 export interface TerminalService {
   createSession(id: string, cwd: string): Promise<void>
+  hasSession(id: string): boolean
+  getOutput(id: string): string
   executeCommand(
     sessionId: string,
     command: string,

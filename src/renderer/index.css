@@ -63,6 +63,23 @@ html, body, #root {
 /* Selection */
 ::selection { background: rgba(124, 58, 237, 0.2); }
 
+/* Keep IME composition legible without the terminal's default black block. */
+.eva-terminal .xterm .composition-view {
+  background: transparent;
+  color: #a56512;
+  border-bottom: 1px solid #a56512;
+}
+
+.eva-terminal .xterm .composition-view.active::after {
+  display: inline-block;
+  width: 2px;
+  height: 1.1em;
+  margin-left: 1px;
+  background: #6259d8;
+  content: '';
+  vertical-align: -0.16em;
+}
+
 /* Shared visual language: color is reserved for navigation, status and data
    hierarchy, while the work surface stays quiet enough for long sessions. */
 .eva-app-shell {

@@ -25,7 +25,11 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'project_index_status', label: 'Project index status', description: 'Show persisted metadata coverage and synchronization status.', category: 'Search', risk: 'read' },
   { id: 'web_search', label: 'Web search', description: 'Allow this agent to query the active search service. Requires a configured Brave, Tavily, or SearXNG provider.', category: 'Internet', risk: 'network' },
   { id: 'read_web_page', label: 'Read web page', description: 'Read a public HTTP(S) webpage. Local and private network addresses are blocked.', category: 'Internet', risk: 'network' },
-  { id: 'execute_command', label: 'Run command', description: 'Execute a terminal command in the workspace.', category: 'Execution', risk: 'system' },
+  { id: 'open_terminal', label: 'Open controlled terminal', description: 'Open the current conversation\'s built-in terminal in Eva.', category: 'Execution', risk: 'system' },
+  { id: 'read_terminal', label: 'Read controlled terminal', description: 'Read recent output from the terminal owned by the current conversation.', category: 'Execution', risk: 'read' },
+  { id: 'write_terminal', label: 'Type in controlled terminal', description: 'Type text in the current conversation\'s built-in terminal, optionally pressing Enter to run it.', category: 'Execution', risk: 'system' },
+  { id: 'execute_command', label: 'Run command', description: 'Execute a command in the current conversation\'s controlled terminal.', category: 'Execution', risk: 'system' },
+  { id: 'close_terminal', label: 'Close controlled terminal', description: 'Close the current conversation\'s built-in terminal.', category: 'Execution', risk: 'system' },
   { id: 'mouse_control', label: 'Mouse control', description: 'Move, click, double-click, or scroll only on a recent visible-desktop observation. Semantic targets use Windows hit-tested click points when available, all visible taskbars are supported, and movement adapts for fast, balanced, or precise actions. Eva can minimize itself, while closing Eva requires explicit user authorization. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'desktop_observe', label: 'Desktop observer', description: 'Capture the complete visible Windows virtual desktop across all displays as a point-in-time screenshot, plus structured controls for the foreground window and taskbars. It is not continuous monitoring and never reads password values. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'keyboard_control', label: 'Keyboard control', description: 'Type into a focused visible control, paste a TSV block into a selected desktop grid, or press navigation keys after a recent desktop observation. TSV pastes include a verification screenshot; the foreground window is revalidated. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
@@ -41,4 +45,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 23
+export const TOOL_CATALOG_VERSION = 26

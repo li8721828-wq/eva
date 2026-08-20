@@ -21,27 +21,33 @@ import { useShallow } from 'zustand/react/shallow'
 // Lazy-loaded heavy components
 const TerminalPanel = lazy(() => import('@/components/terminal/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
 
-type ResizeTarget = 'sidebar' | 'right-panel' | 'task-note'
+type ResizeTarget = 'sidebar' | 'right-panel' | 'task-note' | 'terminal-height' | 'terminal-width'
 
 const SIDEBAR_MIN_WIDTH = 240
 const SIDEBAR_MAX_WIDTH = 440
 const RIGHT_PANEL_MIN_WIDTH = 300
 const RIGHT_PANEL_MAX_WIDTH = 640
+const TERMINAL_MIN_WIDTH = 380
+const TERMINAL_MAX_WIDTH = 960
+const TERMINAL_MIN_HEIGHT = 220
 function ResizeHandle({ target, onPointerDown }: { target: ResizeTarget; onPointerDown: (target: ResizeTarget, event: React.PointerEvent<HTMLDivElement>) => void }) {
-  const isVertical = target === 'task-note'
+  const isHorizontal = target === 'task-note' || target === 'terminal-height'
   return (
     <div
       role="separator"
-      aria-orientation={isVertical ? 'horizontal' : 'vertical'}
-      aria-label={isVertical ? 'Resize task workspace height' : target === 'sidebar' ? 'Resize sidebar' : 'Resize task workspace width'}
+      aria-orientation={isHorizontal ? 'horizontal' : 'vertical'}
+      aria-label={target === 'terminal-height' ? 'Resize terminal height' : target === 'terminal-width' ? 'Resize terminal width' : isHorizontal ? 'Resize task workspace height' : target === 'sidebar' ? 'Resize sidebar' : 'Resize task workspace width'}
       onPointerDown={(event) => onPointerDown(target, event)}
-      className={isVertical
-        ? 'relative z-10 mx-auto h-3 w-12 shrink-0 cursor-row-resize touch-none after:absolute after:-inset-x-3 after:-inset-y-2'
+      className={isHorizontal
+        ? target === 'terminal-height'
+          ? 'group relative z-10 h-2 shrink-0 cursor-row-resize touch-none after:absolute after:-inset-y-2 after:inset-x-0'
+          : 'relative z-10 mx-auto h-3 w-12 shrink-0 cursor-row-resize touch-none after:absolute after:-inset-x-3 after:-inset-y-2'
         : target === 'right-panel'
         ? 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-violet-200/60 active:bg-violet-400 after:absolute after:-inset-x-2 after:-inset-y-2'
         : 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-zinc-100 transition-colors hover:bg-violet-300 active:bg-violet-500 after:absolute after:-inset-x-2 after:-inset-y-2'}
     >
-      {isVertical && <span className="task-workspace-resize-grip" />}
+      {target === 'task-note' && <span className="task-workspace-resize-grip" />}
+      {target === 'terminal-height' && <span className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-200 transition-colors group-hover:bg-violet-300 group-active:bg-violet-500" />}
     </div>
   )
 }
@@ -60,6 +66,9 @@ const App: React.FC = () => {
     toggleRightPanel,
     setRightPanelVisible,
     terminalVisible,
+    setTerminalVisible,
+    terminalHeight,
+    terminalWidth,
     workspacePath,
     loadConfig,
     agentManagerOpen,
@@ -74,11 +83,16 @@ const App: React.FC = () => {
     setSidebarWidth,
     setRightPanelWidth,
     setTaskNoteHeight,
+    setTerminalHeight,
+    setTerminalWidth,
   } = useAppStore(useShallow((state) => ({
     rightPanelVisible: state.rightPanelVisible,
     toggleRightPanel: state.toggleRightPanel,
     setRightPanelVisible: state.setRightPanelVisible,
     terminalVisible: state.terminalVisible,
+    setTerminalVisible: state.setTerminalVisible,
+    terminalHeight: state.terminalHeight,
+    terminalWidth: state.terminalWidth,
     workspacePath: state.workspacePath,
     loadConfig: state.loadConfig,
     agentManagerOpen: state.agentManagerOpen,
@@ -93,6 +107,8 @@ const App: React.FC = () => {
     setSidebarWidth: state.setSidebarWidth,
     setRightPanelWidth: state.setRightPanelWidth,
     setTaskNoteHeight: state.setTaskNoteHeight,
+    setTerminalHeight: state.setTerminalHeight,
+    setTerminalWidth: state.setTerminalWidth,
   })))
 
   const { loadConversations, currentConversationId, refreshConversation } = useChatStore(useShallow((state) => ({
@@ -106,9 +122,11 @@ const App: React.FC = () => {
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   const sidebarWidthRef = useRef(sidebarWidth)
   const rightPanelWidthRef = useRef(rightPanelWidth)
+  const terminalWidthRef = useRef(terminalWidth)
 
   useEffect(() => { sidebarWidthRef.current = sidebarWidth }, [sidebarWidth])
   useEffect(() => { rightPanelWidthRef.current = rightPanelWidth }, [rightPanelWidth])
+  useEffect(() => { terminalWidthRef.current = terminalWidth }, [terminalWidth])
   useEffect(() => () => resizeCleanupRef.current?.(), [])
 
   const startResize = useCallback((target: ResizeTarget, event: React.PointerEvent<HTMLDivElement>) => {
@@ -120,9 +138,11 @@ const App: React.FC = () => {
     const startRightPanelWidth = rightPanelWidthRef.current
     const defaultTaskNoteHeight = Math.round((rightPanelWidthRef.current - 26) * 1.618)
     const startTaskNoteHeight = taskNoteHeight || defaultTaskNoteHeight
+    const startTerminalHeight = terminalHeight
+    const startTerminalWidth = terminalWidthRef.current
     setActiveResize(target)
     document.body.style.userSelect = 'none'
-    document.body.style.cursor = target === 'task-note' ? 'row-resize' : 'col-resize'
+    document.body.style.cursor = target === 'task-note' || target === 'terminal-height' ? 'row-resize' : 'col-resize'
 
     const onMove = (moveEvent: PointerEvent) => {
       if (target === 'sidebar') {
@@ -131,9 +151,15 @@ const App: React.FC = () => {
       } else if (target === 'right-panel') {
         const available = window.innerWidth - sidebarWidthRef.current - 480
         setRightPanelWidth(Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, available, startRightPanelWidth - (moveEvent.clientX - startX))))
-      } else {
+      } else if (target === 'task-note') {
         const maxHeight = Math.max(340, window.innerHeight - 84)
         setTaskNoteHeight(Math.max(340, Math.min(maxHeight, startTaskNoteHeight + moveEvent.clientY - startY)))
+      } else if (target === 'terminal-height') {
+        const maxHeight = Math.max(TERMINAL_MIN_HEIGHT, window.innerHeight - 160)
+        setTerminalHeight(Math.max(TERMINAL_MIN_HEIGHT, Math.min(maxHeight, startTerminalHeight + moveEvent.clientY - startY)))
+      } else {
+        const available = window.innerWidth - sidebarWidthRef.current - 360
+        setTerminalWidth(Math.max(TERMINAL_MIN_WIDTH, Math.min(TERMINAL_MAX_WIDTH, available, startTerminalWidth - (moveEvent.clientX - startX))))
       }
     }
     const onUp = () => {
@@ -148,13 +174,17 @@ const App: React.FC = () => {
         ? ['sidebarWidth', state.sidebarWidth]
         : target === 'right-panel'
           ? ['rightPanelWidth', state.rightPanelWidth]
-          : ['taskNoteHeight', state.taskNoteHeight]
+          : target === 'task-note'
+            ? ['taskNoteHeight', state.taskNoteHeight]
+            : target === 'terminal-height'
+              ? ['terminalHeight', state.terminalHeight]
+              : ['terminalWidth', state.terminalWidth]
       void window.eva.config.set(key, value).catch(console.error)
     }
     document.addEventListener('pointermove', onMove)
     document.addEventListener('pointerup', onUp)
     resizeCleanupRef.current = onUp
-  }, [rightPanelVisible, setRightPanelWidth, setSidebarWidth, setTaskNoteHeight, taskNoteHeight])
+  }, [rightPanelVisible, setRightPanelWidth, setSidebarWidth, setTaskNoteHeight, setTerminalHeight, setTerminalWidth, taskNoteHeight, terminalHeight])
 
   // Initialize streaming listeners
   useStreaming()
@@ -173,6 +203,13 @@ const App: React.FC = () => {
     // reader's current position while refreshing their visible conversation.
     if (conversationId === currentConversationId) void refreshConversation(conversationId)
   }), [currentConversationId, loadConversations, refreshConversation])
+
+  useEffect(() => window.eva.terminal.onPanelVisibility((_event, payload) => {
+    // Do not interrupt someone working in another conversation. When the
+    // owning conversation is visible, opening the Agent-controlled terminal
+    // reveals the exact terminal the Agent is using.
+    if (payload.conversationId === currentConversationId) setTerminalVisible(payload.visible)
+  }), [currentConversationId, setTerminalVisible])
 
   // Responsive: auto-hide right panel on small windows
   useEffect(() => {
@@ -198,7 +235,7 @@ const App: React.FC = () => {
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : language === 'ja' ? 'ja' : 'en'
   }, [language])
 
-  const showRightPanel = currentView === 'chat' && rightPanelVisible
+  const showRightPanel = currentView === 'chat' && (rightPanelVisible || terminalVisible)
 
   return (
     <ErrorBoundary>
@@ -217,7 +254,7 @@ const App: React.FC = () => {
           </div>
 
           {/* Right Panel Toggle */}
-          {currentView === 'chat' && !rightPanelVisible && (
+          {currentView === 'chat' && !rightPanelVisible && !terminalVisible && (
             <div className="flex flex-col items-center border-l border-indigo-100 bg-white/70 py-2 px-1 backdrop-blur-sm">
               <Button variant="ghost" size="icon" onClick={toggleRightPanel} title="Show task workspace" aria-label="Toggle task workspace">
                 <PanelRight className="h-4 w-4" />
@@ -225,11 +262,19 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Right Panel (conversation task workspace) */}
+          {/* Right utility rail switches between task workspace and terminal. */}
           {showRightPanel && (
             <>
-            <aside className="eva-utility-rail flex min-h-0 shrink-0 flex-col" style={{ width: rightPanelWidth }} aria-label="Task workspace">
-              <div className="task-workspace-note flex min-h-0 shrink-0 flex-col" style={taskNoteHeight ? { height: taskNoteHeight } : undefined}>
+            {terminalVisible && <ResizeHandle target="terminal-width" onPointerDown={startResize} />}
+            <aside className="eva-utility-rail flex min-h-0 shrink-0 flex-col" style={{ width: terminalVisible ? terminalWidth : rightPanelWidth }} aria-label={terminalVisible ? 'Terminal' : 'Task workspace'}>
+              {terminalVisible ? (
+                <>
+                  <Suspense fallback={<LazyFallback className="h-56" />}>
+                    <TerminalPanel height={terminalHeight} className="shrink-0 border border-zinc-200" />
+                  </Suspense>
+                  <ResizeHandle target="terminal-height" onPointerDown={startResize} />
+                </>
+              ) : <div className="task-workspace-note flex min-h-0 shrink-0 flex-col" style={taskNoteHeight ? { height: taskNoteHeight } : undefined}>
                 {/* Panel header */}
                 <div className="task-workspace-note__header flex items-center justify-between px-4 py-3">
                   <span className="text-xs font-semibold text-zinc-600">Workspace</span>
@@ -239,7 +284,7 @@ const App: React.FC = () => {
                 </div>
 
                 <TaskWorkspacePanel />
-                <div
+              <div
                   role="separator"
                   aria-orientation="horizontal"
                   aria-label="Resize task workspace height"
@@ -251,20 +296,14 @@ const App: React.FC = () => {
                   aria-orientation="vertical"
                   aria-label="Resize task workspace width"
                   className="task-workspace-note__resize-edge task-workspace-note__resize-edge--left"
-                  onPointerDown={(event) => startResize('right-panel', event)}
-                />
-              </div>
+                onPointerDown={(event) => startResize('right-panel', event)}
+              />
+              </div>}
             </aside>
             </>
           )}
         </div>
 
-        {/* Terminal Panel */}
-        {!settingsOpen && terminalVisible && (
-          <Suspense fallback={<LazyFallback className="h-48" />}>
-            <TerminalPanel />
-          </Suspense>
-        )}
         {settingsOpen && <SettingsDialog />}
       </div>
 

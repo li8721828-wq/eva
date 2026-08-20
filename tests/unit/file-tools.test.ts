@@ -4,6 +4,8 @@ import type { FileService, TerminalService, ToolContext } from '../../src/main/t
 
 const terminalService: TerminalService = {
   createSession: vi.fn(),
+  hasSession: vi.fn(),
+  getOutput: vi.fn(),
   executeCommand: vi.fn(),
   writeInput: vi.fn(),
   resize: vi.fn(),

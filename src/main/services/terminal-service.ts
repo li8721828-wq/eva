@@ -10,12 +10,22 @@ interface TerminalSession {
 
 const DEFAULT_TIMEOUT = 30_000
 const MAX_OUTPUT_LENGTH = 10_000
+const MAX_SESSION_OUTPUT_LENGTH = 100_000
+// OSC 633 is consumed by modern terminal emulators without rendering text.
+// It lets command execution observe PowerShell's next prompt without injecting
+// a control character into PSReadLine's input buffer.
+const POWERSHELL_PROMPT_MARKER = '\x1b]633;E;EvaPrompt\x07'
+const POWERSHELL_BOOTSTRAP = [
+  "try { Import-Module PSReadLine -ErrorAction Stop; Set-PSReadLineOption -Colors @{ Command = 'Yellow'; Parameter = 'Cyan'; String = 'Green'; Variable = 'Magenta'; Number = 'Cyan'; Operator = 'DarkYellow'; Type = 'Blue'; Comment = 'DarkGray'; Error = 'Red'; Selection = 'Black,DarkCyan' } } catch {}",
+  "$global:EvaPromptShown = $false",
+  "function global:prompt { $esc = [char]27; $osc = \"${esc}]633;E;EvaPrompt$([char]7)\"; $path = (Get-Location).Path; $leaf = Split-Path -Leaf $path; $displayPath = if ($path -match '^[A-Za-z]:\\\\?$' -or !$leaf) { $path } elseif ($path -match '^[A-Za-z]:\\\\') { \"$($path.Substring(0, 2))\\~\\$leaf\" } else { $path }; $gap = if ($global:EvaPromptShown) { \"`r`n\" } else { $global:EvaPromptShown = $true; '' }; \"${gap}${osc}${esc}[90mPS ${esc}[1;34m${displayPath} ${esc}[90m>${esc}[0m \" }",
+].join('; ')
 
 function getShell(): { command: string; args: string[] } {
   if (process.platform === 'win32') {
     return {
-      command: process.env.COMSPEC || 'powershell.exe',
-      args: process.env.COMSPEC ? [] : ['-NoLogo'],
+      command: 'powershell.exe',
+      args: ['-NoLogo', '-NoExit', '-Command', POWERSHELL_BOOTSTRAP],
     }
   }
   return {
@@ -35,6 +45,7 @@ try {
 interface PtySession {
   pty: import('node-pty').IPty
   outputCallbacks: Array<(data: string) => void>
+  outputBuffer: string
 }
 
 export class TerminalServiceImpl implements TerminalService {
@@ -46,6 +57,10 @@ export class TerminalServiceImpl implements TerminalService {
   }
 
   async createSession(id: string, cwd: string): Promise<void> {
+    // A conversation may re-open its visible terminal after the panel was
+    // hidden. Keep the original process and its working state intact.
+    if (this.hasSession(id)) return
+
     if (this.usePty) {
       const shell = getShell()
       const pty = nodePty!.spawn(shell.command, shell.args, {
@@ -59,9 +74,11 @@ export class TerminalServiceImpl implements TerminalService {
       const session: PtySession = {
         pty,
         outputCallbacks: [],
+        outputBuffer: '',
       }
 
       pty.onData((data: string) => {
+        this.appendOutput(session, data)
         for (const cb of session.outputCallbacks) {
           cb(data)
         }
@@ -85,7 +102,7 @@ export class TerminalServiceImpl implements TerminalService {
 
       child.stdout?.on('data', (data: Buffer) => {
         const text = data.toString()
-        session.outputBuffer += text
+        this.appendOutput(session, text)
         for (const cb of session.outputCallbacks) {
           cb(text)
         }
@@ -93,7 +110,7 @@ export class TerminalServiceImpl implements TerminalService {
 
       child.stderr?.on('data', (data: Buffer) => {
         const text = data.toString()
-        session.outputBuffer += text
+        this.appendOutput(session, text)
         for (const cb of session.outputCallbacks) {
           cb(text)
         }
@@ -101,6 +118,18 @@ export class TerminalServiceImpl implements TerminalService {
 
       this.fallbackSessions.set(id, session)
     }
+  }
+
+  hasSession(id: string): boolean {
+    return this.ptySessions.has(id) || this.fallbackSessions.has(id)
+  }
+
+  getOutput(id: string): string {
+    return this.ptySessions.get(id)?.outputBuffer || this.fallbackSessions.get(id)?.outputBuffer || ''
+  }
+
+  private appendOutput(session: Pick<TerminalSession, 'outputBuffer'> | Pick<PtySession, 'outputBuffer'>, data: string): void {
+    session.outputBuffer = `${session.outputBuffer}${data}`.slice(-MAX_SESSION_OUTPUT_LENGTH)
   }
 
   async executeCommand(
@@ -122,7 +151,9 @@ export class TerminalServiceImpl implements TerminalService {
     const session = this.ptySessions.get(sessionId)
     if (!session) throw new Error(`Terminal session ${sessionId} not found`)
 
-    const endMarker = `\x00EVA_CMD_DONE_${Date.now()}\x00`
+    const isWindows = process.platform === 'win32'
+    const unixMarkerText = `EVA_CMD_DONE_${Date.now()}`
+    const endMarker = isWindows ? POWERSHELL_PROMPT_MARKER : `\x1e${unixMarkerText}\x1e`
     let output = ''
 
     return new Promise((resolve, reject) => {
@@ -152,12 +183,14 @@ export class TerminalServiceImpl implements TerminalService {
       }
 
       session.outputCallbacks.push(onData)
-      // Send command followed by echo of the end marker
-      const isWindows = process.platform === 'win32'
-      const echoCmd = isWindows
-        ? `echo ${endMarker}`
-        : `echo '${endMarker}'`
-      session.pty.write(`${command}\r\n${echoCmd}\r\n`)
+      if (isWindows) {
+        // The custom prompt emits an invisible OSC marker after each command.
+        // Sending only the user's command avoids triggering PSReadLine's
+        // completion behaviour with an artificial trailing command.
+        session.pty.write(`${command}\r`)
+      } else {
+        session.pty.write(`${command}\r\nprintf '\\036%s\\036' '${unixMarkerText}'\r`)
+      }
     })
   }
 
@@ -257,6 +290,7 @@ export class TerminalServiceImpl implements TerminalService {
       const session = this.ptySessions.get(sessionId)
       if (!session) return () => {}
       session.outputCallbacks.push(callback)
+      if (session.outputBuffer) callback(session.outputBuffer)
       return () => {
         const idx = session.outputCallbacks.indexOf(callback)
         if (idx >= 0) session.outputCallbacks.splice(idx, 1)
@@ -265,6 +299,7 @@ export class TerminalServiceImpl implements TerminalService {
       const session = this.fallbackSessions.get(sessionId)
       if (!session) return () => {}
       session.outputCallbacks.push(callback)
+      if (session.outputBuffer) callback(session.outputBuffer)
       return () => {
         const idx = session.outputCallbacks.indexOf(callback)
         if (idx >= 0) session.outputCallbacks.splice(idx, 1)

@@ -39,29 +39,40 @@ export function ActivityPanel({ className }: ActivityPanelProps) {
     return window.eva.activity.onEntry((_event, entry) => appendEntry(entry))
   }, [appendEntry, loadEntries])
 
-  const activeScope = scope === 'conversation' && !currentConversationId ? 'workspace' : scope
+  useEffect(() => {
+    if (!currentConversationId && scope === 'conversation') setScope('workspace')
+  }, [currentConversationId, scope])
+
   const visibleEntries = useMemo(() => {
-    if (activeScope === 'conversation') return entries.filter((entry) => entry.conversationId === currentConversationId)
-    if (activeScope === 'workspace') return entries.filter((entry) => entry.workspaceId === activeWorkspaceId)
+    if (scope === 'conversation') return entries.filter((entry) => entry.conversationId === currentConversationId)
+    if (scope === 'workspace') return entries.filter((entry) => entry.workspaceId === activeWorkspaceId)
     return entries
-  }, [activeScope, activeWorkspaceId, currentConversationId, entries])
+  }, [activeWorkspaceId, currentConversationId, entries, scope])
 
   return (
     <div className={cn('flex min-h-0 flex-1 flex-col bg-white', className)}>
       <div className="flex min-h-11 items-center justify-between border-b border-zinc-200 px-4">
         <div className="flex items-center gap-1" role="tablist" aria-label="Activity log scope">
           {(['conversation', 'workspace', 'all'] as ActivityScope[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setScope(item)}
-              className={cn(
-                'h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
-                activeScope === item ? 'bg-violet-50 text-violet-700' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700'
-              )}
-            >
-              {item === 'conversation' ? 'Conversation' : item === 'workspace' ? 'Workspace' : 'All activity'}
-            </button>
+            (() => {
+              const unavailable = item === 'conversation' && !currentConversationId
+              return (
+                <button
+                  key={item}
+                  type="button"
+                  disabled={unavailable}
+                  title={unavailable ? 'Select a conversation to view its activity.' : undefined}
+                  onClick={() => setScope(item)}
+                  className={cn(
+                    'h-7 rounded-md px-2.5 text-xs font-medium transition-colors',
+                    scope === item ? 'bg-violet-50 text-violet-700' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700',
+                    unavailable && 'cursor-not-allowed opacity-45 hover:bg-transparent hover:text-zinc-500'
+                  )}
+                >
+                  {item === 'conversation' ? 'Conversation' : item === 'workspace' ? 'Workspace' : 'All activity'}
+                </button>
+              )
+            })()
           ))}
         </div>
         <button type="button" onClick={() => void loadEntries()} className="text-xs text-zinc-400 hover:text-zinc-700">Refresh</button>

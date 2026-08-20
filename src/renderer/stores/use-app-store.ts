@@ -28,6 +28,8 @@ interface AppState {
   rightPanelVisible: boolean
   rightPanelTab: 'tasks' | 'files' | 'requirements' | 'editor'
   terminalVisible: boolean
+  terminalHeight: number
+  terminalWidth: number
   settingsOpen: boolean
   agentManagerOpen: boolean
   specSelectorOpen: boolean
@@ -52,6 +54,9 @@ interface AppState {
   setRightPanelVisible: (visible: boolean) => void
   setRightPanelTab: (tab: 'tasks' | 'files' | 'requirements' | 'editor') => void
   toggleTerminal: () => void
+  setTerminalVisible: (visible: boolean) => void
+  setTerminalHeight: (height: number) => void
+  setTerminalWidth: (width: number) => void
   setSettingsOpen: (open: boolean) => void
   setAgentManagerOpen: (open: boolean) => void
   setSpecSelectorOpen: (open: boolean) => void
@@ -81,6 +86,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   rightPanelVisible: true,
   rightPanelTab: 'tasks',
   terminalVisible: false,
+  terminalHeight: 560,
+  terminalWidth: 560,
   settingsOpen: false,
   agentManagerOpen: false,
   specSelectorOpen: false,
@@ -124,11 +131,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setRightPanelVisible: (visible) => set({ rightPanelVisible: visible }),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
-  toggleTerminal: () => set((s) => {
-    const visible = !s.terminalVisible
+  setTerminalVisible: (visible) => {
     window.eva.config.set('terminalVisible', visible).catch(console.error)
-    return { terminalVisible: visible }
-  }),
+    set({ terminalVisible: visible })
+  },
+  toggleTerminal: () => get().setTerminalVisible(!get().terminalVisible),
+  setTerminalHeight: (terminalHeight) => set({ terminalHeight }),
+  setTerminalWidth: (terminalWidth) => set({ terminalWidth }),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
   setAgentManagerOpen: (open) => set({ agentManagerOpen: open }),
   setSpecSelectorOpen: (open) => set({ specSelectorOpen: open }),
@@ -155,6 +164,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         fileAccessGrants: (config.fileAccessGrants as FileAccessGrant[]) || [],
         rightPanelVisible: (config.rightPanelVisible as boolean) ?? true,
         terminalVisible: (config.terminalVisible as boolean) ?? false,
+        terminalHeight: Math.max(220, Math.min(960, Number(config.terminalHeight) || 560)),
+        terminalWidth: Math.max(380, Math.min(960, Number(config.terminalWidth) || 560)),
         activeProviderId: (config.activeProviderId as string) || 'openai',
         activeModel: (config.activeModel as string) || 'gpt-4o',
       })

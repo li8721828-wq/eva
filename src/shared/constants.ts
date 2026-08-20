@@ -66,7 +66,7 @@ export const BUILT_IN_AGENTS: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'
     systemPrompt: '',
     model: 'gpt-4o',
     providerId: 'openai',
-    tools: ['inspect_runtime', 'diagnose_runtime', 'create_runtime_proposal', 'read_file', 'edit_file', 'write_file', 'list_directory', 'search_files', 'search_code', 'search_by_regex', 'execute_command', 'desktop_observe', 'mouse_control', 'keyboard_control', 'desktop_session', 'browser_control', 'form_fill_workflow', 'project_search', 'project_index_status', 'web_search', 'read_web_page', 'blender_inspect_scene', 'blender_run_script', 'blender_model_from_reference', 'blender_render_review', 'blender_open_gui', 'delegate_to_model_pool'],
+    tools: ['inspect_runtime', 'diagnose_runtime', 'create_runtime_proposal', 'read_file', 'edit_file', 'write_file', 'list_directory', 'search_files', 'search_code', 'search_by_regex', 'open_terminal', 'read_terminal', 'write_terminal', 'execute_command', 'close_terminal', 'desktop_observe', 'mouse_control', 'keyboard_control', 'desktop_session', 'browser_control', 'form_fill_workflow', 'project_search', 'project_index_status', 'web_search', 'read_web_page', 'blender_inspect_scene', 'blender_run_script', 'blender_model_from_reference', 'blender_render_review', 'blender_open_gui', 'delegate_to_model_pool'],
     maxIterations: 100,
     temperature: 0.7,
     isBuiltIn: true,

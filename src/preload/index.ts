@@ -127,6 +127,7 @@ export interface EvaAPI {
     create(id: string, cwd: string): Promise<void>
     write(id: string, data: string): Promise<void>
     onOutput(callback: EventCallback<{ id: string; data: string }>): Unsubscribe
+    onPanelVisibility(callback: EventCallback<{ conversationId: string; visible: boolean }>): Unsubscribe
     resize(id: string, cols: number, rows: number): Promise<void>
     destroy(id: string): Promise<void>
   }
@@ -375,6 +376,7 @@ const evaAPI: EvaAPI = {
       return Promise.resolve()
     },
     onOutput: (callback) => onStream(IPC.TERMINAL_OUTPUT, callback),
+    onPanelVisibility: (callback) => onStream(IPC.TERMINAL_PANEL_VISIBILITY, callback),
     resize: (id, cols, rows) => {
       ipcRenderer.send(IPC.TERMINAL_RESIZE, id, cols, rows)
       return Promise.resolve()

@@ -129,8 +129,8 @@ export function RuntimeIntrospectionPanel() {
         </div>
       </section>
 
-      <section aria-label="Recent runtime events">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">近期运行事件</h3></div><div className="flex flex-wrap gap-2">{Object.entries(summary.byCategory).map(([category, count]) => <span key={category} className="eva-status eva-status--neutral">{categoryLabels[category as ActivityCategory]} {count}</span>)}</div></div>
+      <section aria-label="Activity log">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">活动记录</h3></div><div className="flex flex-wrap gap-2">{Object.entries(summary.byCategory).map(([category, count]) => <span key={category} className="eva-status eva-status--neutral">{categoryLabels[category as ActivityCategory]} {count}</span>)}</div></div>
         <div className="overflow-hidden rounded-md border border-[var(--ui-border)] bg-white divide-y divide-zinc-100">{data.activity.length ? data.activity.slice(0, 24).map((entry) => <div key={entry.id} className="flex items-start gap-3 px-4 py-3"><ActivityStatus status={entry.status} /><div className="min-w-0 flex-1"><p className="text-sm text-zinc-700">{entry.summary}</p><p className="mt-1 text-xs text-zinc-400">{categoryLabels[entry.category]} · {entry.action} · {new Date(entry.timestamp).toLocaleString()}</p></div></div>) : <p className="px-4 py-6 text-sm text-zinc-500">尚无运行事件。执行一次对话、任务或工具调用后，此处会自动出现记录。</p>}</div>
       </section>
     </div>

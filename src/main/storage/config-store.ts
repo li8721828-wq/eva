@@ -23,6 +23,8 @@ export interface AppConfig {
   fileAccessGrants: FileAccessGrant[]
   sidebarCollapsed: boolean
   terminalVisible: boolean
+  terminalHeight: number
+  terminalWidth: number
   rightPanelVisible: boolean
 
   // Model config
@@ -76,6 +78,8 @@ const DEFAULTS: AppConfig = {
   fileAccessGrants: [],
   sidebarCollapsed: false,
   terminalVisible: true,
+  terminalHeight: 560,
+  terminalWidth: 560,
   rightPanelVisible: true,
   providers: DEFAULT_PROVIDERS,
   activeProviderId: 'openai',

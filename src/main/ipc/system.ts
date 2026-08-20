@@ -17,6 +17,7 @@ import { applyNetworkConfig, normalizeNetworkConfig, testNetworkConnection } fro
 import type { NetworkConfig } from '../../shared/types/network'
 
 const terminalWorkspaces = new Map<string, string>()
+const terminalOutputUnsubscribers = new Map<string, () => void>()
 const PREVIEW_IMAGE_TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -215,6 +216,13 @@ export function registerSystemHandlers(
   ipcMain.handle(IPC.TERMINAL_CREATE, async (event, id: string, cwd: string): Promise<void> => {
     if (terminalService) {
       await terminalService.createSession(id, cwd)
+      terminalOutputUnsubscribers.get(id)?.()
+      terminalOutputUnsubscribers.set(
+        id,
+        terminalService.onOutput(id, (data) => {
+          event.sender.send(IPC.TERMINAL_OUTPUT, { id, data })
+        })
+      )
     } else {
       console.log('Terminal create (no service):', id)
     }
@@ -238,6 +246,8 @@ export function registerSystemHandlers(
   })
 
   ipcMain.handle(IPC.TERMINAL_DESTROY, async (event, id: string): Promise<void> => {
+    terminalOutputUnsubscribers.get(id)?.()
+    terminalOutputUnsubscribers.delete(id)
     if (terminalService) {
       await terminalService.destroySession(id)
     }

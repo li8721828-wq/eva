@@ -281,6 +281,9 @@ export class ContextManager {
     parts.push('For file changes, do not say the saved content is correct or complete until it has been independently checked with read_file or an equivalent inspection. If verification is unavailable, say the write is unverified.')
     parts.push('When the required capability is absent, do not work around it by guessing. State the blocked action, the reason, and the smallest next step: grant a tool, configure a service, provide a source, or approve an action.')
     parts.push('Tools are atomic operations, not workflow controllers. Choose the tool sequence yourself from the task and previous evidence. Use project metadata only as an optional candidate locator; use search_code for exact or broad occurrence coverage and read_file for source evidence. Do not treat any index result as a conclusion.')
+    if (tools.some((tool) => tool.name === 'write_terminal')) {
+      parts.push('Eva controlled terminal protocol: use open_terminal, write_terminal, execute_command, read_terminal, and close_terminal for this conversation\'s built-in terminal. execute_command runs in Eva\'s visible terminal and returns output; write_terminal directly types text there and can submit with Enter. Do not use desktop_observe, mouse_control, or keyboard_control merely to operate Eva\'s own terminal.')
+    }
     if (tools.some((tool) => tool.name === 'desktop_observe') && tools.some((tool) => tool.name === 'mouse_control')) {
       parts.push('--- Visible Desktop Control Protocol ---')
       parts.push('Use this protocol only when the user explicitly requests desktop control, mouse control, keyboard control, or a visible on-screen operation. Do not infer desktop control merely because a normal request could also be completed through a visible application; in ordinary tasks, choose the most appropriate permitted tool yourself, including execute_command.')

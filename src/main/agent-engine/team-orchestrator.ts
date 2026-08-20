@@ -51,7 +51,10 @@ export class TeamOrchestrator {
   private static readonly MUTATING_TOOLS = new Set([
     'write_file',
     'edit_file',
+    'open_terminal',
+    'write_terminal',
     'execute_command',
+    'close_terminal',
     'blender_run_script',
     'blender_model_from_reference',
     'blender_render_review',

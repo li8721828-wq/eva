@@ -85,7 +85,7 @@ interface CompletedToolResult {
 }
 
 const MAX_TOOL_REVIEW_IMAGES = 4
-const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'])
+const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
 // A complete virtual desktop can include multiple high-resolution displays.
 // Keep this distinct from ordinary user attachment limits so desktop_observe
 // does not silently drop a valid multi-display PNG before visual analysis.

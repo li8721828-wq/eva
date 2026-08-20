@@ -48,12 +48,12 @@ async function showLocalApproval(title: string, detail: string): Promise<boolean
  */
 export function createRemoteToolApproval(context: RemoteToolPolicyContext): (request: ToolApprovalRequest) => Promise<ToolApprovalDecision> {
   return async (request) => {
-    if (request.toolCall.name !== 'write_file' && request.toolCall.name !== 'edit_file' && request.toolCall.name !== 'execute_command') {
+  if (request.toolCall.name !== 'write_file' && request.toolCall.name !== 'edit_file' && request.toolCall.name !== 'execute_command' && request.toolCall.name !== 'write_terminal') {
       return { approved: true }
     }
 
-    if (request.toolCall.name === 'execute_command') {
-      const command = String(request.toolCall.arguments.command || '')
+  if (request.toolCall.name === 'execute_command' || request.toolCall.name === 'write_terminal') {
+    const command = String(request.toolCall.arguments.command || request.toolCall.arguments.text || '')
       if (!isAllowedRemoteTerminalCommand(command)) {
         await recordActivity({
           category: 'permission',
