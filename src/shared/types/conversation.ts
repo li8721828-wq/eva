@@ -94,8 +94,23 @@ export interface ChatUsage {
   cachedTokens?: number
   /** Prompt tokens that were not served from cache, when reported or derived. */
   cacheMissTokens?: number
-  /** Best-effort estimate based on the configured provider/model pricing table. */
+  /** Best-effort estimate calculated from a saved CNY rate card. */
   estimatedCostCny?: number
+  /** Estimate in the supplier's native billing currency. */
+  estimatedCost?: number
+  estimatedCostCurrency?: string
+  /** Amount returned directly by the supplier for this request, in its native currency. */
+  providerReportedCost?: number
+  /** ISO-style currency code returned by the supplier, such as CNY or USD. */
+  providerReportedCurrency?: string
+  /** Whether the visible cost came from the supplier or a locally saved rate card. */
+  costSource?: 'provider' | 'rate-card'
+  /** Rate card snapshot used for this response, retained for cost auditability. */
+  rateCardId?: string
+  rateCardUpdatedAt?: number
+  /** A subscription plan has no meaningful per-token charge for this response. */
+  pricingMode?: 'token' | 'subscription'
+  pricingSourceUrl?: string
   /** Number of model calls that contributed to this response. */
   modelCalls?: number
 }

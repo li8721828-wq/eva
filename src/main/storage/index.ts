@@ -11,6 +11,10 @@ import { PluginStore } from './plugin-store'
 import { TaskRunStore } from './task-run-store'
 import { ProjectIndexStore } from './project-index-store'
 import { RuntimeProposalStore } from './runtime-proposal-store'
+import { RuntimeKernelStore } from './runtime-kernel-store'
+import { RuntimeMemoryStore } from './runtime-memory-store'
+import { RuntimeRunStore } from './runtime-run-store'
+import { ActivePlanStore } from './active-plan-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -23,6 +27,10 @@ export class StorageManager {
   taskRuns: TaskRunStore
   projectIndexes: ProjectIndexStore
   runtimeProposals: RuntimeProposalStore
+  runtimeKernel: RuntimeKernelStore
+  runtimeMemory: RuntimeMemoryStore
+  runtimeRuns: RuntimeRunStore
+  activePlans: ActivePlanStore
 
   private userDataPath: string
 
@@ -40,6 +48,10 @@ export class StorageManager {
     this.taskRuns = new TaskRunStore(this.userDataPath)
     this.projectIndexes = new ProjectIndexStore(this.userDataPath)
     this.runtimeProposals = new RuntimeProposalStore(this.userDataPath)
+    this.runtimeKernel = new RuntimeKernelStore(this.userDataPath)
+    this.runtimeMemory = new RuntimeMemoryStore(this.userDataPath)
+    this.runtimeRuns = new RuntimeRunStore(this.userDataPath)
+    this.activePlans = new ActivePlanStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {
@@ -57,6 +69,8 @@ export class StorageManager {
     // Initialize built-in agents on first launch
     await this.agents.initializeBuiltInAgents()
     await this.taskRuns.markRunningAsInterrupted()
+    await this.runtimeKernel.markActiveAsInterrupted()
+    await this.runtimeRuns.markActiveAsInterrupted()
 
     // Preserve the pre-project single workspace as the first project workspace.
     const legacyWorkspacePath = this.config.get('workspacePath')

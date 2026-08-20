@@ -8,6 +8,8 @@ import { registerPluginHandlers } from './plugin'
 import { registerGitHandlers } from './git'
 import { registerCostHandlers } from './cost'
 import { registerRuntimeProposalHandlers } from './runtime-proposal'
+import { registerRuntimeKernelHandlers } from './runtime-kernel'
+import { registerActivePlanHandlers } from './active-plan'
 import { registerRequirementEngineeringHandlers } from './requirement-engineering'
 import type { FileService, TerminalService, ToolRegistry } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -35,6 +37,8 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerWorkspaceHandlers(services?.projectIndexService)
   registerActivityHandlers()
   registerRuntimeProposalHandlers()
+  registerRuntimeKernelHandlers()
+  registerActivePlanHandlers()
   registerAgentHandlers()
   registerPluginHandlers()
   if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService)

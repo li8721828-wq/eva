@@ -12,6 +12,7 @@ import { QqRemoteBridge } from './services/qq-remote-bridge'
 import { registerQqRemoteHandlers } from './ipc/qq-remote'
 import { ProjectIndexService } from './services/project-index-service'
 import { LocalSearxngService } from './services/local-searxng-service'
+import { applyNetworkConfig } from './services/network-settings-service'
 
 // Set up global error handlers before anything else
 setupGlobalErrorHandlers()
@@ -21,6 +22,11 @@ let mainWindow: BrowserWindow | null = null
 app.whenReady().then(async () => {
   // 1. Initialize persistent storage (creates dirs, seeds built-in agents)
   await initializeStorage()
+  // Apply the saved policy before initializing model connections so every
+  // Electron-backed request has the same proxy and bypass behaviour.
+  await applyNetworkConfig(getStorage().config.get('network')).catch((error) => {
+    console.warn('Could not apply saved network settings:', error)
+  })
   // A planner cannot survive a desktop restart. Preserve its checkpoint but
   // make the state honest and let the user explicitly continue it in Task
   // Center instead of rendering a stale task as still running.

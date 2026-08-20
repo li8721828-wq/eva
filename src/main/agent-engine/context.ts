@@ -30,6 +30,11 @@ export interface ContextOptions {
   tools: ToolDefinition[]
 }
 
+export interface ContextManagerOptions {
+  /** Bounded historical reference supplied by the Agent OS memory store. */
+  durableMemory?: string
+}
+
 /**
  * Convert a stored ChatMessage to the LLM input format.
  */
@@ -63,6 +68,12 @@ function chatMessageToInput(msg: ChatMessage, maxToolResultChars?: number): Chat
 }
 
 export class ContextManager {
+  constructor(private readonly options: ContextManagerOptions = {}) {}
+
+  getDurableMemory(): string {
+    return this.options.durableMemory?.trim() || ''
+  }
+
   private compressHistory(messages: ChatMessage[], rawHistoryBudget: number): { memory: string; recent: ChatMessage[] } {
     const historyTokens = messages.reduce((total, message) => {
       const toolCalls = message.toolCalls?.length ? JSON.stringify(message.toolCalls) : ''
@@ -121,9 +132,11 @@ export class ContextManager {
     const modelMessages = messages.filter((message) => !message.progressKind)
 
     const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools)
-    const rawHistoryBudget = Math.max(0, maxTokens - this.estimateTokens(baseSystemPrompt) - CONTEXT_SAFETY_TOKENS)
+    const memory = this.options.durableMemory?.trim()
+    const promptBeforeHistory = memory ? `${baseSystemPrompt}\n\n${memory}` : baseSystemPrompt
+    const rawHistoryBudget = Math.max(0, maxTokens - this.estimateTokens(promptBeforeHistory) - CONTEXT_SAFETY_TOKENS)
     const history = this.compressHistory(modelMessages, rawHistoryBudget)
-    const systemPrompt = history.memory ? `${baseSystemPrompt}\n\n${history.memory}` : baseSystemPrompt
+    const systemPrompt = history.memory ? `${promptBeforeHistory}\n\n${history.memory}` : promptBeforeHistory
 
     const systemMessage: ChatMessageInput = {
       role: 'system',

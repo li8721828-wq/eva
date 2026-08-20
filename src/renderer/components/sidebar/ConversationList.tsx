@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState } from 'react'
 import type { Conversation } from '../../../shared/types'
 import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
@@ -10,7 +10,6 @@ import { AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageS
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
-import type { QqRemoteStatus } from '../../../shared/types/qq'
 
 function belongsToWorkspace(conversation: Conversation, workspace: Workspace): boolean {
   return conversation.workspaceId === workspace.id || (!conversation.workspaceId && conversation.workspacePath === workspace.path)
@@ -20,13 +19,14 @@ interface ConversationRowProps {
   conversation: Conversation
   isSelected: boolean
   archived?: boolean
+  showExecutionIndicator?: boolean
   onSelect: (id: string) => void
   onArchive: (id: string) => void
   onRestore: (id: string) => void
   onDelete: (conversation: Conversation) => void
 }
 
-function ConversationRow({ conversation, isSelected, archived = false, onSelect, onArchive, onRestore, onDelete }: ConversationRowProps) {
+function ConversationRow({ conversation, isSelected, archived = false, showExecutionIndicator = true, onSelect, onArchive, onRestore, onDelete }: ConversationRowProps) {
   const hasUnreadTerminalStatus = !conversation.executionStatusAcknowledgedAt
   const executionIndicator = conversation.executionStatus === 'running'
     ? <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-violet-600" aria-label="Running" />
@@ -63,7 +63,7 @@ function ConversationRow({ conversation, isSelected, archived = false, onSelect,
             ? <UsersRound className="h-3.5 w-3.5 shrink-0 text-violet-500" />
             : <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
           <span className="min-w-0 flex-1 truncate">{conversation.title || 'Untitled'}</span>
-          {executionIndicator && <span title={executionLabel}>{executionIndicator}</span>}
+          {showExecutionIndicator && executionIndicator && <span title={executionLabel}>{executionIndicator}</span>}
         </button>
       )}
       <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
@@ -111,25 +111,11 @@ export function ConversationList({ className }: ConversationListProps) {
   const [archivedOpen, setArchivedOpen] = useState(true)
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null)
   const [workspaceToDelete, setWorkspaceToDelete] = useState<Workspace | null>(null)
-  const [qqStatus, setQqStatus] = useState<QqRemoteStatus>({ state: 'disabled', message: 'QQ remote control is disabled.' })
 
   const handleSelect = async (id: string) => {
     setCurrentView('chat')
     await selectConversation(id)
   }
-
-  useEffect(() => {
-    let cancelled = false
-    const refresh = () => void window.eva.qqRemote.getStatus().then((status) => {
-      if (!cancelled) setQqStatus(status)
-    }).catch(() => undefined)
-    refresh()
-    const timer = window.setInterval(refresh, 3000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [])
 
   const toggleProject = (id: string) => {
     setActiveWorkspaceId(id)
@@ -177,9 +163,6 @@ export function ConversationList({ className }: ConversationListProps) {
             aria-expanded={channelsOpen}
           >
             <span>Channels</span>
-            <span className={qqStatus.state === 'connected' ? 'text-emerald-600' : qqStatus.state === 'error' ? 'text-red-600' : 'text-zinc-400'}>
-              {qqStatus.state === 'connected' ? 'Online' : qqStatus.state === 'connecting' ? 'Connecting' : 'Offline'}
-            </span>
           </button>
           {channelsOpen && (channelConversations.length > 0 ? (
             <div className="mt-1 space-y-1">
@@ -188,6 +171,7 @@ export function ConversationList({ className }: ConversationListProps) {
                   key={conversation.id}
                   conversation={conversation}
                   isSelected={currentConversationId === conversation.id}
+                  showExecutionIndicator={false}
                   onSelect={(id) => void handleSelect(id)}
                   onArchive={(id) => void archiveConversation(id)}
                   onRestore={(id) => void restoreConversation(id)}

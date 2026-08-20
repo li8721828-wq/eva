@@ -3,22 +3,7 @@ import type { ChatMessage, Conversation } from '../../shared/types/conversation'
 import type { CostUsageRecord, CostUsageReport, ModelRateCard } from '../../shared/types/cost'
 import type { ProviderConfigEntry } from '../../shared/types/provider'
 import { getStorage } from '../storage'
-
-function matchingRateCard(rateCards: ModelRateCard[], providerId: string, model: string): ModelRateCard | undefined {
-  return rateCards.find((rate) => rate.providerId === providerId && rate.model === model)
-    || rateCards.find((rate) => rate.providerId === providerId && rate.model === '*')
-}
-
-function estimatedCost(usage: NonNullable<ChatMessage['usage']>, rateCard?: ModelRateCard): number | undefined {
-  if (!rateCard) return usage.estimatedCostCny
-  const cached = Math.min(usage.promptTokens, Math.max(0, usage.cachedTokens || 0))
-  const uncached = Math.max(0, usage.promptTokens - cached)
-  return (
-    (uncached * rateCard.inputCnyPerMillion)
-    + (cached * (rateCard.cachedInputCnyPerMillion ?? rateCard.inputCnyPerMillion))
-    + (usage.completionTokens * rateCard.outputCnyPerMillion)
-  ) / 1_000_000
-}
+import { calculateRateCardCost, findMatchingRateCard } from './usage-pricing-service'
 
 function usageRecord(
   message: ChatMessage,
@@ -32,7 +17,7 @@ function usageRecord(
   const providerId = message.providerId || agent?.providerId || 'unknown'
   const provider = providers.find((candidate) => candidate.id === providerId)
   const model = message.model || agent?.model || 'unknown'
-  const rateCard = matchingRateCard(rateCards, providerId, model)
+  const rateCard = findMatchingRateCard(rateCards, providerId, model)
   const usage = message.usage
   return {
     id: message.id,
@@ -46,8 +31,19 @@ function usageRecord(
     cachedTokens: usage.cachedTokens || 0,
     cacheMissTokens: usage.cacheMissTokens ?? Math.max(0, usage.promptTokens - (usage.cachedTokens || 0)),
     modelCalls: usage.modelCalls || 1,
-    estimatedCostCny: estimatedCost(usage, rateCard),
-    rateCardId: rateCard?.id,
+    // A message keeps its original price snapshot. Legacy messages without one
+    // are calculated from the currently saved rate card.
+    estimatedCostCny: usage.providerReportedCurrency?.toUpperCase() === 'CNY'
+      ? usage.providerReportedCost
+      : usage.estimatedCostCny ?? ((rateCard?.currency || 'CNY').toUpperCase() === 'CNY' && rateCard ? calculateRateCardCost(usage, rateCard) : undefined),
+    estimatedCost: usage.estimatedCost,
+    estimatedCostCurrency: usage.estimatedCostCurrency,
+    providerReportedCost: usage.providerReportedCost,
+    providerReportedCurrency: usage.providerReportedCurrency,
+    costSource: usage.costSource || (rateCard ? 'rate-card' : undefined),
+    rateCardId: usage.rateCardId || rateCard?.id,
+    pricingMode: usage.pricingMode,
+    pricingSourceUrl: usage.pricingSourceUrl || rateCard?.sourceUrl,
   }
 }
 

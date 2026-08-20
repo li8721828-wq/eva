@@ -7,6 +7,8 @@ export interface ProviderConfigEntry {
   isEnabled: boolean
   defaultModel?: string
   models?: ProviderModelOption[]
+  /** Supplier-side pricing group/tier when one connection is routed through a specific group. */
+  pricingGroup?: string
 }
 
 export interface ProviderTestConfig {
@@ -93,6 +95,9 @@ export interface ChatChunk {
     completionTokens: number
     cachedTokens?: number
     cacheMissTokens?: number
+    /** Non-standard but common fields returned by provider gateways. */
+    providerReportedCost?: number
+    providerReportedCurrency?: string
   }
 }
 

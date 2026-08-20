@@ -14,6 +14,8 @@ import { getStorage } from '../storage'
 import { providerRegistry } from '../providers'
 import { ModelRouter } from '../services/model-router'
 import { modelHealthService } from '../services/model-health-service'
+import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../services/usage-pricing-service'
+import { ensureProviderPricing } from '../services/supplier-pricing-service'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -181,6 +183,9 @@ export class AgentRunner {
     this.abortController = new AbortController()
 
     try {
+      // Synchronize the active supplier connection before any model call so a
+      // newly used connection does not require a separate Cost Center visit.
+      await ensureProviderPricing(this.config.provider.id).catch(() => undefined)
       const { agentConfig, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
       const configuredMaxIterations = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
       const adaptiveToolBudget = this.config.adaptiveToolBudget
@@ -684,12 +689,24 @@ export class AgentRunner {
     const cachedTokens = usage.cachedTokens
     const cacheMissTokens = usage.cacheMissTokens
       ?? (typeof cachedTokens === 'number' ? Math.max(0, promptTokens - cachedTokens) : undefined)
+    const rateCardCost = resolveRateCardUsageCost(this.config.provider.id, this.config.agentConfig.model, {
+      promptTokens,
+      completionTokens,
+      ...(typeof cachedTokens === 'number' ? { cachedTokens } : {}),
+    })
+    const connectionPricing = resolveConnectionPricingMode(this.config.provider.id)
     return {
       promptTokens,
       completionTokens,
       ...(typeof cachedTokens === 'number' ? { cachedTokens } : {}),
       ...(typeof cacheMissTokens === 'number' ? { cacheMissTokens } : {}),
-      estimatedCostCny: this.estimateUsageCostCny(promptTokens, completionTokens, cachedTokens),
+      ...(typeof usage.providerReportedCost === 'number'
+        ? {
+            providerReportedCost: usage.providerReportedCost,
+            ...(usage.providerReportedCurrency ? { providerReportedCurrency: usage.providerReportedCurrency } : {}),
+            costSource: 'provider' as const,
+          }
+        : { ...connectionPricing, ...rateCardCost }),
       modelCalls: 1,
     }
   }
@@ -703,6 +720,15 @@ export class AgentRunner {
       cachedTokens: this.addOptional(current.cachedTokens, next.cachedTokens),
       cacheMissTokens: this.addOptional(current.cacheMissTokens, next.cacheMissTokens),
       estimatedCostCny: this.addOptional(current.estimatedCostCny, next.estimatedCostCny),
+      estimatedCost: this.sameEstimatedCost(current, next),
+      estimatedCostCurrency: current.estimatedCostCurrency || next.estimatedCostCurrency,
+      providerReportedCost: this.sameCurrencyCost(current, next),
+      providerReportedCurrency: current.providerReportedCurrency || next.providerReportedCurrency,
+      costSource: current.costSource === 'provider' || next.costSource === 'provider' ? 'provider' : current.costSource || next.costSource,
+      rateCardId: current.rateCardId || next.rateCardId,
+      rateCardUpdatedAt: current.rateCardUpdatedAt || next.rateCardUpdatedAt,
+      pricingMode: current.pricingMode === 'subscription' || next.pricingMode === 'subscription' ? 'subscription' : current.pricingMode || next.pricingMode,
+      pricingSourceUrl: current.pricingSourceUrl || next.pricingSourceUrl,
       modelCalls: (current.modelCalls ?? 1) + (next.modelCalls ?? 1),
     }
   }
@@ -712,16 +738,18 @@ export class AgentRunner {
     return (left ?? 0) + (right ?? 0)
   }
 
-  private estimateUsageCostCny(promptTokens: number, completionTokens: number, cachedTokens?: number): number | undefined {
-    // Estimates are local reference values, not provider billing records.
-    if (this.config.provider.type !== 'deepseek') return undefined
-    const isFlash = this.config.agentConfig.model.toLowerCase().includes('flash')
-    const inputPerMillion = isFlash ? 0.5 : 2
-    const cachedInputPerMillion = isFlash ? 0.05 : 0.2
-    const outputPerMillion = isFlash ? 2 : 8
-    const cached = Math.min(promptTokens, Math.max(0, cachedTokens ?? 0))
-    const uncached = Math.max(0, promptTokens - cached)
-    return (uncached * inputPerMillion + cached * cachedInputPerMillion + completionTokens * outputPerMillion) / 1_000_000
+  private sameCurrencyCost(current: ChatUsage, next: ChatUsage): number | undefined {
+    if (current.providerReportedCost === undefined) return next.providerReportedCost
+    if (next.providerReportedCost === undefined) return current.providerReportedCost
+    if (current.providerReportedCurrency !== next.providerReportedCurrency) return undefined
+    return current.providerReportedCost + next.providerReportedCost
+  }
+
+  private sameEstimatedCost(current: ChatUsage, next: ChatUsage): number | undefined {
+    if (current.estimatedCost === undefined) return next.estimatedCost
+    if (next.estimatedCost === undefined) return current.estimatedCost
+    if (current.estimatedCostCurrency !== next.estimatedCostCurrency) return undefined
+    return current.estimatedCost + next.estimatedCost
   }
 
   /**

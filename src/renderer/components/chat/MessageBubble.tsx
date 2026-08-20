@@ -58,6 +58,14 @@ function formatCny(value: number): string {
   return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
 }
 
+function formatSupplierCost(value: number, currency?: string): string {
+  const normalizedCurrency = currency?.trim().toUpperCase()
+  if (!normalizedCurrency) return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
+  if (normalizedCurrency === 'CNY') return `¥${formatCny(value)}`
+  if (normalizedCurrency === 'USD') return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`
+  return `${normalizedCurrency} ${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`
+}
+
 function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversationUsage?: ChatUsage }) {
   const totalTokens = usage.promptTokens + usage.completionTokens
   const cacheRate = usage.cachedTokens && usage.promptTokens > 0
@@ -75,10 +83,20 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
       </span>
       <span>输入 {formatTokenCount(usage.promptTokens)} · 输出 {formatTokenCount(usage.completionTokens)}</span>
       {cacheRate !== null ? <span>缓存 {cacheRate}%</span> : null}
-      {usage.estimatedCostCny !== undefined ? (
-        <span title="基于 Eva 内置 DeepSeek 参考价的估算；实际账单以供应商记录为准。">
+      {usage.providerReportedCost !== undefined ? (
+        <span title={usage.providerReportedCurrency ? '由供应商响应返回的本次实际费用。' : '供应商响应返回了金额，但未声明币种，未纳入人民币汇总。'}>
+          {usage.providerReportedCurrency ? '费用' : '供应商金额'} {formatSupplierCost(usage.providerReportedCost, usage.providerReportedCurrency)}
+        </span>
+      ) : usage.estimatedCostCny !== undefined ? (
+        <span title="按此连接保存的模型价格卡计算；实际账单以供应商记录为准。">
           预计 ¥{formatCny(usage.estimatedCostCny)}
         </span>
+      ) : usage.estimatedCost !== undefined ? (
+        <span title={usage.pricingSourceUrl ? `按该供应商官网同步的费率计算：${usage.pricingSourceUrl}` : '按此连接保存的模型价格卡计算；实际账单以供应商记录为准。'}>
+          预计 {formatSupplierCost(usage.estimatedCost, usage.estimatedCostCurrency)}
+        </span>
+      ) : usage.pricingMode === 'subscription' ? (
+        <span title={usage.pricingSourceUrl ? `该连接为订阅额度制：${usage.pricingSourceUrl}` : '该连接为订阅额度制，无法按本次 Token 计算单独费用。'}>订阅额度制</span>
       ) : null}
       {conversationUsage && conversationTokens > totalTokens ? (
         <span className="text-zinc-350">本对话 {formatTokenCount(conversationTokens)}</span>

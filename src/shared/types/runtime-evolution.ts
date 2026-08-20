@@ -17,6 +17,10 @@ export interface RuntimeEvolutionProposal {
   createdBy: 'agent' | 'user'
   sourceConversationId?: string
   decisionNote?: string
+  implementation?: {
+    conversationId: string
+    startedAt: number
+  }
   createdAt: number
   updatedAt: number
 }

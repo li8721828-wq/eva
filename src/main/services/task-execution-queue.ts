@@ -17,6 +17,7 @@ export interface TaskQueueUpdate {
   startedAt?: number
   nextRetryAt?: number
   error?: string
+  resourceKey?: string
 }
 
 export interface TaskQueueJob {
@@ -24,6 +25,8 @@ export interface TaskQueueJob {
   kind: 'expert' | 'goal'
   run: (attempt: number) => Promise<TaskQueueResult>
   maxAttempts?: number
+  /** Jobs sharing a resource key never execute concurrently. */
+  resourceKey?: string
   onUpdate?: (update: TaskQueueUpdate) => void | Promise<void>
 }
 
@@ -42,6 +45,7 @@ export class TaskExecutionQueue {
   private readonly running = new Map<string, PendingTaskJob>()
   private readonly retryTimers = new Map<string, { timer: ReturnType<typeof setTimeout>; job: PendingTaskJob }>()
   private readonly cancellationRequested = new Set<string>()
+  private readonly activeResources = new Set<string>()
 
   constructor(
     private readonly maxConcurrent = 2,
@@ -110,13 +114,18 @@ export class TaskExecutionQueue {
 
   private drain(): void {
     while (this.running.size < this.maxConcurrent && this.pending.length > 0) {
-      const job = this.pending.shift()
+      // Do not let a blocked same-workspace task prevent a ready task from a
+      // different workspace from using an available global execution slot.
+      const index = this.pending.findIndex((job) => !job.resourceKey || !this.activeResources.has(job.resourceKey))
+      if (index < 0) return
+      const [job] = this.pending.splice(index, 1)
       if (job) void this.execute(job)
     }
   }
 
   private async execute(job: PendingTaskJob): Promise<void> {
     this.running.set(job.id, job)
+    if (job.resourceKey) this.activeResources.add(job.resourceKey)
     job.attempt += 1
     await this.notify(job, 'running')
 
@@ -127,6 +136,7 @@ export class TaskExecutionQueue {
       result = { status: 'failed', error: error instanceof Error ? error.message : String(error) }
     } finally {
       this.running.delete(job.id)
+      if (job.resourceKey) this.activeResources.delete(job.resourceKey)
     }
 
     if (this.cancellationRequested.delete(job.id)) {
@@ -157,6 +167,7 @@ export class TaskExecutionQueue {
       maxAttempts: job.maxAttempts ?? 2,
       queuedAt: job.queuedAt,
       startedAt: state === 'running' ? Date.now() : undefined,
+      resourceKey: job.resourceKey,
       ...extra,
     })
   }

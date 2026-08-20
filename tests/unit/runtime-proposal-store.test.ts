@@ -30,4 +30,17 @@ describe('RuntimeProposalStore', () => {
     expect(decided).toMatchObject({ status: 'approved', decisionNote: 'Reviewed by operator' })
     await expect(store.decide(proposal.id, 'rejected')).rejects.toThrow('already been decided')
   })
+
+  it('starts an implementation task only after approval and only once', async () => {
+    const store = createStore()
+    const proposal = await store.create({
+      title: 'Repair runtime route', area: 'model-routing', problem: 'Route is missing.', evidence: ['diagnostic'], proposedChanges: ['Repair it.'], validationPlan: ['Run diagnostics.'], rollbackPlan: ['Restore route.'], createdBy: 'user',
+    })
+    await expect(store.beginImplementation(proposal.id, 'conversation-1')).rejects.toThrow('approved')
+
+    await store.decide(proposal.id, 'approved')
+    const started = await store.beginImplementation(proposal.id, 'conversation-1')
+    expect(started.implementation?.conversationId).toBe('conversation-1')
+    await expect(store.beginImplementation(proposal.id, 'conversation-2')).rejects.toThrow('already has')
+  })
 })

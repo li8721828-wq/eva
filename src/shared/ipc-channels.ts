@@ -17,6 +17,7 @@ export const IPC = {
   // Agent OS runtime kernel (read-only, redacted control-plane state)
   RUNTIME_KERNEL_SNAPSHOT: 'runtime-kernel:snapshot',
   RUNTIME_KERNEL_AUDIT_LIST: 'runtime-kernel:audit-list',
+  ACTIVE_PLAN_GET: 'active-plan:get',
 
   // Runtime evolution proposals (proposal-only; never execute a change)
   RUNTIME_PROPOSAL_LIST: 'runtime-proposal:list',
@@ -130,6 +131,9 @@ export const IPC = {
   CONFIG_GET: 'config:get',
   CONFIG_SET: 'config:set',
   CONFIG_GET_ALL: 'config:get-all',
+  NETWORK_GET_CONFIG: 'network:get-config',
+  NETWORK_SAVE_CONFIG: 'network:save-config',
+  NETWORK_TEST_CONNECTION: 'network:test-connection',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_CONFIG: 'provider:config',
   PROVIDER_DELETE: 'provider:delete',
@@ -140,6 +144,7 @@ export const IPC = {
   MODEL_POOL_ROUTE: 'model-pool:route',
   COST_USAGE_REPORT: 'cost:usage-report',
   COST_RATE_CARDS_SAVE: 'cost:rate-cards-save',
+  COST_RATE_CARDS_REFRESH: 'cost:rate-cards-refresh',
 
   // QQ remote control
   QQ_REMOTE_GET_CONFIG: 'qq-remote:get-config',

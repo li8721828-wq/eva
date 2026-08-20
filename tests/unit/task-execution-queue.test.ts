@@ -52,6 +52,21 @@ describe('TaskExecutionQueue', () => {
     await vi.waitFor(() => expect(queue.activeCount).toBe(0))
   })
 
+  it('serializes work for one resource while allowing another resource to run', async () => {
+    let releaseFirst: (() => void) | undefined
+    const first = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const started: string[] = []
+    const queue = new TaskExecutionQueue(2)
+
+    queue.enqueue({ conversationId: 'one', kind: 'goal', resourceKey: 'workspace:a', run: async () => { started.push('one'); await first; return { status: 'completed' } } })
+    queue.enqueue({ conversationId: 'two', kind: 'expert', resourceKey: 'workspace:a', run: async () => { started.push('two'); return { status: 'completed' } } })
+    queue.enqueue({ conversationId: 'three', kind: 'goal', resourceKey: 'workspace:b', run: async () => { started.push('three'); return { status: 'completed' } } })
+
+    await vi.waitFor(() => expect(started.sort()).toEqual(['one', 'three']))
+    releaseFirst?.()
+    await vi.waitFor(() => expect(started).toContain('two'))
+  })
+
   it('settles a running task as cancelled after the user stops it', async () => {
     let release: (() => void) | undefined
     const pending = new Promise<void>((resolve) => { release = resolve })

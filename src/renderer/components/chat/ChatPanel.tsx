@@ -15,9 +15,18 @@ import { Select } from '@/components/ui/Select'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
 import type { GitRepositoryStatus } from '../../../shared/types'
 import { SYMPOSIUM_TOOL_OPTIONS } from '../../../shared/types/symposium'
+import type { QqRemoteStatus } from '../../../shared/types/qq'
 
 export interface ChatPanelProps {
   className?: string
+}
+
+const QQ_CONNECTION_PRESENTATION: Record<QqRemoteStatus['state'], { label: string; className: string }> = {
+  connected: { label: '已连接', className: 'bg-emerald-500' },
+  connecting: { label: '连接中', className: 'bg-amber-400 animate-pulse' },
+  disconnected: { label: '未连接', className: 'bg-zinc-400' },
+  disabled: { label: '未启用', className: 'bg-zinc-400' },
+  error: { label: '连接异常', className: 'bg-rose-500' },
 }
 
 export function ChatPanel({ className }: ChatPanelProps) {
@@ -43,6 +52,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
   const [symposiumToolDrafts, setSymposiumToolDrafts] = useState<Record<string, string[]>>({})
   const [symposiumMemoryDraft, setSymposiumMemoryDraft] = useState({ objective: '', agreements: '', openQuestions: '', actionItems: '', pinned: true })
   const [savingSymposiumCapabilities, setSavingSymposiumCapabilities] = useState(false)
+  const [qqStatus, setQqStatus] = useState<QqRemoteStatus | null>(null)
 
   useEffect(() => {
     setSymposiumCapabilitiesOpen(false)
@@ -73,6 +83,27 @@ export function ChatPanel({ className }: ChatPanelProps) {
 
     return () => { cancelled = true }
   }, [currentConversationId, currentConversation?.gitBranch, currentConversation?.workspacePath])
+
+  useEffect(() => {
+    if (currentConversation?.channel !== 'qq') {
+      setQqStatus(null)
+      return
+    }
+
+    let cancelled = false
+    const refresh = () => void window.eva.qqRemote.getStatus()
+      .then((status) => { if (!cancelled) setQqStatus(status) })
+      .catch(() => {
+        if (!cancelled) setQqStatus({ state: 'error', message: 'Unable to check the QQ channel connection.' })
+      })
+
+    refresh()
+    const timer = window.setInterval(refresh, 5_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [currentConversation?.channel, currentConversationId])
 
   const gitBranchOptions = useMemo(() => {
     if (!gitStatus?.isRepository) return []
@@ -149,10 +180,19 @@ export function ChatPanel({ className }: ChatPanelProps) {
     <div className={cn('eva-chat-surface flex h-full flex-col', className)}>
       {/* Header */}
       <div className="eva-chat-header flex h-14 items-center justify-between gap-4 border-b px-6">
-        <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2.5">
           <h1 className="truncate text-base font-semibold text-zinc-800" title={currentConversation?.title || 'New conversation'}>
             {currentConversation?.title || 'New conversation'}
           </h1>
+          {qqStatus && (() => {
+            const status = QQ_CONNECTION_PRESENTATION[qqStatus.state]
+            return (
+              <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-zinc-500" title={qqStatus.message}>
+                <span className={cn('h-1.5 w-1.5 rounded-full', status.className)} aria-hidden="true" />
+                {status.label}
+              </span>
+            )
+          })()}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {currentConversationId && (

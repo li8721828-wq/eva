@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft, BarChart3, Coins, Database, Plus, RefreshCw, Save, Trash2, Zap } from 'lucide-react'
-import type { CostUsageRecord, CostUsageReport, ModelRateCard } from '../../../shared/types/cost'
+import type { CostUsageRecord, CostUsageReport, ModelRateCard, SupplierRateRefreshResult } from '../../../shared/types/cost'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -109,7 +109,9 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
   const [providerId, setProviderId] = useState('all')
   const [loading, setLoading] = useState(true)
   const [savingRates, setSavingRates] = useState(false)
+  const [refreshingRates, setRefreshingRates] = useState(false)
   const [rateCards, setRateCards] = useState<ModelRateCard[]>([])
+  const [rateRefreshResults, setRateRefreshResults] = useState<SupplierRateRefreshResult[]>([])
   const [error, setError] = useState<string | null>(null)
 
   const loadReport = async () => {
@@ -181,6 +183,36 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
     }
   }
 
+  const refreshSupplierRates = async () => {
+    setRefreshingRates(true)
+    try {
+      const results = await window.eva.cost.refreshSupplierRates()
+      setRateRefreshResults(results)
+      await loadReport()
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Could not refresh supplier prices.')
+    } finally {
+      setRefreshingRates(false)
+    }
+  }
+
+  const rateValue = (rate: ModelRateCard, kind: 'input' | 'cachedInput' | 'output') => {
+    if (kind === 'input') return rate.inputPerMillion ?? rate.inputCnyPerMillion
+    if (kind === 'cachedInput') return rate.cachedInputPerMillion ?? rate.cachedInputCnyPerMillion
+    return rate.outputPerMillion ?? rate.outputCnyPerMillion
+  }
+
+  const updateRateValue = (id: string, kind: 'input' | 'cachedInput' | 'output', value: string) => {
+    const parsed = value === '' ? undefined : Number(value)
+    const card = rateCards.find((rate) => rate.id === id)
+    if (!card) return
+    const supplierField = card.source === 'supplier-site'
+    const key = supplierField
+      ? kind === 'input' ? 'inputPerMillion' : kind === 'cachedInput' ? 'cachedInputPerMillion' : 'outputPerMillion'
+      : kind === 'input' ? 'inputCnyPerMillion' : kind === 'cachedInput' ? 'cachedInputCnyPerMillion' : 'outputCnyPerMillion'
+    updateRate(id, { [key]: parsed ?? (kind === 'cachedInput' ? undefined : 0) })
+  }
+
   return (
     <div className={cn('cost-center flex h-full min-h-0 flex-col overflow-auto', embedded && 'cost-center--embedded')}>
       {!embedded && (
@@ -218,7 +250,43 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
 
         <section className="cost-panel cost-table"><div className="flex items-center justify-between gap-4 border-b border-zinc-100 px-5 py-4"><div><h2 className="text-sm font-semibold text-zinc-900">Model usage</h2><p className="mt-1 text-xs text-zinc-500">Grouped by supplier and model for the selected time period.</p></div></div><div className="overflow-x-auto"><table className="w-full min-w-[740px] text-sm"><thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">Supplier</th><th className="px-5 py-3">Model</th><th className="px-5 py-3 text-right">Cost</th><th className="px-5 py-3 text-right">Calls</th><th className="px-5 py-3 text-right">Input</th><th className="px-5 py-3 text-right">Output</th><th className="px-5 py-3 text-right">Cache hit</th></tr></thead><tbody className="divide-y divide-zinc-100">{breakdown.length === 0 ? <tr><td colSpan={7} className="px-5 py-10 text-center text-zinc-400">No usage records match these filters.</td></tr> : breakdown.map((row) => <tr key={`${row.providerName}:${row.model}`}><td className="px-5 py-3 text-zinc-600">{row.providerName}</td><td className="px-5 py-3 font-mono text-xs text-zinc-800">{row.model}</td><td className="px-5 py-3 text-right font-medium text-zinc-900">{row.priced ? cny(row.cost) : '--'}</td><td className="px-5 py-3 text-right text-zinc-600">{row.calls}</td><td className="px-5 py-3 text-right text-zinc-600">{tokens(row.prompt)}</td><td className="px-5 py-3 text-right text-zinc-600">{tokens(row.completion)}</td><td className="px-5 py-3 text-right text-zinc-600">{row.prompt > 0 ? `${((row.cached / row.prompt) * 100).toFixed(1)}%` : '--'}</td></tr>)}</tbody></table></div></section>
 
-        <section className="cost-panel cost-table"><div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-100 px-5 py-4"><div><h2 className="text-sm font-semibold text-zinc-900">Model rate cards</h2><p className="mt-1 text-xs text-zinc-500">Local reference prices in CNY per million tokens. These determine estimates for records without a provider-reported cost.</p></div><div className="flex gap-2"><Button variant="outline" size="sm" onClick={addRate}><Plus className="mr-1.5 h-3.5 w-3.5" />Add rate</Button><Button size="sm" onClick={() => void saveRates()} disabled={savingRates}><Save className="mr-1.5 h-3.5 w-3.5" />{savingRates ? 'Saving...' : 'Save rates'}</Button></div></div><div className="overflow-x-auto"><table className="w-full min-w-[870px] text-sm"><thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">Supplier</th><th className="px-5 py-3">Model</th><th className="px-5 py-3">Input / M</th><th className="px-5 py-3">Cached input / M</th><th className="px-5 py-3">Output / M</th><th className="w-14 px-5 py-3"><span className="sr-only">Remove</span></th></tr></thead><tbody className="divide-y divide-zinc-100">{rateCards.length === 0 ? <tr><td colSpan={6} className="px-5 py-8 text-center text-zinc-400">Add a rate card to estimate models that do not report cost.</td></tr> : rateCards.map((rate) => <tr key={rate.id}><td className="px-5 py-2"><Select value={rate.providerId} onChange={(event) => updateRate(rate.id, { providerId: event.target.value })} options={providers.length ? providers.map(([id, name]) => ({ value: id, label: name })) : [{ value: rate.providerId, label: rate.providerId || 'Supplier ID' }]} /></td><td className="px-5 py-2"><Input value={rate.model} onChange={(event) => updateRate(rate.id, { model: event.target.value })} placeholder="Model ID or *" /></td><td className="px-5 py-2"><Input type="number" min="0" step="0.01" value={rate.inputCnyPerMillion} onChange={(event) => updateRate(rate.id, { inputCnyPerMillion: Number(event.target.value) || 0 })} /></td><td className="px-5 py-2"><Input type="number" min="0" step="0.01" value={rate.cachedInputCnyPerMillion ?? ''} onChange={(event) => updateRate(rate.id, { cachedInputCnyPerMillion: event.target.value === '' ? undefined : Number(event.target.value) || 0 })} /></td><td className="px-5 py-2"><Input type="number" min="0" step="0.01" value={rate.outputCnyPerMillion} onChange={(event) => updateRate(rate.id, { outputCnyPerMillion: Number(event.target.value) || 0 })} /></td><td className="px-5 py-2"><Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400 hover:text-red-600" onClick={() => removeRate(rate.id)} title="Remove rate"><Trash2 className="h-3.5 w-3.5" /></Button></td></tr>)}</tbody></table></div></section>
+        <section className="cost-panel cost-table">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-100 px-5 py-4">
+            <div>
+              <h2 className="text-sm font-semibold text-zinc-900">Connection rate cards</h2>
+              <p className="mt-1 text-xs text-zinc-500">Every card belongs to one supplier connection. Supplier-synced prices retain their source, currency, and refresh time; manual cards remain available as a fallback.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => void refreshSupplierRates()} disabled={refreshingRates}>
+                <RefreshCw className={cn('mr-1.5 h-3.5 w-3.5', refreshingRates && 'animate-spin')} />{refreshingRates ? 'Refreshing supplier prices...' : 'Refresh supplier prices'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={addRate}><Plus className="mr-1.5 h-3.5 w-3.5" />Add manual rate</Button>
+              <Button size="sm" onClick={() => void saveRates()} disabled={savingRates}><Save className="mr-1.5 h-3.5 w-3.5" />{savingRates ? 'Saving...' : 'Save rates'}</Button>
+            </div>
+          </div>
+          {rateRefreshResults.length > 0 && (
+            <div className="space-y-1 border-b border-zinc-100 bg-zinc-50/70 px-5 py-3 text-xs text-zinc-600">
+              {rateRefreshResults.map((result) => <p key={result.providerId}><span className={cn('mr-1.5 font-medium', result.status === 'updated' ? 'text-emerald-700' : result.status === 'subscription' ? 'text-violet-700' : result.status === 'failed' ? 'text-rose-600' : 'text-zinc-600')}>{result.providerName}</span>{result.message}{result.sourceUrl ? <a className="ml-1 text-violet-700 hover:underline" href={result.sourceUrl} target="_blank" rel="noreferrer">Source</a> : null}</p>)}
+            </div>
+          )}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1040px] text-sm">
+              <thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">Supplier</th><th className="px-5 py-3">Model</th><th className="px-5 py-3">Currency</th><th className="px-5 py-3">Input / M</th><th className="px-5 py-3">Cached input / M</th><th className="px-5 py-3">Output / M</th><th className="px-5 py-3">Source</th><th className="w-14 px-5 py-3"><span className="sr-only">Remove</span></th></tr></thead>
+              <tbody className="divide-y divide-zinc-100">
+                {rateCards.length === 0 ? <tr><td colSpan={8} className="px-5 py-8 text-center text-zinc-400">Refresh supplier prices or add a manual connection rate.</td></tr> : rateCards.map((rate) => <tr key={rate.id}>
+                  <td className="px-5 py-2"><Select value={rate.providerId} onChange={(event) => updateRate(rate.id, { providerId: event.target.value })} options={providers.length ? providers.map(([id, name]) => ({ value: id, label: name })) : [{ value: rate.providerId, label: rate.providerId || 'Supplier ID' }]} /></td>
+                  <td className="px-5 py-2"><Input value={rate.model} readOnly={rate.source === 'supplier-site'} onChange={(event) => updateRate(rate.id, { model: event.target.value })} placeholder="Model ID or *" /></td>
+                  <td className="px-5 py-2"><Input value={rate.currency || 'CNY'} readOnly={rate.source === 'supplier-site'} onChange={(event) => updateRate(rate.id, { currency: event.target.value.toUpperCase() || 'CNY' })} className="w-20" /></td>
+                  <td className="px-5 py-2"><Input type="number" min="0" step="0.0001" readOnly={rate.source === 'supplier-site'} value={rateValue(rate, 'input')} onChange={(event) => updateRateValue(rate.id, 'input', event.target.value)} /></td>
+                  <td className="px-5 py-2"><Input type="number" min="0" step="0.0001" readOnly={rate.source === 'supplier-site'} value={rateValue(rate, 'cachedInput') ?? ''} onChange={(event) => updateRateValue(rate.id, 'cachedInput', event.target.value)} /></td>
+                  <td className="px-5 py-2"><Input type="number" min="0" step="0.0001" readOnly={rate.source === 'supplier-site'} value={rateValue(rate, 'output')} onChange={(event) => updateRateValue(rate.id, 'output', event.target.value)} /></td>
+                  <td className="px-5 py-2 text-xs text-zinc-500">{rate.source === 'supplier-site' ? <>{rate.sourceGroup ? `${rate.sourceGroup} · ` : ''}{rate.sourceUrl ? <a href={rate.sourceUrl} target="_blank" rel="noreferrer" title={rate.sourceFetchedAt ? `Refreshed ${new Date(rate.sourceFetchedAt).toLocaleString()}` : undefined} className="text-violet-700 hover:underline">Supplier site</a> : 'Supplier site'}</> : 'Manual'}</td>
+                  <td className="px-5 py-2"><Button variant="ghost" size="icon" className="h-8 w-8 text-zinc-400 hover:text-red-600" onClick={() => removeRate(rate.id)} title="Remove rate"><Trash2 className="h-3.5 w-3.5" /></Button></td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>
+        </section>
       </main>
     </div>
   )

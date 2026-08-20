@@ -10,6 +10,7 @@ import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ModelRateCard } from '../../shared/types/cost'
 import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
+import { DEFAULT_NETWORK_CONFIG, type NetworkConfig } from '../../shared/types/network'
 import { CredentialStore } from './credential-store'
 
 export type { ProviderConfigEntry }
@@ -40,6 +41,7 @@ export interface AppConfig {
   maxTokens: number
   automation: AutomationConfig
   costRateCards: ModelRateCard[]
+  network: NetworkConfig
 }
 
 const DEFAULT_PROVIDERS: ProviderConfigEntry[] = [
@@ -85,6 +87,7 @@ const DEFAULTS: AppConfig = {
   maxTokens: DEFAULT_MAX_TOKENS,
   automation: DEFAULT_AUTOMATION_CONFIG,
   costRateCards: [],
+  network: DEFAULT_NETWORK_CONFIG,
 }
 
 export class ConfigStore {

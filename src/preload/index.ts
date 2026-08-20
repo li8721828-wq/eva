@@ -7,7 +7,7 @@ import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent 
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
 import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { ModelPool, ModelRouteRequest, ModelRouteResult } from '../shared/types/model-pool'
-import type { CostUsageReport, ModelRateCard } from '../shared/types/cost'
+import type { CostUsageReport, ModelRateCard, SupplierRateRefreshResult } from '../shared/types/cost'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
@@ -16,6 +16,8 @@ import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from 
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
+import type { ActivePlan } from '../shared/types/active-plan'
+import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 
 // GoalEvent type - defined locally to avoid importing from main process
@@ -95,8 +97,8 @@ export interface EvaAPI {
     start(payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string; resume?: boolean }): void
     onStream(callback: EventCallback<GoalEvent>): Unsubscribe
     abort(conversationId: string): void
-    pause(conversationId: string): void
-    resume(conversationId: string): void
+    pause(conversationId: string): Promise<void>
+    resume(conversationId: string): Promise<void>
   }
 
   // Spec 模板
@@ -192,6 +194,16 @@ export interface EvaAPI {
     listAudit(limit?: number): Promise<RuntimeKernelAuditRecord[]>
   }
 
+  network: {
+    getConfig(): Promise<NetworkConfig>
+    saveConfig(config: NetworkConfig): Promise<NetworkConfig>
+    testConnection(url?: string): Promise<NetworkTestResult>
+  }
+
+  activePlan: {
+    get(scopeKey: string): Promise<ActivePlan | null>
+  }
+
   modelPool: {
     list(): Promise<ModelPool[]>
     save(pools: ModelPool[]): Promise<void>
@@ -201,6 +213,7 @@ export interface EvaAPI {
   cost: {
     getUsageReport(): Promise<CostUsageReport>
     saveRateCards(rateCards: ModelRateCard[]): Promise<void>
+    refreshSupplierRates(): Promise<SupplierRateRefreshResult[]>
   }
 
   qqRemote: {
@@ -329,12 +342,8 @@ const evaAPI: EvaAPI = {
     abort: (conversationId) => {
       ipcRenderer.send(IPC.TASK_GOAL_ABORT, conversationId)
     },
-    pause: (conversationId) => {
-      ipcRenderer.send(IPC.TASK_GOAL_PAUSE, conversationId)
-    },
-    resume: (conversationId) => {
-      ipcRenderer.send(IPC.TASK_GOAL_RESUME, conversationId)
-    },
+    pause: (conversationId) => ipcRenderer.invoke(IPC.TASK_GOAL_PAUSE, conversationId),
+    resume: (conversationId) => ipcRenderer.invoke(IPC.TASK_GOAL_RESUME, conversationId),
   },
 
   // Spec 模板
@@ -445,6 +454,16 @@ const evaAPI: EvaAPI = {
     listAudit: (limit) => ipcRenderer.invoke(IPC.RUNTIME_KERNEL_AUDIT_LIST, limit),
   },
 
+  network: {
+    getConfig: () => ipcRenderer.invoke(IPC.NETWORK_GET_CONFIG),
+    saveConfig: (config) => ipcRenderer.invoke(IPC.NETWORK_SAVE_CONFIG, config),
+    testConnection: (url) => ipcRenderer.invoke(IPC.NETWORK_TEST_CONNECTION, url),
+  },
+
+  activePlan: {
+    get: (scopeKey) => ipcRenderer.invoke(IPC.ACTIVE_PLAN_GET, scopeKey),
+  },
+
   modelPool: {
     list: () => ipcRenderer.invoke(IPC.MODEL_POOL_LIST),
     save: (entries) => ipcRenderer.invoke(IPC.MODEL_POOL_SAVE, entries),
@@ -454,6 +473,7 @@ const evaAPI: EvaAPI = {
   cost: {
     getUsageReport: () => ipcRenderer.invoke(IPC.COST_USAGE_REPORT),
     saveRateCards: (rateCards) => ipcRenderer.invoke(IPC.COST_RATE_CARDS_SAVE, rateCards),
+    refreshSupplierRates: () => ipcRenderer.invoke(IPC.COST_RATE_CARDS_REFRESH),
   },
 
   qqRemote: {

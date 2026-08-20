@@ -1,7 +1,7 @@
 import type { LLMProvider } from '../providers/base-provider'
 import type { ToolRegistry, FileService, TerminalService } from '../tools/index'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
-import type { GoalConfig, GoalStep, GoalProgress, TaskStatus } from '../../shared/types/task'
+import { markGoalProgressCancelled, type GoalConfig, type GoalStep, type GoalProgress, type TaskStatus } from '../../shared/types/task'
 import type { ToolCall } from '../../shared/types/conversation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { ChatMessage } from '../../shared/types/conversation'
@@ -90,7 +90,7 @@ export class GoalPlanner {
     // measurable progress between steps instead.
     let lastProgressAt = startTime
 
-    const progress: GoalProgress = resumeProgress
+    let progress: GoalProgress = resumeProgress
       ? {
           ...resumeProgress,
           steps: resumeProgress.steps.map((step) => ({ ...step, toolCalls: step.toolCalls ? [...step.toolCalls] : undefined })),
@@ -137,8 +137,7 @@ export class GoalPlanner {
       for (let i = 0; i < steps.length; i++) {
         // Check abort
         if (this.abortController?.signal.aborted) {
-          progress.status = 'cancelled'
-          progress.completedAt = Date.now()
+          progress = markGoalProgressCancelled(progress)
           yield { type: 'done', progress }
           return
         }
@@ -149,8 +148,7 @@ export class GoalPlanner {
         }
 
         if (this.abortController?.signal.aborted) {
-          progress.status = 'cancelled'
-          progress.completedAt = Date.now()
+          progress = markGoalProgressCancelled(progress)
           yield { type: 'done', progress }
           return
         }
@@ -191,6 +189,12 @@ export class GoalPlanner {
           stepFailed = true
         }
 
+        if (this.abortController?.signal.aborted) {
+          progress = markGoalProgressCancelled(progress)
+          yield { type: 'done', progress }
+          return
+        }
+
         step.status = stepFailed ? 'failed' : 'completed'
         step.result = stepResult
         step.completedAt = Date.now()
@@ -215,6 +219,11 @@ export class GoalPlanner {
       while (this.isPaused && !this.abortController?.signal.aborted) {
         await new Promise((resolve) => setTimeout(resolve, 200))
       }
+      if (this.abortController?.signal.aborted) {
+        progress = markGoalProgressCancelled(progress)
+        yield { type: 'done', progress }
+        return
+      }
       progress.status = 'completed'
       progress.completedAt = Date.now()
       const summary = await this.generateSummary(goalConfig.goal, completedSteps)
@@ -223,7 +232,7 @@ export class GoalPlanner {
       yield { type: 'done', progress }
     } catch (err) {
       if (this.abortController?.signal.aborted) {
-        progress.status = 'cancelled'
+        progress = markGoalProgressCancelled(progress)
       } else {
         progress.status = 'failed'
         yield { type: 'error', error: (err as Error).message }
@@ -317,10 +326,11 @@ export class GoalPlanner {
   }
 
   private async createPlan(goal: string): Promise<GoalStep[]> {
+    const durableMemory = this.config.contextManager.getDurableMemory()
     const messages: ChatMessageInput[] = [
       {
         role: 'system',
-        content: 'You are an AI agent planning assistant. Analyze goals and create structured execution plans. Output only valid JSON.',
+        content: `You are an AI agent planning assistant. Analyze goals and create structured execution plans. Output only valid JSON.${durableMemory ? `\n\n${durableMemory}` : ''}`,
       },
       {
         role: 'user',

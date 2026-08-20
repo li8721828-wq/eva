@@ -97,7 +97,7 @@ export function GoalProgress({ className }: GoalProgressProps) {
       <div className="border-b border-zinc-200 px-4 py-2 flex gap-2">
         {isGoalRunning && !isGoalPaused && (
           <>
-            <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={() => pauseGoal(currentConversationId || '')}>
+            <Button variant="outline" size="sm" className="flex-1 gap-1.5" onClick={() => void pauseGoal(currentConversationId || '')}>
               <Pause className="h-3.5 w-3.5" />
               Pause
             </Button>
@@ -109,7 +109,7 @@ export function GoalProgress({ className }: GoalProgressProps) {
         )}
         {isGoalRunning && isGoalPaused && (
           <>
-            <Button size="sm" className="flex-1 gap-1.5" onClick={() => resumeGoal(currentConversationId || '')}>
+            <Button size="sm" className="flex-1 gap-1.5" onClick={() => void resumeGoal(currentConversationId || '')}>
               <Play className="h-3.5 w-3.5" />
               Resume
             </Button>

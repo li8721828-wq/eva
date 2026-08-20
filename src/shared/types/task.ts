@@ -97,6 +97,33 @@ export interface GoalProgress {
   conversationId?: string
 }
 
+/**
+ * A stopped Goal must not retain a visually active step. Pending steps remain
+ * pending so a later resume can continue from a truthful checkpoint.
+ */
+export function markGoalProgressCancelled(progress: GoalProgress, completedAt = Date.now()): GoalProgress {
+  return {
+    ...progress,
+    status: 'cancelled',
+    completedAt,
+    steps: progress.steps.map((step) => step.status === 'in_progress'
+      ? { ...step, status: 'cancelled', completedAt }
+      : step),
+  }
+}
+
+/** Marks an interrupted active step as failed so a failed Goal never renders as still running. */
+export function markGoalProgressFailed(progress: GoalProgress, error: string, completedAt = Date.now()): GoalProgress {
+  return {
+    ...progress,
+    status: 'failed',
+    completedAt,
+    steps: progress.steps.map((step) => step.status === 'in_progress'
+      ? { ...step, status: 'failed', result: error, completedAt }
+      : step),
+  }
+}
+
 export interface TaskFeedback {
   id: string
   content: string
@@ -127,6 +154,13 @@ export interface TaskExecutionState {
   nextRetryAt?: number
 }
 
+/** Durable metadata for a checkpointed replay after interruption or failure. */
+export interface TaskRecoveryState {
+  replayCount: number
+  lastReplayAt: number
+  reason: 'user-continue' | 'app-restart'
+}
+
 export interface TaskRunSnapshot {
   conversationId: string
   kind: 'expert' | 'goal'
@@ -135,6 +169,7 @@ export interface TaskRunSnapshot {
   goal?: string
   agentId?: string
   execution?: TaskExecutionState
+  recovery?: TaskRecoveryState
   plan?: TaskPlan
   progress?: GoalProgress
   summary?: string

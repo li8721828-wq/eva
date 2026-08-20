@@ -13,6 +13,8 @@ import { SpecService } from '../services/spec-service'
 import { createProvider, type ProviderRegistry } from '../providers'
 import { recordActivity } from '../services/activity-log'
 import { ModelRouter } from '../services/model-router'
+import { applyNetworkConfig, normalizeNetworkConfig, testNetworkConnection } from '../services/network-settings-service'
+import type { NetworkConfig } from '../../shared/types/network'
 
 const terminalWorkspaces = new Map<string, string>()
 const PREVIEW_IMAGE_TYPES: Record<string, string> = {
@@ -255,6 +257,15 @@ export function registerSystemHandlers(
   ipcMain.handle(IPC.CONFIG_GET_ALL, async (): Promise<unknown> => {
     return getStorage().config.getAll()
   })
+
+  ipcMain.handle(IPC.NETWORK_GET_CONFIG, (): NetworkConfig => getStorage().config.get('network'))
+  ipcMain.handle(IPC.NETWORK_SAVE_CONFIG, async (_event, config: Partial<NetworkConfig>): Promise<NetworkConfig> => {
+    const normalized = normalizeNetworkConfig(config)
+    await applyNetworkConfig(normalized)
+    getStorage().config.set('network', normalized)
+    return normalized
+  })
+  ipcMain.handle(IPC.NETWORK_TEST_CONNECTION, async (_event, url?: string) => testNetworkConnection(url))
 
   // Provider handlers
   ipcMain.handle(IPC.PROVIDER_LIST, async (): Promise<ProviderConfigEntry[]> => {

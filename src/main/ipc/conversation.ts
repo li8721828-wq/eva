@@ -12,6 +12,7 @@ import { TeamOrchestrator } from '../agent-engine/team-orchestrator'
 import { GoalPlanner } from '../agent-engine/goal-planner'
 import type { GoalEvent } from '../agent-engine/goal-planner'
 import { getStorage } from '../storage'
+import { getAgentOsScheduler } from '../services/agent-os-scheduler'
 import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
@@ -22,10 +23,14 @@ import type { ChatMessageInput } from '../../shared/types/provider'
 import type { GoalProgress } from '../../shared/types/task'
 import { SYMPOSIUM_TOOL_OPTIONS, type AgentSymposium, type SymposiumContinueInput, type SymposiumDiscussionMemory, type SymposiumModelParticipant, type SymposiumStartInput, type SymposiumStreamEvent } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
+import { registerBackgroundGoalController, type BackgroundGoalAction, type BackgroundGoalControlResult } from '../services/background-goal-control'
 import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
 import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
 import { ModelRouter } from '../services/model-router'
 import type { ModelPoolEntry } from '../../shared/types/model-pool'
+import type { ActivePlan } from '../../shared/types/active-plan'
+import { hydrateUsagePricing } from '../services/usage-pricing-service'
+import { ensureProviderPricing } from '../services/supplier-pricing-service'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -73,10 +78,57 @@ function scheduleLegacyTitleRefresh(services: ChatServices): void {
 // separately from the visible Goal screen so they remain cancellable after the
 // chat turn that started them has completed.
 const activeBackgroundGoalPlanners = new Map<string, GoalPlanner>()
+const activeDelegatedTeamOrchestrators = new Map<string, TeamOrchestrator>()
 const activeSymposiumRunners = new Map<string, Set<AgentRunner>>()
 const activeSymposiumAborters = new Map<string, () => void>()
 const MAX_PERSISTED_TOOL_RESULT_CHARS = 12_000
 const INTERNAL_TASK_TIMEOUT_MS = 3 * 60 * 1000
+
+async function controlBackgroundGoal(
+  conversationId: string,
+  action: BackgroundGoalAction,
+): Promise<BackgroundGoalControlResult> {
+  const planner = activeBackgroundGoalPlanners.get(conversationId)
+  const snapshot = await getStorage().taskRuns.get(conversationId)
+
+  if (action === 'status') return { handled: Boolean(planner), status: snapshot?.status }
+  if (!planner) return { handled: false, status: snapshot?.status }
+
+  if (action === 'pause') {
+    planner.pause()
+    if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+    await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'paused', 'Paused by the user.')
+    return { handled: true, status: 'paused' }
+  }
+
+  if (action === 'resume') {
+    planner.resume()
+    if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+    await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'running', 'Resumed by the user.')
+    return { handled: true, status: 'running' }
+  }
+
+  planner.abort()
+  return { handled: false, status: snapshot?.status }
+}
+
+function activePlanContext(plan: ActivePlan | null): string {
+  if (!plan) return ''
+  const steps = plan.steps.map((step, index) => {
+    const marker = step.id === plan.currentStepId ? ' <- current' : ''
+    return `${index + 1}. [${step.status}] ${step.title}${marker}`
+  }).join('\n')
+  return [
+    '--- Active Agent OS plan ---',
+    `Objective: ${plan.objective}`,
+    `Plan status: ${plan.status}`,
+    steps || '(The plan is being prepared.)',
+    'When the user says "continue" or "next" without naming another task, continue the current unfinished plan step. Treat unrelated questions as temporary discussion; do not replace this plan unless the user explicitly starts, switches, or cancels a plan.',
+    '--- End active Agent OS plan ---',
+  ].join('\n')
+}
 
 function compactToolResult(result: string): string {
   if (result.length <= MAX_PERSISTED_TOOL_RESULT_CHARS) return result
@@ -543,7 +595,15 @@ async function runInternalTeamDelegation(
     throw new Error('The Team Leader has no available model connection. Configure its model access first.')
   }
 
+  const runtimeProcess = await getAgentOsScheduler().startChild({
+    conversationId: conversation.id,
+    kind: 'team',
+    agentId: leader.id,
+    workspaceId: conversation.workspaceId,
+    summary: 'A chat agent delegated work to the specialist team.',
+  })
   const access = await getConversationAccess(conversation)
+  const durableMemory = await getStorage().runtimeMemory.buildContext(conversation.id, conversation.workspaceId)
   const workerContexts = new Map<string, string>()
   const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
     const child = await getStorage().conversations.createConversation({
@@ -600,7 +660,7 @@ async function runInternalTeamDelegation(
     providerForAgent: (agent) => services.providerRegistry.get(agent.providerId),
     fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
     toolRegistry: services.toolRegistry,
-    contextManager: new ContextManager(),
+    contextManager: new ContextManager({ durableMemory }),
     workspacePath: conversation.workspacePath || (access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
     fileAccessGrants: access.fileAccessGrants,
     fullFilesystemAccess: access.fullFilesystemAccess,
@@ -609,14 +669,27 @@ async function runInternalTeamDelegation(
     createWorkerConversation,
     onWorkerEvent: persistWorkerEvent,
   })
+  activeDelegatedTeamOrchestrators.get(conversation.id)?.abort()
+  activeDelegatedTeamOrchestrators.set(conversation.id, orchestrator)
 
-  let summary = ''
-  for await (const event of orchestrator.run({ goal, messages: historyMessages })) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.TASK_STREAM, { ...event, conversationId: conversation.id })
-    if (event.type === 'summary') summary = event.summary || ''
-    if (event.type === 'error') throw new Error(event.error || 'Team orchestration failed.')
+  try {
+    let summary = ''
+    for await (const event of orchestrator.run({ goal, messages: historyMessages })) {
+      if (!win.isDestroyed()) win.webContents.send(IPC.TASK_STREAM, { ...event, conversationId: conversation.id })
+      if (event.type === 'summary') summary = event.summary || ''
+      if (event.type === 'error') throw new Error(event.error || 'Team orchestration failed.')
+    }
+    const result = summary || 'The specialist team completed the delegated work without a separate summary.'
+    await getAgentOsScheduler().finishProcess(runtimeProcess.id, 'completed', result)
+    return result
+  } catch (error: any) {
+    await getAgentOsScheduler().finishProcess(runtimeProcess.id, 'failed', error?.message ?? String(error))
+    throw error
+  } finally {
+    if (activeDelegatedTeamOrchestrators.get(conversation.id) === orchestrator) {
+      activeDelegatedTeamOrchestrators.delete(conversation.id)
+    }
   }
-  return summary || 'The specialist team completed the delegated work without a separate summary.'
 }
 
 function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
@@ -669,6 +742,7 @@ async function getConversationAccess(conversation?: Conversation): Promise<{ fil
 }
 
 export function registerConversationHandlers(services?: ChatServices): void {
+  registerBackgroundGoalController(controlBackgroundGoal)
   // ─── Conversation CRUD ──────────────────────────────────────────────────────
 
   ipcMain.handle(IPC.CONVERSATION_LIST, async (): Promise<Conversation[]> => {
@@ -737,7 +811,14 @@ export function registerConversationHandlers(services?: ChatServices): void {
       if (!conversation) {
         throw new Error(`Conversation ${id} not found`)
       }
-      const messages = await store.getMessages(id)
+      const storedMessages = await store.getMessages(id)
+      const providersNeedingPricing = Array.from(new Set(storedMessages
+        .filter((message) => message.usage && message.providerId)
+        .map((message) => message.providerId)))
+      await Promise.all(providersNeedingPricing.map((providerId) => ensureProviderPricing(providerId).catch(() => undefined)))
+      const messages = storedMessages.map((message) => message.usage
+        ? { ...message, usage: hydrateUsagePricing(message.providerId, message.model, message.usage) }
+        : message)
       return { conversation, messages }
     }
   )
@@ -811,6 +892,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
       let runner: AgentRunner | null = null
+      let runtimeProcessId: string | null = null
 
       const send = (agentEvent: AgentEvent): void => {
         if (!win.isDestroyed()) {
@@ -833,6 +915,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
           send({ type: 'done', content: '' })
           return
         }
+        const memory = await getStorage().runtimeMemory.buildContext(conversationId, conversation.workspaceId)
+        const activePlanScope = conversation.workspaceId
+          ? `workspace:${conversation.workspaceId}`
+          : conversation.workspacePath?.trim()
+            ? `workspace-path:${conversation.workspacePath.trim().toLowerCase()}`
+            : `conversation:${conversationId}`
+        const durableMemory = [memory, activePlanContext(await getStorage().activePlans.getActive(activePlanScope))]
+          .filter(Boolean)
+          .join('\n\n')
         const historyMessages = sanitizeToolHistory(await convStore.getMessages(conversationId)).map((item) => ({
           ...item,
           images: loadReferenceImages(item.images, false),
@@ -924,7 +1015,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 agentConfig: effectiveAgentConfig,
                 provider,
                 toolRegistry: services.toolRegistry,
-                contextManager: new ContextManager(),
+                contextManager: new ContextManager({ durableMemory }),
                 workspacePath: runnerWorkspacePath,
                 fileAccessGrants: workspaceAccess.fileAccessGrants,
                 fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
@@ -982,7 +1073,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 agentConfig: effectiveAgentConfig,
                 provider,
                 toolRegistry: services.toolRegistry,
-                contextManager: new ContextManager(),
+                contextManager: new ContextManager({ durableMemory }),
                 workspacePath: runnerWorkspacePath,
                 fileAccessGrants: workspaceAccess.fileAccessGrants,
                 fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
@@ -1016,6 +1107,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 checkpoints: previousSnapshot?.checkpoints || [],
                 error: undefined,
               })
+              const runtimeProcess = await getAgentOsScheduler().startChild({
+                conversationId,
+                kind: 'goal',
+                agentId: effectiveAgentConfig.id,
+                workspaceId: conversation.workspaceId,
+                summary: 'A chat agent started a background Goal.',
+              })
 
               void (async () => {
                 let progress: GoalProgress | null = resumeProgress || null
@@ -1025,13 +1123,27 @@ export function registerConversationHandlers(services?: ChatServices): void {
                     await getStorage().taskRuns.save({
                       conversationId,
                       kind: 'goal',
-                      status: goalEvent.type === 'done'
+                      status: planner.paused ? 'paused' : goalEvent.type === 'done'
                         ? (goalEvent.progress.status === 'completed' ? 'completed' : goalEvent.progress.status === 'cancelled' ? 'cancelled' : 'failed')
                         : goalEvent.type === 'error' ? 'failed' : 'running',
                       progress: progress || undefined,
                       summary: goalEvent.type === 'summary' ? goalEvent.content : progress?.summary,
                       error: goalEvent.type === 'error' ? goalEvent.error : undefined,
                     })
+                    if (goalEvent.type === 'done') {
+                      const status = goalEvent.progress.status === 'completed'
+                        ? 'completed'
+                        : goalEvent.progress.status === 'cancelled'
+                          ? 'cancelled'
+                          : 'failed'
+                      await getAgentOsScheduler().finishProcess(
+                        runtimeProcess.id,
+                        status,
+                        goalEvent.progress.summary || (status === 'completed' ? 'Background Goal completed.' : 'Background Goal did not complete.'),
+                      )
+                    } else if (goalEvent.type === 'error') {
+                      await getAgentOsScheduler().finishProcess(runtimeProcess.id, 'failed', goalEvent.error)
+                    }
                     if (!win.isDestroyed()) {
                       win.webContents.send(IPC.TASK_GOAL_STREAM, { ...goalEvent, conversationId })
                     }
@@ -1039,6 +1151,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 } catch (error: any) {
                   const message = error?.message ?? String(error)
                   await getStorage().taskRuns.save({ conversationId, kind: 'goal', status: 'failed', progress: progress || undefined, error: message })
+                  await getAgentOsScheduler().finishProcess(runtimeProcess.id, 'failed', message)
                   if (!win.isDestroyed()) win.webContents.send(IPC.TASK_GOAL_STREAM, { type: 'error', error: message, conversationId })
                 } finally {
                   if (activeBackgroundGoalPlanners.get(conversationId) === planner) {
@@ -1071,10 +1184,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 if (action === 'pause') {
                   backgroundPlanner.pause()
                   if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+                  await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'paused', 'Paused by the user.')
                   return 'Goal task was paused after its current operation.'
                 }
                 backgroundPlanner.abort()
                 if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'cancelled' })
+                await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'cancelled', 'Stopped by the user.')
                 return 'Goal task was cancelled.'
               }
 
@@ -1082,6 +1197,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 if (backgroundPlanner) {
                   backgroundPlanner.resume()
                   if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+                  await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'running', 'Resumed by the user.')
                   return 'Goal task is running again.'
                 }
                 if (!snapshot || snapshot.kind !== 'goal' || !snapshot.goal) {
@@ -1122,7 +1238,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           agentConfig: effectiveAgentConfig,
           provider,
           toolRegistry: services.toolRegistry,
-          contextManager: new ContextManager(),
+          contextManager: new ContextManager({ durableMemory }),
           workspacePath: runnerWorkspacePath,
           fileAccessGrants: workspaceAccess.fileAccessGrants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
@@ -1147,6 +1263,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
         activeTaskRunners.get(conversationId)?.abort()
         activeTaskRunners.delete(conversationId)
         activeRunners.set(conversationId, runner)
+        const runtimeProcess = await getAgentOsScheduler().startInteractive({
+          conversationId,
+          agentId: effectiveAgentConfig.id,
+          workspaceId: conversation.workspaceId,
+          summary: `${effectiveAgentConfig.name} is handling a chat request.`,
+          resourceKey: `conversation:${conversationId}`,
+        })
+        runtimeProcessId = runtimeProcess.id
+        getAgentOsScheduler().attachInteractiveAbort(conversationId, runtimeProcess.id, () => runner?.abort())
 
         // 6. Execute the ReAct loop and stream events
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
@@ -1155,7 +1280,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
         let runError: string | null = null
-        let pendingModelText = ''
+        // Keep only a possible partial eva-progress tag between token chunks.
+        // Ordinary response text must not wait for the model's final `done`
+        // event, otherwise every provider appears to be non-streaming.
+        let pendingProgressMarkup = ''
         let latestProgressContent = ''
         const executionTrace: ExecutionTraceEntry[] = []
         let currentAction: {
@@ -1241,10 +1369,52 @@ export function registerConversationHandlers(services?: ChatServices): void {
             } satisfies ChatStreamEvent)
           }
         }
-        const publishPendingModelProgress = async (): Promise<void> => {
-          const updates = extractProgressUpdates(pendingModelText)
-          pendingModelText = ''
-          for (const update of updates) await publishProgress(update.kind, update.content)
+        const progressOpeningTag = '<eva-progress'
+        const progressClosingTag = '</eva-progress>'
+        const streamTextDelta = async (content: string): Promise<void> => {
+          pendingProgressMarkup += content
+
+          while (pendingProgressMarkup) {
+            const normalized = pendingProgressMarkup.toLowerCase()
+            const openingIndex = normalized.indexOf(progressOpeningTag)
+
+            if (openingIndex < 0) {
+              // A tag opener can be split across chunks. Retain only the small
+              // matching suffix and immediately forward everything else.
+              const maxPrefixLength = Math.min(progressOpeningTag.length - 1, pendingProgressMarkup.length)
+              let retainedLength = 0
+              for (let length = maxPrefixLength; length > 0; length--) {
+                if (progressOpeningTag.startsWith(normalized.slice(-length))) {
+                  retainedLength = length
+                  break
+                }
+              }
+              const visible = pendingProgressMarkup.slice(0, pendingProgressMarkup.length - retainedLength)
+              pendingProgressMarkup = pendingProgressMarkup.slice(pendingProgressMarkup.length - retainedLength)
+              if (visible) send({ type: 'text', content: visible })
+              return
+            }
+
+            if (openingIndex > 0) {
+              send({ type: 'text', content: pendingProgressMarkup.slice(0, openingIndex) })
+              pendingProgressMarkup = pendingProgressMarkup.slice(openingIndex)
+              continue
+            }
+
+            const closingIndex = normalized.indexOf(progressClosingTag)
+            if (closingIndex < 0) return
+
+            const markupEnd = closingIndex + progressClosingTag.length
+            const updates = extractProgressUpdates(pendingProgressMarkup.slice(0, markupEnd))
+            pendingProgressMarkup = pendingProgressMarkup.slice(markupEnd)
+            for (const update of updates) await publishProgress(update.kind, update.content)
+          }
+        }
+
+        const clearPendingProgressMarkup = (): void => {
+          // A tool call can only follow a complete, user-visible progress tag.
+          // Drop malformed/incomplete tag fragments rather than exposing them.
+          pendingProgressMarkup = ''
         }
 
         addTraceEntry({
@@ -1258,10 +1428,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage })) {
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
-            // Tool-using turns may contain a concise progress note before the
-            // tool calls. Hold it until we know whether it is a progress update
-            // or the final response, so the two do not get mixed together.
-            pendingModelText += agentEvent.content
+            await streamTextDelta(agentEvent.content)
             continue
           }
           if (agentEvent.type === 'reasoning' && agentEvent.content) {
@@ -1277,7 +1444,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             })
           }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
-            await publishPendingModelProgress()
+            clearPendingProgressMarkup()
             allToolCalls.push(agentEvent.toolCall)
             if (!currentAction) {
               completeActiveNonToolTraceEntries()
@@ -1319,13 +1486,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
             }, win)
           }
           if (agentEvent.type === 'done') {
-            // A response without tools is the final answer. Flush its buffered
-            // text through the ordinary message stream before finalizing it.
-            if (pendingModelText) {
-              const finalText = pendingModelText.replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '').trim()
-              pendingModelText = ''
-              if (finalText) send({ type: 'text', content: finalText })
-            }
+            // `done` carries the canonical, complete response. Any remaining
+            // buffer is only an incomplete tag opener and must not be shown.
+            clearPendingProgressMarkup()
             if (agentEvent.content) {
               assistantContent = agentEvent.content
                 .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '')
@@ -1391,7 +1554,6 @@ export function registerConversationHandlers(services?: ChatServices): void {
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, assistantChatMessage)
-
         // Save individual tool messages for tool results
         for (const tr of allToolResults) {
           const toolMessage: ChatMessage = {
@@ -1413,6 +1575,14 @@ export function registerConversationHandlers(services?: ChatServices): void {
             executionUpdatedAt: Date.now(),
           })
         }
+        await getStorage().runtimeMemory.recordConversationTurn({
+          conversationId,
+          workspaceId: conversation.workspaceId,
+          assistantMessageId,
+          userRequest: message,
+          outcome: assistantChatMessage.content,
+          status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
+        })
         win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         void recordActivity({
           category: 'agent',
@@ -1422,6 +1592,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
           conversationId,
           workspaceId: conversation.workspaceId,
         }, win)
+        if (runtimeProcessId) {
+          await getAgentOsScheduler().finishInteractive(
+            runtimeProcessId,
+            latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
+            runError || `${effectiveAgentConfig.name} completed the chat request.`,
+          )
+        }
         if (shouldGenerateTitle) {
           void generateConversationTitle({
             conversationId,
@@ -1434,6 +1611,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
           })
         }
       } catch (err: any) {
+        if (runtimeProcessId) {
+          await getAgentOsScheduler().finishInteractive(runtimeProcessId, 'failed', err?.message ?? String(err))
+        }
         try {
           await getStorage().conversations.updateConversation(conversationId, {
             executionStatus: 'failed',
@@ -1468,8 +1648,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
       activeBackgroundGoalPlanners.get(conversationId)?.abort()
+      activeDelegatedTeamOrchestrators.get(conversationId)?.abort()
       activeSymposiumAborters.get(conversationId)?.()
       activeTaskRunners.delete(conversationId)
+      void getAgentOsScheduler().cancelInteractive(conversationId)
+      void getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'cancelled', 'Stopped by the user.')
+      void getAgentOsScheduler().transitionConversation(conversationId, 'team', 'cancelled', 'Stopped by the user.')
       void getStorage().conversations.updateConversation(conversationId, {
         executionStatus: 'cancelled',
         executionUpdatedAt: Date.now(),

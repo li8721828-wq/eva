@@ -89,6 +89,14 @@ function sumConversationUsage(messages: ChatMessage[]): ChatUsage | undefined {
       cachedTokens: (total.cachedTokens || 0) + (usage.cachedTokens || 0),
       cacheMissTokens: (total.cacheMissTokens || 0) + (usage.cacheMissTokens || 0),
       estimatedCostCny: (total.estimatedCostCny || 0) + (usage.estimatedCostCny || 0),
+      estimatedCost: total.estimatedCostCurrency === usage.estimatedCostCurrency
+        ? (total.estimatedCost || 0) + (usage.estimatedCost || 0)
+        : total.estimatedCost ?? usage.estimatedCost,
+      estimatedCostCurrency: total.estimatedCostCurrency || usage.estimatedCostCurrency,
+      providerReportedCost: total.providerReportedCurrency === usage.providerReportedCurrency
+        ? (total.providerReportedCost || 0) + (usage.providerReportedCost || 0)
+        : undefined,
+      providerReportedCurrency: total.providerReportedCurrency || usage.providerReportedCurrency,
       modelCalls: (total.modelCalls || 0) + (usage.modelCalls || 1),
     }
   }, { promptTokens: 0, completionTokens: 0 })

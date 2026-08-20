@@ -412,6 +412,7 @@ export class TeamOrchestrator {
       ...(agent.modelCandidates || []).map((candidate) => `${candidate.providerId}/${candidate.model}`),
       `${agent.providerId}/${agent.model}`,
     ]))].join(', ')
+    const durableMemory = this.config.contextManager.getDurableMemory()
 
     const planningPrompt = `You are a team leader. Analyze the following goal and create a task plan.
 
@@ -424,6 +425,7 @@ Tools available for task-scoped members: ${availableToolNames.join(', ') || 'non
 Configured model connections available for task-scoped members: ${modelDirectory || 'none'}
 
 ${messages && messages.length > 0 ? `Recent conversation context:\n${messages.slice(-4).map((m) => `${m.role}: ${m.content.slice(0, 500)}`).join('\n')}\n` : ''}
+${durableMemory ? `\n${durableMemory}\n` : ''}
 
 Create a JSON plan with the following structure:
 {

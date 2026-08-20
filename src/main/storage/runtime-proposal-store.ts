@@ -41,6 +41,28 @@ export class RuntimeProposalStore {
     })
   }
 
+  async beginImplementation(id: string, conversationId: string): Promise<RuntimeEvolutionProposal> {
+    return this.enqueue(() => {
+      const proposals = this.read()
+      const index = proposals.findIndex((proposal) => proposal.id === id)
+      if (index < 0) throw new Error('Runtime evolution proposal not found.')
+      const existing = proposals[index]
+      if (existing.status !== 'approved') throw new Error('Only an approved runtime evolution proposal can start implementation.')
+      if (existing.implementation) {
+        if (existing.implementation.conversationId === conversationId) return existing
+        throw new Error('This runtime evolution proposal already has an implementation task.')
+      }
+      const proposal: RuntimeEvolutionProposal = {
+        ...existing,
+        implementation: { conversationId, startedAt: Date.now() },
+        updatedAt: Date.now(),
+      }
+      proposals[index] = proposal
+      this.write(proposals)
+      return proposal
+    })
+  }
+
   private read(): RuntimeEvolutionProposal[] {
     try {
       if (!fs.existsSync(this.filePath)) return []

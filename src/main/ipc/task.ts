@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow, type IpcMainEvent } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { GoalConfig, GoalProgress, TaskCheckpoint, TaskFeedback, TaskPlan, TaskRunSnapshot, TeamEvent } from '../../shared/types/task'
+import { markGoalProgressCancelled, markGoalProgressFailed, type GoalConfig, type GoalProgress, type TaskCheckpoint, type TaskFeedback, type TaskPlan, type TaskRunSnapshot, type TeamEvent } from '../../shared/types/task'
 import type { AgentConfig } from '../../shared/types/agent'
 import type { Conversation } from '../../shared/types/conversation'
 import type { ChatMessage } from '../../shared/types/conversation'
@@ -13,7 +13,9 @@ import type { GoalEvent } from '../agent-engine/goal-planner'
 import { getStorage } from '../storage'
 import { recordActivity } from '../services/activity-log'
 import { toTaskArtifactRun } from '../services/task-artifact-service'
-import { TaskExecutionQueue, type TaskQueueUpdate } from '../services/task-execution-queue'
+import { getAgentOsScheduler } from '../services/agent-os-scheduler'
+import { controlBackgroundGoal } from '../services/background-goal-control'
+import type { TaskQueueUpdate } from '../services/task-execution-queue'
 import { v4 as uuidv4 } from 'uuid'
 
 export interface TaskServices {
@@ -27,7 +29,6 @@ export interface TaskServices {
 // parallel without sharing a cancellation handle or status.
 const activeOrchestrators = new Map<string, TeamOrchestrator>()
 const activeGoalPlanners = new Map<string, GoalPlanner>()
-const taskExecutionQueue = new TaskExecutionQueue(2)
 let taskServices: TaskServices | null = null
 
 function notifyConversationChanged(event: IpcMainEvent, conversationId: string): void {
@@ -35,12 +36,68 @@ function notifyConversationChanged(event: IpcMainEvent, conversationId: string):
   if (window && !window.isDestroyed()) window.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 }
 
+async function resolveTaskRuntimeScope(conversationId: string): Promise<{ workspaceId?: string; resourceKey: string }> {
+  const conversation = await getStorage().conversations.getConversation(conversationId)
+  if (conversation?.workspaceId) return { workspaceId: conversation.workspaceId, resourceKey: `workspace:${conversation.workspaceId}` }
+  if (conversation?.workspacePath?.trim()) return { resourceKey: `workspace-path:${conversation.workspacePath.trim().toLowerCase()}` }
+  return { resourceKey: `conversation:${conversationId}` }
+}
+
+/** Mirrors durable Goal/Team checkpoints into the workspace's visible active plan. */
+async function syncActivePlan(conversationId: string): Promise<void> {
+  const [conversation, snapshot] = await Promise.all([
+    getStorage().conversations.getConversation(conversationId),
+    getStorage().taskRuns.get(conversationId),
+  ])
+  if (!conversation || !snapshot) return
+  const goal = snapshot.goal || snapshot.plan?.goal || snapshot.progress?.goal
+  if (!goal) return
+  await getStorage().activePlans.syncTask({
+    conversationId,
+    workspaceId: conversation.workspaceId,
+    workspacePath: conversation.workspacePath,
+    kind: snapshot.kind,
+    status: snapshot.status,
+    goal,
+    plan: snapshot.plan,
+    progress: snapshot.progress,
+  })
+}
+
+function resolveGoalAgentConnection(agentConfig: AgentConfig, services: TaskServices): { agentConfig: AgentConfig; provider: NonNullable<ReturnType<ProviderRegistry['get']>>; usedFallback: boolean } {
+  const configuredConnections = [
+    { providerId: agentConfig.providerId, model: agentConfig.model },
+    ...(agentConfig.modelCandidates || []),
+    { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
+  ]
+  const seen = new Set<string>()
+
+  for (const connection of configuredConnections) {
+    const providerId = connection.providerId?.trim()
+    if (!providerId || seen.has(providerId)) continue
+    seen.add(providerId)
+    const provider = services.providerRegistry.get(providerId)
+    if (!provider) continue
+    const model = connection.model?.trim() || services.providerRegistry.getDefaultModel(providerId) || agentConfig.model
+    return {
+      agentConfig: providerId === agentConfig.providerId && model === agentConfig.model
+        ? agentConfig
+        : { ...agentConfig, providerId, model },
+      provider,
+      usedFallback: providerId !== agentConfig.providerId || model !== agentConfig.model,
+    }
+  }
+
+  throw new Error(`No available model connection for Goal execution. The original connection "${agentConfig.providerId}" is unavailable; configure a model connection and try again.`)
+}
+
 /** Persist a user-requested stop before the planner has a chance to emit again. */
 export async function cancelTaskRun(
   conversationId: string,
   kind?: 'expert' | 'goal',
 ): Promise<boolean> {
-  const queueCancelled = taskExecutionQueue.cancel(conversationId, kind)
+  if (kind !== 'expert') await controlBackgroundGoal(conversationId, 'cancel')
+  const queueCancelled = await getAgentOsScheduler().cancelTask(conversationId, kind)
   const goalPlanner = kind === 'expert' ? undefined : activeGoalPlanners.get(conversationId)
   const teamOrchestrator = kind === 'goal' ? undefined : activeOrchestrators.get(conversationId)
   goalPlanner?.abort()
@@ -48,18 +105,29 @@ export async function cancelTaskRun(
 
   const snapshot = await getStorage().taskRuns.get(conversationId)
   if (snapshot && (!kind || snapshot.kind === kind)) {
+    const stoppedAt = Date.now()
     await getStorage().taskRuns.save({
       ...snapshot,
       status: 'cancelled',
+      progress: snapshot.kind === 'goal' && snapshot.progress
+        ? markGoalProgressCancelled(snapshot.progress, stoppedAt)
+        : snapshot.progress,
       error: undefined,
       execution: snapshot.execution
-        ? { ...snapshot.execution, state: 'cancelled', lastActivityAt: Date.now(), nextRetryAt: undefined }
+        ? { ...snapshot.execution, state: 'cancelled', lastActivityAt: stoppedAt, nextRetryAt: undefined }
         : undefined,
     })
     await getStorage().conversations.updateConversation(conversationId, {
       executionStatus: 'cancelled',
       executionUpdatedAt: Date.now(),
     })
+    await getAgentOsScheduler().transitionTask(
+      conversationId,
+      snapshot.kind === 'expert' ? 'team' : 'goal',
+      'cancelled',
+      'Stopped by the user.',
+    )
+    await syncActivePlan(conversationId)
   }
   return queueCancelled || Boolean(goalPlanner || teamOrchestrator || snapshot)
 }
@@ -70,7 +138,7 @@ export async function controlForegroundGoal(
   action: 'status' | 'pause' | 'resume' | 'cancel',
 ): Promise<{ handled: boolean; status?: TaskRunSnapshot['status'] }> {
   const planner = activeGoalPlanners.get(conversationId)
-  const queued = taskExecutionQueue.has(conversationId, 'goal')
+  const queued = getAgentOsScheduler().hasTask(conversationId, 'goal')
   const snapshot = await getStorage().taskRuns.get(conversationId)
 
   if (action === 'status') {
@@ -80,12 +148,14 @@ export async function controlForegroundGoal(
     planner.pause()
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
     await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+    await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'paused', 'Paused by the user.')
     return { handled: true, status: 'paused' }
   }
   if (action === 'resume' && planner) {
     planner.resume()
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
     await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+    await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'running', 'Resumed by the user.')
     return { handled: true, status: 'running' }
   }
   if (action === 'cancel' && (planner || queued || snapshot)) {
@@ -323,17 +393,50 @@ export function registerTaskHandlers(services?: TaskServices): void {
     taskServices = services
   }
 
+  const scheduler = getAgentOsScheduler()
+  scheduler.registerRecoveryHandler('team', async (run, context) => {
+    const window = context as BrowserWindow
+    const goal = run.payload?.goal
+    if (!goal || !window || window.isDestroyed()) return false
+    ipcMain.emit(IPC.TASK_START, { sender: window.webContents } as IpcMainEvent, {
+      conversationId: run.conversationId,
+      goal,
+      resume: run.payload?.resume ?? false,
+      recoveryReason: 'app-restart',
+    })
+    return true
+  })
+  scheduler.registerRecoveryHandler('goal', async (run, context) => {
+    const window = context as BrowserWindow
+    const goal = run.payload?.goal
+    const agentId = run.payload?.agentId
+    if (!goal || !agentId || !window || window.isDestroyed()) return false
+    ipcMain.emit(IPC.TASK_GOAL_START, { sender: window.webContents } as IpcMainEvent, {
+      conversationId: run.conversationId,
+      goal,
+      agentId,
+      resume: run.payload?.resume ?? false,
+      recoveryReason: 'app-restart',
+      config: run.payload?.config,
+    })
+    return true
+  })
+
   // ─── Expert Mode ────────────────────────────────────────────────────────────
 
   // Expert mode - start task (fire-and-forget; events streamed via TASK_STREAM)
   ipcMain.on(
     IPC.TASK_START,
-    async (event, payload: { conversationId: string; goal: string; resume?: boolean }) => {
+    async (event, payload: { conversationId: string; goal: string; resume?: boolean; recoveryReason?: 'user-continue' | 'app-restart' }) => {
       const { conversationId, goal } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
-      if (taskExecutionQueue.has(conversationId, 'expert')) return
+      if (getAgentOsScheduler().hasTask(conversationId, 'expert')) return
+      const runtimeScope = await resolveTaskRuntimeScope(conversationId)
       const previousSnapshot = payload.resume ? await getStorage().taskRuns.get(conversationId) : null
+      const recovery = payload.resume
+        ? { replayCount: (previousSnapshot?.recovery?.replayCount || 0) + 1, lastReplayAt: Date.now(), reason: payload.recoveryReason || 'user-continue' as const }
+        : undefined
       await getStorage().taskRuns.save({
         conversationId,
         kind: 'expert',
@@ -341,15 +444,22 @@ export function registerTaskHandlers(services?: TaskServices): void {
         goal,
         plan: previousSnapshot?.plan,
         checkpoints: previousSnapshot?.checkpoints || [],
+        recovery,
         execution: { state: 'queued', attempt: 0, maxAttempts: 2, queuedAt: Date.now(), lastActivityAt: Date.now() },
       })
+      await syncActivePlan(conversationId)
       await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 
-      taskExecutionQueue.enqueue({
+      await getAgentOsScheduler().scheduleTask({
         conversationId,
         kind: 'expert',
+        runtimeKind: 'team',
+        workspaceId: runtimeScope.workspaceId,
         maxAttempts: 2,
+        resourceKey: runtimeScope.resourceKey,
+        summary: payload.resume ? 'Replaying Expert Team task from its saved checkpoint.' : 'Expert Team task queued.',
+        recoveryPayload: { goal, resume: Boolean(previousSnapshot?.plan?.subtasks.length), recoveryReason: 'app-restart' },
         onUpdate: async (update) => {
           await persistQueueUpdate(update)
           if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
@@ -419,6 +529,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         if (!conversation) {
           throw new Error('Conversation not found.')
         }
+        const durableMemory = await getStorage().runtimeMemory.buildContext(conversationId, conversation.workspaceId)
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const historyMessages = await getStorage().conversations.getMessages(conversationId, { limit: 12 })
@@ -516,7 +627,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           providerForAgent: (agent) => taskServices?.providerRegistry.get(agent.providerId),
           fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
           toolRegistry: activeTaskServices.toolRegistry,
-          contextManager: new ContextManager(),
+          contextManager: new ContextManager({ durableMemory }),
           workspacePath,
           fileAccessGrants: workspaceAccess.grants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
@@ -570,6 +681,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
               summary: finalSummary,
               checkpoints,
             })
+            await syncActivePlan(conversationId)
           }
           send(teamEvent)
         }
@@ -595,6 +707,22 @@ export function registerTaskHandlers(services?: TaskServices): void {
           summary: finalSummary,
           checkpoints,
         })
+        await syncActivePlan(conversationId)
+        await getAgentOsScheduler().transitionTask(
+          conversationId,
+          'team',
+          wasCancelled ? 'cancelled' : executionFailed ? 'failed' : 'completed',
+          finalSummary || (wasCancelled ? 'Team task was cancelled.' : executionFailed ? 'Team task failed.' : 'Team task completed.'),
+        )
+        await getStorage().runtimeMemory.recordTaskOutcome({
+          conversationId,
+          workspaceId: conversation.workspaceId,
+          kind: 'team',
+          goal,
+          summary: finalSummary,
+          status: wasCancelled ? 'cancelled' : executionFailed ? 'failed' : 'completed',
+          updatedAt: Date.now(),
+        })
       } catch (err: any) {
         await getStorage().taskRuns.save({
           conversationId,
@@ -604,6 +732,8 @@ export function registerTaskHandlers(services?: TaskServices): void {
           error: err?.message ?? String(err),
           checkpoints,
         })
+        await syncActivePlan(conversationId)
+        await getAgentOsScheduler().transitionTask(conversationId, 'team', 'failed', err?.message ?? String(err))
         void recordActivity({ category: 'agent', action: 'team.failed', status: 'error', summary: 'Expert Team task failed.', conversationId }, win)
         send({ type: 'error', error: err?.message ?? String(err) })
         send({ type: 'done' })
@@ -723,11 +853,15 @@ export function registerTaskHandlers(services?: TaskServices): void {
   // Goal mode - start (fire-and-forget; events streamed via TASK_GOAL_STREAM)
   ipcMain.on(
     IPC.TASK_GOAL_START,
-    async (event, payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string; resume?: boolean }) => {
+    async (event, payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string; resume?: boolean; recoveryReason?: 'user-continue' | 'app-restart' }) => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
-      if (taskExecutionQueue.has(payload.conversationId, 'goal')) return
+      if (getAgentOsScheduler().hasTask(payload.conversationId, 'goal')) return
+      const runtimeScope = await resolveTaskRuntimeScope(payload.conversationId)
       const previousSnapshot = payload.resume ? await getStorage().taskRuns.get(payload.conversationId) : null
+      const recovery = payload.resume
+        ? { replayCount: (previousSnapshot?.recovery?.replayCount || 0) + 1, lastReplayAt: Date.now(), reason: payload.recoveryReason || 'user-continue' as const }
+        : undefined
       await getStorage().taskRuns.save({
         conversationId: payload.conversationId,
         kind: 'goal',
@@ -736,15 +870,29 @@ export function registerTaskHandlers(services?: TaskServices): void {
         agentId: payload.agentId,
         progress: previousSnapshot?.progress,
         checkpoints: previousSnapshot?.checkpoints || [],
+        recovery,
         execution: { state: 'queued', attempt: 0, maxAttempts: 2, queuedAt: Date.now(), lastActivityAt: Date.now() },
       })
+      await syncActivePlan(payload.conversationId)
       await getStorage().conversations.updateConversation(payload.conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
 
-      taskExecutionQueue.enqueue({
+      await getAgentOsScheduler().scheduleTask({
         conversationId: payload.conversationId,
         kind: 'goal',
+        runtimeKind: 'goal',
+        agentId: payload.agentId,
+        workspaceId: runtimeScope.workspaceId,
         maxAttempts: 2,
+        resourceKey: runtimeScope.resourceKey,
+        summary: payload.resume ? 'Replaying Goal task from its saved checkpoint.' : 'Goal task queued.',
+        recoveryPayload: {
+          goal: payload.goal,
+          agentId: payload.agentId,
+          resume: Boolean(previousSnapshot?.progress?.steps.length),
+          recoveryReason: 'app-restart',
+          config: payload.config,
+        },
         onUpdate: async (update) => {
           await persistQueueUpdate(update)
           if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
@@ -784,10 +932,19 @@ export function registerTaskHandlers(services?: TaskServices): void {
           throw new Error(`Agent ${payload.agentId} not found`)
         }
 
-        // 2. Get LLM provider
-        const provider = activeTaskServices.providerRegistry.get(agentConfig.providerId)
-        if (!provider) {
-          throw new Error(`Provider ${agentConfig.providerId} not available`)
+        // 2. Restore the original connection when possible. A saved Goal must
+        // still be resumable if that connection was removed or renamed.
+        const resolvedConnection = resolveGoalAgentConnection(agentConfig, activeTaskServices)
+        const goalAgentConfig = resolvedConnection.agentConfig
+        const provider = resolvedConnection.provider
+        if (resolvedConnection.usedFallback) {
+          void recordActivity({
+            category: 'agent',
+            action: 'goal.model_fallback',
+            status: 'info',
+            summary: `Goal resumed with ${goalAgentConfig.providerId} / ${goalAgentConfig.model} because ${agentConfig.providerId} / ${agentConfig.model} is unavailable.`,
+            conversationId: payload.conversationId,
+          }, win)
         }
 
         // 3. Get workspace path from conversation or config
@@ -797,6 +954,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
+        const durableMemory = await getStorage().runtimeMemory.buildContext(payload.conversationId, conversation?.workspaceId)
 
         // 4. Create GoalPlanner
         const goalConfig: GoalConfig = {
@@ -808,10 +966,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
         planner = new GoalPlanner({
           conversationId: payload.conversationId,
-          agentConfig,
+          agentConfig: goalAgentConfig,
           provider,
           toolRegistry: activeTaskServices.toolRegistry,
-          contextManager: new ContextManager(),
+          contextManager: new ContextManager({ durableMemory }),
           workspacePath,
           fileAccessGrants: workspaceAccess.grants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
@@ -861,28 +1019,71 @@ export function registerTaskHandlers(services?: TaskServices): void {
             error: goalEvent.type === 'error' ? goalEvent.error : undefined,
             checkpoints,
           })
+          await syncActivePlan(payload.conversationId)
+          if (goalEvent.type === 'done') {
+            const status = goalEvent.progress.status === 'completed'
+              ? 'completed'
+              : goalEvent.progress.status === 'cancelled'
+                ? 'cancelled'
+                : 'failed'
+            await getAgentOsScheduler().transitionTask(
+              payload.conversationId,
+              'goal',
+              status,
+              goalEvent.progress.summary || (status === 'completed' ? 'Goal task completed.' : 'Goal task did not complete.'),
+            )
+            await getStorage().runtimeMemory.recordTaskOutcome({
+              conversationId: payload.conversationId,
+              workspaceId: conversation?.workspaceId,
+              kind: 'goal',
+              goal: payload.goal,
+              summary: goalEvent.progress.summary,
+              status,
+              updatedAt: Date.now(),
+            })
+          } else if (goalEvent.type === 'error') {
+            await getAgentOsScheduler().transitionTask(payload.conversationId, 'goal', 'failed', goalEvent.error)
+          } else if (planner?.paused) {
+            await getAgentOsScheduler().transitionTask(payload.conversationId, 'goal', 'paused', 'Goal task paused.')
+          }
           send(goalEvent)
         }
       } catch (err: any) {
+        const error = err?.message ?? String(err)
+        if (persistedProgress) {
+          persistedProgress = markGoalProgressFailed(persistedProgress, error)
+        }
         await getStorage().taskRuns.save({
           conversationId: payload.conversationId,
           kind: 'goal',
           status: 'failed',
           progress: persistedProgress || undefined,
-          error: err?.message ?? String(err),
+          error,
           checkpoints,
         })
+        await syncActivePlan(payload.conversationId)
+        await getAgentOsScheduler().transitionTask(payload.conversationId, 'goal', 'failed', error)
+        await getStorage().runtimeMemory.recordTaskOutcome({
+          conversationId: payload.conversationId,
+          kind: 'goal',
+          goal: payload.goal,
+          summary: error,
+          status: 'failed',
+          updatedAt: Date.now(),
+        })
         void recordActivity({ category: 'agent', action: 'goal.failed', status: 'error', summary: 'Goal-driven task failed.', conversationId: payload.conversationId }, win)
-        send({ type: 'error', error: err?.message ?? String(err) })
+        send({ type: 'error', error })
           } finally {
             if (planner && activeGoalPlanners.get(payload.conversationId) === planner) {
               activeGoalPlanners.delete(payload.conversationId)
             }
           }
           const snapshot = await getStorage().taskRuns.get(payload.conversationId)
+          const nonRetryableFailure = /no available model connection|task services not initialized|agent .+ not found/i.test(snapshot?.error || '')
           return {
             status: snapshot?.status === 'cancelled' ? 'cancelled' as const : snapshot?.status === 'failed' ? 'failed' as const : 'completed' as const,
             error: snapshot?.error,
+            retryable: snapshot?.status === 'failed' ? !nonRetryableFailure : undefined,
           }
         }
       })
@@ -895,29 +1096,39 @@ export function registerTaskHandlers(services?: TaskServices): void {
   })
 
   // Goal mode - pause
-  ipcMain.on(IPC.TASK_GOAL_PAUSE, (event, conversationId: string) => {
-    const planner = activeGoalPlanners.get(conversationId)
-    if (!planner) return
-    planner.pause()
-    void getStorage().taskRuns.get(conversationId).then(async (snapshot) => {
-      if (!snapshot) return
-      await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
-      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+  ipcMain.handle(IPC.TASK_GOAL_PAUSE, async (event, conversationId: string): Promise<void> => {
+    const background = await controlBackgroundGoal(conversationId, 'pause')
+    if (background.handled) {
       notifyConversationChanged(event, conversationId)
-    })
+      return
+    }
+    const planner = activeGoalPlanners.get(conversationId)
+    if (!planner) throw new Error('This Goal is no longer running.')
+    planner.pause()
+    const snapshot = await getStorage().taskRuns.get(conversationId)
+    if (!snapshot) throw new Error('This Goal has no persisted task record.')
+    await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+    await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'paused', 'Paused by the user.')
+    notifyConversationChanged(event, conversationId)
   })
 
   // Goal mode - resume
-  ipcMain.on(IPC.TASK_GOAL_RESUME, (event, conversationId: string) => {
-    const planner = activeGoalPlanners.get(conversationId)
-    if (!planner) return
-    planner.resume()
-    void getStorage().taskRuns.get(conversationId).then(async (snapshot) => {
-      if (!snapshot) return
-      await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
-      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+  ipcMain.handle(IPC.TASK_GOAL_RESUME, async (event, conversationId: string): Promise<void> => {
+    const background = await controlBackgroundGoal(conversationId, 'resume')
+    if (background.handled) {
       notifyConversationChanged(event, conversationId)
-    })
+      return
+    }
+    const planner = activeGoalPlanners.get(conversationId)
+    if (!planner) throw new Error('This Goal is not available for in-process resume.')
+    planner.resume()
+    const snapshot = await getStorage().taskRuns.get(conversationId)
+    if (!snapshot) throw new Error('This Goal has no persisted task record.')
+    await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
+    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+    await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'running', 'Resumed by the user.')
+    notifyConversationChanged(event, conversationId)
   })
 }
 
@@ -928,9 +1139,11 @@ export function registerTaskHandlers(services?: TaskServices): void {
  * resumes without the user seeing it.
  */
 export async function recoverQueuedTasks(window: BrowserWindow): Promise<void> {
+  const recoveredConversationIds = new Set(await getAgentOsScheduler().recoverQueued(window))
   const snapshots = await getStorage().taskRuns.list()
   for (const snapshot of snapshots) {
     if (snapshot.status !== 'queued') continue
+    if (recoveredConversationIds.has(snapshot.conversationId)) continue
 
     const goal = snapshot.goal || snapshot.progress?.goal || snapshot.plan?.goal
     const conversation = await getStorage().conversations.getConversation(snapshot.conversationId)
@@ -946,7 +1159,7 @@ export async function recoverQueuedTasks(window: BrowserWindow): Promise<void> {
     const event = { sender: window.webContents } as IpcMainEvent
     const hasSavedProgress = Boolean(snapshot.progress?.steps.length || snapshot.plan?.subtasks.length)
     if (snapshot.kind === 'expert') {
-      ipcMain.emit(IPC.TASK_START, event, { conversationId: snapshot.conversationId, goal, resume: hasSavedProgress })
+      ipcMain.emit(IPC.TASK_START, event, { conversationId: snapshot.conversationId, goal, resume: hasSavedProgress, recoveryReason: 'app-restart' })
       continue
     }
 
@@ -959,6 +1172,6 @@ export async function recoverQueuedTasks(window: BrowserWindow): Promise<void> {
       })
       continue
     }
-    ipcMain.emit(IPC.TASK_GOAL_START, event, { goal, conversationId: snapshot.conversationId, agentId, resume: hasSavedProgress })
+    ipcMain.emit(IPC.TASK_GOAL_START, event, { goal, conversationId: snapshot.conversationId, agentId, resume: hasSavedProgress, recoveryReason: 'app-restart' })
   }
 }

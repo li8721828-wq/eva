@@ -49,17 +49,28 @@ export class OpenAIProvider implements LLMProvider {
     prompt_tokens?: number
     completion_tokens?: number
     prompt_tokens_details?: { cached_tokens?: number }
+    cost?: number
+    total_cost?: number
+    totalCost?: number
+    currency?: string
+    cost_currency?: string
+    cost_details?: { total_cost?: number; currency?: string }
   } | null): ChatChunk['usage'] | undefined {
     if (!usage) return undefined
     const promptTokens = Number(usage.prompt_tokens || 0)
     const completionTokens = Number(usage.completion_tokens || 0)
     const cachedTokens = usage.prompt_tokens_details?.cached_tokens
+    const providerReportedCost = [usage.cost, usage.total_cost, usage.totalCost, usage.cost_details?.total_cost]
+      .find((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+    const providerReportedCurrency = usage.cost_currency || usage.currency || usage.cost_details?.currency
     return {
       promptTokens,
       completionTokens,
       ...(typeof cachedTokens === 'number'
         ? { cachedTokens, cacheMissTokens: Math.max(0, promptTokens - cachedTokens) }
         : {}),
+      ...(providerReportedCost !== undefined ? { providerReportedCost } : {}),
+      ...(providerReportedCurrency ? { providerReportedCurrency } : {}),
     }
   }
 
@@ -69,24 +80,31 @@ export class OpenAIProvider implements LLMProvider {
       { id?: string; name?: string; arguments: string }
     > = new Map()
 
-    const stream = await withRetry(
-      () =>
-        this.client.chat.completions.create(
+    const createStream = (includeUsage: boolean) =>
+      this.client.chat.completions.create(
           {
             model: params.model || this.defaultModel || 'gpt-4o',
             messages: toOpenAIMessages(params.messages),
             tools: toOpenAITools(params.tools),
             stream: true,
-            // Most hosted OpenAI-compatible providers return usage in the last
-            // stream chunk. Do not send this extension to unknown custom servers.
-            ...(this.type === 'custom' ? {} : { stream_options: { include_usage: true } }),
+            // OpenAI-compatible gateways commonly return usage, and sometimes
+            // their actual charge, only in this final stream chunk.
+            ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
             temperature: params.temperature,
             max_tokens: params.maxTokens,
           },
-          { signal }
-        ),
-      this.id
-    )
+          { signal },
+        )
+
+    let stream
+    try {
+      stream = await withRetry(() => createStream(true), this.id)
+    } catch (error) {
+      // Some older gateways reject stream_options entirely. Retrying without
+      // the optional extension preserves the existing chat behavior.
+      if (this.type !== 'custom') throw error
+      stream = await withRetry(() => createStream(false), this.id)
+    }
 
     for await (const chunk of stream) {
       const usage = this.mapUsage(chunk.usage)

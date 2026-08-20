@@ -1,4 +1,4 @@
-import type { GoalConfig, GoalProgress, SubTask, TaskPlan, TeamEvent, TaskRunSnapshot } from '../../shared/types'
+import { markGoalProgressCancelled, markGoalProgressFailed, type GoalConfig, type GoalProgress, type SubTask, type TaskPlan, type TeamEvent, type TaskRunSnapshot } from '../../shared/types'
 import type { GoalEvent } from '../lib/goal-event'
 import { create } from 'zustand'
 
@@ -33,8 +33,8 @@ interface TaskState {
   clearPlan: (conversationId?: string) => void
   startGoal: (goal: string, agentId: string, conversationId: string, config?: Partial<GoalConfig>) => void
   abortGoal: (conversationId: string) => Promise<void>
-  pauseGoal: (conversationId: string) => void
-  resumeGoal: (conversationId: string) => void
+  pauseGoal: (conversationId: string) => Promise<void>
+  resumeGoal: (conversationId: string) => Promise<void>
   clearGoalProgress: (conversationId?: string) => void
   handleGoalEvent: (event: GoalEvent) => void
   hydrateSnapshot: (snapshot: TaskRunSnapshot | null) => void
@@ -164,7 +164,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set((state) => ({
         goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({
           ...task,
-          progress: task.progress ? { ...task.progress, status: 'cancelled', completedAt: Date.now() } : null,
+          progress: task.progress ? markGoalProgressCancelled(task.progress) : null,
           isRunning: false,
           isPaused: false,
           recoveryStatus: 'cancelled',
@@ -175,17 +175,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  pauseGoal: (conversationId) => {
+  pauseGoal: async (conversationId) => {
     if (!conversationId) return
-    window.eva.goal.pause(conversationId)
+    await window.eva.goal.pause(conversationId)
     set((state) => ({
       goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({ ...task, isPaused: true }), EMPTY_GOAL_TASK),
     }))
   },
 
-  resumeGoal: (conversationId) => {
+  resumeGoal: async (conversationId) => {
     if (!conversationId) return
-    window.eva.goal.resume(conversationId)
+    await window.eva.goal.resume(conversationId)
     set((state) => ({
       goalTasks: updateTask(state.goalTasks, conversationId, (task) => ({ ...task, isPaused: false }), EMPTY_GOAL_TASK),
     }))
@@ -270,7 +270,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           next = { ...current, progress: { ...event.progress, conversationId }, isRunning: false, isPaused: false }
           break
         case 'error':
-          next = { ...current, progress: progress ? { ...progress, status: 'failed' } : null, isRunning: false, isPaused: false }
+          next = { ...current, progress: progress ? markGoalProgressFailed(progress, event.error) : null, isRunning: false, isPaused: false }
           break
       }
 
@@ -301,14 +301,21 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           ...state.goalTasks,
           [snapshot.conversationId]: {
             progress: snapshot.progress
-              ? {
-                  ...snapshot.progress,
+              ? (() => {
+                  const progress = snapshot.status === 'cancelled'
+                    ? markGoalProgressCancelled(snapshot.progress)
+                    : snapshot.status === 'failed'
+                      ? markGoalProgressFailed(snapshot.progress, snapshot.error || 'Goal execution failed.')
+                    : snapshot.progress
+                  return {
+                  ...progress,
                   // The durable scheduler state is authoritative after a
                   // conversation is re-opened. A saved in-progress plan must
                   // never be rendered as a failed Goal merely because the UI
                   // was remounted.
-                  status: isActive || isPaused ? 'in_progress' : snapshot.progress.status,
+                  status: isActive || isPaused ? 'in_progress' : progress.status,
                 }
+              })()
               : null,
             streamingContent: '',
             isRunning: isActive,

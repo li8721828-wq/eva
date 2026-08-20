@@ -1965,6 +1965,40 @@ a.tool-call-source__title:hover {
   line-height: 1.45;
 }
 
+.settings-dialog__provider-editor {
+  width: min(100%, 46rem);
+  max-width: none;
+}
+
+.settings-dialog__provider-editor-form {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-dialog__provider-editor .settings-dialog__field {
+  gap: 7px;
+}
+
+.settings-dialog__provider-editor .settings-dialog__field--models {
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.settings-dialog__provider-editor .settings-dialog__models-empty {
+  min-height: 48px;
+  background: #fafbfc;
+}
+
+.settings-dialog__provider-editor .settings-dialog__actions {
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 0;
+}
+
+.settings-dialog__provider-editor .settings-dialog__result {
+  margin-top: -4px;
+}
+
 .settings-dialog__actions {
   display: flex;
   justify-content: flex-end;

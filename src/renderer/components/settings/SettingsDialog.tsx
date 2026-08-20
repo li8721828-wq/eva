@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { Separator } from '@/components/ui/Separator'
+import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { APP_VERSION } from '../../../shared/constants'
 import {
   AlertCircle,
@@ -21,6 +22,7 @@ import {
   Link,
   Loader2,
   Languages,
+  Network,
   Plus,
   RefreshCw,
   Server,
@@ -35,6 +37,8 @@ import type { Workspace } from '../../../shared/types/workspace'
 import type { AgentConfig } from '../../../shared/types/agent'
 import type { AutomationConfig, HiddenCapabilityId } from '../../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
+import type { NetworkConfig, NetworkTestResult } from '../../../shared/types/network'
+import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
@@ -88,10 +92,12 @@ export function SettingsDialog() {
   const [providerName, setProviderName] = useState('OpenAI')
   const [providerEnabled, setProviderEnabled] = useState(true)
   const [editingProviderId, setEditingProviderId] = useState('')
+  const [providerEditorOpen, setProviderEditorOpen] = useState(false)
   const [providerPendingDeletionId, setProviderPendingDeletionId] = useState<string | null>(null)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
+  const [pricingGroup, setPricingGroup] = useState('')
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>(activeModel ? [activeModel] : [])
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [saving, setSaving] = useState(false)
@@ -110,6 +116,11 @@ export function SettingsDialog() {
   const [qqSaving, setQqSaving] = useState(false)
   const [qqResult, setQqResult] = useState<{ success: boolean; message: string } | null>(null)
   const [automation, setAutomation] = useState<AutomationConfig>(DEFAULT_AUTOMATION_CONFIG)
+  const [networkConfig, setNetworkConfig] = useState<NetworkConfig>(DEFAULT_NETWORK_CONFIG)
+  const [networkTestUrl, setNetworkTestUrl] = useState('https://www.gstatic.com/generate_204')
+  const [networkResult, setNetworkResult] = useState<NetworkTestResult | null>(null)
+  const [networkSaving, setNetworkSaving] = useState(false)
+  const [networkTesting, setNetworkTesting] = useState(false)
   const copy = uiCopy[language].settings
   const automationCopy = uiCopy[language].automation
 
@@ -145,13 +156,14 @@ export function SettingsDialog() {
     setModelSearch('')
   }
 
-  const applyProviderProfile = (provider: ProviderConfigEntry) => {
+  const applyProviderProfile = (provider: ProviderConfigEntry, openEditor = true) => {
     setEditingProviderId(provider.id)
     setProviderName(provider.name)
     setProviderType(provider.type)
     setProviderEnabled(provider.isEnabled)
     setApiKey(provider.apiKey)
     setBaseUrl(provider.baseUrl || '')
+    setPricingGroup(provider.pricingGroup || '')
     const savedModels = provider.models?.length
       ? provider.models
       : provider.defaultModel
@@ -162,20 +174,23 @@ export function SettingsDialog() {
     setModelSearch('')
     setModelsMessage(null)
     setTestResult(null)
+    if (openEditor) setProviderEditorOpen(true)
   }
 
-  const startNewProviderProfile = (type: ProviderType = 'openai') => {
+  const startNewProviderProfile = (type: ProviderType = 'openai', openEditor = true) => {
     setEditingProviderId(`provider-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
     setProviderType(type)
     setProviderName('New connection')
     setProviderEnabled(true)
     setApiKey('')
     setBaseUrl('')
+    setPricingGroup('')
     setSelectedModelIds([])
     setAvailableModels([])
     setModelSearch('')
     setModelsMessage(null)
     setTestResult(null)
+    setProviderEditorOpen(openEditor)
   }
 
   useEffect(() => {
@@ -187,10 +202,27 @@ export function SettingsDialog() {
       const current = providers.find((provider) => provider.id === activeProviderId)
         || providers.find((provider) => provider.isEnabled && provider.apiKey)
         || providers[0]
-      if (current) applyProviderProfile(current)
-      else startNewProviderProfile()
+      if (current) applyProviderProfile(current, false)
+      else startNewProviderProfile('openai', false)
       setShowApiKey(false)
     }).catch((error) => console.error('Failed to load saved provider profiles:', error))
+    return () => { cancelled = true }
+  }, [settingsOpen])
+
+  useEffect(() => {
+    if (!settingsOpen) return
+    let cancelled = false
+    void window.eva.network.getConfig()
+      .then((config) => {
+        if (!cancelled) setNetworkConfig(config)
+      })
+      .catch(() => {
+        if (!cancelled) setNetworkResult({
+          success: false,
+          url: networkTestUrl,
+          message: 'Unable to load network settings.',
+        })
+      })
     return () => { cancelled = true }
   }, [settingsOpen])
 
@@ -217,6 +249,48 @@ export function SettingsDialog() {
       await window.eva.config.set('automation', next)
     } catch {
       setAutomation(automation)
+    }
+  }
+
+  const saveNetworkConfig = async () => {
+    setNetworkSaving(true)
+    setNetworkResult(null)
+    try {
+      const saved = await window.eva.network.saveConfig(networkConfig)
+      setNetworkConfig(saved)
+      setNetworkResult({
+        success: true,
+        url: networkTestUrl,
+        message: saved.mode === 'system'
+          ? 'System proxy settings are now active for Eva.'
+          : saved.mode === 'direct'
+            ? 'Eva is now using a direct network connection.'
+            : 'Manual proxy settings are now active for Eva.',
+      })
+    } catch (error) {
+      setNetworkResult({
+        success: false,
+        url: networkTestUrl,
+        message: error instanceof Error ? error.message : 'Unable to apply network settings.',
+      })
+    } finally {
+      setNetworkSaving(false)
+    }
+  }
+
+  const testNetworkConfig = async () => {
+    setNetworkTesting(true)
+    setNetworkResult(null)
+    try {
+      setNetworkResult(await window.eva.network.testConnection(networkTestUrl))
+    } catch (error) {
+      setNetworkResult({
+        success: false,
+        url: networkTestUrl,
+        message: error instanceof Error ? error.message : 'Network test failed.',
+      })
+    } finally {
+      setNetworkTesting(false)
     }
   }
 
@@ -280,6 +354,7 @@ export function SettingsDialog() {
         type: configToSave.type,
         apiKey: configToSave.apiKey,
         baseUrl: configToSave.baseUrl,
+        pricingGroup: pricingGroup.trim() || undefined,
         isEnabled: providerEnabled,
         defaultModel: configToSave.defaultModel,
         models: availableModels.filter((model) => selectedModelIds.includes(model.id)),
@@ -297,6 +372,7 @@ export function SettingsDialog() {
           ? 'Connection saved. Its models are now available in the chat model picker.'
           : 'Connection saved but hidden from the chat model picker until enabled.',
       })
+      setProviderEditorOpen(false)
     } catch (error) {
       setTestResult({ success: false, message: 'Failed to save configuration.' })
     } finally {
@@ -342,8 +418,8 @@ export function SettingsDialog() {
       }
 
       if (provider.id === editingProviderId) {
-        if (fallback) applyProviderProfile(fallback)
-        else startNewProviderProfile()
+        if (fallback) applyProviderProfile(fallback, false)
+        else startNewProviderProfile('openai', false)
       }
       setTestResult({ success: true, message: `Deleted connection "${provider.name}".` })
     } catch (error) {
@@ -498,6 +574,7 @@ export function SettingsDialog() {
       <Tabs defaultValue="general" className="settings-dialog__tabs">
         <TabsList className="settings-dialog__tabs-list">
           <TabsTrigger value="general">{copy.general}</TabsTrigger>
+          <TabsTrigger value="network">网络</TabsTrigger>
           <TabsTrigger value="models">{copy.models}</TabsTrigger>
           <TabsTrigger value="cost">{copy.cost}</TabsTrigger>
           <TabsTrigger value="introspection">系统自省</TabsTrigger>
@@ -548,6 +625,113 @@ export function SettingsDialog() {
               </p>
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="network" className="settings-dialog__content">
+          <section className="mx-auto w-full max-w-3xl">
+            <div className="settings-dialog__card settings-dialog__model-card gap-5">
+              <div className="flex items-start justify-between gap-6">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium text-zinc-800">
+                    <Network className="h-4 w-4 text-violet-500" />
+                    网络路由
+                  </div>
+                  <p className="mt-1 text-sm leading-6 text-zinc-500">
+                    此设置会统一用于模型调用、供应商费率同步和 Eva 的其他网络服务。
+                  </p>
+                </div>
+                <span className="shrink-0 rounded-md bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">应用级</span>
+              </div>
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700">连接方式</label>
+                <Select
+                  value={networkConfig.mode}
+                  onChange={(event) => {
+                    const mode = event.target.value as NetworkConfig['mode']
+                    setNetworkConfig((config) => ({ ...config, mode }))
+                    setNetworkResult(null)
+                  }}
+                  options={[
+                    { value: 'system', label: '跟随系统代理（推荐）' },
+                    { value: 'manual', label: '手动配置代理' },
+                    { value: 'direct', label: '始终直连' },
+                  ]}
+                />
+                <p className="text-xs leading-5 text-zinc-500">
+                  系统代理会读取 Windows 当前代理设置；手动模式仅影响 Eva，不会修改系统设置。
+                </p>
+              </div>
+
+              {networkConfig.mode === 'manual' ? <>
+                <Separator />
+                <div className="settings-dialog__field">
+                  <label className="text-sm font-medium text-zinc-700">代理地址</label>
+                  <Input
+                    value={networkConfig.proxyRules}
+                    onChange={(event) => {
+                      setNetworkConfig((config) => ({ ...config, proxyRules: event.target.value }))
+                      setNetworkResult(null)
+                    }}
+                    placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+                    autoComplete="off"
+                  />
+                  <p className="text-xs leading-5 text-zinc-500">
+                    多协议可用分号分隔，例如 <code>http=127.0.0.1:7890;https=127.0.0.1:7890</code>。
+                  </p>
+                </div>
+                <div className="settings-dialog__field">
+                  <label className="text-sm font-medium text-zinc-700">不使用代理的地址</label>
+                  <Input
+                    value={networkConfig.proxyBypassRules}
+                    onChange={(event) => {
+                      setNetworkConfig((config) => ({ ...config, proxyBypassRules: event.target.value }))
+                      setNetworkResult(null)
+                    }}
+                    placeholder="&lt;local&gt;;localhost;127.0.0.1"
+                    autoComplete="off"
+                  />
+                  <p className="text-xs leading-5 text-zinc-500">多个域名、IP 或网段请用分号分隔。</p>
+                </div>
+              </> : null}
+
+              <Separator />
+
+              <div className="settings-dialog__field">
+                <label className="text-sm font-medium text-zinc-700">连通性检测地址</label>
+                <Input
+                  value={networkTestUrl}
+                  onChange={(event) => setNetworkTestUrl(event.target.value)}
+                  placeholder="https://www.gstatic.com/generate_204"
+                  autoComplete="off"
+                />
+                <p className="text-xs leading-5 text-zinc-500">检测不会发送模型密钥或供应商凭据。</p>
+              </div>
+
+              <div className="settings-dialog__actions">
+                <Button variant="outline" onClick={() => void testNetworkConfig()} disabled={networkTesting || networkSaving}>
+                  {networkTesting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+                  {networkTesting ? '检测中...' : '检测连接'}
+                </Button>
+                <Button onClick={() => void saveNetworkConfig()} disabled={networkSaving || networkTesting}>
+                  {networkSaving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                  {networkSaving ? '应用中...' : '应用网络设置'}
+                </Button>
+              </div>
+
+              {networkResult ? (
+                <div className="settings-dialog__result" data-status={networkResult.success ? 'success' : 'error'}>
+                  {networkResult.success ? <CheckCircle2 className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}
+                  <span className="min-w-0">
+                    <span className="block">{networkResult.message}</span>
+                    {networkResult.resolvedProxy ? <span className="mt-0.5 block break-all text-xs opacity-80">路由：{networkResult.resolvedProxy}</span> : null}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+          </section>
         </TabsContent>
 
         <TabsContent value="models" className="settings-dialog__content">
@@ -603,18 +787,23 @@ export function SettingsDialog() {
 
               <ModelPoolPanel providers={savedProviders} />
 
-              <Separator />
+              {providerEditorOpen && <Dialog open={providerEditorOpen} onOpenChange={setProviderEditorOpen} className="settings-dialog__provider-editor max-w-2xl">
+                <DialogClose onClose={() => setProviderEditorOpen(false)} />
+                <DialogHeader>
+                  <DialogTitle>{providerName === 'New connection' ? 'Add model connection' : `Edit ${providerName}`}</DialogTitle>
+                  <DialogDescription>Configure this connection, fetch its available models, then save it for chat and agents.</DialogDescription>
+                </DialogHeader>
 
-              <div className="settings-dialog__provider-profile-row">
-                <div className="settings-dialog__field flex-1">
-                  <label className="text-sm font-medium text-zinc-700">Connection name</label>
-                  <Input value={providerName} onChange={(event) => setProviderName(event.target.value)} placeholder="e.g. DeepSeek personal" />
-                </div>
-              </div>
+                <div className="settings-dialog__provider-editor-form">
 
-              <Separator />
+                  <div className="settings-dialog__provider-profile-row">
+                    <div className="settings-dialog__field flex-1">
+                      <label className="text-sm font-medium text-zinc-700">Connection name</label>
+                      <Input value={providerName} onChange={(event) => setProviderName(event.target.value)} placeholder="e.g. DeepSeek personal" />
+                    </div>
+                  </div>
 
-              <div className="settings-dialog__field">
+                <div className="settings-dialog__field">
                 <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                   <Server className="h-4 w-4 text-zinc-500" />
                   Provider type
@@ -629,11 +818,9 @@ export function SettingsDialog() {
                   }}
                   options={PROVIDER_OPTIONS}
                 />
-              </div>
+                </div>
 
-              <Separator />
-
-              <div className="settings-dialog__field">
+                <div className="settings-dialog__field">
                 <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                   <Key className="h-4 w-4 text-zinc-500" />
                   API Key
@@ -659,11 +846,9 @@ export function SettingsDialog() {
                     {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                   </button>
                 </div>
-              </div>
+                </div>
 
-              <Separator />
-
-              <div className="settings-dialog__field">
+                <div className="settings-dialog__field">
                 <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                   <Link className="h-4 w-4 text-zinc-500" />
                   Base URL
@@ -679,11 +864,15 @@ export function SettingsDialog() {
                   }}
                   placeholder={providerType === 'custom' ? 'https://api.example.com/v1' : 'https://api.openai.com/v1'}
                 />
-              </div>
+                </div>
 
-              <Separator />
+                <div className="settings-dialog__field">
+                  <label className="text-sm font-medium text-zinc-700">Supplier pricing group <span className="text-xs font-normal text-zinc-400">(optional)</span></label>
+                  <Input value={pricingGroup} onChange={(event) => setPricingGroup(event.target.value)} placeholder="e.g. default, group name from the supplier" />
+                  <p className="mt-1 text-xs text-zinc-400">Used only when this supplier routes the same model through different price groups. The Cost center never guesses a group.</p>
+                </div>
 
-              <div className="settings-dialog__field">
+                <div className="settings-dialog__field settings-dialog__field--models">
                 <div className="settings-dialog__model-label-row">
                   <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                     <Box className="h-4 w-4 text-zinc-500" />
@@ -743,8 +932,8 @@ export function SettingsDialog() {
                     {modelsMessage || 'Fetch models using the API key and base URL above, then select the models for this connection.'}
                   </div>
                 )}
+                </div>
               </div>
-            </div>
 
             <div className="settings-dialog__actions">
               <Button variant="outline" onClick={handleTestConnection} disabled={testing || saving}>
@@ -769,6 +958,8 @@ export function SettingsDialog() {
                 {testResult.message}
               </div>
             )}
+              </Dialog>}
+            </div>
           </div>
         </TabsContent>
 

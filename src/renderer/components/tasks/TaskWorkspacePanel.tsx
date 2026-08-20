@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BarChart3,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   ClipboardList,
   Circle,
+  CircleMinus,
   CircleX,
   FileText,
   FolderOpen,
@@ -12,9 +15,11 @@ import {
   PanelTopOpen,
   Play,
   Square,
-  X,
+  Target,
 } from 'lucide-react'
 import type { TaskArtifactItem, TaskRunSnapshot, TaskRunStatus, TaskStatus } from '../../../shared/types/task'
+import type { ToolCall } from '../../../shared/types/conversation'
+import type { ActivePlan } from '../../../shared/types/active-plan'
 import { getModelInputBudgetTokens } from '../../../shared/constants'
 import { CodeEditor } from '@/components/editor/CodeEditor'
 import { FileExplorer } from '@/components/editor/FileExplorer'
@@ -30,6 +35,8 @@ type StepItem = {
   title: string
   detail?: string
   status: TaskStatus
+  result?: string
+  toolCalls?: ToolCall[]
 }
 
 const activeStatuses: TaskRunStatus[] = ['queued', 'running', 'paused']
@@ -42,10 +49,21 @@ function formatTokens(value: number): string {
 
 function StepStatusIcon({ status, paused = false }: { status: TaskStatus | TaskRunStatus; paused?: boolean }) {
   if (status === 'completed') return <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-500" />
-  if (status === 'failed' || status === 'cancelled' || status === 'interrupted') return <CircleX className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+  if (status === 'failed') return <CircleX className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" />
+  if (status === 'cancelled') return <CircleMinus className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
+  if (status === 'interrupted') return <Square className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" />
   if (paused && (status === 'in_progress' || status === 'running')) return <Square className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-400" />
   if (status === 'in_progress' || status === 'running') return <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-violet-500" />
   return <Circle className="mt-0.5 h-4 w-4 shrink-0 text-zinc-300" />
+}
+
+function stepStatusLabel(status: TaskStatus | TaskRunStatus): string {
+  if (status === 'completed') return 'Completed'
+  if (status === 'failed') return 'Failed'
+  if (status === 'cancelled') return 'Cancelled'
+  if (status === 'interrupted') return 'Stopped'
+  if (status === 'in_progress' || status === 'running') return 'In progress'
+  return 'Waiting'
 }
 
 function snapshotSteps(snapshot: TaskRunSnapshot | null): StepItem[] {
@@ -56,13 +74,17 @@ function snapshotSteps(snapshot: TaskRunSnapshot | null): StepItem[] {
       title: task.title,
       detail: task.description,
       status: task.status,
+      result: task.result,
+      toolCalls: task.toolCalls,
     }))
   }
   return (snapshot.progress?.steps || []).map((step) => ({
-    id: step.id,
-    title: step.description,
-    detail: step.result,
-    status: step.status,
+      id: step.id,
+      title: step.description,
+      detail: step.result,
+      status: step.status,
+      result: step.result,
+      toolCalls: step.toolCalls,
   }))
 }
 
@@ -101,7 +123,7 @@ export function TaskWorkspacePanel() {
     setRightPanelTab,
     workspacePath,
   } = useAppStore()
-  const { currentConversationId, messages } = useChatStore()
+  const { currentConversationId, messages, setError } = useChatStore()
   const { workspaces, activeWorkspaceId } = useWorkspaceStore()
   const liveGoalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] || EMPTY_GOAL_TASK : EMPTY_GOAL_TASK)
   const liveExpertTask = useTaskStore((state) => currentConversationId ? state.expertTasks[currentConversationId] || EMPTY_EXPERT_TASK : EMPTY_EXPERT_TASK)
@@ -110,17 +132,26 @@ export function TaskWorkspacePanel() {
   const pauseGoal = useTaskStore((state) => state.pauseGoal)
   const resumeGoal = useTaskStore((state) => state.resumeGoal)
   const [snapshot, setSnapshot] = useState<TaskRunSnapshot | null>(null)
+  const [activePlan, setActivePlan] = useState<ActivePlan | null>(null)
   const [artifacts, setArtifacts] = useState<TaskArtifactItem[]>([])
   const [requirementRuns, setRequirementRuns] = useState<RequirementRun[]>([])
-  const [loading, setLoading] = useState(false)
+  const [, setLoading] = useState(false)
   const [taskView, setTaskView] = useState<'plan' | 'usage'>('plan')
   const [showAllSteps, setShowAllSteps] = useState(false)
+  const [expandedStepId, setExpandedStepId] = useState<string | null>(null)
   const [showAllArtifacts, setShowAllArtifacts] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [cancelling, setCancelling] = useState(false)
 
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
   const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
+  const activePlanScopeKey = activeWorkspaceId
+    ? `workspace:${activeWorkspaceId}`
+    : resolvedWorkspacePath?.trim()
+      ? `workspace-path:${resolvedWorkspacePath.trim().toLowerCase()}`
+      : currentConversationId
+        ? `conversation:${currentConversationId}`
+        : ''
   const liveGoalProgress = liveGoalTask.progress?.conversationId === currentConversationId ? liveGoalTask.progress : null
   const steps = useMemo(() => {
     if (liveExpertTask.currentPlan?.subtasks.length) {
@@ -135,14 +166,19 @@ export function TaskWorkspacePanel() {
   const visibleSteps = showAllSteps ? steps : steps.slice(0, 5)
   const visibleArtifacts = showAllArtifacts ? artifacts : artifacts.slice(0, 3)
   const taskGoal = liveExpertTask.currentPlan?.goal || liveGoalProgress?.goal || snapshot?.goal
-  const taskIsPaused = liveGoalTask.isPaused || snapshot?.status === 'paused' || snapshot?.status === 'interrupted'
-  const taskStatus = taskIsPaused
+  const taskWasCancelled = snapshot?.status === 'cancelled'
+  const taskIsPaused = !taskWasCancelled && (liveGoalTask.isPaused || snapshot?.status === 'paused' || snapshot?.status === 'interrupted')
+  const taskStatus = taskWasCancelled
+    ? undefined
+    : taskIsPaused
     ? (snapshot?.status === 'interrupted' ? 'interrupted' : 'paused')
     : liveExpertTask.isRunning || liveGoalTask.isRunning
       ? 'running'
       : snapshot?.status || liveExpertTask.recoveryStatus || liveGoalTask.recoveryStatus
-  const hasTaskRun = Boolean(snapshot || liveExpertTask.currentPlan || liveGoalProgress || liveExpertTask.isRunning || liveGoalTask.isRunning)
+  const hasTaskRun = !taskWasCancelled && Boolean(snapshot || liveExpertTask.currentPlan || liveGoalProgress || liveExpertTask.isRunning || liveGoalTask.isRunning)
   const taskIsRunning = !taskIsPaused && (liveExpertTask.isRunning || liveGoalTask.isRunning || snapshot?.status === 'running' || snapshot?.status === 'queued')
+  const taskCanResume = Boolean(snapshot && (taskIsPaused || taskStatus === 'failed'))
+  const taskCanCancel = Boolean(snapshot && !taskWasCancelled && !['completed', 'cancelled'].includes(taskStatus || ''))
   const usageMessages = useMemo(() => messages.filter((message) => message.role === 'assistant' && message.usage), [messages])
   const usageTotals = useMemo(() => usageMessages.reduce((total, message) => ({
     prompt: total.prompt + (message.usage?.promptTokens || 0),
@@ -159,30 +195,34 @@ export function TaskWorkspacePanel() {
   const refresh = useCallback(async () => {
     if (!currentConversationId) {
       setSnapshot(null)
+      setActivePlan(null)
       setArtifacts([])
       setRequirementRuns([])
       return
     }
     setLoading(true)
     try {
-      const [nextSnapshot, runs, nextRequirementRuns] = await Promise.all([
+      const [nextSnapshot, runs, nextRequirementRuns, nextActivePlan] = await Promise.all([
         window.eva.task.getSnapshot(currentConversationId),
         activeWorkspaceId ? window.eva.task.listArtifacts(activeWorkspaceId) : Promise.resolve([]),
         window.eva.requirements.listRuns(currentConversationId),
+        activePlanScopeKey ? window.eva.activePlan.get(activePlanScopeKey) : Promise.resolve(null),
       ])
       setSnapshot(nextSnapshot)
+      setActivePlan(nextActivePlan)
       const run = runs.find((item) => item.conversationId === currentConversationId)
       setArtifacts(run?.files || [])
       setRequirementRuns(nextRequirementRuns)
     } catch (error) {
       console.error('Failed to load task workspace:', error)
       setSnapshot(null)
+      setActivePlan(null)
       setArtifacts([])
       setRequirementRuns([])
     } finally {
       setLoading(false)
     }
-  }, [activeWorkspaceId, currentConversationId])
+  }, [activePlanScopeKey, activeWorkspaceId, currentConversationId])
 
   useEffect(() => { void refresh() }, [refresh])
 
@@ -202,6 +242,7 @@ export function TaskWorkspacePanel() {
   useEffect(() => {
     setTaskView('plan')
     setShowAllSteps(false)
+    setExpandedStepId(null)
   }, [currentConversationId])
 
   useEffect(() => {
@@ -236,11 +277,13 @@ export function TaskWorkspacePanel() {
       if (snapshot?.kind === 'expert') {
         await window.eva.task.addFeedback(currentConversationId, 'Pause this task after the current operation.', undefined, true)
       } else if (liveGoalTask.isRunning || snapshot?.kind === 'goal') {
-        pauseGoal(currentConversationId)
+        await pauseGoal(currentConversationId)
       } else {
         await window.eva.task.addFeedback(currentConversationId, 'Pause this task after the current operation.', undefined, true)
       }
       await refresh()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not stop this task.')
     } finally {
       setStopping(false)
     }
@@ -251,12 +294,14 @@ export function TaskWorkspacePanel() {
     setStopping(true)
     try {
       if (snapshot.status === 'paused') {
-        if (snapshot.kind === 'goal') resumeGoal(currentConversationId)
+        if (snapshot.kind === 'goal') await resumeGoal(currentConversationId)
         else await window.eva.task.resumeFromCheckpoint(currentConversationId)
       } else {
         await window.eva.task.resume({ conversationId: snapshot.conversationId, kind: snapshot.kind, goal: snapshot.goal || snapshot.progress?.goal || snapshot.plan?.goal || '', agentId: snapshot.agentId || '' })
       }
       await refresh()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not continue this task.')
     } finally {
       setStopping(false)
     }
@@ -270,6 +315,8 @@ export function TaskWorkspacePanel() {
       if (snapshot?.kind === 'goal') await abortGoal(currentConversationId)
       else await abortExpertTask(currentConversationId)
       await refresh()
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not cancel this task.')
     } finally {
       setCancelling(false)
     }
@@ -440,23 +487,47 @@ export function TaskWorkspacePanel() {
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-semibold text-zinc-800">Task workspace</span>
-                {loading && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-400" />}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <span className={cn('eva-status', taskStatus === 'completed' ? 'eva-status--success' : taskStatus === 'failed' ? 'eva-status--error' : taskStatus ? 'eva-status--active' : 'eva-status--neutral')}>
                 {statusLabel(taskStatus)}
               </span>
-              {(taskIsRunning || taskIsPaused) && <>
-                <button type="button" onClick={() => void (taskIsPaused ? continueTask() : stopTask())} disabled={stopping} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60" title={taskIsPaused ? 'Continue this task' : 'Stop after the current operation'}>
-                  {taskIsPaused ? <Play className="h-3 w-3 fill-current" /> : <Square className="h-3 w-3 fill-current" />}{stopping ? 'Working...' : taskIsPaused ? 'Continue' : 'Stop'}
-                </button>
-                <button type="button" onClick={() => void cancelTask()} disabled={cancelling} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-wait disabled:opacity-60" title="Cancel this task">
-                  <X className="h-3 w-3" />{cancelling ? 'Cancelling...' : 'Cancel'}
-                </button>
+              {(taskIsRunning || taskCanResume || taskCanCancel) && <>
+                {(taskIsRunning || taskCanResume) && <button type="button" onClick={() => void (taskCanResume ? continueTask() : stopTask())} disabled={stopping} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60" title={taskCanResume ? 'Continue this task' : 'Stop after the current operation'}>
+                  {taskCanResume ? <Play className="h-3 w-3 fill-current" /> : <Square className="h-3 w-3 fill-current" />}{stopping ? 'Working...' : taskCanResume ? 'Continue' : 'Stop'}
+                </button>}
+                {taskCanCancel && <button type="button" onClick={() => void cancelTask()} disabled={cancelling} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:cursor-wait disabled:opacity-60" title="Cancel this task">
+                  <CircleMinus className="h-3.5 w-3.5" />{cancelling ? 'Cancelling...' : 'Cancel'}
+                </button>}
               </>}
             </div>
           </div>
+
+          {activePlan && (
+            <section className="border-b border-indigo-100/80 py-4" aria-label="Active plan">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <Target className="h-4 w-4 shrink-0 text-violet-500" />
+                  <h2 className="truncate text-sm font-semibold text-zinc-800">Current plan</h2>
+                </div>
+                <span className={cn('eva-status', activePlan.status === 'active' ? 'eva-status--active' : activePlan.status === 'completed' ? 'eva-status--success' : activePlan.status === 'failed' ? 'eva-status--error' : 'eva-status--neutral')}>
+                  {activePlan.status === 'active' ? 'In progress' : activePlan.status === 'paused' ? 'Paused' : activePlan.status === 'completed' ? 'Complete' : activePlan.status === 'failed' ? 'Needs attention' : 'Stopped'}
+                </span>
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-600" title={activePlan.objective}>{activePlan.objective}</p>
+              <ol className="mt-3 space-y-1.5" aria-label="Plan steps">
+                {activePlan.steps.slice(0, 4).map((step, index) => (
+                  <li key={step.id} className="flex min-w-0 items-start gap-2">
+                    <StepStatusIcon status={step.status} paused={activePlan.status === 'paused'} />
+                    <span className="mt-0.5 text-xs tabular-nums text-zinc-400">{index + 1}</span>
+                    <span className={cn('min-w-0 flex-1 truncate text-xs leading-5', step.status === 'completed' ? 'text-zinc-400' : step.status === 'in_progress' ? 'font-medium text-zinc-800' : 'text-zinc-600')} title={step.title}>{step.title}</span>
+                  </li>
+                ))}
+              </ol>
+              {activePlan.steps.length > 4 && <p className="mt-2 text-xs text-zinc-400">{activePlan.steps.length - 4} more steps</p>}
+            </section>
+          )}
 
           {!hasTaskRun ? (
             <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
@@ -475,14 +546,32 @@ export function TaskWorkspacePanel() {
                   <p className="py-2 text-sm text-zinc-500">Eva is preparing the task plan.</p>
                 ) : (
                   <ol className="space-y-1">
-                    {visibleSteps.map((step, index) => (
-                      <li key={step.id} className="flex gap-2.5 rounded-md px-1 py-2">
-                        <StepStatusIcon status={step.status} paused={taskIsPaused} />
-                        <div className="min-w-0 flex-1">
-                          <div className="flex gap-2"><span className="text-xs tabular-nums text-zinc-400">{index + 1}</span><p className={cn('truncate text-sm leading-5', step.status === 'completed' ? 'text-zinc-500' : 'font-medium text-zinc-700')} title={step.title}>{step.title}</p></div>
-                        </div>
-                      </li>
-                    ))}
+                    {visibleSteps.map((step, index) => {
+                      const isExpanded = expandedStepId === step.id
+                      const hasActivity = Boolean(step.toolCalls?.length || step.detail || step.result)
+                      return (
+                        <li key={step.id} className="rounded-md">
+                          <button type="button" onClick={() => setExpandedStepId((current) => current === step.id ? null : step.id)} aria-expanded={isExpanded} className="flex w-full items-start gap-2.5 rounded-md px-1 py-2 text-left transition-colors hover:bg-violet-50/70">
+                            <StepStatusIcon status={step.status} paused={taskIsPaused} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start gap-2">
+                                <span className="mt-0.5 text-xs tabular-nums text-zinc-400">{index + 1}</span>
+                                <p className={cn('min-w-0 flex-1 truncate text-sm leading-5', step.status === 'completed' ? 'text-zinc-500' : 'font-medium text-zinc-700')} title={step.title}>{step.title}</p>
+                                {isExpanded ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" /> : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" />}
+                              </div>
+                            </div>
+                          </button>
+                          {isExpanded && (
+                            <div className="mb-2 ml-7 border-l-2 border-violet-100 pl-3 pr-1 text-xs leading-5 text-zinc-600">
+                              <div className="flex items-center justify-between gap-3"><span className="font-medium text-zinc-700">{stepStatusLabel(step.status)}</span>{step.toolCalls?.length ? <span className="shrink-0 text-zinc-400">{step.toolCalls.length} activities</span> : null}</div>
+                              {step.detail && <p className="mt-1.5 whitespace-pre-wrap break-words">{step.detail}</p>}
+                              {step.result && step.result !== step.detail && <div className="mt-2 rounded bg-zinc-50 px-2.5 py-2 text-zinc-600"><p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Result</p><p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words">{step.result}</p></div>}
+                              {step.toolCalls?.length ? <div className="mt-2 space-y-1.5"><p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">Execution activity</p>{step.toolCalls.map((toolCall) => <div key={toolCall.id} className="rounded bg-zinc-50 px-2.5 py-2"><div className="flex items-center justify-between gap-3"><span className="truncate font-medium text-zinc-700">{toolCall.name}</span><span className={cn('shrink-0 text-[11px]', toolCall.isError ? 'text-rose-500' : toolCall.result ? 'text-emerald-600' : 'text-violet-500')}>{toolCall.isError ? 'Failed' : toolCall.result ? 'Completed' : 'Running'}</span></div>{toolCall.result && <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-zinc-500">{toolCall.result}</p>}</div>)}</div> : !hasActivity && <p className="mt-1.5 text-zinc-400">Execution records will appear here as this step progresses.</p>}
+                            </div>
+                          )}
+                        </li>
+                      )
+                    })}
                   </ol>
                 )}
                 {steps.length > 5 && <button type="button" onClick={() => setShowAllSteps((show) => !show)} className="mt-2 text-xs font-medium text-violet-700 hover:text-violet-900">{showAllSteps ? 'Show less' : `Show all ${steps.length} steps`}</button>}
