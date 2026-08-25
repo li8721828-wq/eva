@@ -99,7 +99,13 @@ export function classifyError(err: unknown, providerId: string): ProviderError {
   if (
     lowerMsg.includes('network') ||
     lowerMsg.includes('econnrefused') ||
+    lowerMsg.includes('econnreset') ||
     lowerMsg.includes('enotfound') ||
+    lowerMsg.includes('err_connection_closed') ||
+    lowerMsg.includes('err_connection_reset') ||
+    lowerMsg.includes('connection closed') ||
+    lowerMsg.includes('connection reset') ||
+    lowerMsg.includes('socket hang up') ||
     lowerMsg.includes('fetch failed')
   ) {
     if (lowerMsg.includes('enotfound')) {

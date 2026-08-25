@@ -122,7 +122,7 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
     <section className="border-t border-zinc-100 pt-7">
       <label className="flex cursor-pointer items-start gap-3 rounded-md bg-zinc-50 px-3.5 py-3.5 transition-colors hover:bg-zinc-100/70">
         <input type="checkbox" checked={showThinking} onChange={(event) => onShowThinkingChange(event.target.checked)} className="mt-0.5 h-4 w-4 accent-violet-600" />
-        <span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium text-zinc-800"><Braces className="h-4 w-4 text-violet-600" />显示模型思考</span><span className="mt-1 block text-xs leading-5 text-zinc-500">仅在当前模型实际提供推理内容时显示。</span></span>
+        <span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium text-zinc-800"><Braces className="h-4 w-4 text-violet-600" />显示模型慢思考</span><span className="mt-1 block text-xs leading-5 text-zinc-500">支持时显示模型的慢思考过程；不支持时提示能力缺失并正常输出。</span></span>
       </label>
     </section>
   </div>

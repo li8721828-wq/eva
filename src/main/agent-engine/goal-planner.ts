@@ -1,15 +1,33 @@
 import type { LLMProvider } from '../providers/base-provider'
+import { classifyError } from '../providers/errors'
 import type { ToolRegistry, FileService, TerminalService } from '../tools/index'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
-import { markGoalProgressCancelled, type GoalConfig, type GoalStep, type GoalProgress, type TaskStatus } from '../../shared/types/task'
+import { markGoalProgressCancelled, type GoalConfig, type GoalStep, type GoalProgress, type TaskStatus, type GoalStepHandoff, type GoalStepAttempt } from '../../shared/types/task'
 import type { ToolCall } from '../../shared/types/conversation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { ChatMessage } from '../../shared/types/conversation'
 import { AgentRunner } from './agent-runner'
 import { ContextManager } from './context'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
 
 const GOAL_ABSOLUTE_MAX_ITERATIONS = 100
+export const GOAL_STEP_MAX_ATTEMPTS = 2
+
+export function shouldRetryGoalStepError(error: string, providerId: string): boolean {
+  return classifyError(new Error(error), providerId).retryable
+}
+
+export function goalStepRetryDelayMs(failedAttempt: number): number {
+  return Math.min(5_000, 1_000 * Math.pow(2, Math.max(0, failedAttempt - 1)))
+}
+
+function compactHandoffResult(value: string, maxChars = 6_000): string {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxChars) return normalized
+  const head = Math.floor(maxChars * 0.68)
+  return `${normalized.slice(0, head)} ... [handoff middle omitted] ... ${normalized.slice(-(maxChars - head - 38))}`
+}
 
 export interface GoalStepIterationBudget {
   initialIterations: number
@@ -39,12 +57,14 @@ export function goalStepIterationBudget(step: Pick<GoalStep, 'description'>, age
 export type GoalEvent =
   | { type: 'goal_started'; goal: string }
   | { type: 'plan_created'; steps: GoalStep[] }
-  | { type: 'step_started'; stepId: string; stepIndex: number }
+  | { type: 'step_started'; stepId: string; stepIndex: number; agentConversationId?: string; attempt: number; maxAttempts: number; attempts: GoalStepAttempt[] }
+  | { type: 'step_conversation'; stepId: string; agentConversationId: string; handoff: GoalStepHandoff }
   | { type: 'step_progress'; stepId: string; content: string }
   | { type: 'step_tool_call'; stepId: string; toolCall: ToolCall }
   | { type: 'step_tool_result'; stepId: string; toolCallId: string; result: string; isError: boolean }
-  | { type: 'step_completed'; stepId: string; result: string }
-  | { type: 'step_failed'; stepId: string; error: string }
+  | { type: 'step_retrying'; stepId: string; attempt: number; maxAttempts: number; attempts: GoalStepAttempt[]; error: string; delayMs: number }
+  | { type: 'step_completed'; stepId: string; result: string; attempts?: GoalStepAttempt[] }
+  | { type: 'step_failed'; stepId: string; error: string; attempts?: GoalStepAttempt[] }
   | { type: 'plan_adjusted'; steps: GoalStep[]; reason: string }
   | { type: 'summary'; content: string }
   | { type: 'done'; progress: GoalProgress }
@@ -63,6 +83,10 @@ export interface GoalPlannerConfig {
   terminalService: TerminalService
   maxSteps?: number
   timeout?: number
+  /** Creates a hidden, durable child conversation for each Goal step. */
+  prepareStepConversation?: (input: { step: GoalStep; handoff: GoalStepHandoff; continuation: boolean }) => Promise<{ conversationId: string; messages: ChatMessage[]; message: ChatMessage }>
+  /** Persists the step's execution trace into its hidden child conversation. */
+  persistStepEvent?: (input: { step: GoalStep; conversationId: string; event: Extract<GoalEvent, { type: 'step_progress' | 'step_tool_call' | 'step_tool_result' | 'step_completed' | 'step_failed' }> }) => Promise<void>
 }
 
 export class GoalPlanner {
@@ -167,26 +191,85 @@ export class GoalPlanner {
         if (step.status === 'failed' || step.status === 'cancelled') step.status = 'pending'
         progress.currentStepIndex = i
         step.status = 'in_progress'
+        step.maxAttempts = GOAL_STEP_MAX_ATTEMPTS
+        step.attempt = 1
         step.startedAt = Date.now()
+        step.attempts = [{ attempt: 1, status: 'in_progress', startedAt: step.startedAt }]
 
-        yield { type: 'step_started', stepId: step.id, stepIndex: i }
+        yield {
+          type: 'step_started',
+          stepId: step.id,
+          stepIndex: i,
+          agentConversationId: step.agentConversationId,
+          attempt: step.attempt,
+          maxAttempts: step.maxAttempts,
+          attempts: step.attempts,
+        }
 
         let stepResult = ''
         let stepFailed = false
 
-        try {
-          for await (const event of this.executeStep(step, completedSteps)) {
-            yield event
-            if (event.type === 'step_completed') {
-              stepResult = event.result
-            } else if (event.type === 'step_failed') {
-              stepResult = event.error
-              stepFailed = true
-            }
+        for (let attempt = 1; attempt <= GOAL_STEP_MAX_ATTEMPTS; attempt += 1) {
+          step.attempt = attempt
+          step.startedAt = Date.now()
+          if (attempt > 1) {
+            step.attempts = (step.attempts || []).some((entry) => entry.attempt === attempt)
+              ? (step.attempts || []).map((entry) => entry.attempt === attempt ? { ...entry, startedAt: step.startedAt } : entry)
+              : [...(step.attempts || []), { attempt, status: 'in_progress', startedAt: step.startedAt }]
           }
-        } catch (err) {
-          stepResult = (err as Error).message
-          stepFailed = true
+
+          let attemptFailed = false
+          try {
+            for await (const event of this.executeStep(step, completedSteps, goalConfig.goal)) {
+              if (event.type === 'step_completed') {
+                stepResult = event.result
+              } else if (event.type === 'step_failed') {
+                stepResult = event.error
+                attemptFailed = true
+              } else {
+                yield event
+              }
+            }
+          } catch (err) {
+            stepResult = (err as Error).message
+            attemptFailed = true
+          }
+
+          const completedAt = Date.now()
+          if (!attemptFailed) {
+            step.attempts = (step.attempts || []).map((entry) => entry.attempt === attempt
+              ? { ...entry, status: 'completed', completedAt }
+              : entry)
+            stepFailed = false
+            break
+          }
+
+          step.attempts = (step.attempts || []).map((entry) => entry.attempt === attempt
+            ? { ...entry, status: 'failed', completedAt, error: stepResult }
+            : entry)
+          const retryable = shouldRetryGoalStepError(stepResult, this.config.provider.id)
+          if (!retryable || attempt === GOAL_STEP_MAX_ATTEMPTS) {
+            stepFailed = true
+            break
+          }
+
+          const delayMs = goalStepRetryDelayMs(attempt)
+          step.attempts = [...(step.attempts || []), {
+            attempt: attempt + 1,
+            status: 'in_progress',
+            startedAt: Date.now() + delayMs,
+          }]
+          yield {
+            type: 'step_retrying',
+            stepId: step.id,
+            attempt: attempt + 1,
+            maxAttempts: GOAL_STEP_MAX_ATTEMPTS,
+            attempts: step.attempts,
+            error: stepResult,
+            delayMs,
+          }
+          await new Promise((resolve) => setTimeout(resolve, delayMs))
+          if (this.abortController?.signal.aborted) break
         }
 
         if (this.abortController?.signal.aborted) {
@@ -199,6 +282,10 @@ export class GoalPlanner {
         step.result = stepResult
         step.completedAt = Date.now()
         lastProgressAt = step.completedAt
+
+        yield stepFailed
+          ? { type: 'step_failed', stepId: step.id, error: stepResult, attempts: step.attempts || [] }
+          : { type: 'step_completed', stepId: step.id, result: stepResult, attempts: step.attempts || [] }
 
         completedSteps.push(step)
 
@@ -322,7 +409,12 @@ export class GoalPlanner {
       }
     }
 
-    throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    throw new Error(formatProviderRequestFailure(
+      lastError,
+      this.config.provider,
+      params.model || this.config.agentConfig.model,
+      'goal-plan',
+    ))
   }
 
   private async createPlan(goal: string): Promise<GoalStep[]> {
@@ -393,50 +485,69 @@ Rules:
 
   private async *executeStep(
     step: GoalStep,
-    previousResults: GoalStep[]
+    previousResults: GoalStep[],
+    goal: string,
   ): AsyncGenerator<GoalEvent> {
     const adaptiveToolBudget = goalStepIterationBudget(step, this.config.agentConfig.maxIterations)
+    const dependencyResults = previousResults
+      .filter((previous) => previous.status === 'completed')
+      .map((previous) => ({ stepId: previous.id, description: previous.description, result: compactHandoffResult(previous.result || 'No structured result was recorded.') }))
+    const handoff: GoalStepHandoff = {
+      goal,
+      step: step.description,
+      acceptanceCriteria: ['Complete the assigned step.', 'Report changed files, verification, and unresolved risks explicitly.'],
+      workspacePath: this.config.workspacePath || undefined,
+      dependencyResults,
+    }
+    step.handoff = handoff
+    let stepConversationId = step.agentConversationId
+    let stepMessages: ChatMessage[] = []
+    let stepMessage: ChatMessage
+    if (this.config.prepareStepConversation) {
+      const prepared = await this.config.prepareStepConversation({ step, handoff, continuation: Boolean(stepConversationId) })
+      stepConversationId = prepared.conversationId
+      step.agentConversationId = prepared.conversationId
+      stepMessages = prepared.messages
+      stepMessage = prepared.message
+      yield { type: 'step_conversation', stepId: step.id, agentConversationId: prepared.conversationId, handoff }
+    } else {
+      stepMessage = {
+        id: `goal-step-${step.id}-${Date.now()}`,
+        conversationId: '',
+        role: 'user',
+        content: this.buildStepPrompt(handoff),
+        timestamp: Date.now(),
+      }
+    }
+
     const runner = new AgentRunner({
       conversationId: this.config.conversationId,
       agentConfig: this.config.agentConfig,
       provider: this.config.provider,
       toolRegistry: this.config.toolRegistry,
-      contextManager: this.config.contextManager,
+      // Each step gets a fresh context manager. The parent planner's durable
+      // memory is intentionally not copied into the child transcript; the
+      // explicit handoff above is the only cross-step contract.
+      contextManager: new ContextManager(),
       workspacePath: this.config.workspacePath,
       fileAccessGrants: this.config.fileAccessGrants,
       fullFilesystemAccess: this.config.fullFilesystemAccess,
       fileService: this.config.fileService,
       terminalService: this.config.terminalService,
       adaptiveToolBudget,
+      requestSource: 'goal-step',
     })
     this.currentRunner = runner
-
-    // Build step context message
-    let contextMsg = `[Goal Step ${step.index + 1}] ${step.description}`
-    if (this.feedback.length > 0) {
-      contextMsg += `\n\nUser guidance received after the plan was created:\n${this.feedback.map((item) => `- ${item.content}`).join('\n')}\nApply this guidance where it affects the remaining work.`
-    }
-    if (previousResults.length > 0) {
-      contextMsg += '\n\nPrevious steps completed:\n'
-      for (const prev of previousResults) {
-        contextMsg += `- Step ${prev.index + 1} (${prev.status}): ${prev.description}\n  Result: ${prev.result || 'N/A'}\n`
-      }
-    }
 
     let lastContent = ''
 
     try {
-      const stepMessage: ChatMessage = {
-        id: `goal-step-${step.id}-${Date.now()}`,
-        conversationId: '',
-        role: 'user',
-        content: contextMsg,
-        timestamp: Date.now(),
-      }
-      for await (const event of runner.run({ messages: [], newMessage: stepMessage })) {
+      for await (const event of runner.run({ messages: stepMessages, newMessage: stepMessage })) {
         if (event.type === 'text' && event.content) {
           lastContent += event.content
-          yield { type: 'step_progress', stepId: step.id, content: event.content }
+          const stepEvent: GoalEvent = { type: 'step_progress', stepId: step.id, content: event.content }
+          if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+          yield stepEvent
         } else if (event.type === 'tool_call' && event.toolCall) {
           const toolCall: ToolCall = {
             id: event.toolCall.id,
@@ -444,40 +555,70 @@ Rules:
             arguments: event.toolCall.arguments,
           }
           step.toolCalls = [...(step.toolCalls || []), toolCall]
-          yield { type: 'step_tool_call', stepId: step.id, toolCall }
+          const stepEvent: GoalEvent = { type: 'step_tool_call', stepId: step.id, toolCall }
+          if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+          yield stepEvent
         } else if (event.type === 'tool_result' && event.toolResult) {
           step.toolCalls = (step.toolCalls || []).map((toolCall) =>
             toolCall.id === event.toolResult!.toolCallId
               ? { ...toolCall, result: event.toolResult!.result, isError: event.toolResult!.isError }
               : toolCall
           )
-          yield {
+          const stepEvent: GoalEvent = {
             type: 'step_tool_result',
             stepId: step.id,
             toolCallId: event.toolResult.toolCallId,
             result: event.toolResult.result,
             isError: event.toolResult.isError,
           }
+          if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+          yield stepEvent
         } else if (event.type === 'done') {
-          yield { type: 'step_completed', stepId: step.id, result: lastContent || 'Step completed successfully' }
+          const stepEvent: GoalEvent = { type: 'step_completed', stepId: step.id, result: lastContent || 'Step completed successfully' }
+          if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+          yield stepEvent
           return
         } else if (event.type === 'error' && event.error) {
-          yield { type: 'step_failed', stepId: step.id, error: event.error }
+          const stepEvent: GoalEvent = { type: 'step_failed', stepId: step.id, error: event.error }
+          if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+          yield stepEvent
           return
         }
       }
 
       // If no done event received
-      yield { type: 'step_completed', stepId: step.id, result: lastContent || 'Step completed' }
+      const stepEvent: GoalEvent = { type: 'step_completed', stepId: step.id, result: lastContent || 'Step completed' }
+      if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+      yield stepEvent
     } catch (err) {
       if (this.abortController?.signal.aborted) {
-        yield { type: 'step_failed', stepId: step.id, error: 'Aborted' }
+        const stepEvent: GoalEvent = { type: 'step_failed', stepId: step.id, error: 'Aborted' }
+        if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+        yield stepEvent
       } else {
-        yield { type: 'step_failed', stepId: step.id, error: (err as Error).message }
+        const stepEvent: GoalEvent = { type: 'step_failed', stepId: step.id, error: (err as Error).message }
+        if (stepConversationId && this.config.persistStepEvent) await this.config.persistStepEvent({ step, conversationId: stepConversationId, event: stepEvent })
+        yield stepEvent
       }
     } finally {
       this.currentRunner = null
     }
+  }
+
+  private buildStepPrompt(handoff: GoalStepHandoff): string {
+    const dependencies = handoff.dependencyResults.length
+      ? handoff.dependencyResults.map((item) => `- ${item.stepId}: ${item.description}\n  Result: ${item.result}`).join('\n')
+      : '(No upstream step results.)'
+    return [
+      `Goal: ${handoff.goal}`,
+      `Assigned step: ${handoff.step}`,
+      `Workspace: ${handoff.workspacePath || '(not restricted to one workspace)'}`,
+      'Acceptance criteria:',
+      ...handoff.acceptanceCriteria.map((criterion) => `- ${criterion}`),
+      'Upstream handoffs:',
+      dependencies,
+      'This is an isolated Goal step conversation. Work only on this step. Do not assume another step completed unless its handoff above says so.',
+    ].join('\n')
   }
 
   private async evaluateAndAdjust(

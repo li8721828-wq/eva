@@ -3,6 +3,22 @@ import { conversationTerminalSessionId } from '../../shared/terminal-session'
 import { setConversationTerminalVisibility } from '../services/terminal-panel-controller'
 
 const MAX_OUTPUT_LENGTH = 10_000
+const failedCommandsBySession = new Map<string, string>()
+
+function commandGuardError(command: string): string | undefined {
+  // In PowerShell pipeline script blocks, `.Property` is parsed as a command.
+  // The current pipeline item must be referenced as `$_.Property` instead.
+  const missingPipelineVariable = /\b(?:Where-Object|ForEach-Object|%|\?)\s*\{[^}]*?(?<!\$)\.[A-Za-z_][\w-]*/i.test(command)
+  if (missingPipelineVariable) {
+    return 'Command blocked before execution: this PowerShell pipeline uses `.Property` inside a script block. Use `$_.Property` (for example, `Where-Object { $_.Extension -match \'\\.ts$\' }`) and submit a corrected command.'
+  }
+  return undefined
+}
+
+function commandFailed(result: { stdout: string; stderr: string; exitCode: number }): boolean {
+  return result.exitCode !== 0
+    || /(?:commandnotfoundexception|not recognized as|无法将.+识别为|categoryinfo\s*:.*(?:error|objectnotfound))/i.test(`${result.stdout}\n${result.stderr}`)
+}
 
 export function createTerminalTools(): ToolExecutor[] {
   return [openTerminalTool, readTerminalTool, writeTerminalTool, executeCommandTool, closeTerminalTool]
@@ -59,9 +75,13 @@ const writeTerminalTool: ToolExecutor = {
     if (!text) return 'Terminal text is required.'
 
     const sessionId = conversationTerminalSessionId(context.conversationId)
+    const submitted = params.submit === true
+    if (submitted) {
+      const guardError = commandGuardError(text)
+      if (guardError) return guardError
+    }
     await context.terminalService.createSession(sessionId, context.workspacePath || process.cwd())
     setConversationTerminalVisibility(context.conversationId, true)
-    const submitted = params.submit === true
     context.terminalService.writeInput(sessionId, submitted ? `${text}\r` : text)
     return submitted
       ? 'Typed the text and pressed Enter in this conversation\'s visible terminal.'
@@ -91,7 +111,8 @@ const executeCommandTool: ToolExecutor = {
     },
   },
   async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
-    const command = params.command as string
+    const command = typeof params.command === 'string' ? params.command.trim() : ''
+    if (!command) return 'Command execution requires a non-empty command.'
 
     // An explicit conversation terminal tool grant authorizes control of that
     // visible shell. It is distinct from unrestricted background shell access.
@@ -107,6 +128,13 @@ const executeCommandTool: ToolExecutor = {
       ? conversationTerminalSessionId(context.conversationId)
       : `tool_cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     const cwd = (params.cwd as string) || context.workspacePath
+    const guardError = commandGuardError(command)
+    if (guardError) return guardError
+
+    const priorFailure = failedCommandsBySession.get(sessionId)
+    if (priorFailure === command) {
+      return 'Command blocked: the identical command already failed in this terminal session. Inspect and correct it before retrying; do not submit the same command again.'
+    }
 
     try {
       await context.terminalService.createSession(sessionId, cwd)
@@ -128,6 +156,8 @@ const executeCommandTool: ToolExecutor = {
       }
 
       const output = parts.join('\n') || '(no output)'
+      if (commandFailed(result)) failedCommandsBySession.set(sessionId, command)
+      else failedCommandsBySession.delete(sessionId)
       return truncateOutput(output)
     } catch (err) {
       return `Command execution failed: ${(err as Error).message}`
@@ -153,7 +183,9 @@ const closeTerminalTool: ToolExecutor = {
   },
   async execute(_params: Record<string, unknown>, context: ToolContext): Promise<string> {
     if (!context.conversationId) return 'Closing a controlled terminal requires an active conversation.'
-    context.terminalService.destroySession(conversationTerminalSessionId(context.conversationId))
+    const sessionId = conversationTerminalSessionId(context.conversationId)
+    failedCommandsBySession.delete(sessionId)
+    context.terminalService.destroySession(sessionId)
     setConversationTerminalVisibility(context.conversationId, false)
     return 'Closed this conversation\'s controlled terminal.'
   },

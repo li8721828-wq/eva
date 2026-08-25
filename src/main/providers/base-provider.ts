@@ -5,6 +5,9 @@ export interface LLMProvider {
   readonly name: string
   readonly type: 'openai' | 'anthropic' | 'deepseek' | 'custom'
 
+  /** Safe connection metadata for user-visible request diagnostics. Never includes credentials. */
+  getConnectionDiagnostics?(): { baseUrl?: string }
+
   /**
    * 流式聊天 - 返回 AsyncIterable 的 ChatChunk
    */
@@ -22,6 +25,7 @@ export interface LLMProvider {
   ): Promise<{
     content: string
     toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
+    finishReason?: ChatChunk['finishReason']
     usage?: ChatChunk['usage']
   }>
 

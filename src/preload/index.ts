@@ -65,6 +65,7 @@ export interface EvaAPI {
     send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[], quotedMessage?: ChatMessageReference): Promise<void>
     onStream(callback: EventCallback<ChatStreamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
+    decideGoalConfirmation(conversationId: string, confirmationId: string, approved: boolean): Promise<boolean>
   }
 
   // 智能体管理
@@ -296,6 +297,7 @@ const evaAPI: EvaAPI = {
       ipcRenderer.send(IPC.CHAT_ABORT, conversationId)
       return Promise.resolve()
     },
+    decideGoalConfirmation: (conversationId, confirmationId, approved) => ipcRenderer.invoke(IPC.CHAT_GOAL_CONFIRMATION_DECIDE, { conversationId, confirmationId, approved }),
   },
 
   // 智能体管理

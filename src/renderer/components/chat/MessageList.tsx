@@ -3,6 +3,7 @@ import type { ChatMessage, ChatUsage } from '../../../shared/types'
 import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
+import { GoalConfirmationCard } from './GoalConfirmationCard'
 import { RequirementClarificationCard } from './RequirementClarificationCard'
 import { WelcomeScreen } from './WelcomeScreen'
 import { CheckCircle2, ChevronsDown, CircleAlert, Loader2 } from 'lucide-react'
@@ -10,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
 import type { RequirementClarificationAnswer, RequirementRun } from '../../../shared/types/requirement-engineering'
+import { collapseToolHistoryMessages } from '@/lib/collapse-tool-history'
 
 const PAGE_SIZE = 100
 const CONVERSATION_SCROLL_STORAGE_KEY = 'eva.conversation-scroll-positions.v2'
@@ -107,11 +109,17 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, currentConversationId, isConversationLoading, streamingByConversation, requirementProgressByConversation } = useChatStore()
+  const { messages, currentConversationId, isConversationLoading, streamingByConversation, requirementProgressByConversation, decideGoalConfirmation } = useChatStore()
   const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
   const isStreaming = Boolean(stream?.isStreaming)
   const streamingContent = stream?.content || ''
   const streamingReasoningContent = stream?.reasoningContent || ''
+  const streamingAgentId = stream?.agentId
+  const streamingAgentName = stream?.agentName
+  const streamingToolCalls = stream?.toolCalls || []
+  const streamingExecutionTrace = stream?.executionTrace || []
+  const streamingExecutionTimeline = stream?.executionTimeline || []
+  const goalConfirmation = stream?.goalConfirmation
   const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
   const isRequirementRunning = Boolean(requirementProgress)
   const { rightPanelVisible, rightPanelWidth, language } = useAppStore()
@@ -122,6 +130,7 @@ export function MessageList({ className }: MessageListProps) {
   const pendingRestoreRef = useRef<string | null>(currentConversationId)
   const scrollPersistTimerRef = useRef<number | null>(null)
   const scrollFrameRef = useRef<number | null>(null)
+  const forcedScrollFrameRef = useRef<number | null>(null)
   const lastScrollAffordanceUpdateAtRef = useRef(0)
   const followStreamRef = useRef(true)
   const lastScrollTopRef = useRef(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
@@ -227,6 +236,23 @@ export function MessageList({ className }: MessageListProps) {
     return true
   }
 
+  const resumeFollowingLatestMessage = () => {
+    // A newly sent user message is an explicit request to leave any older
+    // reading position and follow the new exchange. Repeat after layout so
+    // virtualized item measurements cannot leave the view above the reply.
+    followStreamRef.current = true
+    pendingRestoreRef.current = null
+    if (forcedScrollFrameRef.current !== null) cancelAnimationFrame(forcedScrollFrameRef.current)
+    scrollToBottom('auto')
+    forcedScrollFrameRef.current = requestAnimationFrame(() => {
+      scrollToBottom('auto')
+      forcedScrollFrameRef.current = requestAnimationFrame(() => {
+        scrollToBottom('auto')
+        forcedScrollFrameRef.current = null
+      })
+    })
+  }
+
   const saveScrollPosition = (conversationId = currentConversationId, persist = false) => {
     const scrollArea = scrollAreaRef.current
     if (!conversationId) return
@@ -309,12 +335,13 @@ export function MessageList({ className }: MessageListProps) {
   useEffect(() => () => {
     if (scrollIndicatorTimerRef.current !== null) window.clearTimeout(scrollIndicatorTimerRef.current)
     if (scrollFrameRef.current !== null) cancelAnimationFrame(scrollFrameRef.current)
+    if (forcedScrollFrameRef.current !== null) cancelAnimationFrame(forcedScrollFrameRef.current)
   }, [])
 
-  // Tool-role messages are retained for a valid model tool-call history, but
-  // their full output is already available from the preceding tool card.
-  // Rendering them as chat bubbles duplicates large search/page results.
-  const renderableMessages = useMemo(() => messages.filter((message) => message.role !== 'tool'), [messages])
+  // Goal child conversations retain each protocol event for safe resumption.
+  // Collapse them here into one expandable activity item, so one tool never
+  // becomes one empty assistant reply in the visible transcript.
+  const renderableMessages = useMemo(() => collapseToolHistoryMessages(messages), [messages])
   const conversationUsage = useMemo(() => sumConversationUsage(renderableMessages), [renderableMessages])
   const latestUsageMessageId = useMemo(
     () => [...renderableMessages].reverse().find((message) => message.role === 'assistant' && message.usage)?.id,
@@ -515,6 +542,16 @@ export function MessageList({ className }: MessageListProps) {
   useLayoutEffect(() => {
     const previousMessageCount = previousMessageCountRef.current
     previousMessageCountRef.current = messages.length
+    const latestMessage = messages[messages.length - 1]
+
+    if (
+      messages.length > previousMessageCount
+      && latestMessage?.role === 'user'
+      && latestMessage.conversationId === currentConversationId
+    ) {
+      resumeFollowingLatestMessage()
+      return
+    }
 
     // Persisted conversation refreshes replace the array even when no message
     // was added. Only follow genuine new messages, and never pull a reader
@@ -527,6 +564,19 @@ export function MessageList({ className }: MessageListProps) {
 
     scrollToBottom('auto')
   }, [currentConversationId, messages])
+
+  useLayoutEffect(() => {
+    // A message can grow after its first render when Markdown settles or the
+    // ResizeObserver records its actual height. Keep a pinned reader at the
+    // physical bottom after that later layout pass, not just after the first
+    // message insertion.
+    if (
+      pendingRestoreRef.current !== currentConversationId
+      && followStreamRef.current
+    ) {
+      scrollToBottom('auto')
+    }
+  }, [currentConversationId, itemLayout.totalHeight])
 
   useEffect(() => {
     // Tool state can update rapidly during desktop observation. Following on
@@ -558,7 +608,7 @@ export function MessageList({ className }: MessageListProps) {
       >
       <div
         className={cn(
-          'flex w-full flex-col px-8 py-10',
+          'flex w-full flex-col px-8 pb-5 pt-10',
           rightPanelVisible && 'mx-auto max-w-[72rem]'
         )}
       >
@@ -581,7 +631,7 @@ export function MessageList({ className }: MessageListProps) {
             key={item.id}
             ref={(element) => attachItemRef(item.id, element)}
             data-message-item-id={item.id}
-            className="pb-9"
+            className={cn('pb-9', item.id === renderItems[renderItems.length - 1]?.id && 'pb-4')}
           >
             <MessageBubble
               message={item.message}
@@ -652,10 +702,17 @@ export function MessageList({ className }: MessageListProps) {
           </div>
         )}
 
+        {goalConfirmation && currentConversationId && (
+          <GoalConfirmationCard
+            request={goalConfirmation}
+            onDecide={(approved) => void decideGoalConfirmation(currentConversationId, goalConfirmation.id, approved)}
+          />
+        )}
+
         {/* Render the in-flight Markdown through the same assistant-message surface.
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
-        {isStreaming && (streamingContent || streamingReasoningContent) && (
+        {isStreaming && (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0) && (
           <MessageBubble
             isStreaming
             message={{
@@ -663,7 +720,12 @@ export function MessageList({ className }: MessageListProps) {
               conversationId: currentConversationId || '',
               role: 'assistant',
               content: streamingContent,
+              agentId: streamingAgentId,
+              agentName: streamingAgentName,
               reasoningContent: streamingReasoningContent || undefined,
+              toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+              executionTrace: streamingExecutionTrace.length > 0 ? streamingExecutionTrace : undefined,
+              executionTimeline: streamingExecutionTimeline.length > 0 ? streamingExecutionTimeline : undefined,
               timestamp: Date.now(),
             }}
           />

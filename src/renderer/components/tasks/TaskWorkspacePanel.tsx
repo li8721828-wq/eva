@@ -8,6 +8,7 @@ import {
   Circle,
   CircleMinus,
   CircleX,
+  ExternalLink,
   FileText,
   FolderOpen,
   ListTodo,
@@ -17,7 +18,7 @@ import {
   Square,
   Target,
 } from 'lucide-react'
-import type { TaskArtifactItem, TaskRunSnapshot, TaskRunStatus, TaskStatus } from '../../../shared/types/task'
+import type { GoalStepAttempt, TaskArtifactItem, TaskRunSnapshot, TaskRunStatus, TaskStatus } from '../../../shared/types/task'
 import type { ToolCall } from '../../../shared/types/conversation'
 import type { ActivePlan } from '../../../shared/types/active-plan'
 import { getModelInputBudgetTokens } from '../../../shared/constants'
@@ -37,6 +38,10 @@ type StepItem = {
   status: TaskStatus
   result?: string
   toolCalls?: ToolCall[]
+  agentConversationId?: string
+  attempt?: number
+  maxAttempts?: number
+  attempts?: GoalStepAttempt[]
 }
 
 const activeStatuses: TaskRunStatus[] = ['queued', 'running', 'paused']
@@ -76,6 +81,7 @@ function snapshotSteps(snapshot: TaskRunSnapshot | null): StepItem[] {
       status: task.status,
       result: task.result,
       toolCalls: task.toolCalls,
+      agentConversationId: task.agentConversationId,
     }))
   }
   return (snapshot.progress?.steps || []).map((step) => ({
@@ -85,6 +91,10 @@ function snapshotSteps(snapshot: TaskRunSnapshot | null): StepItem[] {
       status: step.status,
       result: step.result,
       toolCalls: step.toolCalls,
+      agentConversationId: step.agentConversationId,
+      attempt: step.attempt,
+      maxAttempts: step.maxAttempts,
+      attempts: step.attempts,
   }))
 }
 
@@ -115,6 +125,19 @@ function processDocumentName(document: RequirementDocument): string {
   return document.title.replace(/^第\s*\d+\s*轮\s*/, '').trim() || document.title
 }
 
+function latestEvaluationStatus(run: RequirementRun): { blockers: string[]; checks: string[]; structured: boolean } {
+  const evaluation = run.evaluations.at(-1)
+  if (evaluation?.unresolvedItems) {
+    const describe = (item: { id: string; fact: string; requiredDecision: string }) => `${item.id}: ${item.fact} (${item.requiredDecision})`
+    return {
+      blockers: evaluation.unresolvedItems.filter((item) => item.blocking).map(describe),
+      checks: evaluation.unresolvedItems.filter((item) => !item.blocking).map(describe),
+      structured: true,
+    }
+  }
+  return { blockers: evaluation?.blockers || [], checks: [], structured: false }
+}
+
 export function TaskWorkspacePanel() {
   const {
     currentFile,
@@ -123,7 +146,7 @@ export function TaskWorkspacePanel() {
     setRightPanelTab,
     workspacePath,
   } = useAppStore()
-  const { currentConversationId, messages, setError } = useChatStore()
+  const { conversations, currentConversationId, messages, selectConversation, setError } = useChatStore()
   const { workspaces, activeWorkspaceId } = useWorkspaceStore()
   const liveGoalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] || EMPTY_GOAL_TASK : EMPTY_GOAL_TASK)
   const liveExpertTask = useTaskStore((state) => currentConversationId ? state.expertTasks[currentConversationId] || EMPTY_EXPERT_TASK : EMPTY_EXPERT_TASK)
@@ -144,6 +167,7 @@ export function TaskWorkspacePanel() {
   const [cancelling, setCancelling] = useState(false)
 
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
+  const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
   const activePlanScopeKey = activeWorkspaceId
     ? `workspace:${activeWorkspaceId}`
@@ -153,12 +177,12 @@ export function TaskWorkspacePanel() {
         ? `conversation:${currentConversationId}`
         : ''
   const liveGoalProgress = liveGoalTask.progress?.conversationId === currentConversationId ? liveGoalTask.progress : null
-  const steps = useMemo(() => {
+  const steps = useMemo<StepItem[]>(() => {
     if (liveExpertTask.currentPlan?.subtasks.length) {
       return liveExpertTask.currentPlan.subtasks.map((task) => ({ id: task.id, title: task.title, detail: task.description, status: task.status }))
     }
     if (liveGoalProgress?.steps.length) {
-      return liveGoalProgress.steps.map((step) => ({ id: step.id, title: step.description, detail: step.result, status: step.status }))
+      return liveGoalProgress.steps.map((step) => ({ id: step.id, title: step.description, detail: step.result, status: step.status, result: step.result, toolCalls: step.toolCalls, agentConversationId: step.agentConversationId, attempt: step.attempt, maxAttempts: step.maxAttempts, attempts: step.attempts }))
     }
     return snapshotSteps(snapshot)
   }, [liveExpertTask.currentPlan, liveGoalProgress, snapshot])
@@ -322,6 +346,14 @@ export function TaskWorkspacePanel() {
     }
   }
 
+  const openStepConversation = async (conversationId?: string) => {
+    if (conversationId) await selectConversation(conversationId)
+  }
+
+  const openParentConversation = async () => {
+    if (currentConversation?.parentConversationId) await selectConversation(currentConversation.parentConversationId)
+  }
+
   return (
     <div className="task-workspace-panel flex min-h-0 flex-1 flex-col">
       <div className="task-workspace-note__tabs flex shrink-0 items-center gap-1 px-3 py-2" role="tablist" aria-label="Task workspace">
@@ -395,7 +427,27 @@ export function TaskWorkspacePanel() {
                   <h3 className="text-sm font-semibold text-zinc-800">需求工程记录</h3>
                   <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', run.status === 'ready-for-implementation' ? 'bg-emerald-50 text-emerald-700' : run.status === 'ready-for-specification' && run.specQualityScore === undefined ? 'bg-emerald-50 text-emerald-700' : run.status === 'failed' || run.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700')}>{run.status === 'ready-for-implementation' || run.specQualityScore !== undefined ? `${run.specQualityScore || 0}/${run.specQualityThreshold || 85}` : `${run.qualityScore}/${run.qualityThreshold}`}</span>
                 </div>
-                <p className="mt-1 text-xs text-zinc-500">{run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
+                 <p className="mt-1 text-xs text-zinc-500">{run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
+                 {run.evaluations.length > 0 && (() => {
+                   const status = latestEvaluationStatus(run)
+                   return (
+                     <div className="mt-2 rounded-md border border-zinc-100 bg-zinc-50/70 px-2.5 py-2 text-[11px] leading-5 text-zinc-600">
+                       {status.blockers.length === 0 ? (
+                         <span>{status.structured ? '结构化语义审计阻塞：无' : '本轮评测阻塞：无'}</span>
+                       ) : (
+                         <>
+                           <span className="font-medium text-zinc-700">{status.structured ? '结构化语义审计发现' : '本轮评测提出'} {status.blockers.length} 项阻塞：</span>
+                           <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                             {status.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                           </ul>
+                         </>
+                       )}
+                       {status.checks.length > 0 && (
+                         <p className="mt-1 text-zinc-500">后续规格核验 {status.checks.length} 项：{status.checks.join('；')}</p>
+                       )}
+                     </div>
+                   )
+                 })()}
                  {run.workspaceOutputPath && (
                    <p className="mt-2 truncate text-[11px] text-zinc-400" title={run.workspaceOutputPath}>
                      规格中间文档：{run.workspaceOutputPath}
@@ -474,6 +526,11 @@ export function TaskWorkspacePanel() {
               <section className="py-5">
                 <div className="flex items-center justify-between gap-3"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Current context</h3><span className="shrink-0 text-sm font-semibold tabular-nums text-violet-700">{contextRate.toFixed(1)}%</span></div>
                 <p className="mt-2 text-xs leading-5 text-zinc-500">Latest request: {formatTokens(contextTokens)} of {formatTokens(contextBudget)} available input tokens.</p>
+                {latestUsageMessage?.usage?.contextDiagnostics && (
+                  <p className="mt-1 text-xs leading-5 text-zinc-500">
+                    Local estimate: {formatTokens(latestUsageMessage.usage.contextDiagnostics.estimatedTokens)}; retained {latestUsageMessage.usage.contextDiagnostics.retainedMessages}, omitted {latestUsageMessage.usage.contextDiagnostics.omittedMessages}, compacted {latestUsageMessage.usage.contextDiagnostics.compactedMessages}.
+                  </p>
+                )}
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-100"><div className="h-full rounded-full bg-violet-500" style={{ width: `${Math.max(contextRate, contextTokens > 0 ? 0.7 : 0)}%` }} /></div>
               </section>
             </div>
@@ -530,10 +587,25 @@ export function TaskWorkspacePanel() {
           )}
 
           {!hasTaskRun ? (
-            <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
-              <PanelTopOpen className="mb-3 h-6 w-6 text-violet-300" />
-              <p className="font-medium text-zinc-700">No task plan yet</p>
-            </div>
+            currentConversation?.parentConversationId ? (
+              <div className="border-b border-indigo-100/80 py-4">
+                <div className="flex items-start gap-2 rounded-md bg-violet-50/70 px-3 py-3 text-xs leading-5 text-zinc-600">
+                  <Target className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-zinc-800">Hidden Goal step conversation</p>
+                    <p className="mt-1">This conversation is scoped to one Goal step and is hidden from the left conversation list.</p>
+                    <button type="button" onClick={() => void openParentConversation()} className="mt-2 inline-flex items-center gap-1 font-medium text-violet-700 hover:text-violet-900">
+                      <ChevronRight className="h-3.5 w-3.5 rotate-180" /> Back to parent task
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
+                <PanelTopOpen className="mb-3 h-6 w-6 text-violet-300" />
+                <p className="font-medium text-zinc-700">No task plan yet</p>
+              </div>
+            )
           ) : (
             <>
               {taskGoal && <p className="mt-4 line-clamp-2 border-l-2 border-violet-200 pl-3 text-xs leading-5 text-zinc-600">{taskGoal}</p>}
@@ -548,22 +620,25 @@ export function TaskWorkspacePanel() {
                   <ol className="space-y-1">
                     {visibleSteps.map((step, index) => {
                       const isExpanded = expandedStepId === step.id
-                      const hasActivity = Boolean(step.toolCalls?.length || step.detail || step.result)
+                      const hasActivity = Boolean(step.toolCalls?.length || step.detail || step.result || step.attempts?.length)
                       return (
                         <li key={step.id} className="rounded-md">
-                          <button type="button" onClick={() => setExpandedStepId((current) => current === step.id ? null : step.id)} aria-expanded={isExpanded} className="flex w-full items-start gap-2.5 rounded-md px-1 py-2 text-left transition-colors hover:bg-violet-50/70">
+                          <div role="button" tabIndex={0} onClick={() => setExpandedStepId((current) => current === step.id ? null : step.id)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setExpandedStepId((current) => current === step.id ? null : step.id) }} aria-expanded={isExpanded} className="flex w-full items-start gap-2.5 rounded-md px-1 py-2 text-left transition-colors hover:bg-violet-50/70">
                             <StepStatusIcon status={step.status} paused={taskIsPaused} />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-start gap-2">
                                 <span className="mt-0.5 text-xs tabular-nums text-zinc-400">{index + 1}</span>
                                 <p className={cn('min-w-0 flex-1 truncate text-sm leading-5', step.status === 'completed' ? 'text-zinc-500' : 'font-medium text-zinc-700')} title={step.title}>{step.title}</p>
+                                {step.maxAttempts && step.maxAttempts > 1 && <span className={cn('mt-0.5 shrink-0 text-[11px] tabular-nums', step.status === 'in_progress' ? 'text-violet-600' : step.status === 'failed' ? 'text-rose-600' : 'text-zinc-400')}>尝试 {step.attempt || 1}/{step.maxAttempts}</span>}
+                                {step.agentConversationId && <button type="button" onClick={(event) => { event.stopPropagation(); void openStepConversation(step.agentConversationId) }} className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-violet-500 hover:bg-violet-100 hover:text-violet-800" title="Open this step conversation" aria-label="Open this step conversation"><ExternalLink className="h-3.5 w-3.5" /></button>}
                                 {isExpanded ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" /> : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" />}
                               </div>
                             </div>
-                          </button>
+                          </div>
                           {isExpanded && (
                             <div className="mb-2 ml-7 border-l-2 border-violet-100 pl-3 pr-1 text-xs leading-5 text-zinc-600">
                               <div className="flex items-center justify-between gap-3"><span className="font-medium text-zinc-700">{stepStatusLabel(step.status)}</span>{step.toolCalls?.length ? <span className="shrink-0 text-zinc-400">{step.toolCalls.length} activities</span> : null}</div>
+                              {step.attempts?.length ? <div className="mt-2 space-y-1 rounded bg-violet-50/50 px-2.5 py-2"><p className="text-[11px] font-medium uppercase tracking-wide text-violet-500">Retry history</p>{step.attempts.map((attempt) => <p key={attempt.attempt} className={cn('text-xs', attempt.status === 'failed' ? 'text-rose-600' : attempt.status === 'completed' ? 'text-emerald-700' : 'text-violet-700')}>Attempt {attempt.attempt}: {attempt.status === 'failed' ? attempt.error || 'Connection failed' : attempt.status === 'completed' ? 'Completed' : 'Retry in progress'}</p>)}</div> : null}
                               {step.detail && <p className="mt-1.5 whitespace-pre-wrap break-words">{step.detail}</p>}
                               {step.result && step.result !== step.detail && <div className="mt-2 rounded bg-zinc-50 px-2.5 py-2 text-zinc-600"><p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Result</p><p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words">{step.result}</p></div>}
                               {step.toolCalls?.length ? <div className="mt-2 space-y-1.5"><p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">Execution activity</p>{step.toolCalls.map((toolCall) => <div key={toolCall.id} className="rounded bg-zinc-50 px-2.5 py-2"><div className="flex items-center justify-between gap-3"><span className="truncate font-medium text-zinc-700">{toolCall.name}</span><span className={cn('shrink-0 text-[11px]', toolCall.isError ? 'text-rose-500' : toolCall.result ? 'text-emerald-600' : 'text-violet-500')}>{toolCall.isError ? 'Failed' : toolCall.result ? 'Completed' : 'Running'}</span></div>{toolCall.result && <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-zinc-500">{toolCall.result}</p>}</div>)}</div> : !hasActivity && <p className="mt-1.5 text-zinc-400">Execution records will appear here as this step progresses.</p>}

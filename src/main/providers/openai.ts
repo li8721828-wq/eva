@@ -11,12 +11,14 @@ export class OpenAIProvider implements LLMProvider {
   readonly type: 'openai' | 'deepseek' | 'custom'
   private client: OpenAI
   private defaultModel?: string
+  private baseUrl: string
 
   constructor(id: string, name: string, type: 'openai' | 'deepseek' | 'custom', options: ProviderCreateOptions) {
     this.id = id
     this.name = name
     this.type = type
     this.defaultModel = options.defaultModel
+    this.baseUrl = options.baseUrl || 'https://api.openai.com/v1'
 
     this.client = new OpenAI({
       apiKey: options.apiKey,
@@ -42,7 +44,16 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   supportsReasoning(model: string): boolean {
-    return this.type === 'deepseek' && model.trim().toLowerCase() === 'deepseek-reasoner'
+    const normalized = model.trim().toLowerCase()
+
+    // DeepSeek V4 exposes provider-supplied reasoning through the same
+    // OpenAI-compatible `reasoning_content` field as DeepSeek Reasoner. A
+    // gateway may register it as `custom`, so capability detection must not
+    // depend only on the provider's local type label.
+    const isDeepSeekReasoningModel = normalized === 'deepseek-reasoner'
+      || /^deepseek-v4-(?:flash|pro)(?:[-.]|$)/.test(normalized)
+
+    return (this.type === 'deepseek' || this.type === 'custom') && isDeepSeekReasoningModel
   }
 
   private mapUsage(usage?: {
@@ -74,6 +85,10 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
+  getConnectionDiagnostics(): { baseUrl: string } {
+    return { baseUrl: this.baseUrl }
+  }
+
   async *chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const toolCallsAccumulator: Map<
       number,
@@ -92,6 +107,9 @@ export class OpenAIProvider implements LLMProvider {
             ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
             temperature: params.temperature,
             max_tokens: params.maxTokens,
+            ...(params.reasoning && (this.type === 'deepseek' || this.type === 'custom')
+              ? { thinking: { type: params.reasoning.enabled ? 'enabled' : 'disabled' } }
+              : {}),
           },
           { signal },
         )
@@ -173,6 +191,7 @@ export class OpenAIProvider implements LLMProvider {
   ): Promise<{
     content: string
     toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
+    finishReason?: ChatChunk['finishReason']
     usage?: ChatChunk['usage']
   }> {
     const response = await withRetry(
@@ -183,7 +202,9 @@ export class OpenAIProvider implements LLMProvider {
             messages: toOpenAIMessages(params.messages),
             tools: toOpenAITools(params.tools),
             stream: false,
-            ...(this.type === 'deepseek' && params.reasoning ? { thinking: { type: params.reasoning.enabled ? 'enabled' : 'disabled' } } : {}),
+            ...(params.reasoning && (this.type === 'deepseek' || this.type === 'custom')
+              ? { thinking: { type: params.reasoning.enabled ? 'enabled' : 'disabled' } }
+              : {}),
             temperature: params.temperature,
             max_tokens: params.maxTokens,
           },
@@ -207,6 +228,13 @@ export class OpenAIProvider implements LLMProvider {
     return {
       content: message.content || message.reasoning_content || '',
       toolCalls,
+      finishReason: choice.finish_reason === 'length'
+        ? 'length'
+        : choice.finish_reason === 'tool_calls'
+          ? 'tool_calls'
+          : choice.finish_reason === 'stop'
+            ? 'stop'
+            : undefined,
       usage: this.mapUsage(response.usage),
     }
   }

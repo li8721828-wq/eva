@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { goalStepIterationBudget } from '../../src/main/agent-engine/goal-planner'
+import { GOAL_STEP_MAX_ATTEMPTS, goalStepIterationBudget, goalStepRetryDelayMs, shouldRetryGoalStepError } from '../../src/main/agent-engine/goal-planner'
 
 describe('goalStepIterationBudget', () => {
   it('starts read-only investigation steps with a compact budget', () => {
@@ -29,5 +29,13 @@ describe('goalStepIterationBudget', () => {
       extensionIterations: 16,
       maxIterations: 100,
     })
+  })
+
+  it('retries only recoverable provider failures at the step level', () => {
+    expect(GOAL_STEP_MAX_ATTEMPTS).toBe(2)
+    expect(shouldRetryGoalStepError('net::ERR_CONNECTION_CLOSED', 'provider')).toBe(true)
+    expect(shouldRetryGoalStepError('401 Authentication Fails', 'provider')).toBe(false)
+    expect(goalStepRetryDelayMs(1)).toBe(1_000)
+    expect(goalStepRetryDelayMs(4)).toBe(5_000)
   })
 })

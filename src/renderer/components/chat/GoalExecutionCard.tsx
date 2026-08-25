@@ -45,7 +45,10 @@ function StepRow({ step }: { step: GoalStep }) {
     setExpanded(step.status === 'in_progress')
   }, [step.status])
 
-  const hasDetails = Boolean(step.result || step.toolCalls?.length)
+  const hasDetails = Boolean(step.result || step.toolCalls?.length || step.attempts?.length)
+  const attemptLabel = step.maxAttempts && step.maxAttempts > 1
+    ? `Attempt ${step.attempt || 1}/${step.maxAttempts}`
+    : undefined
 
   return (
     <div className={cn(
@@ -60,7 +63,10 @@ function StepRow({ step }: { step: GoalStep }) {
       >
         <span className="mt-0.5 shrink-0">{statusIcon[step.status]}</span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500">Step {step.index + 1}</span>
+          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500">
+            Step {step.index + 1}
+            {attemptLabel && <span className={cn('normal-case tracking-normal', step.status === 'in_progress' ? 'text-violet-600' : step.status === 'failed' ? 'text-rose-600' : 'text-zinc-400')}>{attemptLabel}</span>}
+          </span>
           <span className="mt-1 block text-sm leading-6 text-zinc-700">{step.description}</span>
         </span>
         {hasDetails && (
@@ -70,6 +76,16 @@ function StepRow({ step }: { step: GoalStep }) {
 
       {expanded && hasDetails && (
         <div className="ml-7 space-y-2 border-l border-violet-100 px-3 pb-4 pt-1">
+          {step.attempts?.length ? (
+            <div className="space-y-1 text-xs leading-5 text-zinc-500">
+              {step.attempts.map((attempt) => (
+                <div key={attempt.attempt} className="flex gap-2">
+                  <span className={cn('shrink-0 font-medium', attempt.status === 'failed' ? 'text-rose-600' : attempt.status === 'completed' ? 'text-emerald-600' : 'text-violet-600')}>Attempt {attempt.attempt}</span>
+                  <span>{attempt.status === 'failed' ? `Connection retry: ${attempt.error || 'failed'}` : attempt.status === 'completed' ? 'Completed' : 'Retry in progress'}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {step.toolCalls?.length ? <ToolCallGroupView toolCalls={step.toolCalls} /> : null}
           {step.result && (
             <pre className="max-h-44 overflow-auto whitespace-pre-wrap bg-zinc-50/80 px-3 py-2.5 text-xs leading-5 text-zinc-600">

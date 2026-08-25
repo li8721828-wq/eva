@@ -104,6 +104,7 @@ export class ConversationStore {
     channel?: Conversation['channel']
     parentConversationId?: string
     teamTaskId?: string
+    goalStepId?: string
     accessScope?: 'workspace' | 'full'
     permissionLevel?: Conversation['permissionLevel']
     fileAccessGrants?: Conversation['fileAccessGrants']
@@ -123,6 +124,7 @@ export class ConversationStore {
         channel: params.channel,
         parentConversationId: params.parentConversationId,
         teamTaskId: params.teamTaskId,
+        goalStepId: params.goalStepId,
         accessScope: params.accessScope,
         permissionLevel: params.permissionLevel,
         fileAccessGrants: params.fileAccessGrants || [],

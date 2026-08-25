@@ -2,7 +2,7 @@ import type { AgentConfig, AgentRole } from './types/agent'
 import type { ModelInfo } from './types/provider'
 
 export const APP_NAME = 'Eva'
-export const APP_VERSION = '0.1.100'
+export const APP_VERSION = '0.1.116'
 
 export const DEFAULT_MAX_ITERATIONS = 100
 export const DEFAULT_TEMPERATURE = 0.7
@@ -17,7 +17,8 @@ export const CONTEXT_SAFETY_RESERVE_TOKENS = 8192
  */
 export function getModelContextWindowTokens(modelId: string): number {
   const normalized = modelId.trim().toLowerCase()
-  if (['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'].includes(normalized)) {
+  if (/^deepseek-v4-(?:flash|pro)(?:[-_].+)?$/.test(normalized)
+    || ['deepseek-chat', 'deepseek-reasoner'].includes(normalized)) {
     return DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
   }
   return CONTEXT_WINDOW_TOKENS

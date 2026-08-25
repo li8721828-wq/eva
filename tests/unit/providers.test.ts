@@ -143,7 +143,38 @@ describe('OpenAIProvider streaming tool calls', () => {
   it('recognizes DeepSeek Reasoner as a reasoning-capable model', () => {
     const provider = new OpenAIProvider('test', 'Test', 'deepseek', { apiKey: 'test-key' })
     expect(provider.supportsReasoning('deepseek-reasoner')).toBe(true)
+    expect(provider.supportsReasoning('deepseek-v4-flash-ga-260731')).toBe(true)
     expect(provider.supportsReasoning('deepseek-chat')).toBe(false)
+  })
+
+  it('recognizes DeepSeek V4 models behind an OpenAI-compatible gateway', () => {
+    const provider = new OpenAIProvider('gateway', 'Volcano Coding Plan', 'custom', { apiKey: 'test-key' })
+    expect(provider.supportsReasoning('deepseek-v4-flash-ga-260731')).toBe(true)
+    expect(provider.supportsReasoning('deepseek-v4-pro')).toBe(true)
+    expect(provider.supportsReasoning('gpt-4o')).toBe(false)
+  })
+
+  it('passes the thinking switch through a custom OpenAI-compatible gateway', async () => {
+    async function* responseStream() {
+      yield { choices: [{ delta: { reasoning_content: 'plan' }, finish_reason: null }] }
+      yield { choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Volcano Coding Plan', 'custom', { apiKey: 'test-key' })
+    const create = vi.fn().mockResolvedValue(responseStream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'deepseek-v4-flash-ga-260731',
+      messages: [],
+      reasoning: { enabled: true, budgetTokens: 1024 },
+    })) {
+      chunks.push(chunk)
+    }
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ thinking: { type: 'enabled' } }), expect.anything())
+    expect(chunks.some((chunk) => chunk.reasoningContent === 'plan')).toBe(true)
   })
 
   it('emits one complete tool call instead of duplicating streamed arguments', async () => {
@@ -212,5 +243,25 @@ describe('OpenAIProvider streaming tool calls', () => {
         ],
       },
     ])
+  })
+
+  it('preserves a non-streaming length stop reason for callers that must reject partial artifacts', async () => {
+    const provider = new OpenAIProvider('test', 'Test', 'openai', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn().mockResolvedValue({
+            choices: [{
+              finish_reason: 'length',
+              message: { content: 'partial document' },
+            }],
+          }),
+        },
+      },
+    }
+
+    const result = await provider.chatComplete({ model: 'test-model', messages: [] })
+
+    expect(result).toMatchObject({ content: 'partial document', finishReason: 'length' })
   })
 })

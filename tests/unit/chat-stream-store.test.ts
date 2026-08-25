@@ -32,4 +32,22 @@ describe('chat stream state', () => {
     expect(background.toolCalls).toHaveLength(1)
     expect(useChatStore.getState().streamingByConversation.foreground).toBeUndefined()
   })
+
+  it('clears provisional text when the runner starts tools', () => {
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'text_delta',
+      conversationId: 'foreground',
+      content: 'I will inspect the workspace first.',
+    })
+    store.appendStreamEvent({
+      type: 'text_reset',
+      conversationId: 'foreground',
+    })
+
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream.content).toBe('')
+    expect(stream.isStreaming).toBe(true)
+    expect(stream.status).toBe('Running tools...')
+  })
 })

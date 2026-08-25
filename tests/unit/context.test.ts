@@ -2,16 +2,21 @@ import { describe, it, expect } from 'vitest'
 import { ContextManager } from '../../src/main/agent-engine/context'
 import type { ChatMessageInput } from '../../src/shared/types/provider'
 import type { AgentConfig } from '../../src/shared/types/agent'
+import { DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS, getModelContextWindowTokens } from '../../src/shared/constants'
 
 describe('ContextManager', () => {
   const cm = new ContextManager()
 
+  it('recognizes configured DeepSeek V4 gateway model variants', () => {
+    expect(getModelContextWindowTokens('deepseek-v4-flash-ga-260731')).toBe(DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS)
+  })
+
   describe('estimateTokens', () => {
-    it('should return ~4 chars per token', () => {
+    it('uses a conservative multilingual estimate', () => {
       expect(cm.estimateTokens('')).toBe(0)
-      expect(cm.estimateTokens('abcd')).toBe(1)
-      expect(cm.estimateTokens('abcdefgh')).toBe(2)
-      expect(cm.estimateTokens('a')).toBe(1) // ceil(1/4) = 1
+      expect(cm.estimateTokens('abcdefgh')).toBeGreaterThan(0)
+      expect(cm.estimateTokens('中文上下文')).toBeGreaterThan(cm.estimateTokens('abcdef'))
+      expect(cm.estimateTokens('{"path":"src/a.ts","ok":true}')).toBeGreaterThan(0)
     })
 
     it('should handle empty string', () => {
@@ -19,8 +24,7 @@ describe('ContextManager', () => {
     })
 
     it('should ceil partial tokens', () => {
-      // 5 chars -> ceil(5/4) = 2
-      expect(cm.estimateTokens('abcde')).toBe(2)
+      expect(cm.estimateTokens('abcde')).toBeGreaterThanOrEqual(1)
     })
   })
 
@@ -95,7 +99,58 @@ describe('ContextManager', () => {
       const result = cm.trimMessages(msgs, 10)
       expect(result.length).toBe(1)
       expect(result[0].role).toBe('system')
-      expect(result[0].content.length).toBe(40) // 10 tokens * 4 chars
+      expect(cm.estimateTokens(result[0].content)).toBeLessThanOrEqual(10)
+    })
+
+    it('keeps a multi-tool exchange as a complete transaction when compacting', () => {
+      const msgs: ChatMessageInput[] = [
+        { role: 'system', content: 'sys' },
+        { role: 'assistant', content: '', toolCalls: [
+          { id: 'tc-a', name: 'read_file', arguments: { path: 'a.ts' } },
+          { id: 'tc-b', name: 'read_file', arguments: { path: 'b.ts' } },
+        ] },
+        { role: 'tool', content: JSON.stringify({ status: 'ok', path: 'a.ts', result: 'a'.repeat(1000) }), toolCallId: 'tc-a' },
+        { role: 'tool', content: JSON.stringify({ status: 'error', path: 'b.ts', error: 'missing export', result: 'b'.repeat(1000) }), toolCallId: 'tc-b' },
+      ]
+      const result = cm.trimMessages(msgs, 300)
+      expect(result.filter((message) => message.role === 'tool')).toHaveLength(2)
+      expect(result.find((message) => message.role === 'assistant')?.toolCalls).toHaveLength(2)
+      expect(result.some((message) => message.content.includes('missing export'))).toBe(true)
+    })
+
+    it('does not forward an incomplete tool transaction', () => {
+      const result = cm.trimMessages([
+        { role: 'system', content: 'sys' },
+        { role: 'assistant', content: '', toolCalls: [
+          { id: 'tc-a', name: 'read_file', arguments: {} },
+          { id: 'tc-b', name: 'read_file', arguments: {} },
+        ] },
+        { role: 'tool', content: 'only one result', toolCallId: 'tc-a' },
+        { role: 'user', content: 'Current request' },
+      ], 500)
+      expect(result.some((message) => message.role === 'tool')).toBe(false)
+      expect(result.some((message) => message.toolCalls?.length)).toBe(false)
+      expect(result.at(-1)?.content).toBe('Current request')
+    })
+
+    it('keeps the current request when older history exhausts the budget', () => {
+      const msgs: ChatMessageInput[] = [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'old context '.repeat(200) },
+        { role: 'assistant', content: 'old response '.repeat(200) },
+        { role: 'user', content: 'Current request: fix the payment timeout.' },
+      ]
+      const result = cm.trimMessages(msgs, 40)
+      expect(result.at(-1)?.content).toContain('Current request')
+      expect(result.some((message) => message.content.includes('old response'))).toBe(false)
+    })
+
+    it('reports its local budget decisions', () => {
+      cm.fitMessages([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'Current request' },
+      ], 100, [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }])
+      expect(cm.getLastDiagnostics()).toMatchObject({ budgetTokens: 100, retainedMessages: 1, estimator: 'heuristic-v2' })
     })
   })
 
@@ -203,6 +258,22 @@ describe('ContextManager', () => {
       expect(result[1].content).toContain('User-selected conversation reference - required context')
       expect(result[1].content).toContain('Implement the account reconciliation report.')
       expect(result[1].content).toContain('Continue the task from the quoted message.')
+    })
+
+    it('keeps the conclusion at the end of a long quoted reference', () => {
+      const agent: AgentConfig = {
+        id: 'quote-agent', name: 'Quote Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+      const result = cm.buildContext({
+        agentConfig: agent, workspacePath: 'C:\\workspace', tools: [],
+        messages: [{
+          id: 'current-message', conversationId: 'conversation', role: 'user', content: 'Continue.', timestamp: 1,
+          quotedMessage: { messageId: 'previous-message', role: 'assistant', content: `${'analysis '.repeat(3_000)}FINAL CONCLUSION: retain this.` },
+        }],
+      })
+      expect(result[1].content).toContain('FINAL CONCLUSION: retain this.')
     })
   })
 })

@@ -6,8 +6,8 @@ import { createHash, randomUUID } from 'crypto'
 import { promisify } from 'util'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from './project-index-service'
-import type { Conversation } from '../../shared/types/conversation'
-import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementProgress, RequirementRun, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
+import type { ChatDocumentAttachment, Conversation } from '../../shared/types/conversation'
+import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementProgress, RequirementRun, RequirementUnresolvedItem, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { getStorage } from '../storage'
 import { buildDocumentAttachmentContext } from './document-attachment-service'
 import { recordActivity } from './activity-log'
@@ -15,6 +15,7 @@ import { recordActivity } from './activity-log'
 const QUALITY_THRESHOLD = 80
 const SPEC_QUALITY_THRESHOLD = 85
 const MAX_CONTEXT_CHARS = 48_000
+const MAX_GENERATION_CONTINUATIONS = 3
 const execFileAsync = promisify(execFile)
 
 interface ParsedDslField {
@@ -923,6 +924,18 @@ export class RequirementEngineeringService {
     if (!finalRequirement) {
       throw new Error('没有找到最终明确需求文档，请重新完成需求评测后再进行建模。')
     }
+    this.assertDocumentReady(finalRequirement, '需求建模')
+    const finalAudit = [...run.evaluations].reverse().find((evaluation) => evaluation.dimension === `final-readiness-${run.round}`)
+    if (!finalAudit) {
+      await this.gateFinalRequirementReadiness(run, conversation, finalRequirement.content, finalRequirement, onProgress, signal)
+      run.updatedAt = new Date().toISOString()
+      await this.persist(run)
+      await this.persistRoundDocuments(conversation.id, run)
+      await this.persistSummary(conversation.id, run)
+      if (run.status !== 'ready-for-specification') return run
+    } else if (finalAudit.readiness !== 'ready' || this.hasBlockingRequirementGaps(finalAudit)) {
+      throw new Error('最终明确需求尚未通过结构化语义放行审计，请先完成需求澄清。')
+    }
 
     const generatedDocuments: RequirementDocument[] = []
     try {
@@ -968,6 +981,7 @@ export class RequirementEngineeringService {
         ].join('\n\n'),
       )
       generatedDocuments.push(finalModeling)
+      this.assertDocumentReady(finalModeling, '需求建模完成')
 
       await this.persist(run)
       await this.persistDocuments(conversation.id, generatedDocuments)
@@ -1000,6 +1014,8 @@ export class RequirementEngineeringService {
       ? [finalModeling]
       : run.documents.filter((document) => document.stage === 'modeling')
     if (!finalRequirement || modelingDocuments.length === 0) throw new Error('规格构建缺少最终明确需求或需求建模成果。')
+    this.assertDocumentReady(finalRequirement, '规格构建')
+    for (const document of modelingDocuments) this.assertDocumentReady(document, '规格构建')
 
     const generatedDocuments: RequirementDocument[] = []
     const publish = async (document: RequirementDocument) => {
@@ -1200,11 +1216,13 @@ export class RequirementEngineeringService {
       documents: [],
       evaluations: [],
       clarificationQuestions: [],
-      workspacePackagePath: this.createWorkspacePackagePath(conversation, input.content || conversation.title, runId),
+      requirementTitle: this.requirementPackageName(input.content, input.attachments, runId),
+      workspacePackagePath: undefined,
       workspaceOutputPath: undefined,
       createdAt: now,
       updatedAt: now,
     }
+    run.workspacePackagePath = this.createWorkspacePackagePath(conversation, run.requirementTitle, runId)
     if (run.workspacePackagePath) {
       run.workspaceOutputPath = path.join(run.workspacePackagePath, 'spec', 'output')
       await this.initializeRmsdPackage(run)
@@ -1212,6 +1230,8 @@ export class RequirementEngineeringService {
     await fs.mkdir(this.runDirectory(run.id), { recursive: true })
     this.reportProgress(onProgress, run, 'source', '正在读取需求输入和附件')
     const attachmentContext = await buildDocumentAttachmentContext(input.attachments)
+    const attachmentIssue = this.attachmentReadinessError(attachmentContext)
+    if (attachmentIssue) throw new Error(attachmentIssue)
     const source = [input.content?.trim(), attachmentContext].filter(Boolean).join('\n\n').slice(0, MAX_CONTEXT_CHARS)
     await this.addDocument(run, 'source', 'input', '原始需求输入', `# 原始需求输入\n\n${source || '（附件未能解析为文本，请在对话中补充文字说明。）'}\n`)
     await this.persist(run)
@@ -1248,16 +1268,18 @@ export class RequirementEngineeringService {
       run.evaluations = [...run.evaluations, evaluation]
       run.qualityScore = evaluation.score
 
-      if (evaluation.score < run.qualityThreshold) {
+      if (evaluation.score < run.qualityThreshold || this.hasBlockingRequirementGaps(evaluation)) {
         this.reportProgress(onProgress, run, 'clarification', '评测未通过，正在整理仍需确认的选项')
         const clarification = await this.generateDocument(run, 'clarification', `round-${run.round}`, `第 ${run.round} 轮需求澄清`, this.clarificationPrompt('本轮澄清后的剩余问题', source, [integration, evaluationDocument]), signal, onProgress)
-        run.clarificationQuestions = this.extractClarificationQuestions(clarification.content).slice(0, 12)
+        run.clarificationQuestions = this.clarificationQuestionsFromUnresolvedItems(evaluation.unresolvedItems || [])
+        if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.extractClarificationQuestions(clarification.content).slice(0, 12)
         if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.defaultClarificationQuestions()
         run.status = 'awaiting-clarification'
       } else {
         run.clarificationQuestions = []
         run.status = 'ready-for-specification'
-        await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', `合并下列需求工程文档，输出唯一、无歧义、可实施、可验收的最终需求文档。已确认的用户澄清优先于早期分析；不要保留已解决问题。\n\n${run.documents.filter((document) => document.stage !== 'source').map((document) => `## ${document.title}\n${document.content}`).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}`, signal, onProgress)
+        const finalRequirement = await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', this.finalRequirementPrompt(run.documents.filter((document) => document.stage !== 'source')), signal, onProgress)
+        await this.gateFinalRequirementReadiness(run, conversation, source, finalRequirement, onProgress, signal)
       }
 
       await this.persist(run)
@@ -1305,10 +1327,12 @@ export class RequirementEngineeringService {
       const extractedQuestions = this.extractClarificationQuestions(clarification.content).slice(0, 12)
       run.evaluations = [firstEvaluation]
       run.qualityScore = firstEvaluation.score
-      run.clarificationQuestions = extractedQuestions.length > 0
-        ? extractedQuestions
-        : firstEvaluation.score < run.qualityThreshold
-          ? this.defaultClarificationQuestions()
+      const firstEvaluationHasBusinessBlockers = this.hasBlockingRequirementGaps(firstEvaluation)
+      const firstStructuredQuestions = this.clarificationQuestionsFromUnresolvedItems(firstEvaluation.unresolvedItems || [])
+      run.clarificationQuestions = firstStructuredQuestions.length > 0
+        ? firstStructuredQuestions
+        : firstEvaluation.score < run.qualityThreshold || firstEvaluationHasBusinessBlockers
+          ? extractedQuestions.length > 0 ? extractedQuestions : this.defaultClarificationQuestions()
           : []
 
       // A clarification is a user decision point. Persist the work completed so
@@ -1329,10 +1353,11 @@ export class RequirementEngineeringService {
       const secondEvaluation = this.parseEvaluation('round-2', secondEvaluationDocument.content)
       run.evaluations = [firstEvaluation, secondEvaluation]
       run.qualityScore = secondEvaluation.score
-      if (secondEvaluation.score < run.qualityThreshold) {
+      if (secondEvaluation.score < run.qualityThreshold || this.hasBlockingRequirementGaps(secondEvaluation)) {
         this.reportProgress(onProgress, run, 'clarification', '第二次评测未通过，正在整理待确认选项')
         const followUpClarification = await this.generateDocument(run, 'clarification', `round-${run.round}-follow-up`, `第 ${run.round} 轮需求澄清（评测后）`, this.clarificationPrompt('第二次评测后的待确认问题', source, [codeAnalysis, codeAwareAnalysis, secondEvaluationDocument]), signal, onProgress)
-        run.clarificationQuestions = this.extractClarificationQuestions(followUpClarification.content).slice(0, 12)
+        run.clarificationQuestions = this.clarificationQuestionsFromUnresolvedItems(secondEvaluation.unresolvedItems || [])
+        if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.extractClarificationQuestions(followUpClarification.content).slice(0, 12)
         if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.defaultClarificationQuestions()
       } else {
         run.clarificationQuestions = []
@@ -1341,7 +1366,8 @@ export class RequirementEngineeringService {
         ? 'ready-for-specification'
         : 'awaiting-clarification'
       if (run.status === 'ready-for-specification') {
-        await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', `合并下列材料，输出唯一、无歧义、可实施、可验收的最终需求文档。不要保留冲突描述；每条需求都标注来源或明确为已确认结论。\n\n${run.documents.filter((document) => document.round === run.round && document.stage !== 'source').map((document) => `## ${document.title}\n${document.content}`).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}`, signal, onProgress)
+        const finalRequirement = await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', this.finalRequirementPrompt(run.documents.filter((document) => document.round === run.round && document.stage !== 'source')), signal, onProgress)
+        await this.gateFinalRequirementReadiness(run, conversation, source, finalRequirement, onProgress, signal)
       }
       run.updatedAt = new Date().toISOString()
       await this.persist(run)
@@ -1379,6 +1405,16 @@ export class RequirementEngineeringService {
     let content: string
     try {
       content = await this.complete(prompt, signal)
+      const integrityError = this.documentIntegrityError(stage, dimension, content)
+      if (integrityError) {
+        this.reportProgress(onProgress, run, stage, `检测到${title}不完整，正在重新生成完整文档`)
+        content = await this.complete(
+          `${prompt}\n\n# 上一次草稿未通过完整性校验\n${integrityError}\n\n请从头重新输出完整文档，不要引用、概述或续接上一版。必须覆盖请求的所有固定部分，并以完整的句子、表格行或 Markdown 结构结束。`,
+          signal,
+        )
+        const retryIntegrityError = this.documentIntegrityError(stage, dimension, content)
+        if (retryIntegrityError) throw new Error(`${title} 未生成完整内容：${retryIntegrityError}`)
+      }
     } catch (error) {
       onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `生成${title}失败`, document, phase: 'failed' })
       throw error
@@ -1411,17 +1447,37 @@ export class RequirementEngineeringService {
       return '尚未配置可用模型。请在设置中配置模型后，再次执行 `/requirement` 提交补充信息。\n\n- [ ] 待模型分析\n- [ ] 待人工确认'
     }
     try {
-      const response = await provider.chatComplete({
+      let response = await provider.chatComplete({
         model,
         temperature: 0.2,
-        maxTokens: 1800,
+        maxTokens: 3600,
         reasoning: { enabled: false },
         messages: [
           { role: 'system', content: '你是软件需求工程师。只基于提供的材料工作，不要虚构事实。输出中文 Markdown，明确假设、不确定项和可验证的结论。' },
           { role: 'user', content: prompt },
         ],
       }, signal)
-      if (response.content.trim()) return response.content
+      let content = response.content.trim()
+      for (let attempt = 0; response.finishReason === 'length' && attempt < MAX_GENERATION_CONTINUATIONS; attempt += 1) {
+        if (!content) break
+        response = await provider.chatComplete({
+          model,
+          temperature: 0.2,
+          maxTokens: 3600,
+          reasoning: { enabled: false },
+          messages: [
+            { role: 'system', content: '你是软件需求工程师。请只输出中文 Markdown，且不得编造未提供的业务事实。' },
+            { role: 'user', content: `以下文档因模型输出长度限制而中断。请从中断处继续，不要重复已有内容；保持原有标题层级、编号和表格结构，并完成所有尚未完成的部分。\n\n# 已输出内容\n${content.slice(-18_000)}` },
+          ],
+        }, signal)
+        const continuation = response.content.trim()
+        if (!continuation) break
+        content = `${content}\n\n${continuation}`
+      }
+      if (response.finishReason === 'length') {
+        throw new Error('模型输出达到长度上限，自动续写后仍未完成。请缩小本次需求范围或拆分需求文档。')
+      }
+      if (content) return content
       return this.modelFallback('模型未返回正文。')
     } catch (error) {
       if (signal?.aborted) throw error
@@ -1431,6 +1487,107 @@ export class RequirementEngineeringService {
 
   private modelFallback(reason: string): string {
     return `模型暂时未能完成此维度的分析，已保存本轮输入和任务文档。\n\n原因：${reason}\n\n- [ ] 待补充必要业务信息\n- [ ] 待明确可验收的完成条件\n- [ ] 待重新执行本轮分析`
+  }
+
+  private attachmentReadinessError(attachmentContext: string): string | undefined {
+    if (!attachmentContext.includes('--- Attached file requires conversion:')) return undefined
+    const names = [...attachmentContext.matchAll(/--- Attached file requires conversion:\s*([^\n]+)/g)]
+      .map((match) => match[1].trim())
+      .filter(Boolean)
+    return `以下需求附件未能提取正文，不能据此进入需求澄清或评测：${names.join('、') || '附件'}。请重新添加可读取的文件，或先在对话中提供其正文内容。`
+  }
+
+  private assertDocumentReady(document: RequirementDocument, targetStage: string): void {
+    const error = this.documentIntegrityError(document.stage, document.dimension, document.content)
+    if (error) throw new Error(`${targetStage}不能使用“${document.title}”：${error}`)
+  }
+
+  private documentIntegrityError(stage: RequirementDocumentStage, dimension: string, content: string): string | undefined {
+    const body = content.replace(/^#\s+[^\n]+\n*/m, '').trim()
+    if (!body) return '文档为空。'
+    if (/Attached file requires conversion|Direct extraction was unavailable/i.test(body)) return '输入附件尚未成功提取正文。'
+
+    const requiredMarkers: RegExp[] = []
+    let minimumLength = 0
+    const key = `${stage}:${dimension}`
+    switch (key) {
+      case 'requirement-analysis:final-merged':
+        minimumLength = 1000
+        requiredMarkers.push(/(?:验收|AC-)/)
+        break
+      case 'modeling:modeling-plan':
+        minimumLength = 500
+        requiredMarkers.push(/^\s*STANDARDS\s*:/im)
+        break
+      case 'modeling:ears-spec':
+        minimumLength = 500
+        requiredMarkers.push(/EARS/i)
+        break
+      case 'modeling:bdd-scenarios':
+        minimumLength = 600
+        requiredMarkers.push(/(?:场景|假如|当|那么)/)
+        break
+      case 'modeling:decision-rules':
+        minimumLength = 500
+        requiredMarkers.push(/\|/)
+        break
+      case 'modeling:use-cases':
+        minimumLength = 500
+        requiredMarkers.push(/(?:用例|参与者|主成功场景)/)
+        break
+      case 'modeling:final-merged':
+        minimumLength = 1800
+        requiredMarkers.push(/^\s*STANDARDS\s*:/im)
+        break
+      case 'specification:specification-plan':
+        minimumLength = 500
+        requiredMarkers.push(/(?:范围|追溯|规格)/)
+        break
+      case 'specification:business-specification':
+        minimumLength = 1200
+        requiredMarkers.push(/FR-\d+/i, /(?:BDD|场景)/i)
+        break
+      case 'specification:code-aligned-specification':
+        minimumLength = 1400
+        requiredMarkers.push(/FR-\d+/i)
+        break
+      case 'specification:traceability-matrix':
+        minimumLength = 500
+        requiredMarkers.push(/FR-\d+/i, /\|[^\n]+\|/)
+        break
+      case 'specification:targeted-revision':
+        minimumLength = 700
+        requiredMarkers.push(/(?:修订|修复)/)
+        break
+      case 'specification:implementation-ready':
+        minimumLength = 1800
+        requiredMarkers.push(/FR-\d+/i, /(?:验收|BDD)/i)
+        break
+      case 'spec-validation:validation-round-1':
+      case 'spec-validation:validation-round-2':
+        minimumLength = 180
+        requiredMarkers.push(/SCORE\s*:/i, /BLOCKERS\s*:/i, /ASSESSMENT\s*:/i, /REPAIR\s*:/i)
+        break
+      default:
+        return undefined
+    }
+    if (body.length < minimumLength) return `正文仅 ${body.length} 个字符，低于该产物的最小完整长度 ${minimumLength}。`
+    const missing = requiredMarkers.filter((marker) => !marker.test(body))
+    if (missing.length > 0) return '缺少该阶段要求的固定结构或可追溯标识。'
+    // Do not require Chinese prose to end with punctuation: BDD/EARS output
+    // commonly ends with a valid sentence or action line without a full stop.
+    // Only reject endings that are structurally unfinished or strongly signal
+    // that the provider stopped in the middle of a section.
+    const lines = body.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    const finalLine = lines.at(-1) || ''
+    const fenceCount = (body.match(/```/g) || []).length
+    if (fenceCount % 2 !== 0) return 'Markdown 代码块未闭合，文档疑似被截断。'
+    if (/^(?:[-*+]\s*|\d+[.)]\s*)$/.test(finalLine)) return '文档以未完成的列表项收尾，疑似被截断。'
+    if (/^(?:功能|场景|假如|当|那么|WHEN|THEN|GIVEN)\s*[:：]?\s*$/i.test(finalLine)) return 'BDD 场景关键字后缺少完整内容。'
+    if (/[：:]$/.test(finalLine) || /[([{【「『]$/.test(finalLine)) return '文档以未完成的结构收尾，疑似被截断。'
+    if (/^\|/.test(finalLine) && !/\|\s*$/.test(finalLine)) return 'Markdown 表格行未闭合，文档疑似被截断。'
+    if (/(?:并且|以及|或者|包括|如下|例如|如果|当|其中|待确认|未完)\s*[，,、]?$/.test(finalLine)) return '文档以未完成的连接语收尾，疑似被截断。'
+    return undefined
   }
 
   private throwIfAborted(signal?: AbortSignal): void {
@@ -1462,7 +1619,7 @@ export class RequirementEngineeringService {
   }
 
   private evaluationPrompt(title: string, source: string, documents: RequirementDocument[]): string {
-    return `评测维度：${title}\n\n${REQUIREMENT_CLARIFICATION_POLICY}\n\n# 原始需求\n${source}\n\n# 本轮中间文档\n${documents.map((item) => `## ${item.title}\n${item.content}`).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}\n\n按以下固定格式输出：\nSCORE: 0-100\nBLOCKERS:\n- 需求阻塞项，若无则写“无”\nASSESSMENT:\n从业务完整性、一致性、可验收性和合规性说明评测依据、通过条件和下一步。\n分数低于 ${QUALITY_THRESHOLD} 时必须列出可操作的需求阻塞项，不得把技术实现细节列为用户待确认项。`
+    return `评测维度：${title}\n\n${REQUIREMENT_CLARIFICATION_POLICY}\n\n# 原始需求\n${source}\n\n# 本轮中间文档\n${documents.map((item) => `## ${item.title}\n${item.content}`).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}\n\n你必须做语义审查，不得通过搜索“待确认”等字词来判断。凡是业务事实、范围、规则、角色权限、异常路径、验收条件或非功能指标仍需要业务方决定，且会影响实施或验收时，均必须列入结构化未决项并标记 blocking=true。只有没有任何 blocking=true 的未决项时，READINESS 才能写 READY。代码、接口或建模证据不足但不要求业务方决定的事项可标记 blocking=false，留给后续规格核验。\n\n严格按以下固定格式输出；UNRESOLVED_ITEMS_JSON 必须是合法 JSON 数组，不能用 Markdown 代码块，也不能省略字段：\nSCORE: 0-100\nREADINESS: READY 或 BLOCKED\nUNRESOLVED_ITEMS_JSON:\n[{"id":"U-001","fact":"尚未确定的业务事实","impact":"它会造成的实施或验收影响","requiredDecision":"业务方必须确认的决策","blocking":true,"options":["选项 A","选项 B"],"recommendedIndex":0}]\nBLOCKERS:\n- 对 blocking=true 项的简短摘要；无则写“无”\nASSESSMENT:\n从业务完整性、一致性、可验收性和合规性说明评测依据、通过条件和下一步。\n\n若没有未决项，UNRESOLVED_ITEMS_JSON 必须写 []、READINESS 必须写 READY、BLOCKERS 必须写“无”。不得把技术实现细节伪装为业务方待确认项。`
   }
 
   private specificationSourcePack(finalRequirement: RequirementDocument, modelingDocuments: RequirementDocument[], codeAnalysis: RequirementDocument | undefined, codeEvidence: string, resolutionDocuments: RequirementDocument[] = []): string {
@@ -1563,27 +1720,165 @@ export class RequirementEngineeringService {
 
   private parseEvaluation(dimension: string, content: string): RequirementEvaluation {
     const score = Math.max(0, Math.min(100, Number(content.match(/SCORE\s*:\s*(\d{1,3})/i)?.[1] || 0)))
+    const readiness = content.match(/READINESS\s*:\s*(READY|BLOCKED)/i)?.[1]?.toLowerCase() as RequirementEvaluation['readiness'] | undefined
     const blockers = content.match(/BLOCKERS\s*:\s*([\s\S]*?)(?:ASSESSMENT\s*:|$)/i)?.[1]
-      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无') || []
+      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无' && !/^[-_|]{3,}$/.test(line)) || []
     const summary = content.match(/ASSESSMENT\s*:\s*([\s\S]*)$/i)?.[1]?.trim() || '模型未按固定评测格式返回评测依据。'
-    return { dimension, score, threshold: QUALITY_THRESHOLD, blockers, summary }
+    const unresolvedItems = this.parseUnresolvedItems(content, readiness)
+    return { dimension, score, threshold: QUALITY_THRESHOLD, blockers, summary, readiness, unresolvedItems }
+  }
+
+  private parseUnresolvedItems(content: string, readiness: RequirementEvaluation['readiness']): RequirementUnresolvedItem[] {
+    const section = content.match(/UNRESOLVED_ITEMS_JSON\s*:\s*([\s\S]*?)(?:\n\s*BLOCKERS\s*:|\n\s*ASSESSMENT\s*:|$)/i)?.[1]
+    if (!section || !readiness) return [this.invalidEvaluationItem('评测结果缺少 READINESS 或 UNRESOLVED_ITEMS_JSON，无法证明需求是否可放行。')]
+
+    const json = section.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(json)
+    } catch {
+      return [this.invalidEvaluationItem('评测返回的 UNRESOLVED_ITEMS_JSON 不是合法 JSON，无法可靠判断未决业务事项。')]
+    }
+    if (!Array.isArray(parsed)) return [this.invalidEvaluationItem('评测返回的 UNRESOLVED_ITEMS_JSON 不是数组，无法可靠判断未决业务事项。')]
+
+    const items: RequirementUnresolvedItem[] = []
+    for (let index = 0; index < parsed.length; index += 1) {
+      const value = parsed[index]
+      if (!value || typeof value !== 'object') return [this.invalidEvaluationItem('评测未决项包含无效对象，无法可靠判断需求是否可放行。')]
+      const record = value as Record<string, unknown>
+      const fact = typeof record.fact === 'string' ? record.fact.trim() : ''
+      const impact = typeof record.impact === 'string' ? record.impact.trim() : ''
+      const requiredDecision = typeof record.requiredDecision === 'string' ? record.requiredDecision.trim() : ''
+      if (!fact || !impact || !requiredDecision || typeof record.blocking !== 'boolean') {
+        return [this.invalidEvaluationItem('评测未决项缺少 fact、impact、requiredDecision 或 blocking 字段，无法可靠判断需求是否可放行。')]
+      }
+      const options = Array.isArray(record.options)
+        ? record.options.filter((option): option is string => typeof option === 'string' && option.trim().length > 0).map((option) => option.trim()).slice(0, 4)
+        : undefined
+      const recommendedIndex = typeof record.recommendedIndex === 'number' && Number.isInteger(record.recommendedIndex)
+        ? record.recommendedIndex
+        : undefined
+      items.push({
+        id: typeof record.id === 'string' && record.id.trim() ? record.id.trim().slice(0, 80) : `U-${String(index + 1).padStart(3, '0')}`,
+        fact: fact.slice(0, 600),
+        impact: impact.slice(0, 600),
+        requiredDecision: requiredDecision.slice(0, 600),
+        blocking: record.blocking,
+        options,
+        recommendedIndex: recommendedIndex !== undefined && options && recommendedIndex >= 0 && recommendedIndex < options.length ? recommendedIndex : undefined,
+      })
+    }
+    if (readiness === 'ready' && items.some((item) => item.blocking)) {
+      return [this.invalidEvaluationItem('评测同时声明 READY 和 blocking=true 未决项，结果相互矛盾。')]
+    }
+    if (readiness === 'blocked' && !items.some((item) => item.blocking)) {
+      return [this.invalidEvaluationItem('评测声明 BLOCKED 但没有可执行的 blocking=true 未决项。')]
+    }
+    return items
+  }
+
+  private invalidEvaluationItem(fact: string): RequirementUnresolvedItem {
+    return {
+      id: 'U-FORMAT',
+      fact,
+      impact: '系统无法可靠确认需求是否完整、可实施且可验收。',
+      requiredDecision: '重新执行需求评测，并返回符合固定结构的语义未决项结果。',
+      blocking: true,
+      options: ['重新执行需求评测并生成完整结构化结果', '补充需求材料后重新执行需求评测'],
+      recommendedIndex: 0,
+    }
   }
 
   private parseSpecificationEvaluation(content: string): { score: number; blockers: string[]; repairs: string[] } {
     const score = Math.max(0, Math.min(100, Number(content.match(/SCORE\s*:\s*(\d{1,3})/i)?.[1] || 0)))
     const blockers = content.match(/BLOCKERS\s*:\s*([\s\S]*?)(?:ASSESSMENT\s*:|$)/i)?.[1]
-      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无') || []
+      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无' && !/^[-_|]{3,}$/.test(line)) || []
     const repairs = content.match(/REPAIR\s*:\s*([\s\S]*?)$/i)?.[1]
-      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无') || []
+      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无' && !/^[-_|]{3,}$/.test(line)) || []
     return { score, blockers, repairs }
   }
 
   private specificationBlockerCategory(blocker: string): SpecificationBlockerCategory {
     const value = blocker.toLowerCase()
-    if (/需求|业务|角色|范围|规则|验收条件|合规|requirement|business/.test(value)) return 'requirements'
+    // Technical evidence must win over generic words such as “业务” or
+    // “规则”, otherwise missing API/schema/module evidence is misreported as
+    // a business requirement gap.
+    if (/现有代码|代码证据|模块|文件|接口|api|数据表|表结构|字段|架构|实现|schema|协议|调用|pcc|fsm|fdm|po\b|inv\b|ap\b|code/.test(value)) return 'code-evidence'
     if (/建模|ears|bdd|用例|决策表|模型|追溯|model/.test(value)) return 'modeling'
-    if (/代码|模块|文件|接口|数据表|实现|架构|code|api|schema/.test(value)) return 'code-evidence'
+    if (/需求|业务|角色|范围|规则|rule|验收条件|合规|requirement|business/.test(value)) return 'requirements'
     return 'specification'
+  }
+
+  private finalRequirementPrompt(documents: RequirementDocument[]): string {
+    return `合并下列材料，输出唯一、无歧义、可实施、可验收的最终需求文档。已确认的用户澄清优先于早期分析，不要保留冲突描述。不能从材料推导的业务事实不得编造；只能保留已经确认或有明确来源的结论。每条需求都标注来源或明确为已确认结论。\n\n${documents.map((document) => `## ${document.title}\n${document.content}`).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}`
+  }
+
+  private async gateFinalRequirementReadiness(
+    run: RequirementRun,
+    conversation: Conversation,
+    source: string,
+    finalRequirement: RequirementDocument,
+    onProgress?: (progress: RequirementProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    this.reportProgress(onProgress, run, 'evaluation', '正在对最终需求进行独立语义放行审计')
+    const auditDocument = await this.generateDocument(
+      run,
+      'evaluation',
+      `final-readiness-${run.round}`,
+      `第 ${run.round} 轮最终需求放行审计`,
+      this.evaluationPrompt('最终明确需求放行审计', source, [finalRequirement]),
+      signal,
+      onProgress,
+    )
+    const audit = this.parseEvaluation(`final-readiness-${run.round}`, auditDocument.content)
+    run.evaluations = [...run.evaluations, audit]
+    run.qualityScore = audit.score
+    const questions = this.clarificationQuestionsFromUnresolvedItems(audit.unresolvedItems || [])
+    if (audit.score >= run.qualityThreshold && audit.readiness === 'ready' && questions.length === 0) return
+
+    this.reportProgress(onProgress, run, 'clarification', '最终需求放行审计发现需要业务确认的事项')
+    run.clarificationQuestions = questions.length > 0 ? questions : this.defaultClarificationQuestions()
+    run.status = 'awaiting-clarification'
+  }
+
+  private clarificationQuestionsFromUnresolvedItems(items: RequirementUnresolvedItem[]): RequirementClarificationQuestion[] {
+    return items.filter((item) => item.blocking).slice(0, 12).map((item, index) => {
+      const options = item.options && item.options.length >= 2
+        ? item.options.slice(0, 4)
+        : ['返回需求澄清，补充或确认该业务事实', '将该项登记为待确认风险，暂不纳入本次需求', '在当前已确认范围内排除该项']
+      const recommendedIndex = item.recommendedIndex !== undefined && item.recommendedIndex >= 0 && item.recommendedIndex < options.length
+        ? item.recommendedIndex
+        : 0
+      return {
+        id: item.id || `unresolved-${index + 1}`,
+        question: item.requiredDecision,
+        options,
+        recommendedIndex,
+        rationale: `${item.fact}。影响：${item.impact}`,
+      }
+    })
+  }
+
+  private hasBlockingRequirementGaps(evaluation: Pick<RequirementEvaluation, 'blockers' | 'unresolvedItems'>): boolean {
+    return this.requirementBlockerStatus(evaluation).requirementBlockers.length > 0
+  }
+
+  private requirementBlockerStatus(evaluation: Pick<RequirementEvaluation, 'blockers' | 'unresolvedItems'>): { requirementBlockers: string[]; specificationChecks: string[] } {
+    if (evaluation.unresolvedItems) {
+      const describe = (item: RequirementUnresolvedItem) => `${item.id}：${item.fact}（需决策：${item.requiredDecision}）`
+      return {
+        requirementBlockers: evaluation.unresolvedItems.filter((item) => item.blocking).map(describe),
+        specificationChecks: evaluation.unresolvedItems.filter((item) => !item.blocking).map(describe),
+      }
+    }
+    const requirementBlockers: string[] = []
+    const specificationChecks: string[] = []
+    for (const blocker of evaluation.blockers) {
+      if (this.specificationBlockerCategory(blocker) === 'requirements') requirementBlockers.push(blocker)
+      else specificationChecks.push(blocker)
+    }
+    return { requirementBlockers, specificationChecks }
   }
 
   private specificationResolutionQuestions(evaluation: { blockers: string[]; repairs: string[] }): SpecificationResolutionQuestion[] {
@@ -1753,7 +2048,17 @@ export class RequirementEngineeringService {
     if (!configuredWorkspacePath) return undefined
     const workspaceRoot = path.resolve(configuredWorkspacePath)
     if (workspaceRoot === path.parse(workspaceRoot).root) return undefined
-    const packageDirectory = path.join(workspaceRoot, '.eva', 'RMSD', this.requirementPackageName(name, runId))
+    // Keep the human-readable requirement name as a stable grouping directory,
+    // then isolate every new /requirement run by its durable run id. This
+    // prevents a repeated requirement title from overwriting an older package.
+    const packageDirectory = path.join(
+      workspaceRoot,
+      '.eva',
+      'RMSD',
+      name,
+      'runs',
+      runId,
+    )
     this.assertWithinDirectory(packageDirectory, workspaceRoot)
     return packageDirectory
   }
@@ -1773,7 +2078,11 @@ export class RequirementEngineeringService {
   private async ensureWorkspacePackage(run: RequirementRun, conversation: Conversation): Promise<void> {
     const needsSync = !run.workspacePackagePath || run.documents.some((document) => !document.workspacePath)
     if (!run.workspacePackagePath) {
-      run.workspacePackagePath = this.createWorkspacePackagePath(conversation, run.conversationTitle, run.id)
+      run.workspacePackagePath = this.createWorkspacePackagePath(
+        conversation,
+        run.requirementTitle || this.requirementPackageName(undefined, undefined, run.id),
+        run.id,
+      )
       run.workspaceOutputPath = run.workspacePackagePath ? path.join(run.workspacePackagePath, 'spec', 'output') : undefined
     }
     if (run.workspacePackagePath) await this.initializeRmsdPackage(run)
@@ -1786,15 +2095,29 @@ export class RequirementEngineeringService {
     await this.persist(run)
   }
 
-  private requirementPackageName(name: string, runId: string): string {
-    const base = name
+  private requirementPackageName(content: string | undefined, attachments: ChatDocumentAttachment[] | undefined, runId: string): string {
+    const normalize = (value: string): string => value
       .replace(/^\s*\/requirement\s*/i, '')
-      .split(/\r?\n/)[0]
+      .replace(/^\s*(?:#+|[-*+]\s+|\d+[.)]\s+)/, '')
       .replace(/[<>:"/\\|?*\u0000-\u001f]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 48)
-    return base && !/^new conversation$/i.test(base) ? base : `requirement-${runId.slice(0, 8)}`
+    const isUseful = (value: string): boolean => {
+      if (value.length < 4) return false
+      return !/^(?:new conversation|新建(?:任务)?对话|查看代码架构|需求|需求说明|需求概述|背景|说明|概述)$/i.test(value)
+    }
+
+    const sourceTitle = (content || '')
+      .split(/\r?\n/)
+      .map(normalize)
+      .find(isUseful)
+    if (sourceTitle) return sourceTitle
+
+    const attachmentTitle = (attachments || [])
+      .map((attachment) => normalize(path.basename(attachment.name, path.extname(attachment.name))))
+      .find(isUseful)
+    return attachmentTitle || `requirement-${runId.slice(0, 8)}`
   }
 
   private async initializeRmsdPackage(run: RequirementRun): Promise<void> {
@@ -1827,7 +2150,7 @@ export class RequirementEngineeringService {
   }
 
   private rmsdStandard(): string {
-    return `# RMSD Artifact Standard\n\nEach requirement package is an isolated, project-local pipeline. Every stage has \`upstream\`, \`intermediate\`, and \`output\` directories. Downstream stages may read only the preceding stage's \`output\` snapshot.\n\n- Markdown artifacts are UTF-8 and begin with a level-one title.\n- Final requirement, model, and implementation specification are Markdown.\n- Final DSL is UTF-8 plain text named \`domain-language.dsl\`.\n- Deterministic code artifacts use JSON or YAML and record the source DSL SHA-256.\n- \`ARTIFACT-CONTRACT.md\` in each stage defines its required intermediate and output artifacts.\n`
+    return `# RMSD Artifact Standard\n\nEach requirement package is an isolated, project-local pipeline. A new run is stored at \`.eva/RMSD/<requirement-name>/runs/<run-id>/\`; the run id is immutable and prevents repeated requirement names from overwriting prior outputs. Every stage has \`upstream\`, \`intermediate\`, and \`output\` directories. Downstream stages may read only the preceding stage's \`output\` snapshot.\n\n- Markdown artifacts are UTF-8 and begin with a level-one title.\n- Final requirement, model, and implementation specification are Markdown.\n- Final DSL is UTF-8 plain text named \`domain-language.dsl\`.\n- Deterministic code artifacts use JSON or YAML and record the source DSL SHA-256.\n- \`ARTIFACT-CONTRACT.md\` in each stage defines its required intermediate and output artifacts.\n`
   }
 
   private stageArtifactContract(stage: string): string {
@@ -1953,7 +2276,17 @@ export class RequirementEngineeringService {
     const questions = run.clarificationQuestions.length ? `\n\n待澄清问题：\n${run.clarificationQuestions.map((question) => `- ${question.question}`).join('\n')}` : ''
     const projectDirectory = run.workspaceOutputPath ? path.dirname(run.workspaceOutputPath) : undefined
     const projectLocation = projectDirectory ? `项目产物目录：\`${projectDirectory}\`\n` : ''
-    const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${ready ? '需求已明确，可进入规格阶段。' : '等待你在下方选择澄清选项。'}\n${projectLocation}运行档案：\`${this.runDirectory(run.id)}\`${questions}\n\n${ready ? '下一阶段将基于项目中的持久化文档生成规格说明。' : '请在对话中的澄清卡片完成选择，然后点击“提交确认”继续。'}`
+    const latestEvaluation = run.evaluations.at(-1)
+    const blockerStatus = latestEvaluation ? this.requirementBlockerStatus(latestEvaluation) : undefined
+    const requirementBlockers = blockerStatus?.requirementBlockers || []
+    const specificationChecks = blockerStatus?.specificationChecks || []
+    const blockerSection = latestEvaluation
+      ? [
+          `需求阶段阻塞：${requirementBlockers.length ? `\n${requirementBlockers.map((item) => `- ${item}`).join('\n')}` : '无'}`,
+          `后续规格核验事项：${specificationChecks.length ? `\n${specificationChecks.map((item) => `- ${item}`).join('\n')}` : '无'}`,
+        ].join('\n')
+      : '需求阶段阻塞：未提供评测明细（导入的既有文档）。'
+    const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${ready ? '需求已明确，可进入规格阶段。' : '等待你在下方选择澄清选项。'}\n${blockerSection}\n${projectLocation}运行档案：\`${this.runDirectory(run.id)}\`${questions}\n\n${ready ? '通过仅表示没有未解决的需求阶段阻塞；“后续规格核验事项”会在 /spec 中继续验证。' : '请在对话中的澄清卡片完成选择，然后点击“提交确认”继续。'}`
     await getStorage().conversations.addMessage(conversationId, { id: randomUUID(), role: 'assistant', agentName: '需求工程', content, timestamp: Date.now() })
   }
 }

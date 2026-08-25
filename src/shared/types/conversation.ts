@@ -27,6 +27,8 @@ export interface Conversation {
   /** Internal team conversations are scoped to the task that created them. */
   parentConversationId?: string
   teamTaskId?: string
+  /** Identifies a hidden Goal step conversation owned by the parent task. */
+  goalStepId?: string
   /** Full access is an explicit choice for conversations created outside a project. */
   accessScope?: 'workspace' | 'full'
   permissionLevel?: ConversationPermissionLevel
@@ -64,6 +66,8 @@ export interface ChatMessage {
   reasoningContent?: string
   /** Safe, user-visible execution record for this response. */
   executionTrace?: ExecutionTraceEntry[]
+  /** Chronological provider reasoning, tool calls, and tool feedback. */
+  executionTimeline?: ExecutionTimelineEntry[]
   /** A concise, user-visible progress update emitted while work is underway. */
   progressKind?: ProgressUpdateKind
   /** Files and folders the user attached to this message. Their contents stay local. */
@@ -80,6 +84,8 @@ export interface ChatMessage {
   model?: string
   /** Provider-reported usage accumulated for this assistant response. */
   usage?: ChatUsage
+  /** Provider termination reason, retained to distinguish natural completion from truncation. */
+  finishReason?: string
   /** User-curated assistant response, retained in the conversation record. */
   favorited?: boolean
   /** A user-selected prior message that should be supplied as focused context. */
@@ -113,6 +119,20 @@ export interface ChatUsage {
   pricingSourceUrl?: string
   /** Number of model calls that contributed to this response. */
   modelCalls?: number
+  /** Local context accounting recorded immediately before the latest model call. */
+  contextDiagnostics?: ContextDiagnostics
+}
+
+/** Local context accounting; token values remain estimates until the provider reports usage. */
+export interface ContextDiagnostics {
+  budgetTokens: number
+  estimatedTokens: number
+  systemTokens: number
+  toolDefinitionTokens: number
+  retainedMessages: number
+  omittedMessages: number
+  compactedMessages: number
+  estimator: 'heuristic-v2'
 }
 
 export interface ChatImageAttachment {
@@ -158,10 +178,28 @@ export interface ExecutionTraceEntry {
   toolCallId?: string
 }
 
+export interface ExecutionTimelineEntry {
+  id: string
+  kind: 'reasoning' | 'tool'
+  timestamp: number
+  content?: string
+  toolCall?: ToolCall
+}
+
+/** A chat Agent has proposed switching the current request into Goal execution. */
+export interface GoalConfirmationRequest {
+  id: string
+  goal: string
+  requestedAt: number
+}
+
 export interface ChatStreamEvent {
   /** The conversation that owns this stream event. */
   conversationId?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'progress' | 'done' | 'error'
+  /** The Agent actually selected for this response by the main process. */
+  agentId?: string
+  agentName?: string
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'done' | 'error'
   messageId?: string
   content?: string
   toolCall?: Partial<ToolCall>
@@ -170,7 +208,9 @@ export interface ChatStreamEvent {
   isError?: boolean
   protocol?: ExecutionEnvelope
   executionTrace?: ExecutionTraceEntry[]
+  executionTimeline?: ExecutionTimelineEntry[]
   progressKind?: ProgressUpdateKind
+  goalConfirmation?: GoalConfirmationRequest
   error?: string
   finishReason?: string
   usage?: ChatUsage

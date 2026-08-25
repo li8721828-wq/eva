@@ -234,9 +234,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           if (!progress) return state
           next = {
             ...current,
-            progress: { ...progress, currentStepIndex: event.stepIndex, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress' } : step) },
+            progress: { ...progress, currentStepIndex: event.stepIndex, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', attempt: event.attempt, maxAttempts: event.maxAttempts, attempts: event.attempts, ...(event.agentConversationId ? { agentConversationId: event.agentConversationId } : {}) } : step) },
             streamingContent: '',
           }
+          break
+        case 'step_conversation':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, agentConversationId: event.agentConversationId, handoff: event.handoff } : step) } }
           break
         case 'step_progress':
           next = { ...current, streamingContent: current.streamingContent + event.content }
@@ -249,12 +253,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           if (!progress) return state
           next = { ...current, progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: (step.toolCalls || []).map((call) => call.id === event.toolCallId ? { ...call, result: event.result, isError: event.isError } : call) } : step) } }
           break
+        case 'step_retrying':
+          if (!progress) return state
+          next = { ...current, progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', attempt: event.attempt, maxAttempts: event.maxAttempts, attempts: event.attempts, result: undefined } : step) }, streamingContent: `连接中断，正在重试第 ${event.attempt}/${event.maxAttempts} 次...` }
+          break
         case 'step_completed':
         case 'step_failed':
           if (!progress) return state
           next = {
             ...current,
-            progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error } : step) },
+            progress: { ...progress, steps: progress.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error, attempts: event.attempts || step.attempts } : step) },
             streamingContent: '',
           }
           break

@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTraceEntry, ProgressUpdateKind } from '../../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTimelineEntry, ExecutionTraceEntry, ProgressUpdateKind } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -21,6 +21,8 @@ import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { GoalProgress } from '../../shared/types/task'
+import { prepareGoalStepConversation, persistGoalStepEvent } from '../services/goal-step-conversation'
+import { resolveEffectiveAgentConfig } from '../services/effective-agent-config'
 import { SYMPOSIUM_TOOL_OPTIONS, type AgentSymposium, type SymposiumContinueInput, type SymposiumDiscussionMemory, type SymposiumModelParticipant, type SymposiumStartInput, type SymposiumStreamEvent } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
 import { registerBackgroundGoalController, type BackgroundGoalAction, type BackgroundGoalControlResult } from '../services/background-goal-control'
@@ -31,6 +33,7 @@ import type { ModelPoolEntry } from '../../shared/types/model-pool'
 import type { ActivePlan } from '../../shared/types/active-plan'
 import { hydrateUsagePricing } from '../services/usage-pricing-service'
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
+import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
 
 export interface ChatServices {
   toolRegistry: ToolRegistry
@@ -81,8 +84,38 @@ const activeBackgroundGoalPlanners = new Map<string, GoalPlanner>()
 const activeDelegatedTeamOrchestrators = new Map<string, TeamOrchestrator>()
 const activeSymposiumRunners = new Map<string, Set<AgentRunner>>()
 const activeSymposiumAborters = new Map<string, () => void>()
+const pendingGoalConfirmations = new Map<string, {
+  conversationId: string
+  resolve: (approved: boolean) => void
+}>()
 const MAX_PERSISTED_TOOL_RESULT_CHARS = 12_000
 const INTERNAL_TASK_TIMEOUT_MS = 3 * 60 * 1000
+
+function resolvePendingGoalConfirmation(conversationId: string, approved: boolean): void {
+  for (const [confirmationId, pending] of pendingGoalConfirmations) {
+    if (pending.conversationId !== conversationId) continue
+    pendingGoalConfirmations.delete(confirmationId)
+    pending.resolve(approved)
+  }
+}
+
+function requestGoalConfirmation(conversationId: string, goal: string, win: BrowserWindow): Promise<boolean> {
+  // A conversation can only wait for one Goal decision at a time. A newer
+  // proposal supersedes a stale card from an earlier tool iteration.
+  resolvePendingGoalConfirmation(conversationId, false)
+  const confirmationId = uuidv4()
+  const requestedAt = Date.now()
+  if (!win.isDestroyed()) {
+    win.webContents.send(IPC.CHAT_STREAM, {
+      conversationId,
+      type: 'goal_confirmation',
+      goalConfirmation: { id: confirmationId, goal, requestedAt },
+    } satisfies ChatStreamEvent)
+  }
+  return new Promise<boolean>((resolve) => {
+    pendingGoalConfirmations.set(confirmationId, { conversationId, resolve })
+  })
+}
 
 async function controlBackgroundGoal(
   conversationId: string,
@@ -223,14 +256,18 @@ function applyGoalProgress(current: GoalProgress | null, event: GoalEvent, conve
     case 'plan_created':
       return current ? { ...current, steps: event.steps, totalSteps: event.steps.length } : current
     case 'step_started':
-      return current ? { ...current, currentStepIndex: event.stepIndex, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', startedAt: Date.now() } : step) } : current
+      return current ? { ...current, currentStepIndex: event.stepIndex, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', startedAt: Date.now(), attempt: event.attempt, maxAttempts: event.maxAttempts, attempts: event.attempts, ...(event.agentConversationId ? { agentConversationId: event.agentConversationId } : {}) } : step) } : current
+    case 'step_conversation':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, agentConversationId: event.agentConversationId, handoff: event.handoff } : step) } : current
     case 'step_tool_call':
       return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: [...(step.toolCalls || []), event.toolCall] } : step) } : current
     case 'step_tool_result':
       return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: (step.toolCalls || []).map((toolCall) => toolCall.id === event.toolCallId ? { ...toolCall, result: event.result, isError: event.isError } : toolCall) } : step) } : current
+    case 'step_retrying':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', attempt: event.attempt, maxAttempts: event.maxAttempts, attempts: event.attempts, result: undefined } : step) } : current
     case 'step_completed':
     case 'step_failed':
-      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error, completedAt: Date.now() } : step) } : current
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error, attempts: event.attempts || step.attempts, completedAt: Date.now() } : step) } : current
     case 'plan_adjusted':
       return current ? { ...current, steps: [...current.steps.filter((step) => step.status === 'completed' || step.status === 'failed'), ...event.steps], totalSteps: current.steps.filter((step) => step.status === 'completed' || step.status === 'failed').length + event.steps.length } : current
     case 'summary':
@@ -568,7 +605,7 @@ async function analyzeImagesWithAuthorizedPool(
       if (!response.content.trim()) throw new Error('Model returned an empty image analysis.')
       return `Image analysis from ${entry.name} (${entry.providerId} / ${entry.model}):\n${response.content}`
     } catch (error) {
-      errors.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`)
+      errors.push(`${entry.name}: ${formatProviderRequestFailure(error, provider, entry.model, 'model-pool')}`)
     }
   }
   throw new Error(`No model in the authorized visual pool could analyze the image.\n${errors.join('\n')}`)
@@ -698,6 +735,8 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
   switch (event.type) {
     case 'text':
       return { type: 'text_delta', content: event.content }
+    case 'text_reset':
+      return { type: 'text_reset' }
     case 'thinking':
       return { type: 'thinking', content: event.content }
     case 'reasoning':
@@ -715,7 +754,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
     case 'error':
       return { type: 'error', error: event.error }
     case 'done':
-      return { type: 'done', content: event.content, usage: event.usage }
+      return { type: 'done', content: event.content, finishReason: event.finishReason, usage: event.usage }
   }
 }
 
@@ -893,14 +932,17 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
+      resolvePendingGoalConfirmation(conversationId, false)
       let runner: AgentRunner | null = null
       let runtimeProcessId: string | null = null
+      let activeAgentIdentity: Pick<ChatStreamEvent, 'agentId' | 'agentName'> = {}
 
-      const send = (agentEvent: AgentEvent): void => {
+      const sendStreamEvent = (streamEvent: ChatStreamEvent): void => {
         if (!win.isDestroyed()) {
-          win.webContents.send(IPC.CHAT_STREAM, { ...toChatStreamEvent(agentEvent), conversationId })
+          win.webContents.send(IPC.CHAT_STREAM, { ...streamEvent, conversationId, ...activeAgentIdentity })
         }
       }
+      const send = (agentEvent: AgentEvent): void => sendStreamEvent(toChatStreamEvent(agentEvent))
 
       try {
         if (!services) {
@@ -950,11 +992,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
         // 3. Built-in agents inherit the active Settings provider and model. Custom agents
         // retain their individual configuration as an explicit advanced override.
-        const activeProviderId = getStorage().config.get('activeProviderId')
-        const activeModel = getStorage().config.getActiveModel()
-        const effectiveAgentConfig = agentConfig.isBuiltIn
-          ? { ...agentConfig, providerId: activeProviderId, model: activeModel }
-          : agentConfig
+        const effectiveAgentConfig = resolveEffectiveAgentConfig(agentConfig, {
+          providerId: getStorage().config.get('activeProviderId'),
+          model: getStorage().config.getActiveModel(),
+        })
+        activeAgentIdentity = { agentId: effectiveAgentConfig.id, agentName: effectiveAgentConfig.name }
 
         void recordActivity({
           category: 'agent',
@@ -1058,8 +1100,28 @@ export function registerConversationHandlers(services?: ChatServices): void {
               return output.trim() || 'Task execution completed.'
             }
           : undefined
+        let goalExecutionDeclined = false
         const runGoal = automation.goal.enabled && automation.goal.autoInvoke
-          ? async (goal: string, resumeProgress?: GoalProgress | null): Promise<string> => {
+          ? async (goal: string, resumeProgressOrEstimatedSteps?: GoalProgress | number | null, maybeEstimatedSteps?: number): Promise<string> => {
+              // Tool-triggered Goal calls provide an estimate. Existing manual
+              // resume calls provide a checkpoint as the second argument.
+              const resumeProgress = typeof resumeProgressOrEstimatedSteps === 'number' || resumeProgressOrEstimatedSteps == null
+                ? null
+                : resumeProgressOrEstimatedSteps
+              const estimatedSteps = typeof resumeProgressOrEstimatedSteps === 'number'
+                ? resumeProgressOrEstimatedSteps
+                : maybeEstimatedSteps
+              if (estimatedSteps !== undefined && estimatedSteps < 5) {
+                return 'Goal execution requires at least 5 independent execution steps. Continue this request directly with the available tools.'
+              }
+              if (goalExecutionDeclined) {
+                return 'Goal execution was declined for this request. Continue the user request directly in regular chat with the available tools; do not call run_goal again during this turn.'
+              }
+              const approved = await requestGoalConfirmation(conversationId, goal, win)
+              if (!approved) {
+                goalExecutionDeclined = true
+                return 'The user chose regular chat instead of Goal execution. Continue the request directly with the available tools and provide the result in this conversation; do not call run_goal again during this turn.'
+              }
               // A Goal can outlive the response that requested it. Running it in
               // the tool-call stack caused provider request limits to terminate
               // otherwise healthy long jobs, so launch it independently and
@@ -1083,6 +1145,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 terminalService: services.terminalService,
                 maxSteps: automation.goal.maxSteps,
                 timeout,
+                prepareStepConversation: async ({ step, handoff }) => {
+                  const prepared = await prepareGoalStepConversation({ parent: conversation, agentConfig: effectiveAgentConfig, workspacePath: runnerWorkspacePath, step, handoff })
+                  if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, prepared.conversationId)
+                  return prepared
+                },
+                persistStepEvent: ({ step, conversationId: stepConversationId, event }) => persistGoalStepEvent({ step, conversationId: stepConversationId, event, agentConfig: effectiveAgentConfig }),
               })
               activeBackgroundGoalPlanners.set(conversationId, planner)
 
@@ -1281,6 +1349,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let assistantContent = ''
         let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
+        let assistantFinishReason: string | undefined
         let runError: string | null = null
         // Keep only a possible partial eva-progress tag between token chunks.
         // Ordinary response text must not wait for the model's final `done`
@@ -1288,6 +1357,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let pendingProgressMarkup = ''
         let latestProgressContent = ''
         const executionTrace: ExecutionTraceEntry[] = []
+        const executionTimeline: ExecutionTimelineEntry[] = []
         let currentAction: {
           entry: ExecutionTraceEntry
           toolNames: string[]
@@ -1295,13 +1365,21 @@ export function registerConversationHandlers(services?: ChatServices): void {
         } | null = null
 
         const emitExecutionTrace = (): void => {
-          if (!win.isDestroyed()) {
-            win.webContents.send(IPC.CHAT_STREAM, {
-              conversationId,
-              type: 'execution_trace',
-              executionTrace: executionTrace.map((entry) => ({ ...entry })),
-            } satisfies ChatStreamEvent)
-          }
+          sendStreamEvent({
+            type: 'execution_trace',
+            executionTrace: executionTrace.map((entry) => ({ ...entry })),
+          })
+        }
+        const emitExecutionTimeline = (): void => {
+          sendStreamEvent({
+            type: 'execution_timeline',
+            executionTimeline: executionTimeline.map((entry) => ({
+              ...entry,
+              toolCall: entry.toolCall
+                ? { ...entry.toolCall, arguments: { ...entry.toolCall.arguments } }
+                : undefined,
+            })),
+          })
         }
         const addTraceEntry = (entry: Omit<ExecutionTraceEntry, 'id' | 'timestamp'>): ExecutionTraceEntry => {
           const traceEntry: ExecutionTraceEntry = {
@@ -1433,8 +1511,21 @@ export function registerConversationHandlers(services?: ChatServices): void {
             await streamTextDelta(agentEvent.content)
             continue
           }
+          if (agentEvent.type === 'text_reset') {
+            clearPendingProgressMarkup()
+            assistantContent = ''
+            send(agentEvent)
+            continue
+          }
           if (agentEvent.type === 'reasoning' && agentEvent.content) {
             assistantReasoningContent += agentEvent.content
+            const latest = executionTimeline[executionTimeline.length - 1]
+            if (latest?.kind === 'reasoning') {
+              latest.content = `${latest.content || ''}${agentEvent.content}`
+            } else {
+              executionTimeline.push({ id: uuidv4(), kind: 'reasoning', content: agentEvent.content, timestamp: Date.now() })
+            }
+            emitExecutionTimeline()
           }
           if (agentEvent.type === 'thinking') {
             completeCurrentAction()
@@ -1448,6 +1539,17 @@ export function registerConversationHandlers(services?: ChatServices): void {
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
             clearPendingProgressMarkup()
             allToolCalls.push(agentEvent.toolCall)
+            executionTimeline.push({
+              id: uuidv4(),
+              kind: 'tool',
+              timestamp: Date.now(),
+              toolCall: {
+                id: agentEvent.toolCall.id,
+                name: agentEvent.toolCall.name,
+                arguments: { ...agentEvent.toolCall.arguments },
+              },
+            })
+            emitExecutionTimeline()
             if (!currentAction) {
               completeActiveNonToolTraceEntries()
               currentAction = {
@@ -1473,6 +1575,16 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
             allToolResults.push(agentEvent.toolResult)
+            const timelineTool = [...executionTimeline].reverse().find((entry) => entry.kind === 'tool' && entry.toolCall?.id === agentEvent.toolResult?.toolCallId)
+            if (timelineTool?.toolCall) {
+              timelineTool.toolCall = {
+                ...timelineTool.toolCall,
+                result: compactToolResult(agentEvent.toolResult.result),
+                isError: agentEvent.toolResult.isError,
+                protocol: agentEvent.toolResult.protocol,
+              }
+              emitExecutionTimeline()
+            }
             currentAction?.results.push({
               name: agentEvent.toolResult.name,
               result: agentEvent.toolResult.result,
@@ -1498,6 +1610,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               agentEvent.content = assistantContent
             }
             assistantUsage = agentEvent.usage
+            assistantFinishReason = agentEvent.finishReason
             completeCurrentAction()
             completeActiveNonToolTraceEntries()
             addTraceEntry({
@@ -1546,6 +1659,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           content: runError && !assistantContent && allToolCalls.length === 0 ? `Error: ${runError}` : assistantContent,
           reasoningContent: assistantReasoningContent || undefined,
           executionTrace: executionTrace.length > 0 ? executionTrace : undefined,
+          executionTimeline: executionTimeline.length > 0 ? executionTimeline : undefined,
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
           agentName: effectiveAgentConfig.name,
@@ -1553,6 +1667,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           providerName: getStorage().config.getProvider(effectiveAgentConfig.providerId)?.name || effectiveAgentConfig.providerId,
           model: effectiveAgentConfig.model,
           usage: assistantUsage,
+          finishReason: assistantFinishReason,
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, assistantChatMessage)
@@ -1647,6 +1762,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(IPC.CHAT_ABORT, (event, conversationId?: string) => {
     if (conversationId) {
+      resolvePendingGoalConfirmation(conversationId, false)
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
       activeBackgroundGoalPlanners.get(conversationId)?.abort()
@@ -1665,6 +1781,20 @@ export function registerConversationHandlers(services?: ChatServices): void {
       }).catch(() => undefined)
     }
   })
+
+  ipcMain.handle(
+    IPC.CHAT_GOAL_CONFIRMATION_DECIDE,
+    async (_event, payload: { conversationId?: string; confirmationId?: string; approved?: boolean }): Promise<boolean> => {
+      const confirmationId = typeof payload?.confirmationId === 'string' ? payload.confirmationId : ''
+      const conversationId = typeof payload?.conversationId === 'string' ? payload.conversationId : ''
+      const pending = confirmationId ? pendingGoalConfirmations.get(confirmationId) : undefined
+      if (!pending || pending.conversationId !== conversationId) return false
+
+      pendingGoalConfirmations.delete(confirmationId)
+      pending.resolve(payload.approved === true)
+      return true
+    }
+  )
 
   ipcMain.on(IPC.SYMPOSIUM_START, (event, input: SymposiumStartInput) => {
     const win = BrowserWindow.fromWebContents(event.sender)

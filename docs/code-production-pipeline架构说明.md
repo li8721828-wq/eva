@@ -221,7 +221,7 @@ domain-language.dsl
 Eva 的 `/coding` 运行目录位于：
 
 ```text
-<项目工作区>/.eva/RMSD/<需求名称>/coding/
+<项目工作区>/.eva/RMSD/<需求名称>/runs/<run-id>/coding/
   intermediate/runs/<DSL-SHA256>/
     00-input/
     01-semantic-dsl/

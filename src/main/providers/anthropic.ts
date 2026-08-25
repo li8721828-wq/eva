@@ -30,6 +30,10 @@ export class AnthropicProvider implements LLMProvider {
     return normalized.includes('claude-3-7-sonnet') || /claude-(sonnet|opus)-4(?:[-.]|$)/.test(normalized)
   }
 
+  getConnectionDiagnostics(): { baseUrl: string } {
+    return { baseUrl: this.baseUrl }
+  }
+
   /**
    * Convert shared messages to Anthropic format.
    * System messages are excluded (handled separately).
@@ -224,6 +228,7 @@ export class AnthropicProvider implements LLMProvider {
   ): Promise<{
     content: string
     toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
+    finishReason?: ChatChunk['finishReason']
     usage?: { promptTokens: number; completionTokens: number }
   }> {
     const systemMessage = params.messages.find((m) => m.role === 'system')
@@ -264,6 +269,13 @@ export class AnthropicProvider implements LLMProvider {
     return {
       content,
       toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      finishReason: response.stop_reason === 'max_tokens'
+        ? 'length'
+        : response.stop_reason === 'tool_use'
+          ? 'tool_calls'
+          : response.stop_reason === 'end_turn'
+            ? 'stop'
+            : undefined,
       usage: {
         promptTokens: response.usage.input_tokens,
         completionTokens: response.usage.output_tokens,

@@ -7,6 +7,7 @@ import type { ChatMessage, ChatUsage } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
+import { compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPoolEntry } from '../../shared/types/model-pool'
 import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
@@ -16,6 +17,7 @@ import { ModelRouter } from '../services/model-router'
 import { modelHealthService } from '../services/model-health-service'
 import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../services/usage-pricing-service'
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
+import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -35,12 +37,14 @@ export interface AgentRunnerConfig {
   /** Internal orchestration capability available in Auto conversations. */
   delegateToTeam?: (goal: string) => Promise<string>
   runTask?: (task: string) => Promise<string>
-  runGoal?: (goal: string) => Promise<string>
+  runGoal?: (goal: string, estimatedSteps?: number) => Promise<string>
   manageGoal?: (action: 'status' | 'pause' | 'resume' | 'cancel') => Promise<string>
   createExecutionPlan?: (goal: string) => Promise<string>
   applySpecTemplate?: (templateId: string, parameters: Record<string, string>) => Promise<string>
   /** Goal-only budget that can grow after the model explicitly asks for more evidence. */
   adaptiveToolBudget?: AdaptiveToolBudget
+  /** Identifies the caller in a provider error without changing the request. */
+  requestSource?: ProviderRequestSource
 }
 
 export interface AdaptiveToolBudget {
@@ -85,6 +89,9 @@ interface CompletedToolResult {
 }
 
 const MAX_TOOL_REVIEW_IMAGES = 4
+// A provider may impose a lower, hidden per-request output cap. Continue only
+// when it explicitly reports `length`; a natural `stop` must end the turn.
+const MAX_PROVIDER_CONTINUATIONS = 3
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
 // A complete virtual desktop can include multiple high-resolution displays.
 // Keep this distinct from ordinary user attachment limits so desktop_observe
@@ -103,8 +110,15 @@ const TEAM_DELEGATION_TOOL: ToolDefinition = {
 }
 const GOAL_TOOL: ToolDefinition = {
   name: 'run_goal',
-  description: 'Run a long-lived goal through Eva\'s internal goal planner. Use when the task requires a measurable multi-step outcome with progress evaluation and adaptation.',
-  parameters: { type: 'object', properties: { goal: { type: 'string', description: 'Concrete outcome to achieve.' } }, required: ['goal'] },
+  description: 'Run a long-lived goal through Eva\'s internal goal planner. Use only for a genuinely complex, measurable outcome that needs at least 5 independent execution steps, checkpointed progress, and adaptation. For fewer than 5 steps, continue directly with the available tools instead.',
+  parameters: {
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: 'Concrete outcome to achieve.' },
+      estimatedSteps: { type: 'integer', minimum: 5, maximum: 50, description: 'Required estimate of independent execution steps. Do not call run_goal for fewer than 5 steps.' },
+    },
+    required: ['goal', 'estimatedSteps'],
+  },
 }
 const GOAL_CONTROL_TOOL: ToolDefinition = {
   name: 'manage_goal',
@@ -196,11 +210,7 @@ export class AgentRunner {
         ? Math.max(1, Math.min(maxIter, adaptiveToolBudget.initialIterations))
         : maxIter
       if (agentConfig.showThinking && !this.config.provider.supportsReasoning(agentConfig.model)) {
-        yield {
-          type: 'error',
-          error: `无法显示模型思考：${agentConfig.providerId} / ${agentConfig.model} 不支持推理内容输出。请选择 DeepSeek Reasoner 或支持扩展思考的 Claude 模型，或关闭此选项。`,
-        }
-        return
+        yield { type: 'thinking', content: '当前模型不支持慢思考内容输出，将按普通模式继续执行。' }
       }
 
       // Tool definitions filtered by agent's allowed tool list
@@ -261,6 +271,8 @@ export class AgentRunner {
         }))),
       ).slice(-8)
       let accumulatedUsage: ChatUsage | undefined
+      let completedResponse = ''
+      let providerContinuationCount = 0
 
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -302,6 +314,20 @@ export class AgentRunner {
             }
             return
           }
+          completedResponse += response.content
+          if (response.finishReason === 'length' && providerContinuationCount < MAX_PROVIDER_CONTINUATIONS) {
+            providerContinuationCount += 1
+            messages.push({ role: 'assistant', content: response.content })
+            messages.push({
+              role: 'user',
+              content: 'The provider ended the response because its per-request output limit was reached. Continue from the exact end of the previous response without repeating it. Finish the answer completely, then stop naturally.',
+            })
+            yield {
+              type: 'thinking',
+              content: `The provider output limit was reached; continuing the response (${providerContinuationCount}/${MAX_PROVIDER_CONTINUATIONS})...`,
+            }
+            continue
+          }
           if (pendingWriteVerifications.size > 0 && toolDefs.some((tool) => tool.name === 'read_file') && iteration < maxIter - 1) {
             messages.push({ role: 'assistant', content: response.content })
             messages.push({
@@ -310,9 +336,17 @@ export class AgentRunner {
             })
             continue
           }
-          yield { type: 'done', content: response.content, usage: accumulatedUsage }
+          // Text chunks were already emitted by executeLLMCall. The done event
+          // supplies the canonical, complete content for persistence.
+          yield { type: 'done', content: completedResponse, finishReason: response.finishReason, usage: accumulatedUsage }
           return
         }
+
+        // Text is streamed optimistically for responsiveness. Once this turn
+        // proves to be a tool-call turn, remove that provisional prose from
+        // the visible reply; the final no-tool turn remains streamed normally.
+        if (response.content) yield { type: 'text_reset' }
+        completedResponse = ''
 
         // A model may request several independent reads in one turn. Execute
         // only a wholly read-only batch in parallel; any mutation, terminal,
@@ -561,7 +595,12 @@ export class AgentRunner {
       if (this.abortController?.signal.aborted) {
         yield { type: 'done', content: '' }
       } else {
-        const errorMsg = err?.message ?? String(err)
+        const errorMsg = formatProviderRequestFailure(
+          err,
+          this.config.provider,
+          this.config.agentConfig.model,
+          this.config.requestSource || 'chat',
+        )
         yield { type: 'error', error: errorMsg }
         yield { type: 'done', content: '' }
       }
@@ -598,15 +637,30 @@ export class AgentRunner {
   ): AsyncGenerator<AgentEvent, { content: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage }> {
     const { agentConfig, provider } = this.config
     const signal = this.abortController?.signal
+    // Tool output can grow on every ReAct cycle. Refit immediately before the
+    // provider call, including the serialized tool definitions that providers
+    // count as input tokens.
+    const modelInputBudget = getModelInputBudgetTokens(agentConfig.model)
+    const inputBudget = getToolFollowUpInputBudget(
+      modelInputBudget,
+      messages.some((message) => message.role === 'tool'),
+    )
+    const fittedMessages = this.config.contextManager.fitMessages(
+      messages,
+      inputBudget,
+      tools,
+    )
 
     const stream: AsyncIterable<ChatChunk> = provider.chat(
       {
         model: agentConfig.model,
-        messages,
+        messages: fittedMessages,
         tools: tools.length > 0 ? tools : undefined,
         temperature: agentConfig.temperature,
         stream: true,
-        reasoning: agentConfig.showThinking ? { enabled: true, budgetTokens: 1024 } : undefined,
+        reasoning: agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
+          ? { enabled: true, budgetTokens: 1024 }
+          : undefined,
       },
       signal
     )
@@ -632,7 +686,6 @@ export class AgentRunner {
       // ── Text content ──────────────────────────────────────────────────────
       if (chunk.content) {
         content += chunk.content
-        // Yield real-time text delta to the caller
         yield { type: 'text', content: chunk.content }
       }
 
@@ -675,11 +728,13 @@ export class AgentRunner {
       })
     }
 
-    if (agentConfig.showThinking && !receivedReasoning) {
-      throw new Error(`模型未返回可显示的思考内容。${agentConfig.providerId} / ${agentConfig.model} 可能未启用推理模式或当前连接不支持该能力。`)
+    const contextDiagnostics = this.config.contextManager.getLastDiagnostics()
+    return {
+      content,
+      toolCalls,
+      finishReason,
+      usage: usage ? { ...usage, ...(contextDiagnostics ? { contextDiagnostics } : {}) } : usage,
     }
-
-    return { content, toolCalls, finishReason, usage }
   }
 
   private toChatUsage(usage?: ChatChunk['usage']): ChatUsage | undefined {
@@ -730,6 +785,7 @@ export class AgentRunner {
       pricingMode: current.pricingMode === 'subscription' || next.pricingMode === 'subscription' ? 'subscription' : current.pricingMode || next.pricingMode,
       pricingSourceUrl: current.pricingSourceUrl || next.pricingSourceUrl,
       modelCalls: (current.modelCalls ?? 1) + (next.modelCalls ?? 1),
+      contextDiagnostics: next.contextDiagnostics || current.contextDiagnostics,
     }
   }
 
@@ -782,7 +838,16 @@ export class AgentRunner {
     if (toolCall.name === GOAL_TOOL.name && this.config.runGoal) {
       const goal = typeof toolCall.arguments.goal === 'string' ? toolCall.arguments.goal.trim() : ''
       if (!goal) return { result: 'Error: run_goal requires a non-empty goal.', isError: true }
-      try { return { result: await this.config.runGoal(goal), isError: false } } catch (error: any) { return { result: `Error: Goal execution failed: ${error?.message ?? String(error)}`, isError: true } }
+      const estimatedSteps = typeof toolCall.arguments.estimatedSteps === 'number' && Number.isFinite(toolCall.arguments.estimatedSteps)
+        ? Math.floor(toolCall.arguments.estimatedSteps)
+        : 0
+      if (estimatedSteps < 5) {
+        return {
+          result: 'Goal execution was not started. Automatic Goal mode requires at least 5 independent execution steps. Continue this request directly with the available tools unless the user explicitly asks to use Goal.',
+          isError: false,
+        }
+      }
+      try { return { result: await this.config.runGoal(goal, estimatedSteps), isError: false } } catch (error: any) { return { result: `Error: Goal execution failed: ${error?.message ?? String(error)}`, isError: true } }
     }
 
     if (toolCall.name === GOAL_CONTROL_TOOL.name && this.config.manageGoal) {
@@ -895,7 +960,7 @@ export class AgentRunner {
       const tr = toolResults.get(tc.id)
       updated.push({
         role: 'tool',
-        content: tr?.result ?? '',
+        content: compactToolResultForModel(tc.name, tr?.result ?? ''),
         toolCallId: tc.id,
       })
     }

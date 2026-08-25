@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { RuntimeMemoryStore } from '../../src/main/storage/runtime-memory-store'
 
 describe('RuntimeMemoryStore', () => {
-  it('returns only conversation and workspace-scoped durable memory', async () => {
+  it('returns only current-conversation durable memory', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-runtime-memory-'))
     try {
       const store = new RuntimeMemoryStore(dataDir)
@@ -15,7 +15,7 @@ describe('RuntimeMemoryStore', () => {
 
       const context = await store.buildContext('one', 'workspace-a')
       expect(context).toContain('billing flow')
-      expect(context).toContain('Repair the import service')
+      expect(context).not.toContain('Repair the import service')
       expect(context).not.toContain('Unrelated request')
     } finally {
       await fs.rm(dataDir, { recursive: true, force: true })

@@ -9,6 +9,7 @@ import { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
 import { createRemoteToolApproval } from './remote-tool-policy'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
+import { resolveEffectiveAgentConfig } from './effective-agent-config'
 
 function notifyConversationChanged(conversationId: string): void {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -39,9 +40,10 @@ export async function executeRemoteConversationMessage(
   }
   if (!agentConfig) throw new Error('No agent is configured.')
 
-  const effectiveAgent = agentConfig.isBuiltIn
-    ? { ...agentConfig, providerId: storage.config.get('activeProviderId'), model: storage.config.getActiveModel() }
-    : agentConfig
+  const effectiveAgent = resolveEffectiveAgentConfig(agentConfig, {
+    providerId: storage.config.get('activeProviderId'),
+    model: storage.config.getActiveModel(),
+  })
   const provider = services.providerRegistry.get(effectiveAgent.providerId)
   if (!provider) throw new Error(`Provider ${effectiveAgent.providerId} is not available.`)
 

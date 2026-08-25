@@ -6,7 +6,10 @@ import pdf from 'pdf-parse/lib/pdf-parse.js'
 import type { ChatDocumentAttachment } from '../../shared/types/conversation'
 
 const MAX_FILES = 40
-const MAX_FILE_BYTES = 8 * 1024 * 1024
+// Office documents are compressed containers. The previous 8 MB limit rejected
+// ordinary requirement documents before Mammoth/XLSX had a chance to extract them.
+// Extracted text is still bounded by MAX_TOTAL_CHARS before it reaches a model.
+const MAX_FILE_BYTES = 32 * 1024 * 1024
 const MAX_TOTAL_CHARS = 80_000
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.mdx', '.csv', '.tsv', '.json', '.yaml', '.yml', '.xml', '.html', '.htm', '.css', '.scss', '.less', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.java', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs', '.php', '.rb', '.swift', '.kt', '.kts', '.sql', '.sh', '.ps1', '.bat', '.cmd', '.vue', '.svelte', '.ini', '.toml', '.env', '.log'])
 
@@ -37,7 +40,7 @@ async function parseFile(filePath: string): Promise<ParsedAttachment> {
   const name = path.basename(filePath)
   const extension = path.extname(name).toLowerCase()
   const stats = await fs.stat(filePath)
-  if (stats.size > MAX_FILE_BYTES) return { path: filePath, name, issue: '文件超过 8 MB 的单文件解析上限。' }
+  if (stats.size > MAX_FILE_BYTES) return { path: filePath, name, issue: '文件超过 32 MB 的单文件解析上限。' }
 
   try {
     if (TEXT_EXTENSIONS.has(extension) || !extension) {

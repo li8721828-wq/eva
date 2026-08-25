@@ -30,6 +30,46 @@ function chunks(...items: ChatChunk[]): AsyncIterable<ChatChunk> {
 }
 
 describe('AgentRunner adaptive tool budget', () => {
+  it('continues a provider-truncated response without imposing a max token request', async () => {
+    let request = 0
+    const requestedMaxTokens: Array<number | undefined> = []
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { maxTokens?: number }) => {
+        request += 1
+        requestedMaxTokens.push(params.maxTokens)
+        return request === 1
+          ? chunks({ content: 'The first part', finishReason: 'length' })
+          : chunks({ content: ' completes here.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: [], maxIterations: 2 },
+      provider: provider as never,
+      toolRegistry: new ToolRegistry(),
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Continue the answer.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(request).toBe(2)
+    expect(requestedMaxTokens).toEqual([undefined, undefined])
+    expect(events.find((event) => event.type === 'done')).toMatchObject({
+      content: 'The first part completes here.',
+      finishReason: 'stop',
+    })
+  })
+
   it('extends a Goal budget only after the model explicitly requests more evidence', async () => {
     const registry = new ToolRegistry()
     registry.register({
@@ -132,5 +172,87 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(peakReads).toBe(2)
     expect(events.filter((event) => event.type === 'tool_result')).toHaveLength(2)
     expect(events.find((event) => event.type === 'done')?.content).toBe('Both files were read.')
+  })
+
+  it('streams final prose and clears provisional tool rationale', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect a fact.', parameters: {} },
+      execute: async () => 'inspection complete',
+    })
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: () => {
+        request += 1
+        return request === 1
+          ? chunks({ content: 'I will inspect the workspace first.', toolCalls: [{ index: 0, id: 'inspect-1', name: 'inspect', arguments: '{}' }], finishReason: 'tool_calls' })
+          : chunks({ content: 'The inspection is complete.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 2 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Inspect the workspace.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(events.filter((event) => event.type === 'text').map((event) => event.content)).toEqual([
+      'I will inspect the workspace first.',
+      'The inspection is complete.',
+    ])
+    expect(events.some((event) => event.type === 'text_reset')).toBe(true)
+
+    const provisionalTextIndex = events.findIndex(
+      (event) => event.type === 'text' && event.content === 'I will inspect the workspace first.'
+    )
+    const resetIndex = events.findIndex((event) => event.type === 'text_reset')
+    const finalTextIndex = events.findIndex(
+      (event) => event.type === 'text' && event.content === 'The inspection is complete.'
+    )
+    expect(provisionalTextIndex).toBeLessThan(resetIndex)
+    expect(resetIndex).toBeLessThan(finalTextIndex)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('The inspection is complete.')
+  })
+
+  it('falls back to normal output when slow reasoning is unavailable', async () => {
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: () => chunks({ content: 'Normal response.', finishReason: 'stop' }),
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, showThinking: true, tools: [] },
+      provider: provider as never,
+      toolRegistry: new ToolRegistry(),
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Answer normally.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(events.some((event) => event.type === 'thinking' && event.content?.includes('不支持慢思考'))).toBe(true)
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Normal response.')
   })
 })

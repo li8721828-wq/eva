@@ -15,8 +15,10 @@ import { recordActivity } from '../services/activity-log'
 import { toTaskArtifactRun } from '../services/task-artifact-service'
 import { getAgentOsScheduler } from '../services/agent-os-scheduler'
 import { controlBackgroundGoal } from '../services/background-goal-control'
+import { resolveEffectiveAgentConfig } from '../services/effective-agent-config'
 import type { TaskQueueUpdate } from '../services/task-execution-queue'
 import { v4 as uuidv4 } from 'uuid'
+import { prepareGoalStepConversation, persistGoalStepEvent } from '../services/goal-step-conversation'
 
 export interface TaskServices {
   toolRegistry: ToolRegistry
@@ -65,10 +67,17 @@ async function syncActivePlan(conversationId: string): Promise<void> {
 }
 
 function resolveGoalAgentConnection(agentConfig: AgentConfig, services: TaskServices): { agentConfig: AgentConfig; provider: NonNullable<ReturnType<ProviderRegistry['get']>>; usedFallback: boolean } {
+  const effectiveAgentConfig = resolveEffectiveAgentConfig(agentConfig, {
+    providerId: getStorage().config.get('activeProviderId'),
+    model: getStorage().config.getActiveModel(),
+  })
   const configuredConnections = [
-    { providerId: agentConfig.providerId, model: agentConfig.model },
-    ...(agentConfig.modelCandidates || []),
-    { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
+    { providerId: effectiveAgentConfig.providerId, model: effectiveAgentConfig.model },
+    ...(effectiveAgentConfig.modelCandidates || []),
+    ...(effectiveAgentConfig.isBuiltIn ? [] : [{
+      providerId: getStorage().config.get('activeProviderId'),
+      model: getStorage().config.getActiveModel(),
+    }]),
   ]
   const seen = new Set<string>()
 
@@ -78,17 +87,17 @@ function resolveGoalAgentConnection(agentConfig: AgentConfig, services: TaskServ
     seen.add(providerId)
     const provider = services.providerRegistry.get(providerId)
     if (!provider) continue
-    const model = connection.model?.trim() || services.providerRegistry.getDefaultModel(providerId) || agentConfig.model
+    const model = connection.model?.trim() || services.providerRegistry.getDefaultModel(providerId) || effectiveAgentConfig.model
     return {
-      agentConfig: providerId === agentConfig.providerId && model === agentConfig.model
-        ? agentConfig
-        : { ...agentConfig, providerId, model },
+      agentConfig: providerId === effectiveAgentConfig.providerId && model === effectiveAgentConfig.model
+        ? effectiveAgentConfig
+        : { ...effectiveAgentConfig, providerId, model },
       provider,
-      usedFallback: providerId !== agentConfig.providerId || model !== agentConfig.model,
+      usedFallback: providerId !== effectiveAgentConfig.providerId || model !== effectiveAgentConfig.model,
     }
   }
 
-  throw new Error(`No available model connection for Goal execution. The original connection "${agentConfig.providerId}" is unavailable; configure a model connection and try again.`)
+  throw new Error(`No available model connection for Goal execution. The selected connection "${effectiveAgentConfig.providerId}" is unavailable; configure a model connection and try again.`)
 }
 
 /** Persist a user-requested stop before the planner has a chance to emit again. */
@@ -312,14 +321,18 @@ function applyGoalEventToSnapshot(current: GoalProgress | null, event: GoalEvent
     case 'plan_created':
       return current ? { ...current, steps: event.steps, totalSteps: event.steps.length } : current
     case 'step_started':
-      return current ? { ...current, currentStepIndex: event.stepIndex, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', startedAt: Date.now() } : step) } : current
+      return current ? { ...current, currentStepIndex: event.stepIndex, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', startedAt: Date.now(), attempt: event.attempt, maxAttempts: event.maxAttempts, attempts: event.attempts, ...(event.agentConversationId ? { agentConversationId: event.agentConversationId } : {}) } : step) } : current
+    case 'step_conversation':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, agentConversationId: event.agentConversationId, handoff: event.handoff } : step) } : current
     case 'step_tool_call':
       return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: [...(step.toolCalls || []), event.toolCall] } : step) } : current
     case 'step_tool_result':
       return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, toolCalls: (step.toolCalls || []).map((call) => call.id === event.toolCallId ? { ...call, result: event.result, isError: event.isError } : call) } : step) } : current
+    case 'step_retrying':
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: 'in_progress', attempt: event.attempt, maxAttempts: event.maxAttempts, attempts: event.attempts, result: undefined } : step) } : current
     case 'step_completed':
     case 'step_failed':
-      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error, completedAt: Date.now() } : step) } : current
+      return current ? { ...current, steps: current.steps.map((step) => step.id === event.stepId ? { ...step, status: event.type === 'step_completed' ? 'completed' : 'failed', result: event.type === 'step_completed' ? event.result : event.error, attempts: event.attempts || step.attempts, completedAt: Date.now() } : step) } : current
     case 'plan_adjusted':
       return current ? { ...current, steps: [...current.steps.filter((step) => step.status === 'completed' || step.status === 'failed'), ...event.steps], totalSteps: event.steps.length } : current
     case 'summary':
@@ -932,8 +945,8 @@ export function registerTaskHandlers(services?: TaskServices): void {
           throw new Error(`Agent ${payload.agentId} not found`)
         }
 
-        // 2. Restore the original connection when possible. A saved Goal must
-        // still be resumable if that connection was removed or renamed.
+        // 2. Resolve the same effective model used by the parent conversation.
+        // Candidates are only considered when that connection is unavailable.
         const resolvedConnection = resolveGoalAgentConnection(agentConfig, activeTaskServices)
         const goalAgentConfig = resolvedConnection.agentConfig
         const provider = resolvedConnection.provider
@@ -942,7 +955,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
             category: 'agent',
             action: 'goal.model_fallback',
             status: 'info',
-            summary: `Goal resumed with ${goalAgentConfig.providerId} / ${goalAgentConfig.model} because ${agentConfig.providerId} / ${agentConfig.model} is unavailable.`,
+            summary: `Goal resumed with ${goalAgentConfig.providerId} / ${goalAgentConfig.model} because the selected connection is unavailable.`,
             conversationId: payload.conversationId,
           }, win)
         }
@@ -977,6 +990,13 @@ export function registerTaskHandlers(services?: TaskServices): void {
           terminalService: activeTaskServices.terminalService,
           maxSteps: goalConfig.maxSteps,
           timeout: goalConfig.timeout,
+          prepareStepConversation: async ({ step, handoff }) => {
+            if (!conversation) throw new Error('Parent Goal conversation not found.')
+            const prepared = await prepareGoalStepConversation({ parent: conversation, agentConfig: goalAgentConfig, workspacePath, step, handoff })
+            if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, prepared.conversationId)
+            return prepared
+          },
+          persistStepEvent: ({ step, conversationId: stepConversationId, event }) => persistGoalStepEvent({ step, conversationId: stepConversationId, event, agentConfig: goalAgentConfig }),
         })
         activeGoalPlanners.get(payload.conversationId)?.abort()
         activeGoalPlanners.set(payload.conversationId, planner)

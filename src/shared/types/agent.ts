@@ -44,7 +44,7 @@ export interface AgentConfig {
   outputTextEffect?: AgentOutputTextEffect
   /** Visual renderer for final Markdown responses. */
   markdownRenderer?: AgentMarkdownRenderer
-  /** Request and display provider-supplied reasoning when the model supports it. */
+  /** Request and display provider-supplied slow reasoning when supported. */
   showThinking?: boolean
   model: string
   providerId: string
@@ -67,7 +67,7 @@ export interface AgentConfig {
 }
 
 export interface AgentEvent {
-  type: 'text' | 'reasoning' | 'tool_call' | 'tool_result' | 'thinking' | 'error' | 'done'
+  type: 'text' | 'text_reset' | 'reasoning' | 'tool_call' | 'tool_result' | 'thinking' | 'error' | 'done'
   content?: string
   toolCall?: {
     id: string
@@ -82,6 +82,8 @@ export interface AgentEvent {
     protocol?: ExecutionEnvelope
   }
   error?: string
+  /** Provider termination reason. `length` means the response hit a provider limit. */
+  finishReason?: string
   usage?: ChatUsage
 }
 

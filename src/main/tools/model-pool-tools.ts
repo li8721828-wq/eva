@@ -4,6 +4,7 @@ import type { ProviderRegistry } from '../providers'
 import { getStorage } from '../storage'
 import { ModelRouter } from '../services/model-router'
 import { modelHealthService } from '../services/model-health-service'
+import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
 import { createExecutionEnvelope, type ToolContext, type ToolExecutionResult, type ToolExecutor } from './index'
 import fs from 'fs'
 import path from 'path'
@@ -76,7 +77,7 @@ export function createModelPoolTools(providerRegistry: ProviderRegistry): ToolEx
           }
         } catch (error) {
           modelHealthService.recordFailure(entry.id)
-          errors.push(`${entry.name}: ${error instanceof Error ? error.message : String(error)}`)
+          errors.push(`${entry.name}: ${formatProviderRequestFailure(error, provider, entry.model, 'model-pool')}`)
         }
       }
       return `All routed models failed for pool "${poolId}".\n${errors.join('\n')}`

@@ -23,6 +23,22 @@ export interface RequirementEvaluation {
   threshold: number
   blockers: string[]
   summary: string
+  /**
+   * Machine-readable semantic audit result. New requirement runs use this
+   * instead of inferring blockers from prose or heading names.
+   */
+  readiness?: 'ready' | 'blocked'
+  unresolvedItems?: RequirementUnresolvedItem[]
+}
+
+export interface RequirementUnresolvedItem {
+  id: string
+  fact: string
+  impact: string
+  requiredDecision: string
+  blocking: boolean
+  options?: string[]
+  recommendedIndex?: number
 }
 
 export interface RequirementClarificationQuestion {
@@ -50,6 +66,8 @@ export interface RequirementRun {
   id: string
   conversationId: string
   conversationTitle: string
+  /** Stable business-derived label used to group this RMSD run, never a chat title. */
+  requirementTitle?: string
   status: RequirementRunStatus
   round: number
   qualityScore: number
@@ -61,7 +79,7 @@ export interface RequirementRun {
   documents: RequirementDocument[]
   evaluations: RequirementEvaluation[]
   clarificationQuestions: RequirementClarificationQuestion[]
-  /** Project-local RMSD package root: <workspace>/.eva/RMSD/<requirement-name>. */
+  /** Project-local RMSD run root: <workspace>/.eva/RMSD/<requirement-name>/runs/<run-id>. */
   workspacePackagePath?: string
   /** Fixed workspace directory for this requirement package's specification artifacts. */
   workspaceOutputPath?: string

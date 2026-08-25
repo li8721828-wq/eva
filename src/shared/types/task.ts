@@ -80,8 +80,34 @@ export interface GoalStep {
   result?: string
   /** Tool activity produced while this step is executing. */
   toolCalls?: ToolCall[]
+  /** Hidden child conversation that owns this step's full execution history. */
+  agentConversationId?: string
+  /** Structured handoff sent from the parent Goal to this step. */
+  handoff?: GoalStepHandoff
+  /** Current full-step attempt, separate from provider request retries. */
+  attempt?: number
+  /** Maximum full-step attempts for recoverable provider failures. */
+  maxAttempts?: number
+  /** Durable record of each full-step attempt for task progress UI. */
+  attempts?: GoalStepAttempt[]
   startedAt?: number
   completedAt?: number
+}
+
+export interface GoalStepAttempt {
+  attempt: number
+  status: 'in_progress' | 'completed' | 'failed'
+  startedAt: number
+  completedAt?: number
+  error?: string
+}
+
+export interface GoalStepHandoff {
+  goal: string
+  step: string
+  acceptanceCriteria: string[]
+  workspacePath?: string
+  dependencyResults: Array<{ stepId: string; description: string; result: string }>
 }
 
 export interface GoalProgress {

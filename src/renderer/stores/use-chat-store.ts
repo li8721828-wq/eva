@@ -1,15 +1,19 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTraceEntry, FileAccessGrant, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, ExecutionTraceEntry, FileAccessGrant, GoalConfirmationRequest, ToolCall, ChatStreamEvent } from '../../shared/types'
 import type { RequirementProgress } from '../../shared/types/requirement-engineering'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
 
 export interface ConversationStreamState {
   isStreaming: boolean
+  agentId?: string
+  agentName?: string
   content: string
   reasoningContent: string
   toolCalls: ToolCall[]
   executionTrace: ExecutionTraceEntry[]
+  executionTimeline: ExecutionTimelineEntry[]
+  goalConfirmation?: GoalConfirmationRequest
   status: string
   startedAt: number | null
   lastActivityAt: number | null
@@ -22,7 +26,7 @@ export interface RequirementProgressState {
 }
 
 function createIdleStream(): ConversationStreamState {
-  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], status: '', startedAt: null, lastActivityAt: null }
+  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], executionTimeline: [], status: '', startedAt: null, lastActivityAt: null }
 }
 
 interface ChatState {
@@ -69,6 +73,7 @@ interface ChatState {
   setConversationGitBranch: (id: string, branch: string) => Promise<void>
   sendMessage: (agentId?: string) => Promise<void>
   abortStream: () => void
+  decideGoalConfirmation: (conversationId: string, confirmationId: string, approved: boolean) => Promise<void>
   appendStreamEvent: (event: ChatStreamEvent) => void
   clearCurrentChat: () => void
 }
@@ -451,7 +456,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       documentAttachments: [],
       streamingByConversation: {
         ...s.streamingByConversation,
-        [convId!]: { isStreaming: true, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], status: '正在准备请求...', startedAt: Date.now(), lastActivityAt: Date.now() },
+        [convId!]: { isStreaming: true, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], executionTimeline: [], status: '正在准备请求...', startedAt: Date.now(), lastActivityAt: Date.now() },
       },
       error: null,
     }))
@@ -480,12 +485,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
   },
 
+  decideGoalConfirmation: async (conversationId, confirmationId, approved) => {
+    const accepted = await window.eva.chat.decideGoalConfirmation(conversationId, confirmationId, approved)
+    if (!accepted) return
+    set((state) => {
+      const stream = state.streamingByConversation[conversationId]
+      if (!stream || stream.goalConfirmation?.id !== confirmationId) return state
+      return {
+        streamingByConversation: {
+          ...state.streamingByConversation,
+          [conversationId]: {
+            ...stream,
+            goalConfirmation: undefined,
+            status: approved ? 'Starting Goal execution...' : 'Continuing in regular chat...',
+            lastActivityAt: Date.now(),
+          },
+        },
+      }
+    })
+  },
+
   appendStreamEvent: (event) => {
     const conversationId = event.conversationId
     if (!conversationId) return
+    const agentIdentity = event.agentName
+      ? { agentId: event.agentId, agentName: event.agentName }
+      : {}
     switch (event.type) {
       case 'thinking': {
-        set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
+        set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), ...agentIdentity, isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
         break
       }
 
@@ -502,6 +530,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   isStreaming: true,
                   executionTrace: event.executionTrace!,
                   status: latest?.title || stream.status,
+                  lastActivityAt: Date.now(),
+                },
+              },
+            }
+          })
+        }
+        break
+      }
+
+      case 'execution_timeline': {
+        if (event.executionTimeline) {
+          set((s) => {
+            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const latest = event.executionTimeline![event.executionTimeline!.length - 1]
+            return {
+              streamingByConversation: {
+                ...s.streamingByConversation,
+                [conversationId]: {
+                  ...stream,
+                  ...agentIdentity,
+                  isStreaming: true,
+                  executionTimeline: event.executionTimeline!,
+                  status: latest?.kind === 'tool' ? `Running ${latest.toolCall?.name || 'tool'}...` : '模型正在思考...',
                   lastActivityAt: Date.now(),
                 },
               },
@@ -536,6 +587,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
 
+      case 'goal_confirmation': {
+        if (!event.goalConfirmation) break
+        set((s) => {
+          const stream = s.streamingByConversation[conversationId] || createIdleStream()
+          return {
+            streamingByConversation: {
+              ...s.streamingByConversation,
+                [conversationId]: {
+                  ...stream,
+                  ...agentIdentity,
+                  isStreaming: true,
+                goalConfirmation: event.goalConfirmation,
+                status: 'Waiting for your decision about Goal execution...',
+                lastActivityAt: Date.now(),
+              },
+            },
+          }
+        })
+        break
+      }
+
       case 'reasoning_delta': {
         if (event.content) {
           set((s) => {
@@ -553,6 +625,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content!, status: 'Generating response...', lastActivityAt: Date.now() } } }
           })
         }
+        break
+      }
+
+      case 'text_reset': {
+        set((s) => {
+          const stream = s.streamingByConversation[conversationId] || createIdleStream()
+          return {
+            streamingByConversation: {
+              ...s.streamingByConversation,
+              [conversationId]: { ...stream, isStreaming: true, content: '', status: 'Running tools...', lastActivityAt: Date.now() },
+            },
+          }
+        })
         break
       }
 
@@ -607,8 +692,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
             content: finalContent,
             reasoningContent: stream.reasoningContent || undefined,
             executionTrace: stream.executionTrace.length > 0 ? stream.executionTrace : undefined,
+            executionTimeline: stream.executionTimeline.length > 0 ? stream.executionTimeline : undefined,
             toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,
             usage: event.usage,
+            finishReason: event.finishReason,
             timestamp: Date.now(),
           }
           set((s) => ({

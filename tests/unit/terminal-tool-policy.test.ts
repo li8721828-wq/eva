@@ -56,6 +56,24 @@ describe('execute_command permission boundary', () => {
     )
     expect(context.terminalService.destroySession).not.toHaveBeenCalled()
   })
+
+  it('blocks a PowerShell pipeline property access missing the current-item variable', async () => {
+    const context = { ...makeContext(false), conversationId: 'conversation-powershell' }
+    const result = await tool.execute({ command: "Get-ChildItem -Recurse -File | Where-Object { .Extension -match '\\.ts$' }" }, context)
+
+    expect(result).toContain('$_.Extension')
+    expect(context.terminalService.createSession).not.toHaveBeenCalled()
+    expect(context.terminalService.executeCommand).not.toHaveBeenCalled()
+  })
+
+  it('blocks an identical command after it fails in the same terminal session', async () => {
+    const context = { ...makeContext(false), conversationId: 'conversation-repeat' }
+    vi.mocked(context.terminalService.executeCommand).mockResolvedValue({ stdout: '', stderr: 'CommandNotFoundException', exitCode: 1 })
+
+    await expect(tool.execute({ command: 'broken-command' }, context)).resolves.toContain('CommandNotFoundException')
+    await expect(tool.execute({ command: 'broken-command' }, context)).resolves.toContain('identical command already failed')
+    expect(context.terminalService.executeCommand).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('read_terminal conversation boundary', () => {
@@ -90,6 +108,14 @@ describe('controlled terminal visibility', () => {
       conversationTerminalSessionId('conversation-a'),
       'ipconfig\r',
     )
+  })
+
+  it('does not submit a malformed PowerShell pipeline through direct terminal typing', async () => {
+    const tool = createTerminalTools().find((candidate) => candidate.definition.name === 'write_terminal')!
+    const context = { ...makeContext(false), conversationId: 'conversation-typed-powershell' }
+
+    await expect(tool.execute({ text: 'Get-ChildItem | Where-Object { .Name -eq \'x\' }', submit: true }, context)).resolves.toContain('$_.Property')
+    expect(context.terminalService.writeInput).not.toHaveBeenCalled()
   })
 
   it('closes only the current conversation terminal', async () => {

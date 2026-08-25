@@ -68,6 +68,7 @@ export const IPC = {
   CHAT_SEND: 'chat:send',
   CHAT_STREAM: 'chat:stream',
   CHAT_ABORT: 'chat:abort',
+  CHAT_GOAL_CONFIRMATION_DECIDE: 'chat:goal-confirmation-decide',
 
   // Shared multi-agent discussion
   SYMPOSIUM_START: 'symposium:start',
