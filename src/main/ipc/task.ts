@@ -310,6 +310,10 @@ async function getConversationAccess(conversation?: Conversation | null): Promis
   return { grants: getStorage().config.get('fileAccessGrants'), fullFilesystemAccess: false }
 }
 
+function conversationWorkspacePath(conversation: Conversation, fallback = ''): string {
+  return conversation.workspaceId ? (conversation.workspacePath || fallback) : ''
+}
+
 function applyGoalEventToSnapshot(current: GoalProgress | null, event: GoalEvent, conversationId: string): GoalProgress | null {
   switch (event.type) {
     case 'goal_started':
@@ -544,7 +548,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
         const durableMemory = await getStorage().runtimeMemory.buildContext(conversationId, conversation.workspaceId)
         const workspaceAccess = await getConversationAccess(conversation)
-        const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
+        const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const historyMessages = await getStorage().conversations.getMessages(conversationId, { limit: 12 })
 
         // Team work belongs to the same conversation as normal chat. Persist the
@@ -966,7 +970,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           conversation = await getStorage().conversations.getConversation(payload.conversationId)
         }
         const workspaceAccess = await getConversationAccess(conversation)
-        const workspacePath = conversation?.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
+        const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
         const durableMemory = await getStorage().runtimeMemory.buildContext(payload.conversationId, conversation?.workspaceId)
 
         // 4. Create GoalPlanner

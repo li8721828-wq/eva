@@ -112,15 +112,17 @@ function TreeNode({
 
 export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
   const { workspacePath, setCurrentFile } = useAppStore()
-  const { workspaces, activeWorkspaceId } = useWorkspaceStore()
+  const { workspaces } = useWorkspaceStore()
   const { conversations, currentConversationId, setConversations } = useChatStore()
   const [rootNodes, setRootNodes] = useState<FileNode[]>([])
   const [loading, setLoading] = useState(false)
   const [treeRevision, setTreeRevision] = useState(0)
   const [view, setView] = useState<'files' | 'code'>('files')
-  const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null
   const activeConversation = conversations.find((conversation) => conversation.id === currentConversationId) || null
-  const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
+  const activeWorkspace = activeConversation?.workspaceId
+    ? workspaces.find((workspace) => workspace.id === activeConversation.workspaceId) || null
+    : null
+  const resolvedWorkspacePath = activeWorkspace?.path || (activeConversation?.workspaceId ? workspacePath : '')
 
   const loadRootTree = useCallback(async () => {
     if (!resolvedWorkspacePath) {

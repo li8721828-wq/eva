@@ -19,6 +19,7 @@ import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/
 import type { ActivePlan } from '../shared/types/active-plan'
 import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
+import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -75,6 +76,7 @@ export interface EvaAPI {
     create(data: Partial<AgentConfig>): Promise<AgentConfig>
     update(id: string, data: Partial<AgentConfig>): Promise<AgentConfig>
     delete(id: string): Promise<void>
+    estimateTokens(id: string): Promise<AgentTokenEstimate>
   }
 
   // 任务（Expert 模式）
@@ -307,6 +309,7 @@ const evaAPI: EvaAPI = {
     create: (data) => ipcRenderer.invoke(IPC.AGENT_CREATE, data),
     update: (id, data) => ipcRenderer.invoke(IPC.AGENT_UPDATE, id, data),
     delete: (id) => ipcRenderer.invoke(IPC.AGENT_DELETE, id),
+    estimateTokens: (id) => ipcRenderer.invoke(IPC.AGENT_TOKEN_ESTIMATE, id),
   },
 
   // 任务（Expert 模式）

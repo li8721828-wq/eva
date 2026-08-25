@@ -39,7 +39,7 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerRuntimeProposalHandlers()
   registerRuntimeKernelHandlers()
   registerActivePlanHandlers()
-  registerAgentHandlers()
+  registerAgentHandlers(services?.toolRegistry)
   registerPluginHandlers()
   if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService)
   registerGitHandlers()

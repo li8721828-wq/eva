@@ -119,6 +119,7 @@ export function MessageList({ className }: MessageListProps) {
   const streamingToolCalls = stream?.toolCalls || []
   const streamingExecutionTrace = stream?.executionTrace || []
   const streamingExecutionTimeline = stream?.executionTimeline || []
+  const streamingProgressUpdates = stream?.progressUpdates || []
   const goalConfirmation = stream?.goalConfirmation
   const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
   const isRequirementRunning = Boolean(requirementProgress)
@@ -341,7 +342,18 @@ export function MessageList({ className }: MessageListProps) {
   // Goal child conversations retain each protocol event for safe resumption.
   // Collapse them here into one expandable activity item, so one tool never
   // becomes one empty assistant reply in the visible transcript.
-  const renderableMessages = useMemo(() => collapseToolHistoryMessages(messages), [messages])
+  const liveProgressMessageIds = useMemo(() => {
+    if (!isStreaming) return new Set<string>()
+    const ids = new Set<string>()
+    for (let index = messages.length - 1; index >= 0 && messages[index].progressKind; index--) {
+      ids.add(messages[index].id)
+    }
+    return ids
+  }, [isStreaming, messages])
+  const renderableMessages = useMemo(
+    () => collapseToolHistoryMessages(messages.filter((message) => !liveProgressMessageIds.has(message.id))),
+    [liveProgressMessageIds, messages],
+  )
   const conversationUsage = useMemo(() => sumConversationUsage(renderableMessages), [renderableMessages])
   const latestUsageMessageId = useMemo(
     () => [...renderableMessages].reverse().find((message) => message.role === 'assistant' && message.usage)?.id,
@@ -726,6 +738,7 @@ export function MessageList({ className }: MessageListProps) {
               toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
               executionTrace: streamingExecutionTrace.length > 0 ? streamingExecutionTrace : undefined,
               executionTimeline: streamingExecutionTimeline.length > 0 ? streamingExecutionTimeline : undefined,
+              progressUpdates: streamingProgressUpdates.length > 0 ? streamingProgressUpdates : undefined,
               timestamp: Date.now(),
             }}
           />

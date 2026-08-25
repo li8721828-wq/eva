@@ -28,6 +28,10 @@ export interface AgentConfig {
   description: string
   role: AgentRole
   systemPrompt: string
+  /** Keeps a user-authored built-in prompt from being overwritten by shipped defaults. */
+  systemPromptCustomized?: boolean
+  /** Per-agent platform prompt template. Use {{default_platform_rules}} to retain Eva's generated rules. */
+  platformPromptTemplate?: string
   /** Response presentation rules applied after the agent's role instructions. */
   outputFormat?: AgentOutputFormat
   /** Per-agent response format requirements when outputFormat is custom. */

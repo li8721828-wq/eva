@@ -3,6 +3,8 @@ import type { AgentConfig } from '../../shared/types/agent'
 import type { ChatMessage, ContextDiagnostics } from '../../shared/types/conversation'
 import { CONTEXT_WINDOW_TOKENS } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import { buildSharedEnvironmentPrompt, normalizeEnvironmentRules } from '../services/environment-profile-service'
+import { getStorage } from '../storage'
 
 const COMPRESSED_HISTORY_MAX_CHARS = 8_000
 const OLD_MESSAGE_MAX_CHARS = 520
@@ -349,7 +351,7 @@ export class ContextManager {
     parts.push('')
     parts.push('--- Response Presentation ---')
     parts.push(this.buildOutputPresentationGuidance(agentConfig))
-    parts.push('When tools are needed, you may send a short, natural user-visible work update before the next action using <eva-progress>content</eva-progress>. Use it only when there is something worth telling the user: a new understanding, concrete evidence, an important tradeoff, uncertainty, a change of approach, a useful intermediate result, or a real obstacle. Write one to three calm, natural sentences as a thoughtful collaborator, not as a checklist or tool log. Say what you learned or are weighing, why it matters, and what you will do next when relevant. Do not invent certainty, expose private chain-of-thought, repeat unchanged status, or use eva-progress tags in a final answer that needs no tools.')
+    parts.push('When tools are needed, invoke only the structured tools supplied below. Do not emit XML/HTML tool tags, command markup, or tentative tool results as user-visible prose. Do not claim a command, search, file action, or external lookup succeeded until its tool result confirms it.')
     parts.push('')
     parts.push('--- Evidence and Action Integrity ---')
     parts.push('Separate verified facts, inferences, and suggestions. Never invent a source, citation, file path, command output, external action, test result, collaboration result, or real-time fact.')
@@ -359,7 +361,7 @@ export class ContextManager {
     parts.push('When the required capability is absent, do not work around it by guessing. State the blocked action, the reason, and the smallest next step: grant a tool, configure a service, provide a source, or approve an action.')
     parts.push('Tools are atomic operations, not workflow controllers. Choose the tool sequence yourself from the task and previous evidence. Use project metadata only as an optional candidate locator; use search_code for exact or broad occurrence coverage and read_file for source evidence. Do not treat any index result as a conclusion.')
     if (tools.some((tool) => tool.name === 'write_terminal')) {
-      parts.push('Eva controlled terminal protocol: use open_terminal, write_terminal, execute_command, read_terminal, and close_terminal for this conversation\'s built-in terminal. execute_command runs in Eva\'s visible terminal and returns output; write_terminal directly types text there and can submit with Enter. Do not use desktop_observe, mouse_control, or keyboard_control merely to operate Eva\'s own terminal.')
+      parts.push('Eva controlled terminal protocol: use execute_command for ordinary command work; it runs in the background and returns output without opening the terminal panel. Use open_terminal only for an interactive or externally connected session (such as SSH, a database console, or a remote computer) when the user needs to see or type in that live session. write_terminal only types into the controlled shell and does not reveal it; call open_terminal first when visibility is needed. Do not open the terminal merely for routine filesystem reads/writes, scripts, builds, installations, or checks. Do not use desktop_observe, mouse_control, or keyboard_control merely to operate Eva\'s own terminal.')
     }
     if (tools.some((tool) => tool.name === 'desktop_observe') && tools.some((tool) => tool.name === 'mouse_control')) {
       parts.push('--- Visible Desktop Control Protocol ---')
@@ -393,6 +395,16 @@ export class ContextManager {
     // prompt caching can reuse it across turns instead of missing every second.
     parts.push(`Current date: ${new Date().toISOString().slice(0, 10)}`)
 
+    try {
+      const sharedEnvironment = buildSharedEnvironmentPrompt(normalizeEnvironmentRules(getStorage().config.get('environmentRules')))
+      if (sharedEnvironment) {
+        parts.push('')
+        parts.push(sharedEnvironment)
+      }
+    } catch {
+      // Tests and isolated construction can run before application storage exists.
+    }
+
     if (tools.length > 0) {
       parts.push('')
       parts.push('--- Available Tools ---')
@@ -401,7 +413,14 @@ export class ContextManager {
       }
     }
 
-    return parts.join('\n')
+    const defaultPrompt = parts.join('\n')
+    const template = agentConfig.platformPromptTemplate?.trim()
+    if (!template) return defaultPrompt
+
+    // The agent-specific role prompt always remains the first segment. A template
+    // can retain the generated platform portion via the explicit placeholder.
+    const platformPrompt = defaultPrompt.slice(agentConfig.systemPrompt.length)
+    return `${agentConfig.systemPrompt}${template.replaceAll('{{default_platform_rules}}', platformPrompt)}`
   }
 
   private buildOutputPresentationGuidance(agent: AgentConfig): string {

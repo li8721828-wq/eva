@@ -245,6 +245,123 @@ describe('OpenAIProvider streaming tool calls', () => {
     ])
   })
 
+  it('converts a complete legacy XML command call into the offered structured tool', async () => {
+    async function* legacyToolCallStream() {
+      yield {
+        choices: [{
+          delta: {
+            content: '<tool_call>\n<function=run_command>\n<parameter=command>powershell -Command "Get-PSDrive C"</parameter>\n</function>\n</tool_call>',
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn().mockResolvedValue(legacyToolCallStream()),
+        },
+      },
+    }
+
+    const tools = [{
+      name: 'execute_command',
+      description: 'Execute a command.',
+      parameters: {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+      },
+    }]
+    const chunks = []
+    for await (const chunk of provider.chat({ model: 'test-model', messages: [], tools })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.at(-1)).toMatchObject({
+      content: '',
+      finishReason: 'tool_calls',
+      toolCalls: [{
+        index: 0,
+        name: 'execute_command',
+        arguments: '{"command":"powershell -Command \\"Get-PSDrive C\\""}',
+      }],
+    })
+  })
+
+  it('converts the direct XML tool dialect and discards its premature prose', async () => {
+    async function* directLegacyToolCallStream() {
+      yield {
+        choices: [{
+          delta: {
+            content: '<execute_command><command>Get-PSDrive C</command></execute_command>\nYour C drive has plenty of space.',
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn().mockResolvedValue(directLegacyToolCallStream()),
+        },
+      },
+    }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model',
+      messages: [],
+      tools: [{
+        name: 'execute_command',
+        description: 'Execute a command.',
+        parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] },
+      }],
+    })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.at(-1)).toMatchObject({
+      finishReason: 'tool_calls',
+      toolCalls: [{ name: 'execute_command', arguments: '{"command":"Get-PSDrive C"}' }],
+    })
+  })
+
+  it('does not convert legacy XML when it contains ordinary prose or an unavailable tool', async () => {
+    async function* malformedLegacyStream() {
+      yield {
+        choices: [{
+          delta: { content: 'I will check it now.\n<tool_call><function=run_command><parameter=command>Get-PSDrive C</parameter></function></tool_call>' },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: {
+        completions: {
+          create: vi.fn().mockResolvedValue(malformedLegacyStream()),
+        },
+      },
+    }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model',
+      messages: [],
+      tools: [{ name: 'list_directory', description: 'List files.', parameters: { type: 'object' } }],
+    })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.some((chunk) => chunk.toolCalls)).toBe(false)
+  })
+
   it('preserves a non-streaming length stop reason for callers that must reject partial artifacts', async () => {
     const provider = new OpenAIProvider('test', 'Test', 'openai', { apiKey: 'test-key' })
     ;(provider as any).client = {

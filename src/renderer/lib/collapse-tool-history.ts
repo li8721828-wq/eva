@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolCall } from '../../shared/types'
+import type { ChatMessage, ProgressUpdate, ToolCall } from '../../shared/types'
 
 function isStandaloneToolCallMessage(message: ChatMessage): boolean {
   return message.role === 'assistant'
@@ -25,6 +25,7 @@ function applyToolResult(toolCalls: ToolCall[], toolCallId: string | undefined, 
 export function collapseToolHistoryMessages(messages: ChatMessage[]): ChatMessage[] {
   const collapsed: ChatMessage[] = []
   let activity: ChatMessage | undefined
+  let pendingProgress: ProgressUpdate[] = []
 
   const flushActivity = () => {
     if (activity) collapsed.push(activity)
@@ -32,6 +33,16 @@ export function collapseToolHistoryMessages(messages: ChatMessage[]): ChatMessag
   }
 
   for (const message of messages) {
+    if (message.progressKind) {
+      pendingProgress.push({
+        id: message.id,
+        kind: message.progressKind,
+        content: message.content,
+        timestamp: message.timestamp,
+      })
+      continue
+    }
+
     if (message.role === 'tool') {
       if (activity) {
         activity = {
@@ -51,9 +62,30 @@ export function collapseToolHistoryMessages(messages: ChatMessage[]): ChatMessag
     }
 
     flushActivity()
-    collapsed.push(message)
+    if (message.role === 'assistant' && pendingProgress.length > 0) {
+      const mergedProgress = [...pendingProgress, ...(message.progressUpdates || [])]
+      collapsed.push({
+        ...message,
+        progressUpdates: mergedProgress.filter((progress, index) => mergedProgress.findIndex((candidate) => candidate.id === progress.id) === index),
+      })
+      pendingProgress = []
+    } else {
+      collapsed.push(message)
+    }
   }
 
   flushActivity()
+  // A stream can be interrupted before it writes its final assistant reply.
+  // Keep those updates visible rather than silently discarding the evidence.
+  for (const progress of pendingProgress) {
+    collapsed.push({
+      id: progress.id,
+      conversationId: messages[0]?.conversationId || '',
+      role: 'assistant',
+      content: progress.content,
+      progressKind: progress.kind,
+      timestamp: progress.timestamp,
+    })
+  }
   return collapsed
 }

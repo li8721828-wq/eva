@@ -8,6 +8,8 @@ import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/t
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import { compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
+import { createProgressiveToolPlan } from './tool-loading'
+import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPoolEntry } from '../../shared/types/model-pool'
 import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
@@ -215,7 +217,7 @@ export class AgentRunner {
 
       // Tool definitions filtered by agent's allowed tool list
       const poolTool = agentConfig.tools.includes('delegate_to_model_pool') ? modelPoolDelegationTool(agentConfig.modelPoolIds) : undefined
-      const toolDefs: ToolDefinition[] = [
+      const allToolDefs: ToolDefinition[] = [
         ...toolRegistry.getDefinitionsByNames(agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool')),
         ...(poolTool ? [poolTool] : []),
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
@@ -274,6 +276,15 @@ export class AgentRunner {
       let completedResponse = ''
       let providerContinuationCount = 0
 
+      const progressiveToolPlan = createProgressiveToolPlan(allToolDefs, safeUserMessage.content)
+      let activeToolDefs = progressiveToolPlan.initial
+      let activeSystemPrompt = contextManager.buildSystemPrompt(
+        agentConfig,
+        workspacePath,
+        fileAccessGrants,
+        fullFilesystemAccess,
+        activeToolDefs,
+      )
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
         messages: safeAllHistory,
@@ -281,7 +292,7 @@ export class AgentRunner {
         fileAccessGrants,
         fullFilesystemAccess,
         maxContextTokens: getModelInputBudgetTokens(agentConfig.model),
-        tools: toolDefs,
+        tools: activeToolDefs,
       })
 
       // ── ReAct loop ──────────────────────────────────────────────────────────
@@ -297,7 +308,7 @@ export class AgentRunner {
         }
 
         // Call LLM (yields real-time text_delta events to caller)
-        const response = yield* this.executeLLMCall(messages, toolDefs)
+        const response = yield* this.executeLLMCall(messages, activeToolDefs)
         accumulatedUsage = this.mergeUsage(accumulatedUsage, response.usage)
 
         const hasToolCalls = response.toolCalls.length > 0
@@ -328,7 +339,7 @@ export class AgentRunner {
             }
             continue
           }
-          if (pendingWriteVerifications.size > 0 && toolDefs.some((tool) => tool.name === 'read_file') && iteration < maxIter - 1) {
+          if (pendingWriteVerifications.size > 0 && activeToolDefs.some((tool) => tool.name === 'read_file') && iteration < maxIter - 1) {
             messages.push({ role: 'assistant', content: response.content })
             messages.push({
               role: 'user',
@@ -384,6 +395,7 @@ export class AgentRunner {
           }))
           for (const { toolCall, result } of completedBatch) {
             toolResults.set(toolCall.id, result)
+            if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
             yield {
               type: 'tool_result',
               toolResult: {
@@ -444,6 +456,7 @@ export class AgentRunner {
           const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
           const rawResult = cached || await this.executeTool(toolCall, toolContext)
           const result = this.normalizeToolResult(rawResult)
+          if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
           if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           toolResults.set(toolCall.id, result)
           if (isDesktopAction && !result.isError) desktopActionExecuted = true
@@ -471,6 +484,24 @@ export class AgentRunner {
 
         // Append assistant tool_calls + tool results to message history
         messages = this.appendToolMessages(messages, response.toolCalls, toolResults)
+
+        const nextToolDefs = progressiveToolPlan.followUp(response.toolCalls.map((toolCall) => toolCall.name))
+        const nextSystemPrompt = contextManager.buildSystemPrompt(
+          agentConfig,
+          workspacePath,
+          fileAccessGrants,
+          fullFilesystemAccess,
+          nextToolDefs,
+        )
+        const currentSystemMessage = messages[0]
+        const preservedSystemSuffix = currentSystemMessage?.role === 'system' && currentSystemMessage.content.startsWith(activeSystemPrompt)
+          ? currentSystemMessage.content.slice(activeSystemPrompt.length)
+          : ''
+        if (currentSystemMessage?.role === 'system') {
+          messages[0] = { ...currentSystemMessage, content: `${nextSystemPrompt}${preservedSystemSuffix}` }
+        }
+        activeSystemPrompt = nextSystemPrompt
+        activeToolDefs = nextToolDefs
 
         const integrityReminder = this.buildToolIntegrityReminder(response.toolCalls, toolResults)
         if (integrityReminder) messages.push({ role: 'user', content: integrityReminder })

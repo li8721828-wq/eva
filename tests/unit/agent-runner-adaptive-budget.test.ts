@@ -174,6 +174,47 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.find((event) => event.type === 'done')?.content).toBe('Both files were read.')
   })
 
+  it('drops tool schemas for the final answer after a simple web lookup', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'web_search', description: 'Search the web.', parameters: {} },
+      execute: async () => 'One current weather result.',
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        return request === 1
+          ? chunks({ content: '', toolCalls: [{ index: 0, id: 'weather', name: 'web_search', arguments: '{"query":"weather"}' }], finishReason: 'tool_calls' })
+          : chunks({ content: 'It is cloudy.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['web_search'], maxIterations: 2 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    for await (const _event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '目前北京天气', timestamp: Date.now() },
+    })) {
+      // Exhaust the event stream.
+    }
+
+    expect(requestedTools).toEqual([['web_search'], undefined])
+  })
+
   it('streams final prose and clears provisional tool rationale', async () => {
     const registry = new ToolRegistry()
     registry.register({

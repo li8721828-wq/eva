@@ -1,9 +1,17 @@
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import type { FileService, FileEntry } from '../tools'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+/** Expand the one cross-shell home shorthand before path validation. */
+export function expandHomePath(filePath: string): string {
+  if (filePath === '~') return os.homedir()
+  if (/^~[\\/]/.test(filePath)) return path.join(os.homedir(), filePath.slice(2))
+  return filePath
+}
 
 function isWithinRoot(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate)
@@ -41,6 +49,7 @@ async function normalizeAndValidate(
   fullFilesystemAccess = false
 ): Promise<string> {
   if (!filePath) throw new Error('A file path is required')
+  filePath = expandHomePath(filePath)
   if (!path.isAbsolute(filePath) && !workspacePath && !fullFilesystemAccess) {
     throw new Error('No workspace is configured for relative file paths')
   }

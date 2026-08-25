@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/Input'
 import { ModelAccessPanel } from './ModelAccessPanel'
 import { ToolAccessPanel } from './ToolAccessPanel'
 import { OutputFormatPanel } from './OutputFormatPanel'
+import { AgentTokenEstimatePanel } from './AgentTokenEstimatePanel'
 import { AlertTriangle, Bot, Braces, Check, ChevronLeft, Cpu, Pencil, Plus, Search, Trash2, Wrench } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -350,6 +351,8 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
               {detailAgent.tools.length ? detailAgent.tools.map((tool) => <span key={tool} className="rounded-md border border-violet-100 bg-violet-50 px-3 py-1.5 text-xs text-violet-700">{agentToolsLabel(tool)}</span>) : <span className="text-sm text-zinc-500">{copy.noTools}</span>}
             </div>
           </section>
+
+          <AgentTokenEstimatePanel agent={detailAgent} onUpdate={(updates) => updateAgent(detailAgent.id, updates)} />
 
           <section className="border-t border-zinc-100 pt-6">
             <div className="flex items-start justify-between gap-4">

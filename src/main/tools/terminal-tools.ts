@@ -27,7 +27,7 @@ export function createTerminalTools(): ToolExecutor[] {
 const openTerminalTool: ToolExecutor = {
   definition: {
     name: 'open_terminal',
-    description: 'Open Eva\'s built-in controlled terminal for the current conversation. The user can see it in Eva\'s right panel, and subsequent terminal reads or commands use this same shell.',
+    description: 'Explicitly reveal Eva\'s built-in controlled terminal for the current conversation. Use only for an interactive or externally connected session (for example SSH, a database console, a remote computer) when the user needs to watch or type in the live session. Ordinary commands should remain in the background with execute_command.',
     parameters: { type: 'object', properties: {}, required: [] },
   },
   async execute(_params: Record<string, unknown>, context: ToolContext): Promise<string> {
@@ -59,7 +59,7 @@ const readTerminalTool: ToolExecutor = {
 const writeTerminalTool: ToolExecutor = {
   definition: {
     name: 'write_terminal',
-    description: 'Type text into this conversation\'s controlled terminal in Eva. Set submit=true to press Enter and run the typed command. This is the direct way to control Eva\'s visible built-in terminal, not a desktop keyboard action.',
+    description: 'Type text into this conversation\'s controlled terminal. Set submit=true to press Enter and run the typed command. This does not reveal the terminal panel; call open_terminal first only when the user needs to follow an interactive or external session live.',
     parameters: {
       type: 'object',
       properties: {
@@ -81,11 +81,10 @@ const writeTerminalTool: ToolExecutor = {
       if (guardError) return guardError
     }
     await context.terminalService.createSession(sessionId, context.workspacePath || process.cwd())
-    setConversationTerminalVisibility(context.conversationId, true)
     context.terminalService.writeInput(sessionId, submitted ? `${text}\r` : text)
     return submitted
-      ? 'Typed the text and pressed Enter in this conversation\'s visible terminal.'
-      : 'Typed the text in this conversation\'s visible terminal.'
+      ? 'Typed the text and pressed Enter in this conversation\'s controlled terminal.'
+      : 'Typed the text in this conversation\'s controlled terminal.'
   },
 }
 
@@ -93,7 +92,7 @@ const executeCommandTool: ToolExecutor = {
   definition: {
     name: 'execute_command',
     description:
-      'Execute a shell command in this conversation\'s visible controlled terminal and return the output. The command and output are shared with Eva\'s right-side terminal panel, so the user can see the action. Use for scripts, installs, builds, system automation, and other terminal work. For direct terminal typing without waiting for output, use write_terminal instead.',
+      'Execute a shell command in the conversation\'s background controlled terminal and return its output. This does not open the right-side terminal panel. Use it for ordinary reads, writes, scripts, installs, builds, and system automation. Call open_terminal separately only for interactive or externally connected sessions that the user needs to observe.',
     parameters: {
       type: 'object',
       properties: {
@@ -138,9 +137,6 @@ const executeCommandTool: ToolExecutor = {
 
     try {
       await context.terminalService.createSession(sessionId, cwd)
-      if (context.conversationId) {
-        setConversationTerminalVisibility(context.conversationId, true)
-      }
       const result = await context.terminalService.executeCommand(sessionId, command, timeout)
 
       const parts: string[] = []
@@ -162,8 +158,8 @@ const executeCommandTool: ToolExecutor = {
     } catch (err) {
       return `Command execution failed: ${(err as Error).message}`
     } finally {
-      // Conversation terminals persist so later tool calls and the visible
-      // terminal continue in the same shell. One-off legacy calls still clean up.
+      // Conversation terminals persist so later background commands and an
+      // explicitly opened interactive terminal continue in the same shell.
       if (!context.conversationId) {
         try {
           context.terminalService.destroySession(sessionId)

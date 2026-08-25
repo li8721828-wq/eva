@@ -112,7 +112,7 @@ export class AgentStore {
           createdAt: now,
           updatedAt: now,
         })
-      } else if (existingBuiltIn.systemPrompt !== builtIn.systemPrompt) {
+      } else if (!existingBuiltIn.systemPromptCustomized && existingBuiltIn.systemPrompt !== builtIn.systemPrompt) {
         // Built-in agents are read-only in the UI, so keep their shipped safety
         // instructions current for users who already have a persisted config.
         existingBuiltIn.systemPrompt = builtIn.systemPrompt
@@ -151,6 +151,8 @@ function normalizeAgent(value: unknown): AgentConfig {
     description: typeof raw.description === 'string' ? raw.description : '',
     role: raw.role || 'custom',
     systemPrompt: typeof raw.systemPrompt === 'string' ? raw.systemPrompt : '',
+    systemPromptCustomized: Boolean(raw.systemPromptCustomized),
+    platformPromptTemplate: typeof raw.platformPromptTemplate === 'string' ? raw.platformPromptTemplate : undefined,
     outputFormat: raw.outputFormat || 'default',
     outputFormatInstructions: typeof raw.outputFormatInstructions === 'string' ? raw.outputFormatInstructions : '',
     outputStyle: raw.outputStyle || 'balanced',

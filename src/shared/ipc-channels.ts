@@ -82,6 +82,7 @@ export const IPC = {
   AGENT_CREATE: 'agent:create',
   AGENT_UPDATE: 'agent:update',
   AGENT_DELETE: 'agent:delete',
+  AGENT_TOKEN_ESTIMATE: 'agent:token-estimate',
 
   // 任务（Goal/Expert 模式）
   TASK_START: 'task:start',

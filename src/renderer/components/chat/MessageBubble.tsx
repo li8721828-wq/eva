@@ -3,12 +3,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'streamdown/styles.css'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ExecutionTraceEntry } from '../../../shared/types'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView, ToolCallView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, CircleAlert, ExternalLink, SearchCheck, Loader2, CheckCircle2, XCircle } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, CircleAlert, ExternalLink, Loader2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -121,47 +121,6 @@ function ReasoningPanel({ content, streaming = false }: { content: string; strea
   )
 }
 
-function ExecutionTraceView({ entries, streaming = false }: { entries: ExecutionTraceEntry[]; streaming?: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-  if (!entries.length) return null
-  const latest = entries[entries.length - 1]
-  const hasFailedEntry = entries.some((entry) => entry.status === 'failed')
-  const isActive = streaming || latest?.status === 'active'
-  const statusText = hasFailedEntry ? '执行记录包含失败项' : isActive ? '正在执行' : '执行记录'
-  const StatusIcon = hasFailedEntry ? CircleAlert : isActive ? Loader2 : CheckCircle2
-
-  return (
-    <section className="mb-2">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        title={statusText}
-        className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200"
-      >
-        <StatusIcon className={cn('h-3 w-3', isActive && 'animate-spin', hasFailedEntry && 'text-rose-500', !isActive && !hasFailedEntry && 'text-emerald-500')} />
-        <span>{statusText}</span>
-        <span className="tabular-nums text-zinc-300">{entries.length}</span>
-        <ChevronDown className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')} />
-      </button>
-
-      {expanded && (
-        <div className="mt-1.5 space-y-1 border-l border-zinc-100 pl-3">
-        {entries.map((entry) => {
-          const Icon = entry.status === 'active' ? Loader2 : entry.status === 'failed' ? XCircle : CheckCircle2
-          return (
-            <div key={entry.id} className="flex min-w-0 items-start gap-2 text-xs leading-5 text-zinc-600">
-              <Icon className={cn('mt-1 h-3.5 w-3.5 shrink-0', entry.status === 'active' ? 'animate-spin text-violet-500' : entry.status === 'failed' ? 'text-rose-500' : 'text-emerald-500')} />
-              <span className="min-w-0 flex-1">{entry.title}{entry.detail ? `: ${entry.detail}` : ''}</span>
-            </div>
-          )
-        })}
-        </div>
-      )}
-    </section>
-  )
-}
-
 function ExecutionTimelineView({ entries, streaming = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean }) {
   const [expanded, setExpanded] = useState(false)
   if (!entries.length) return null
@@ -211,6 +170,15 @@ function ExecutionTimelineView({ entries, streaming = false }: { entries: Execut
   )
 }
 
+function ExecutionStatusIndicator() {
+  return (
+    <div className="mb-2 inline-flex h-6 items-center gap-1.5 px-1.5 text-[11px] font-medium text-zinc-400" aria-live="polite">
+      <Loader2 className="h-3 w-3 animate-spin text-violet-500" />
+      <span>正在执行</span>
+    </div>
+  )
+}
+
 function markdownNodeText(node: ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') return String(node)
   if (Array.isArray(node)) return node.map(markdownNodeText).join('')
@@ -239,28 +207,6 @@ function MarkdownCodeBlock({ children, language }: { children: ReactNode; langua
       </div>
       <pre>{children}</pre>
     </div>
-  )
-}
-
-const progressPresentation = {
-  thinking: { icon: BrainCircuit, tone: 'text-zinc-600', iconTone: 'bg-violet-100 text-violet-600' },
-  finding: { icon: SearchCheck, tone: 'text-zinc-600', iconTone: 'bg-sky-100 text-sky-600' },
-  action: { icon: Wrench, tone: 'text-zinc-600', iconTone: 'bg-emerald-100 text-emerald-600' },
-  issue: { icon: CircleAlert, tone: 'text-rose-700', iconTone: 'bg-rose-100 text-rose-600' },
-} as const
-
-function ProgressUpdateMessage({ message }: { message: ChatMessage }) {
-  const presentation = progressPresentation[message.progressKind!]
-  const Icon = presentation.icon
-  return (
-    <article className="flex max-w-[46rem] items-start gap-2.5 py-2" aria-label="Eva 工作进展">
-      <span className={cn('mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full', presentation.iconTone)}>
-        <Icon className="h-3.5 w-3.5" />
-      </span>
-      <div className="min-w-0 pt-0.5">
-        <MarkdownMessageContent content={message.content} className={cn('text-[13px] leading-6', presentation.tone)} />
-      </div>
-    </article>
   )
 }
 
@@ -391,7 +337,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const outputTextEffect = outputAgent?.outputTextEffect || 'none'
   const markdownRenderer = outputAgent?.markdownRenderer || 'enhanced'
 
-  if (message.progressKind) return <ProgressUpdateMessage message={message} />
+  // Stage updates are retained in storage for diagnostics, but the transcript
+  // intentionally shows only the compact live indicator and real tool calls.
+  if (message.progressKind) return null
 
   if (isUser) {
     return (
@@ -476,12 +424,10 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
               </Badge>
             </div>
           )}
+          {isStreaming && !message.executionTimeline?.length ? <ExecutionStatusIndicator /> : null}
           {message.executionTimeline?.length
             ? <ExecutionTimelineView entries={message.executionTimeline} streaming={isStreaming} />
-            : <>
-              {shouldShowReasoning && <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />}
-              {message.executionTrace?.length ? <ExecutionTraceView entries={message.executionTrace} streaming={isStreaming} /> : null}
-            </>}
+            : shouldShowReasoning ? <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} /> : null}
           <MarkdownMessageContent content={message.content} isStreaming={isStreaming} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>

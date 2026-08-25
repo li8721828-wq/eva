@@ -11,6 +11,7 @@ import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ModelRateCard } from '../../shared/types/cost'
 import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
 import { DEFAULT_NETWORK_CONFIG, type NetworkConfig } from '../../shared/types/network'
+import { DEFAULT_ENVIRONMENT_RULES, type EnvironmentRulesConfig } from '../../shared/types/environment-rules'
 import { CredentialStore } from './credential-store'
 
 export type { ProviderConfigEntry }
@@ -44,6 +45,8 @@ export interface AppConfig {
   automation: AutomationConfig
   costRateCards: ModelRateCard[]
   network: NetworkConfig
+  /** Shared OS, shell, path, and tool rules injected into every Agent prompt. */
+  environmentRules: EnvironmentRulesConfig
 }
 
 const DEFAULT_PROVIDERS: ProviderConfigEntry[] = [
@@ -77,7 +80,7 @@ const DEFAULTS: AppConfig = {
   workspacePath: '',
   fileAccessGrants: [],
   sidebarCollapsed: false,
-  terminalVisible: true,
+  terminalVisible: false,
   terminalHeight: 560,
   terminalWidth: 560,
   rightPanelVisible: true,
@@ -92,6 +95,7 @@ const DEFAULTS: AppConfig = {
   automation: DEFAULT_AUTOMATION_CONFIG,
   costRateCards: [],
   network: DEFAULT_NETWORK_CONFIG,
+  environmentRules: DEFAULT_ENVIRONMENT_RULES,
 }
 
 export class ConfigStore {

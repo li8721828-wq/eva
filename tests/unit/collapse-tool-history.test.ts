@@ -35,4 +35,20 @@ describe('collapseToolHistoryMessages', () => {
 
     expect(collapseToolHistoryMessages(messages)).toEqual(messages)
   })
+
+  it('attaches persisted progress updates to the final assistant reply', () => {
+    const messages: ChatMessage[] = [
+      { ...base, id: 'progress-1', role: 'assistant', content: 'Checking the disk usage first.', progressKind: 'thinking' },
+      { ...base, id: 'progress-2', role: 'assistant', content: 'The first shell approach needs adjustment.', progressKind: 'issue' },
+      { ...base, id: 'final', role: 'assistant', content: 'Here is the completed analysis.' },
+    ]
+
+    const result = collapseToolHistoryMessages(messages)
+
+    expect(result).toHaveLength(1)
+    expect(result[0].progressUpdates).toEqual([
+      expect.objectContaining({ id: 'progress-1', kind: 'thinking' }),
+      expect.objectContaining({ id: 'progress-2', kind: 'issue' }),
+    ])
+  })
 })

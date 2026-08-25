@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTimelineEntry, ExecutionTraceEntry, ProgressUpdateKind } from '../../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTimelineEntry, ExecutionTraceEntry, ProgressUpdate, ProgressUpdateKind } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -404,7 +404,7 @@ async function runAgentSymposium(
     }
 
     const access = await getConversationAccess(conversation)
-    const workspacePath = conversation.workspacePath || (access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
+    const workspacePath = conversationWorkspacePath(conversation, access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
     const runnerSet = new Set<AgentRunner>()
     activeSymposiumRunners.set(input.conversationId, runnerSet)
     const runParticipant = async (participant: SymposiumModelParticipant): Promise<{ participant: SymposiumModelParticipant; content: string; error?: string }> => {
@@ -653,7 +653,7 @@ async function runInternalTeamDelegation(
       accessScope: conversation.accessScope,
       permissionLevel: conversation.permissionLevel,
       fileAccessGrants: conversation.fileAccessGrants,
-      workspacePath: conversation.workspacePath,
+      workspacePath: conversationWorkspacePath(conversation),
       parentConversationId: conversation.id,
       teamTaskId: subtask.id,
     })
@@ -700,7 +700,7 @@ async function runInternalTeamDelegation(
     fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
     toolRegistry: services.toolRegistry,
     contextManager: new ContextManager({ durableMemory }),
-    workspacePath: conversation.workspacePath || (access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
+    workspacePath: conversationWorkspacePath(conversation, access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
     fileAccessGrants: access.fileAccessGrants,
     fullFilesystemAccess: access.fullFilesystemAccess,
     fileService: services.fileService,
@@ -782,6 +782,11 @@ async function getConversationAccess(conversation?: Conversation): Promise<{ fil
   }
 }
 
+/** Only project-bound conversations may carry a project workspace path. */
+function conversationWorkspacePath(conversation: Conversation, fallback = ''): string {
+  return conversation.workspaceId ? (conversation.workspacePath || fallback) : ''
+}
+
 export function registerConversationHandlers(services?: ChatServices): void {
   registerBackgroundGoalController(controlBackgroundGoal)
   // ─── Conversation CRUD ──────────────────────────────────────────────────────
@@ -815,7 +820,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         permissionLevel: data.permissionLevel || (workspace ? 'workspace' : 'full-access'),
         fileAccessGrants: data.fileAccessGrants || [],
         symposium: data.symposium,
-        workspacePath: workspace?.path || data.workspacePath?.trim() || getStorage().config.get('workspacePath'),
+        workspacePath: workspace?.path || data.workspacePath?.trim() || '',
       })
       void recordActivity({
         category: 'conversation',
@@ -1049,7 +1054,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           plan: { ...DEFAULT_AUTOMATION_CONFIG.plan, ...storedAutomation?.plan },
           spec: { ...DEFAULT_AUTOMATION_CONFIG.spec, ...storedAutomation?.spec },
         }
-        const runnerWorkspacePath = conversation.workspacePath || (workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
+        const runnerWorkspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const runTask = automation.task.enabled && automation.task.autoInvoke
           ? async (task: string): Promise<string> => {
               // A new nested task supersedes an older one for this conversation.
@@ -1356,6 +1361,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         // event, otherwise every provider appears to be non-streaming.
         let pendingProgressMarkup = ''
         let latestProgressContent = ''
+        const progressUpdates: ProgressUpdate[] = []
         const executionTrace: ExecutionTraceEntry[] = []
         const executionTimeline: ExecutionTimelineEntry[] = []
         let currentAction: {
@@ -1428,15 +1434,22 @@ export function registerConversationHandlers(services?: ChatServices): void {
           const summary = summarizeExecutionText(content, 520)
           if (!summary || summary === latestProgressContent) return
           latestProgressContent = summary
-          const progressMessage: ChatMessage = {
+          const progressUpdate: ProgressUpdate = {
             id: uuidv4(),
+            kind,
+            content: summary,
+            timestamp: Date.now(),
+          }
+          progressUpdates.push(progressUpdate)
+          const progressMessage: ChatMessage = {
+            id: progressUpdate.id,
             conversationId,
             role: 'assistant',
             content: summary,
             progressKind: kind,
             agentId: effectiveAgentConfig.id,
             agentName: effectiveAgentConfig.name,
-            timestamp: Date.now(),
+            timestamp: progressUpdate.timestamp,
           }
           await convStore.addMessage(conversationId, progressMessage)
           if (!win.isDestroyed()) {
@@ -1660,6 +1673,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           reasoningContent: assistantReasoningContent || undefined,
           executionTrace: executionTrace.length > 0 ? executionTrace : undefined,
           executionTimeline: executionTimeline.length > 0 ? executionTimeline : undefined,
+          progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
           agentName: effectiveAgentConfig.name,

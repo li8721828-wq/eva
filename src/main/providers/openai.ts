@@ -5,6 +5,88 @@ import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
 import { withRetry, classifyError } from './errors'
 
+const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {
+  // Some OpenAI-compatible gateways return this historical name inside a
+  // text/XML envelope instead of the structured `tool_calls` field.
+  run_command: 'execute_command',
+}
+
+type LegacyTextToolCall = {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+/**
+ * Parses the narrow XML tool envelope emitted by a few compatible gateways.
+ * It intentionally accepts only a response consisting entirely of valid,
+ * currently offered tools so ordinary model prose can never become a tool call.
+ */
+function createLegacyTextToolCall(
+  requestedName: string,
+  parameters: Array<[string, string]>,
+  tools: ToolDefinition[],
+  index: number,
+): LegacyTextToolCall | undefined {
+  const name = LEGACY_TOOL_NAME_ALIASES[requestedName] || requestedName
+  const tool = tools.find((candidate) => candidate.name === name)
+  if (!tool) return undefined
+
+  const args: Record<string, unknown> = {}
+  const schema = tool.parameters as { properties?: Record<string, unknown>; required?: unknown }
+  for (const [key, rawValue] of parameters) {
+    const value = rawValue.trim()
+    if (!value || key in args || (schema.properties && !(key in schema.properties))) return undefined
+    args[key] = value
+  }
+
+  const required = Array.isArray(schema.required) ? schema.required : []
+  if (required.some((key) => typeof key !== 'string' || !(key in args))) return undefined
+
+  return {
+    id: `legacy_xml_${Date.now()}_${index}`,
+    name,
+    arguments: args,
+  }
+}
+
+function parseLegacyTextToolCalls(content: string, tools?: ToolDefinition[]): LegacyTextToolCall[] {
+  if (!tools?.length) return []
+
+  const functionBlocks = Array.from(content.matchAll(/<tool_call>\s*<function=([A-Za-z0-9_-]+)>\s*([\s\S]*?)<\/function>\s*<\/tool_call>/g))
+  if (functionBlocks.length > 0) {
+    const remainder = content.replace(/<tool_call>\s*<function=[A-Za-z0-9_-]+>\s*[\s\S]*?<\/function>\s*<\/tool_call>/g, '').trim()
+    if (remainder || (content.match(/<tool_call>/g)?.length ?? 0) !== functionBlocks.length) return []
+
+    const calls: LegacyTextToolCall[] = []
+    for (const [index, block] of functionBlocks.entries()) {
+      const parameters = Array.from(block[2].matchAll(/<parameter=([A-Za-z0-9_-]+)>\s*([\s\S]*?)\s*<\/parameter>/g))
+        .map((parameter): [string, string] => [parameter[1], parameter[2]])
+      const parameterRemainder = block[2].replace(/<parameter=[A-Za-z0-9_-]+>\s*[\s\S]*?\s*<\/parameter>/g, '').trim()
+      const call = !parameterRemainder
+        ? createLegacyTextToolCall(block[1], parameters, tools, index)
+        : undefined
+      if (!call) return []
+      calls.push(call)
+    }
+    return calls
+  }
+
+  // Another common gateway dialect uses the tool and argument names directly
+  // as tags, e.g. <execute_command><command>...</command></execute_command>.
+  // It must start the response, be structurally complete, and still pass the
+  // same offered-tool and schema checks. Any trailing prose is discarded when
+  // AgentRunner resets the provisional stream before the real tool result.
+  const directBlock = content.match(/^\s*<([A-Za-z0-9_-]+)>\s*([\s\S]*?)<\/\1>/)
+  if (!directBlock) return []
+  const parameters = Array.from(directBlock[2].matchAll(/<([A-Za-z0-9_-]+)>\s*([\s\S]*?)\s*<\/\1>/g))
+    .map((parameter): [string, string] => [parameter[1], parameter[2]])
+  const parameterRemainder = directBlock[2].replace(/<([A-Za-z0-9_-]+)>\s*[\s\S]*?\s*<\/\1>/g, '').trim()
+  if (parameterRemainder) return []
+  const call = createLegacyTextToolCall(directBlock[1], parameters, tools, 0)
+  return call ? [call] : []
+}
+
 export class OpenAIProvider implements LLMProvider {
   readonly id: string
   readonly name: string
@@ -124,6 +206,7 @@ export class OpenAIProvider implements LLMProvider {
       stream = await withRetry(() => createStream(false), this.id)
     }
 
+    let textContent = ''
     for await (const chunk of stream) {
       const usage = this.mapUsage(chunk.usage)
       const choice = chunk.choices[0]
@@ -133,6 +216,7 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       const delta = choice.delta
+      if (delta?.content) textContent += delta.content
 
       // Process tool_calls incrementally
       if (delta?.tool_calls) {
@@ -183,6 +267,26 @@ export class OpenAIProvider implements LLMProvider {
 
       yield yieldChunk
     }
+
+    // A small number of gateways serialize function calls as text, often with
+    // `finish_reason: stop`. Convert only the complete, strictly validated
+    // legacy envelope. AgentRunner will reset the provisional streamed text
+    // before showing the actual tool activity.
+    if (toolCallsAccumulator.size === 0) {
+      const legacyToolCalls = parseLegacyTextToolCalls(textContent, params.tools)
+      if (legacyToolCalls.length > 0) {
+        yield {
+          content: '',
+          finishReason: 'tool_calls',
+          toolCalls: legacyToolCalls.map((toolCall, index) => ({
+            index,
+            id: toolCall.id,
+            name: toolCall.name,
+            arguments: JSON.stringify(toolCall.arguments),
+          })),
+        }
+      }
+    }
   }
 
   async chatComplete(
@@ -225,12 +329,15 @@ export class OpenAIProvider implements LLMProvider {
     }))
 
     const message = choice.message as typeof choice.message & { reasoning_content?: string }
+    const legacyToolCalls = toolCalls?.length
+      ? []
+      : parseLegacyTextToolCalls(message.content || '', params.tools)
     return {
-      content: message.content || message.reasoning_content || '',
-      toolCalls,
+      content: legacyToolCalls.length > 0 ? '' : (message.content || message.reasoning_content || ''),
+      toolCalls: toolCalls?.length ? toolCalls : legacyToolCalls,
       finishReason: choice.finish_reason === 'length'
         ? 'length'
-        : choice.finish_reason === 'tool_calls'
+        : choice.finish_reason === 'tool_calls' || legacyToolCalls.length > 0
           ? 'tool_calls'
           : choice.finish_reason === 'stop'
             ? 'stop'

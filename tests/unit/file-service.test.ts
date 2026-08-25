@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { FileServiceImpl } from '../../src/main/services/file-service'
+import { expandHomePath, FileServiceImpl } from '../../src/main/services/file-service'
 
 describe('FileServiceImpl access grants', () => {
   let root: string
@@ -25,6 +25,12 @@ describe('FileServiceImpl access grants', () => {
 
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it('expands the cross-shell home shorthand before resolving file paths', () => {
+    expect(expandHomePath('~')).toBe(os.homedir())
+    expect(expandHomePath('~/documents')).toBe(path.join(os.homedir(), 'documents'))
+    expect(expandHomePath('notes.txt')).toBe('notes.txt')
   })
 
   it('rejects access outside the workspace without a grant', async () => {

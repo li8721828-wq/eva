@@ -194,6 +194,23 @@ describe('ContextManager', () => {
       expect(prompt).not.toContain('--- Agent Output Format ---')
       expect(prompt).not.toContain('Return valid JSON only.')
     })
+
+    it('expands the default platform rules inside a saved prompt template', () => {
+      const agent: AgentConfig = {
+        id: 'template-agent', name: 'Template Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Role instructions.',
+        platformPromptTemplate: 'Custom platform preface.\n{{default_platform_rules}}\nCustom platform suffix.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const prompt = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+
+      expect(prompt).toContain('Role instructions.')
+      expect(prompt).toContain('Custom platform preface.')
+      expect(prompt).toContain('--- Evidence and Action Integrity ---')
+      expect(prompt).toContain('Custom platform suffix.')
+      expect(prompt).not.toContain('{{default_platform_rules}}')
+    })
   })
 
   describe('long-context history', () => {

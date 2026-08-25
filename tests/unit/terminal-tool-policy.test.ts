@@ -1,7 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTerminalTools } from '../../src/main/tools/terminal-tools'
 import type { ToolContext } from '../../src/main/tools'
 import { conversationTerminalSessionId } from '../../src/shared/terminal-session'
+import { setConversationTerminalVisibility } from '../../src/main/services/terminal-panel-controller'
+
+vi.mock('../../src/main/services/terminal-panel-controller', () => ({
+  setConversationTerminalVisibility: vi.fn(),
+}))
+
+beforeEach(() => {
+  vi.mocked(setConversationTerminalVisibility).mockClear()
+})
 
 function makeContext(fullFilesystemAccess: boolean): ToolContext {
   return {
@@ -55,6 +64,7 @@ describe('execute_command permission boundary', () => {
       'C:/workspace',
     )
     expect(context.terminalService.destroySession).not.toHaveBeenCalled()
+    expect(setConversationTerminalVisibility).not.toHaveBeenCalled()
   })
 
   it('blocks a PowerShell pipeline property access missing the current-item variable', async () => {
@@ -97,6 +107,7 @@ describe('controlled terminal visibility', () => {
       conversationTerminalSessionId('conversation-a'),
       'C:/workspace',
     )
+    expect(setConversationTerminalVisibility).toHaveBeenCalledWith('conversation-a', true)
   })
 
   it('types and submits text in the current conversation terminal', async () => {
@@ -108,6 +119,7 @@ describe('controlled terminal visibility', () => {
       conversationTerminalSessionId('conversation-a'),
       'ipconfig\r',
     )
+    expect(setConversationTerminalVisibility).not.toHaveBeenCalled()
   })
 
   it('does not submit a malformed PowerShell pipeline through direct terminal typing', async () => {

@@ -27,7 +27,9 @@ function projectSearchTool(projectIndexService: ProjectIndexService): ToolExecut
       const scope = toSearchScope(params.scope)
       const status = await projectIndexService.getStatusForWorkspacePath(context.workspacePath)
       if (!status) return 'This conversation is not assigned to a saved project workspace.'
-      const multiDimensionalEnabled = await getMultiDimensionalIndexEnabled(context.conversationId)
+      const conversation = context.conversationId ? await getStorage().conversations.getConversation(context.conversationId) : null
+      if (!conversation?.workspaceId) return 'This conversation is not assigned to a saved project workspace.'
+      const multiDimensionalEnabled = conversation.multiDimensionalIndexEnabled !== false
       if (!multiDimensionalEnabled && !['all', 'structure'].includes(scope)) {
         return 'Multi-dimensional project navigation is disabled. Use structure scope or enable it from the Code view.'
       }
@@ -66,18 +68,14 @@ function projectIndexStatusTool(projectIndexService: ProjectIndexService): ToolE
       if (!context.workspacePath) return 'Project navigation requires a project workspace.'
       const status = await projectIndexService.getStatusForWorkspacePath(context.workspacePath)
       if (!status) return 'This conversation is not assigned to a saved project workspace.'
-      const dimensions = await getMultiDimensionalIndexEnabled(context.conversationId)
+      const conversation = context.conversationId ? await getStorage().conversations.getConversation(context.conversationId) : null
+      if (!conversation?.workspaceId) return 'This conversation is not assigned to a saved project workspace.'
+      const dimensions = conversation.multiDimensionalIndexEnabled !== false
         ? `${status.indexedApiEndpoints} API clues, ${status.indexedDataEntities} data clues, ${status.indexedConfigKeys} configuration keys, and ${status.indexedBusinessTerms} business terms`
         : 'multi-dimensional navigation disabled'
       return `Project index: ${status.indexedFiles} files, ${status.indexedSymbols} symbols, ${status.indexedDependencies} import links, ${dimensions}. ${status.watching ? 'Watching for changes' : 'Not watching'}, last synchronized ${status.indexedAt ? new Date(status.indexedAt).toLocaleString() : 'never'}.`
     },
   }
-}
-
-async function getMultiDimensionalIndexEnabled(conversationId?: string): Promise<boolean> {
-  if (!conversationId) return true
-  const conversation = await getStorage().conversations.getConversation(conversationId)
-  return conversation?.multiDimensionalIndexEnabled !== false
 }
 
 function toSearchScope(value: unknown): ProjectIndexScope {

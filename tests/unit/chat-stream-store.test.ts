@@ -50,4 +50,28 @@ describe('chat stream state', () => {
     expect(stream.isStreaming).toBe(true)
     expect(stream.status).toBe('Running tools...')
   })
+
+  it('retains every user-visible progress update in the active response', () => {
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'progress',
+      conversationId: 'foreground',
+      messageId: 'progress-1',
+      progressKind: 'thinking',
+      content: 'Checking the first result.',
+    })
+    store.appendStreamEvent({
+      type: 'progress',
+      conversationId: 'foreground',
+      messageId: 'progress-2',
+      progressKind: 'action',
+      content: 'Trying the corrected command.',
+    })
+
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream.progressUpdates).toEqual([
+      expect.objectContaining({ id: 'progress-1', content: 'Checking the first result.' }),
+      expect.objectContaining({ id: 'progress-2', content: 'Trying the corrected command.' }),
+    ])
+  })
 })

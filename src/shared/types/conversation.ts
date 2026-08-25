@@ -70,6 +70,8 @@ export interface ChatMessage {
   executionTimeline?: ExecutionTimelineEntry[]
   /** A concise, user-visible progress update emitted while work is underway. */
   progressKind?: ProgressUpdateKind
+  /** Ordered, user-visible progress retained with the response that produced it. */
+  progressUpdates?: ProgressUpdate[]
   /** Files and folders the user attached to this message. Their contents stay local. */
   attachments?: ChatDocumentAttachment[]
   /** Local image references selected explicitly by the user. Base64 data is never persisted. */
@@ -163,6 +165,13 @@ export interface ToolCall {
 export type ExecutionTraceKind = 'plan' | 'activity' | 'tool' | 'observation' | 'issue' | 'result'
 export type ExecutionTraceStatus = 'active' | 'completed' | 'failed'
 export type ProgressUpdateKind = 'thinking' | 'finding' | 'action' | 'issue'
+
+export interface ProgressUpdate {
+  id: string
+  kind: ProgressUpdateKind
+  content: string
+  timestamp: number
+}
 
 /**
  * A concise, verifiable progress event. This intentionally contains a
