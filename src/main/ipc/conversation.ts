@@ -1360,6 +1360,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
         // Ordinary response text must not wait for the model's final `done`
         // event, otherwise every provider appears to be non-streaming.
         let pendingProgressMarkup = ''
+        // Keep provisional model text long enough to preserve it as a progress
+        // entry when the runner replaces it with a tool call.
+        let provisionalAssistantContent = ''
         let latestProgressContent = ''
         const progressUpdates: ProgressUpdate[] = []
         const executionTrace: ExecutionTraceEntry[] = []
@@ -1484,12 +1487,17 @@ export function registerConversationHandlers(services?: ChatServices): void {
               }
               const visible = pendingProgressMarkup.slice(0, pendingProgressMarkup.length - retainedLength)
               pendingProgressMarkup = pendingProgressMarkup.slice(pendingProgressMarkup.length - retainedLength)
-              if (visible) send({ type: 'text', content: visible })
+              if (visible) {
+                provisionalAssistantContent += visible
+                send({ type: 'text', content: visible })
+              }
               return
             }
 
             if (openingIndex > 0) {
-              send({ type: 'text', content: pendingProgressMarkup.slice(0, openingIndex) })
+              const visible = pendingProgressMarkup.slice(0, openingIndex)
+              provisionalAssistantContent += visible
+              send({ type: 'text', content: visible })
               pendingProgressMarkup = pendingProgressMarkup.slice(openingIndex)
               continue
             }
@@ -1525,7 +1533,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
             continue
           }
           if (agentEvent.type === 'text_reset') {
+            if (!agentEvent.discardProvisionalText && provisionalAssistantContent.trim()) {
+              await publishProgress('thinking', provisionalAssistantContent)
+            }
             clearPendingProgressMarkup()
+            provisionalAssistantContent = ''
             assistantContent = ''
             send(agentEvent)
             continue
@@ -1616,6 +1628,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             // `done` carries the canonical, complete response. Any remaining
             // buffer is only an incomplete tag opener and must not be shown.
             clearPendingProgressMarkup()
+            provisionalAssistantContent = ''
             if (agentEvent.content) {
               assistantContent = agentEvent.content
                 .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '')

@@ -73,6 +73,8 @@ export interface AgentConfig {
 export interface AgentEvent {
   type: 'text' | 'text_reset' | 'reasoning' | 'tool_call' | 'tool_result' | 'thinking' | 'error' | 'done'
   content?: string
+  /** Drop provisional streamed text instead of retaining it as a progress update. */
+  discardProvisionalText?: boolean
   toolCall?: {
     id: string
     name: string

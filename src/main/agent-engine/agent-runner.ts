@@ -8,7 +8,6 @@ import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/t
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import { compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
-import { createProgressiveToolPlan } from './tool-loading'
 import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPoolEntry } from '../../shared/types/model-pool'
@@ -275,9 +274,12 @@ export class AgentRunner {
       let accumulatedUsage: ChatUsage | undefined
       let completedResponse = ''
       let providerContinuationCount = 0
+      let protocolRepairAttempts = 0
 
-      const progressiveToolPlan = createProgressiveToolPlan(allToolDefs, safeUserMessage.content)
-      let activeToolDefs = progressiveToolPlan.initial
+      // Send the complete configured tool set on every model turn. Tool
+      // selection remains the model's responsibility; filtering here can
+      // hide a needed capability when the user uses a short follow-up.
+      const activeToolDefs = allToolDefs
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
         workspacePath,
@@ -315,6 +317,20 @@ export class AgentRunner {
 
         // No tool calls → the model is done reasoning
         if (!hasToolCalls) {
+          if (response.toolCallParseFailure && activeToolDefs.length > 0 && protocolRepairAttempts < 1) {
+            protocolRepairAttempts += 1
+            // The provider streamed an unparseable tool envelope as prose.
+            // Clear it rather than presenting it as a completed answer, then
+            // give the model one bounded retry with the same tool schemas.
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            completedResponse = ''
+            messages.push({
+              role: 'user',
+              content: 'Your previous response attempted a tool call, but the gateway returned an invalid text envelope and nothing was executed. Retry the needed operation now using the provided structured tool-calling interface only. Do not emit DSML, XML, or tool-call markup as ordinary response text.',
+            })
+            yield { type: 'thinking', content: '检测到未执行的工具调用格式，正在按标准工具协议重试一次。' }
+            continue
+          }
           if (!response.content.trim()) {
             const imageHint = hasImageInput
               ? ` The conversation includes image input; select a vision-capable model before retrying.`
@@ -356,7 +372,7 @@ export class AgentRunner {
         // Text is streamed optimistically for responsiveness. Once this turn
         // proves to be a tool-call turn, remove that provisional prose from
         // the visible reply; the final no-tool turn remains streamed normally.
-        if (response.content) yield { type: 'text_reset' }
+        if (response.content) yield { type: 'text_reset', discardProvisionalText: response.textToolCallEnvelope }
         completedResponse = ''
 
         // A model may request several independent reads in one turn. Execute
@@ -485,13 +501,12 @@ export class AgentRunner {
         // Append assistant tool_calls + tool results to message history
         messages = this.appendToolMessages(messages, response.toolCalls, toolResults)
 
-        const nextToolDefs = progressiveToolPlan.followUp(response.toolCalls.map((toolCall) => toolCall.name))
         const nextSystemPrompt = contextManager.buildSystemPrompt(
           agentConfig,
           workspacePath,
           fileAccessGrants,
           fullFilesystemAccess,
-          nextToolDefs,
+          allToolDefs,
         )
         const currentSystemMessage = messages[0]
         const preservedSystemSuffix = currentSystemMessage?.role === 'system' && currentSystemMessage.content.startsWith(activeSystemPrompt)
@@ -501,7 +516,6 @@ export class AgentRunner {
           messages[0] = { ...currentSystemMessage, content: `${nextSystemPrompt}${preservedSystemSuffix}` }
         }
         activeSystemPrompt = nextSystemPrompt
-        activeToolDefs = nextToolDefs
 
         const integrityReminder = this.buildToolIntegrityReminder(response.toolCalls, toolResults)
         if (integrityReminder) messages.push({ role: 'user', content: integrityReminder })
@@ -665,7 +679,7 @@ export class AgentRunner {
   private async *executeLLMCall(
     messages: ChatMessageInput[],
     tools: ToolDefinition[]
-  ): AsyncGenerator<AgentEvent, { content: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage }> {
+  ): AsyncGenerator<AgentEvent, { content: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage; toolCallParseFailure?: string; textToolCallEnvelope?: boolean }> {
     const { agentConfig, provider } = this.config
     const signal = this.abortController?.signal
     // Tool output can grow on every ReAct cycle. Refit immediately before the
@@ -700,6 +714,8 @@ export class AgentRunner {
     let receivedReasoning = false
     let finishReason = ''
     let usage: ChatUsage | undefined
+    let toolCallParseFailure: string | undefined
+    let textToolCallEnvelope = false
 
     // Tool call accumulation state (keyed by chunk index)
     const tcAccumulator: Map<number, { id: string; name: string; argsStr: string }> = new Map()
@@ -707,7 +723,12 @@ export class AgentRunner {
     for await (const chunk of stream) {
       // Check abort between chunks
       if (signal?.aborted) break
-      usage = this.mergeUsage(usage, this.toChatUsage(chunk.usage))
+      // A streaming request is still one model call. OpenAI-compatible
+      // gateways commonly repeat a cumulative usage snapshot on every text
+      // chunk, so adding it here inflates tokens and calls by chunk count.
+      usage = this.selectUsageSnapshot(usage, this.toChatUsage(chunk.usage))
+      if (chunk.toolCallParseFailure) toolCallParseFailure = chunk.toolCallParseFailure
+      if (chunk.textToolCallEnvelope) textToolCallEnvelope = true
 
       if (agentConfig.showThinking && chunk.reasoningContent) {
         receivedReasoning = true
@@ -765,6 +786,8 @@ export class AgentRunner {
       toolCalls,
       finishReason,
       usage: usage ? { ...usage, ...(contextDiagnostics ? { contextDiagnostics } : {}) } : usage,
+      toolCallParseFailure,
+      textToolCallEnvelope,
     }
   }
 
@@ -795,6 +818,19 @@ export class AgentRunner {
         : { ...connectionPricing, ...rateCardCost }),
       modelCalls: 1,
     }
+  }
+
+  /**
+   * Stream usage is a per-request cumulative snapshot, not a delta. Retain
+   * the largest snapshot and prefer the latest one on a tie so a gateway that
+   * reports it on every chunk still contributes exactly one model call.
+   */
+  private selectUsageSnapshot(current?: ChatUsage, next?: ChatUsage): ChatUsage | undefined {
+    if (!current) return next
+    if (!next) return current
+    const currentTotal = current.promptTokens + current.completionTokens
+    const nextTotal = next.promptTokens + next.completionTokens
+    return nextTotal >= currentTotal ? next : current
   }
 
   private mergeUsage(current?: ChatUsage, next?: ChatUsage): ChatUsage | undefined {

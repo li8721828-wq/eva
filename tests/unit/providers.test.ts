@@ -331,6 +331,70 @@ describe('OpenAIProvider streaming tool calls', () => {
     })
   })
 
+  it('converts DSML tool markup from a compatible gateway into a structured command call', async () => {
+    async function* dsmlToolCallStream() {
+      yield {
+        choices: [{
+          delta: {
+            content: '继续。刚才终端输出太乱了，我换一种方式。\n<｜DSML｜tool_calls><｜DSML｜invoke name="execute_command"><｜DSML｜parameter name="command" string="true">netstat -ano | findstr "LISTENING"</｜DSML｜parameter><｜DSML｜parameter name="timeout" string="false">30000</｜DSML｜parameter></｜DSML｜invoke></｜DSML｜tool_calls>',
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: { completions: { create: vi.fn().mockResolvedValue(dsmlToolCallStream()) } },
+    }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model',
+      messages: [],
+      tools: [{
+        name: 'execute_command',
+        description: 'Execute a command.',
+        parameters: {
+          type: 'object',
+          properties: { command: { type: 'string' }, timeout: { type: 'number' } },
+          required: ['command'],
+        },
+      }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)).toMatchObject({
+      finishReason: 'tool_calls',
+      textToolCallEnvelope: true,
+      toolCalls: [{ name: 'execute_command', arguments: '{"command":"netstat -ano | findstr \\"LISTENING\\"","timeout":30000}' }],
+    })
+  })
+
+  it('marks malformed DSML as a retryable parse failure instead of a final answer', async () => {
+    async function* malformedDsmlStream() {
+      yield {
+        choices: [{
+          delta: { content: '<｜DSML｜tool_calls><｜DSML｜invoke name="execute_command">' },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = {
+      chat: { completions: { create: vi.fn().mockResolvedValue(malformedDsmlStream()) } },
+    }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model',
+      messages: [],
+      tools: [{ name: 'execute_command', description: 'Execute a command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)).toMatchObject({ toolCallParseFailure: expect.any(String) })
+  })
+
   it('does not convert legacy XML when it contains ordinary prose or an unavailable tool', async () => {
     async function* malformedLegacyStream() {
       yield {

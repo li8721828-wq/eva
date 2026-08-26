@@ -15,7 +15,8 @@ import { recordActivity } from './activity-log'
 const QUALITY_THRESHOLD = 80
 const SPEC_QUALITY_THRESHOLD = 85
 const MAX_CONTEXT_CHARS = 48_000
-const MAX_GENERATION_CONTINUATIONS = 3
+const MAX_GENERATION_CONTINUATIONS = 4
+const MAX_CONTINUATION_TAIL_CHARS = 18_000
 const execFileAsync = promisify(execFile)
 
 interface ParsedDslField {
@@ -1404,18 +1405,26 @@ export class RequirementEngineeringService {
     onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `正在生成${title}`, document, phase: 'started' })
     let content: string
     try {
-      content = await this.complete(prompt, signal)
+      const outputContract = this.documentOutputContract(stage, dimension)
+      const constrainedPrompt = `${prompt}\n\n# 文档输出约束\n${outputContract}`
+      content = await this.complete(constrainedPrompt, signal, { title, stage, dimension, outputContract })
       const integrityError = this.documentIntegrityError(stage, dimension, content)
       if (integrityError) {
         this.reportProgress(onProgress, run, stage, `检测到${title}不完整，正在重新生成完整文档`)
         content = await this.complete(
-          `${prompt}\n\n# 上一次草稿未通过完整性校验\n${integrityError}\n\n请从头重新输出完整文档，不要引用、概述或续接上一版。必须覆盖请求的所有固定部分，并以完整的句子、表格行或 Markdown 结构结束。`,
+          `${constrainedPrompt}\n\n# 上一次草稿未通过完整性校验\n${integrityError}\n\n请从头重新输出完整文档，不要引用、概述或续接上一版。必须覆盖请求的所有固定部分，并以完整的句子、表格行或 Markdown 结构结束。`,
           signal,
+          { title, stage, dimension, outputContract },
         )
         const retryIntegrityError = this.documentIntegrityError(stage, dimension, content)
         if (retryIntegrityError) throw new Error(`${title} 未生成完整内容：${retryIntegrityError}`)
       }
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      document.content = `# ${title}\n\n> 生成失败：${reason}\n`
+      await fs.writeFile(document.path, document.content, 'utf8')
+      if (document.workspacePath) await fs.writeFile(document.workspacePath, document.content, 'utf8')
+      await this.persist(run)
       onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message: `生成${title}失败`, document, phase: 'failed' })
       throw error
     }
@@ -1438,13 +1447,17 @@ export class RequirementEngineeringService {
     return `${(domainIndex >= 0 ? lines.slice(domainIndex) : lines).join('\n').trim()}\n`
   }
 
-  private async complete(prompt: string, signal?: AbortSignal): Promise<string> {
+  private async complete(
+    prompt: string,
+    signal?: AbortSignal,
+    context?: { title: string; stage: RequirementDocumentStage; dimension: string; outputContract: string },
+  ): Promise<string> {
     this.throwIfAborted(signal)
     const providerId = getStorage().config.get('activeProviderId')
     const model = getStorage().config.getActiveModel()
     const provider = this.providers.get(providerId)
     if (!provider || !model) {
-      return '尚未配置可用模型。请在设置中配置模型后，再次执行 `/requirement` 提交补充信息。\n\n- [ ] 待模型分析\n- [ ] 待人工确认'
+      throw new Error('尚未配置可用模型，无法执行需求工程。请在设置中配置模型后重试。')
     }
     try {
       let response = await provider.chatComplete({
@@ -1460,6 +1473,8 @@ export class RequirementEngineeringService {
       let content = response.content.trim()
       for (let attempt = 0; response.finishReason === 'length' && attempt < MAX_GENERATION_CONTINUATIONS; attempt += 1) {
         if (!content) break
+        const outputContract = context?.outputContract || '保持内容紧凑，只完成尚未完成的部分，不要重复已输出内容。'
+        const taskSummary = this.continuationTaskSummary(prompt)
         response = await provider.chatComplete({
           model,
           temperature: 0.2,
@@ -1467,7 +1482,10 @@ export class RequirementEngineeringService {
           reasoning: { enabled: false },
           messages: [
             { role: 'system', content: '你是软件需求工程师。请只输出中文 Markdown，且不得编造未提供的业务事实。' },
-            { role: 'user', content: `以下文档因模型输出长度限制而中断。请从中断处继续，不要重复已有内容；保持原有标题层级、编号和表格结构，并完成所有尚未完成的部分。\n\n# 已输出内容\n${content.slice(-18_000)}` },
+            {
+              role: 'user',
+              content: `你正在续写《${context?.title || '需求工程文档'}》，它因长度限制中断。只输出尚未完成的正文，不要重写标题、前言、已完成章节、表格表头或已有条目。必须尽快收束并以完整 Markdown 结构结束。\n\n# 原始任务摘要\n${taskSummary}\n\n# 输出约束\n${outputContract}\n\n# 已输出内容的末尾\n${content.slice(-MAX_CONTINUATION_TAIL_CHARS)}`,
+            },
           ],
         }, signal)
         const continuation = response.content.trim()
@@ -1475,18 +1493,39 @@ export class RequirementEngineeringService {
         content = `${content}\n\n${continuation}`
       }
       if (response.finishReason === 'length') {
-        throw new Error('模型输出达到长度上限，自动续写后仍未完成。请缩小本次需求范围或拆分需求文档。')
+        throw new Error(`《${context?.title || '需求工程文档'}》在 ${MAX_GENERATION_CONTINUATIONS} 次自动续写后仍未完成。已停止本轮，未将不完整内容用于后续分析。请缩小需求范围或拆分需求文档后重试。`)
       }
       if (content) return content
-      return this.modelFallback('模型未返回正文。')
+      throw new Error(`《${context?.title || '需求工程文档'}》未返回正文。`)
     } catch (error) {
       if (signal?.aborted) throw error
-      return this.modelFallback(error instanceof Error ? error.message : String(error))
+      throw error instanceof Error ? error : new Error(String(error))
     }
   }
 
-  private modelFallback(reason: string): string {
-    return `模型暂时未能完成此维度的分析，已保存本轮输入和任务文档。\n\n原因：${reason}\n\n- [ ] 待补充必要业务信息\n- [ ] 待明确可验收的完成条件\n- [ ] 待重新执行本轮分析`
+  private continuationTaskSummary(prompt: string): string {
+    const firstContextHeading = prompt.search(/\n# (?:原始需求|待实现需求|最终明确需求|已确认的用户澄清|代码库证据|项目索引证据|本轮分析|历史需求工程文档)/)
+    const instructions = (firstContextHeading >= 0 ? prompt.slice(0, firstContextHeading) : prompt).trim()
+    return instructions.slice(0, 3_000) || '基于已有材料完成当前文档，不得编造事实。'
+  }
+
+  private documentOutputContract(stage: RequirementDocumentStage, dimension: string): string {
+    if (stage === 'requirement-analysis' && dimension === 'initial') {
+      return '这是需求澄清的初版分析，不是详细设计。只保留“已确认事实、业务规则、缺失信息、边界条件、验收标准”五个二级标题；每类最多 12 项，每项最多两句，总正文目标不超过 6,000 个中文字符。不得输出接口路径、表结构、类名、算法、框架选型或实施方案。'
+    }
+    if (stage === 'requirement-analysis' && dimension === 'code-aware') {
+      return '这是结合代码证据的需求分析，不是技术设计。按需求项归纳可复用位置、改动边界、风险和待确认事实；每个需求项最多 4 条，每条最多两句，总正文目标不超过 7,000 个中文字符。只引用必要的文件或模块证据，不得展开接口定义、数据库表设计、伪代码或实现步骤。'
+    }
+    if (stage === 'code-analysis') {
+      return '只输出与当前需求直接相关的代码证据、复用位置和技术风险。最多引用 12 个文件或符号；每项最多两句，总正文目标不超过 6,000 个中文字符。不得把推测写成代码事实。'
+    }
+    if (stage === 'evaluation') {
+      return '严格使用要求的固定评测格式。UNRESOLVED_ITEMS_JSON 最多 8 项，ASSESSMENT 最多 6 个短句；不要复述原始需求、分析过程或技术设计。'
+    }
+    if (stage === 'clarification') {
+      return '只列真正影响业务验收的待确认问题，最多 8 个；每题最多 4 个简短业务选项。不要复述分析过程，不要提出接口、表结构、框架或代码实现问题。'
+    }
+    return '内容必须紧凑、可验证且完整。不要复述输入材料、重复已确认结论或无边界地展开实现细节。'
   }
 
   private attachmentReadinessError(attachmentContext: string): string | undefined {

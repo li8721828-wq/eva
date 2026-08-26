@@ -73,5 +73,6 @@ describe('chat stream state', () => {
       expect.objectContaining({ id: 'progress-1', content: 'Checking the first result.' }),
       expect.objectContaining({ id: 'progress-2', content: 'Trying the corrected command.' }),
     ])
+    expect(useChatStore.getState().messages).toEqual([])
   })
 })

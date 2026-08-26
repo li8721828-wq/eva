@@ -17,6 +17,14 @@ describe('RequirementEngineeringService document integrity', () => {
     (service as unknown as {
       parseEvaluation: (dimension: string, content: string) => { readiness?: string; unresolvedItems?: Array<{ id: string; fact: string; impact: string; requiredDecision: string; blocking: boolean }> }
     }).parseEvaluation('test', content)
+  const outputContract = (stage: string, dimension: string): string =>
+    (service as unknown as {
+      documentOutputContract: (stage: string, dimension: string) => string
+    }).documentOutputContract(stage, dimension)
+  const continuationSummary = (prompt: string): string =>
+    (service as unknown as {
+      continuationTaskSummary: (prompt: string) => string
+    }).continuationTaskSummary(prompt)
 
   it('accepts a complete BDD scenario without terminal punctuation', () => {
     const content = [
@@ -86,5 +94,28 @@ describe('RequirementEngineeringService document integrity', () => {
       'Looks fine.',
     ].join('\n'))
     expect(contradictory.unresolvedItems?.[0]).toMatchObject({ id: 'U-FORMAT', blocking: true })
+  })
+
+  it('keeps requirement analysis concise and prevents it from turning into technical design', () => {
+    const initial = outputContract('requirement-analysis', 'initial')
+    const codeAware = outputContract('requirement-analysis', 'code-aware')
+
+    expect(initial).toContain('总正文目标不超过 6,000')
+    expect(initial).toContain('不得输出接口路径、表结构')
+    expect(codeAware).toContain('总正文目标不超过 7,000')
+    expect(codeAware).toContain('不得展开接口定义、数据库表设计')
+  })
+
+  it('keeps the original task instructions when requesting a continuation', () => {
+    const summary = continuationSummary([
+      '分析维度：范围与目标',
+      '请输出：已确认事实、业务规则、缺失信息、边界条件、验收标准。',
+      '# 原始需求',
+      '这里是可能很长的需求正文。',
+    ].join('\n'))
+
+    expect(summary).toContain('分析维度：范围与目标')
+    expect(summary).toContain('验收标准')
+    expect(summary).not.toContain('这里是可能很长的需求正文')
   })
 })

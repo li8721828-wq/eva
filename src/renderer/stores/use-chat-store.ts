@@ -574,7 +574,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           timestamp: Date.now(),
         }
         set((s) => ({
-          messages: s.currentConversationId === conversationId ? [...s.messages, progressMessage] : s.messages,
           streamingByConversation: {
             ...s.streamingByConversation,
             [conversationId]: {

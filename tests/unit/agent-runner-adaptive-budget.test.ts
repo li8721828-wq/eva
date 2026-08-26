@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentRunner } from '../../src/main/agent-engine/agent-runner'
 import { ContextManager } from '../../src/main/agent-engine/context'
 import { ToolRegistry } from '../../src/main/tools'
 import type { AgentConfig } from '../../src/shared/types/agent'
 import type { ChatChunk } from '../../src/shared/types/provider'
+
+vi.mock('../../src/main/services/usage-pricing-service', () => ({
+  resolveConnectionPricingMode: () => ({}),
+  resolveRateCardUsageCost: () => ({}),
+}))
 
 const agent: AgentConfig = {
   id: 'adaptive-budget-agent',
@@ -67,6 +72,46 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.find((event) => event.type === 'done')).toMatchObject({
       content: 'The first part completes here.',
       finishReason: 'stop',
+    })
+  })
+
+  it('counts repeated streaming usage snapshots as one model call', async () => {
+    const repeatedUsage = { promptTokens: 10_893, completionTokens: 248, cachedTokens: 3_703 }
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: () => chunks(...Array.from({ length: 250 }, (_, index) => ({
+        content: index === 0 ? 'Completed.' : '',
+        usage: repeatedUsage,
+        ...(index === 249 ? { finishReason: 'stop' as const } : {}),
+      }))),
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: [] },
+      provider: provider as never,
+      toolRegistry: new ToolRegistry(),
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Say completed.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(events.find((event) => event.type === 'done')).toMatchObject({
+      content: 'Completed.',
+      usage: {
+        promptTokens: 10_893,
+        completionTokens: 248,
+        cachedTokens: 3_703,
+        modelCalls: 1,
+      },
     })
   })
 
@@ -174,7 +219,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.find((event) => event.type === 'done')?.content).toBe('Both files were read.')
   })
 
-  it('drops tool schemas for the final answer after a simple web lookup', async () => {
+  it('keeps the configured tool schemas available after a simple web lookup', async () => {
     const registry = new ToolRegistry()
     registry.register({
       definition: { name: 'web_search', description: 'Search the web.', parameters: {} },
@@ -212,7 +257,7 @@ describe('AgentRunner adaptive tool budget', () => {
       // Exhaust the event stream.
     }
 
-    expect(requestedTools).toEqual([['web_search'], undefined])
+    expect(requestedTools).toEqual([['web_search'], ['web_search']])
   })
 
   it('streams final prose and clears provisional tool rationale', async () => {
@@ -266,6 +311,101 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(provisionalTextIndex).toBeLessThan(resetIndex)
     expect(resetIndex).toBeLessThan(finalTextIndex)
     expect(events.find((event) => event.type === 'done')?.content).toBe('The inspection is complete.')
+  })
+
+  it('retries one malformed text tool envelope with the same tool definitions', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect a fact.', parameters: {} },
+      execute: async () => 'inspection complete',
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        if (request === 1) {
+          return chunks({
+            content: '<｜DSML｜tool_calls><｜DSML｜invoke name="inspect">',
+            toolCallParseFailure: 'Malformed DSML.',
+            finishReason: 'stop',
+          })
+        }
+        if (request === 2) {
+          return chunks({
+            content: '',
+            toolCalls: [{ index: 0, id: 'inspect-1', name: 'inspect', arguments: '{}' }],
+            finishReason: 'tool_calls',
+          })
+        }
+        return chunks({ content: 'The inspection is complete.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 3 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Inspect the workspace.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(requestedTools).toEqual([['inspect'], ['inspect'], ['inspect']])
+    expect(events.some((event) => event.type === 'text_reset' && event.discardProvisionalText)).toBe(true)
+    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(1)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('The inspection is complete.')
+  })
+
+  it('keeps configured tools available for a follow-up regardless of wording', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'execute_command', description: 'Execute a command.', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } },
+      execute: async () => 'command complete',
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        return chunks({ content: 'I will continue from the failed command.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['execute_command'], maxIterations: 2 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    for await (const _event of runner.run({
+      messages: [{
+        id: 'prior', conversationId: 'conversation', role: 'assistant', content: 'Error: command failed', timestamp: Date.now(),
+        toolCalls: [{ id: 'command-1', name: 'execute_command', arguments: { command: 'bad' }, result: 'Error', isError: true }],
+      }],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'go ahead', timestamp: Date.now() },
+    })) {
+      // Exhaust the stream.
+    }
+
+    expect(requestedTools[0]).toContain('execute_command')
   })
 
   it('falls back to normal output when slow reasoning is unavailable', async () => {

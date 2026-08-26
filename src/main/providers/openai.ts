@@ -1,6 +1,6 @@
 import OpenAI from 'openai'
 import { net } from 'electron'
-import type { ChatParams, ChatChunk } from '../../shared/types/provider'
+import type { ChatParams, ChatChunk, ToolDefinition } from '../../shared/types/provider'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
 import { withRetry, classifyError } from './errors'
@@ -33,11 +33,21 @@ function createLegacyTextToolCall(
   if (!tool) return undefined
 
   const args: Record<string, unknown> = {}
-  const schema = tool.parameters as { properties?: Record<string, unknown>; required?: unknown }
+  const schema = tool.parameters as { properties?: Record<string, { type?: string }>; required?: unknown }
   for (const [key, rawValue] of parameters) {
     const value = rawValue.trim()
     if (!value || key in args || (schema.properties && !(key in schema.properties))) return undefined
-    args[key] = value
+    const expectedType = schema.properties?.[key]?.type
+    if (expectedType === 'number' || expectedType === 'integer') {
+      const numeric = Number(value)
+      if (!Number.isFinite(numeric)) return undefined
+      args[key] = expectedType === 'integer' ? Math.trunc(numeric) : numeric
+    } else if (expectedType === 'boolean') {
+      if (!/^(?:true|false)$/i.test(value)) return undefined
+      args[key] = value.toLowerCase() === 'true'
+    } else {
+      args[key] = value
+    }
   }
 
   const required = Array.isArray(schema.required) ? schema.required : []
@@ -85,6 +95,70 @@ function parseLegacyTextToolCalls(content: string, tools?: ToolDefinition[]): Le
   if (parameterRemainder) return []
   const call = createLegacyTextToolCall(directBlock[1], parameters, tools, 0)
   return call ? [call] : []
+}
+
+function attributeValue(attributes: string, name: string): string | undefined {
+  const match = attributes.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'))
+  return match?.[1]
+}
+
+function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): LegacyTextToolCall[] {
+  if (!tools?.length) return []
+  const marker = '[|｜]\\s*DSML\\s*[|｜]'
+  const openEnvelope = new RegExp(`<\\s*${marker}\\s*tool_calls\\s*>`, 'i')
+  const closeEnvelope = new RegExp(`<\\s*[\\/／]\\s*${marker}\\s*tool_calls\\s*>`, 'i')
+  const openMatch = openEnvelope.exec(content)
+  if (!openMatch) return []
+  const remainder = content.slice(openMatch.index + openMatch[0].length)
+  const closeMatch = closeEnvelope.exec(remainder)
+  if (!closeMatch) return []
+  const block = remainder.slice(0, closeMatch.index)
+  const after = remainder.slice(closeMatch.index + closeMatch[0].length)
+  if (/<\s*[|｜]\s*DSML\s*[|｜]/i.test(after)) return []
+
+  const openInvoke = new RegExp(`<\\s*${marker}\\s*invoke\\b([^>]*)>`, 'gi')
+  const closeInvoke = new RegExp(`<\\s*[\\/／]\\s*${marker}\\s*invoke\\s*>`, 'i')
+  const calls: LegacyTextToolCall[] = []
+  let cursor = 0
+  for (const match of block.matchAll(openInvoke)) {
+    const textBefore = block.slice(cursor, match.index).trim()
+    if (textBefore) return []
+    const callName = attributeValue(match[1], 'name')
+    if (!callName) return []
+    const bodyStart = (match.index || 0) + match[0].length
+    const tail = block.slice(bodyStart)
+    const closing = closeInvoke.exec(tail)
+    if (!closing) return []
+    const body = tail.slice(0, closing.index)
+    const parameterPattern = new RegExp(`<\\s*${marker}\\s*parameter\\b([^>]*)>([\\s\\S]*?)<\\s*[\\/／]\\s*${marker}\\s*parameter\\s*>`, 'gi')
+    const parameters = Array.from(body.matchAll(parameterPattern)).map((parameter): [string, string] | undefined => {
+      const parameterName = attributeValue(parameter[1], 'name')
+      return parameterName ? [parameterName, parameter[2]] : undefined
+    })
+    if (parameters.some((parameter) => !parameter)) return []
+    const parameterBlocks = Array.from(body.matchAll(parameterPattern))
+    const parameterRemainder = body.replace(parameterPattern, '').trim()
+    if (parameterRemainder) return []
+    const call = createLegacyTextToolCall(callName, parameters as Array<[string, string]>, tools, calls.length)
+    if (!call) return []
+    calls.push(call)
+    cursor = bodyStart + (closing.index || 0) + closing[0].length
+    // Reset the global expression before the next invocation search.
+    closeInvoke.lastIndex = 0
+    if (parameterBlocks.length === 0 && body.trim()) return []
+  }
+  return calls.length && block.slice(cursor).trim() === '' ? calls : []
+}
+
+function hasSuspectedTextToolCall(content: string, tools?: ToolDefinition[]): boolean {
+  if (/<\s*[|｜]\s*DSML\s*[|｜]\s*(?:tool_calls|invoke|parameter)\b/i.test(content)) return true
+  if (/<tool_call\b|<function=/i.test(content)) return true
+  return Boolean(tools?.some((tool) => new RegExp(`<\\s*${tool.name}\\b`, 'i').test(content)))
+}
+
+function parseTextToolCalls(content: string, tools?: ToolDefinition[]): LegacyTextToolCall[] {
+  const legacy = parseLegacyTextToolCalls(content, tools)
+  return legacy.length > 0 ? legacy : parseDsmlTextToolCalls(content, tools)
 }
 
 export class OpenAIProvider implements LLMProvider {
@@ -273,17 +347,24 @@ export class OpenAIProvider implements LLMProvider {
     // legacy envelope. AgentRunner will reset the provisional streamed text
     // before showing the actual tool activity.
     if (toolCallsAccumulator.size === 0) {
-      const legacyToolCalls = parseLegacyTextToolCalls(textContent, params.tools)
+      const legacyToolCalls = parseTextToolCalls(textContent, params.tools)
       if (legacyToolCalls.length > 0) {
         yield {
           content: '',
           finishReason: 'tool_calls',
+          textToolCallEnvelope: true,
           toolCalls: legacyToolCalls.map((toolCall, index) => ({
             index,
             id: toolCall.id,
             name: toolCall.name,
             arguments: JSON.stringify(toolCall.arguments),
           })),
+        }
+      } else if (hasSuspectedTextToolCall(textContent, params.tools)) {
+        yield {
+          content: '',
+          finishReason: 'stop',
+          toolCallParseFailure: 'The gateway returned tool-call-like text that did not match a supported schema.',
         }
       }
     }
@@ -331,7 +412,7 @@ export class OpenAIProvider implements LLMProvider {
     const message = choice.message as typeof choice.message & { reasoning_content?: string }
     const legacyToolCalls = toolCalls?.length
       ? []
-      : parseLegacyTextToolCalls(message.content || '', params.tools)
+      : parseTextToolCalls(message.content || '', params.tools)
     return {
       content: legacyToolCalls.length > 0 ? '' : (message.content || message.reasoning_content || ''),
       toolCalls: toolCalls?.length ? toolCalls : legacyToolCalls,

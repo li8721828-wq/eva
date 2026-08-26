@@ -83,6 +83,10 @@ export interface ChatChunk {
   content: string
   /** Provider-supplied reasoning, never synthesized by Eva. */
   reasoningContent?: string
+  /** The provider emitted markup that resembles a tool call but could not be safely parsed. */
+  toolCallParseFailure?: string
+  /** The content is a parsed text tool envelope and must not remain as assistant prose. */
+  textToolCallEnvelope?: boolean
   toolCalls?: Array<{
     index: number
     id?: string

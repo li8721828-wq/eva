@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'streamdown/styles.css'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry } from '../../../shared/types'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ProgressUpdate } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView, ToolCallView } from './ToolCallView'
@@ -179,6 +179,44 @@ function ExecutionStatusIndicator() {
   )
 }
 
+type ProgressMarkdownOptions = {
+  outputFormat: AgentOutputFormat
+  outputStyle: AgentOutputStyle
+  outputFont: AgentOutputFont
+  outputColor: AgentOutputColor
+  outputFontSize: AgentOutputFontSize
+  outputTextEffect: AgentOutputTextEffect
+  markdownRenderer: AgentMarkdownRenderer
+}
+
+function isInternalToolLifecycleUpdate(content: string): boolean {
+  return /^(?:Preparing the response and any required tools|Reviewing the tool results|Reviewing progress after \d+ tool cycles|Continuing with an expanded budget of \d+ tool cycles|Synthesizing the available results)\.\.\.$|^(?:当前模型不支持慢思考内容输出，将按普通模式继续执行。|检测到未执行的工具调用格式，正在按标准工具协议重试一次。)$/.test(content.trim())
+}
+
+function ProgressUpdatesView({ updates, streaming = false, markdownOptions }: { updates: ProgressUpdate[]; streaming?: boolean; markdownOptions: ProgressMarkdownOptions }) {
+  const visibleUpdates = updates.filter((update) => !isInternalToolLifecycleUpdate(update.content))
+  if (!visibleUpdates.length) return null
+
+  return (
+    <section className="mb-3 space-y-3" aria-label="处理进展" aria-live={streaming ? 'polite' : undefined}>
+      {visibleUpdates.map((update) => (
+        <MarkdownMessageContent
+          key={update.id}
+          content={update.content}
+          isStreaming={streaming}
+          outputFormat={markdownOptions.outputFormat}
+          outputStyle={markdownOptions.outputStyle}
+          outputFont={markdownOptions.outputFont}
+          outputColor={markdownOptions.outputColor}
+          outputFontSize={markdownOptions.outputFontSize}
+          outputTextEffect={markdownOptions.outputTextEffect}
+          markdownRenderer={markdownOptions.markdownRenderer}
+        />
+      ))}
+    </section>
+  )
+}
+
 function markdownNodeText(node: ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') return String(node)
   if (Array.isArray(node)) return node.map(markdownNodeText).join('')
@@ -337,9 +375,26 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const outputTextEffect = outputAgent?.outputTextEffect || 'none'
   const markdownRenderer = outputAgent?.markdownRenderer || 'enhanced'
 
-  // Stage updates are retained in storage for diagnostics, but the transcript
-  // intentionally shows only the compact live indicator and real tool calls.
-  if (message.progressKind) return null
+  // A progress event can be left on its own when a run is interrupted before
+  // its final assistant message is persisted. Keep it visible in that case.
+  if (message.progressKind) {
+    if (isInternalToolLifecycleUpdate(message.content)) return null
+    return (
+      <article className={cn('group flex items-start gap-3', className)}>
+        <div className="chat-message-avatar flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600">
+          <Bot className="h-3.5 w-3.5" />
+        </div>
+        <div className="min-w-0 max-w-[66rem]">
+          <div className="chat-message-surface chat-assistant-message py-3 pl-3 pr-5">
+            <ProgressUpdatesView
+              updates={[{ id: message.id, kind: message.progressKind, content: message.content, timestamp: message.timestamp }]}
+              markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
+            />
+          </div>
+        </div>
+      </article>
+    )
+  }
 
   if (isUser) {
     return (
@@ -424,6 +479,13 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
               </Badge>
             </div>
           )}
+          {isStreaming && message.progressUpdates?.length ? (
+            <ProgressUpdatesView
+              updates={message.progressUpdates}
+              streaming={isStreaming}
+              markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
+            />
+          ) : null}
           {isStreaming && !message.executionTimeline?.length ? <ExecutionStatusIndicator /> : null}
           {message.executionTimeline?.length
             ? <ExecutionTimelineView entries={message.executionTimeline} streaming={isStreaming} />
