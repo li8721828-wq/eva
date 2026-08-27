@@ -3,26 +3,11 @@ import type { AgentConfig } from '../../shared/types/agent'
 import type { Conversation, ChatMessage, ToolCall } from '../../shared/types/conversation'
 import type { GoalEvent } from '../agent-engine/goal-planner'
 import type { GoalStep, GoalStepHandoff } from '../../shared/types/task'
+import { goalStepHandoffPrompt } from '../../shared/goal-step-handoff'
 import { getStorage } from '../storage'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 
-export function goalStepHandoffPrompt(handoff: GoalStepHandoff, continuation = false): string {
-  const dependencies = handoff.dependencyResults.length
-    ? handoff.dependencyResults.map((item) => `- ${item.stepId}: ${item.description}\n  Result: ${item.result}`).join('\n')
-    : '(No upstream step results.)'
-  return [
-    `Goal: ${handoff.goal}`,
-    `Assigned step: ${handoff.step}`,
-    `Workspace: ${handoff.workspacePath || '(not restricted to one workspace)'}`,
-    'Acceptance criteria:',
-    ...handoff.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-    'Upstream handoffs:',
-    dependencies,
-    continuation
-      ? 'Continue this isolated Goal step from the saved child conversation. Re-check the current evidence before taking another action.'
-      : 'This is an isolated Goal step conversation. Work only on this step. Do not assume another step completed unless its handoff above says so.',
-  ].join('\n')
-}
+export { goalStepHandoffPrompt } from '../../shared/goal-step-handoff'
 
 export async function prepareGoalStepConversation(input: {
   parent: Conversation

@@ -75,4 +75,31 @@ describe('chat stream state', () => {
     ])
     expect(useChatStore.getState().messages).toEqual([])
   })
+
+  it('keeps accumulated progress visible after response text begins streaming', () => {
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'progress',
+      conversationId: 'foreground',
+      messageId: 'progress-1',
+      progressKind: 'thinking',
+      content: '正在理解请求并确定执行方式',
+    })
+    store.appendStreamEvent({
+      type: 'text_delta',
+      conversationId: 'foreground',
+      content: '这是正在生成的结论。',
+    })
+    store.appendStreamEvent({
+      type: 'progress',
+      conversationId: 'foreground',
+      messageId: 'progress-2',
+      progressKind: 'finding',
+      content: '已获得阶段性结论，正在确认关键细节',
+    })
+
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream.content).toBe('这是正在生成的结论。')
+    expect(stream.progressUpdates).toHaveLength(2)
+  })
 })

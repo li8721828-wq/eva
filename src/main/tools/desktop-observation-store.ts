@@ -89,7 +89,7 @@ const observations = new Map<string, DesktopObservation>()
 const sessions = new Map<string, DesktopControlSession>()
 let nextRevision = 0
 
-export function storeDesktopObservation(snapshot: Omit<DesktopObservation, 'id' | 'observedAt'>): DesktopObservation {
+export function storeDesktopObservation(snapshot: Omit<DesktopObservation, 'id' | 'revision' | 'observedAt'>): DesktopObservation {
   const observation: DesktopObservation = {
     id: `desktop_${randomUUID()}`,
     revision: ++nextRevision,

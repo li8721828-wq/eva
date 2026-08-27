@@ -113,7 +113,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const [toolSelection, setToolSelection] = useState<string[]>([])
   const [modelSelection, setModelSelection] = useState<NonNullable<AgentConfig['modelCandidates']>>([])
   const [selectedPoolIds, setSelectedPoolIds] = useState<string[]>([])
-  const [showThinking, setShowThinking] = useState(false)
+  const [processOutput, setProcessOutput] = useState<NonNullable<AgentConfig['processOutput']>>('compact')
   const [outputFormat, setOutputFormat] = useState<NonNullable<AgentConfig['outputFormat']>>('default')
   const [outputFormatInstructions, setOutputFormatInstructions] = useState('')
   const [outputStyle, setOutputStyle] = useState<NonNullable<AgentConfig['outputStyle']>>('balanced')
@@ -199,7 +199,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
 
   const handleManageOutput = useCallback((agent: AgentConfig) => {
     setEditingAgent(agent)
-    setShowThinking(Boolean(agent.showThinking))
+    setProcessOutput(agent.processOutput || (agent.showThinking ? 'detailed' : 'compact'))
     setOutputFormat(agent.outputFormat || 'default')
     setOutputFormatInstructions(agent.outputFormatInstructions || '')
     setOutputStyle(agent.outputStyle || 'balanced')
@@ -261,14 +261,14 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const handleSaveOutput = useCallback(async () => {
     if (!editingAgent) return
     try {
-      const updates = { showThinking, outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }
+      const updates = { processOutput, showThinking: processOutput === 'detailed', outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }
       await updateAgent(editingAgent.id, updates)
       setEditingAgent({ ...editingAgent, ...updates })
       setView('details')
     } catch (error) {
       console.error('Failed to update output format:', error)
     }
-  }, [editingAgent, showThinking, outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, updateAgent])
+  }, [editingAgent, processOutput, outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, updateAgent])
 
   const handleSetPrimaryChatAgent = useCallback(async (agent: AgentConfig) => {
     try {
@@ -411,7 +411,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
       return (
         <div className="px-6 py-6 sm:px-8">
           <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
-          <OutputFormatPanel outputFormat={outputFormat} outputFormatInstructions={outputFormatInstructions} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} showThinking={showThinking} onOutputFormatChange={setOutputFormat} onOutputFormatInstructionsChange={setOutputFormatInstructions} onOutputStyleChange={setOutputStyle} onOutputFontChange={setOutputFont} onOutputColorChange={setOutputColor} onOutputFontSizeChange={setOutputFontSize} onOutputTextEffectChange={setOutputTextEffect} onMarkdownRendererChange={setMarkdownRenderer} onShowThinkingChange={setShowThinking} />
+          <OutputFormatPanel outputFormat={outputFormat} outputFormatInstructions={outputFormatInstructions} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} processOutput={processOutput} onOutputFormatChange={setOutputFormat} onOutputFormatInstructionsChange={setOutputFormatInstructions} onOutputStyleChange={setOutputStyle} onOutputFontChange={setOutputFont} onOutputColorChange={setOutputColor} onOutputFontSizeChange={setOutputFontSize} onOutputTextEffectChange={setOutputTextEffect} onMarkdownRendererChange={setMarkdownRenderer} onProcessOutputChange={setProcessOutput} />
           <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveOutput()}>{copy.save}</Button></div>
         </div>
       )

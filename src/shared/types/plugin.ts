@@ -59,6 +59,15 @@ export interface LocalSearxngStatus {
   message: string
 }
 
+export interface SearchProviderConnectivity {
+  reachable: boolean
+  apiValid: boolean
+  endpoint: string
+  resultCount: number
+  unresponsiveEngines: string[]
+  message: string
+}
+
 /** Plugins that implement the backend used by the web_search tool. */
 export const SEARCH_PROVIDER_PLUGIN_IDS = ['brave-search', 'tavily-search', 'searxng-search'] as const
 export type SearchProviderPluginId = (typeof SEARCH_PROVIDER_PLUGIN_IDS)[number]

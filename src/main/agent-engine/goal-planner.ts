@@ -6,13 +6,20 @@ import { markGoalProgressCancelled, type GoalConfig, type GoalStep, type GoalPro
 import type { ToolCall } from '../../shared/types/conversation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { ChatMessage } from '../../shared/types/conversation'
+import { goalStepHandoffPrompt } from '../../shared/goal-step-handoff'
 import { AgentRunner } from './agent-runner'
 import { ContextManager } from './context'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import type { ModelPool } from '../../shared/types/model-pool'
+import type { ProviderRegistry } from '../providers'
 import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
 
 const GOAL_ABSOLUTE_MAX_ITERATIONS = 100
 export const GOAL_STEP_MAX_ATTEMPTS = 2
+const MAX_HANDOFF_CONTEXT_CHARS = 5_000
+const MAX_HANDOFF_RESULT_CHARS = 2_000
+const MAX_HANDOFF_ITEMS = 8
+const MAX_HANDOFF_GUIDANCE_CHARS = 1_200
 
 export function shouldRetryGoalStepError(error: string, providerId: string): boolean {
   return classifyError(new Error(error), providerId).retryable
@@ -27,6 +34,12 @@ function compactHandoffResult(value: string, maxChars = 6_000): string {
   if (normalized.length <= maxChars) return normalized
   const head = Math.floor(maxChars * 0.68)
   return `${normalized.slice(0, head)} ... [handoff middle omitted] ... ${normalized.slice(-(maxChars - head - 38))}`
+}
+
+function compactHandoffItems(values: string[]): string[] {
+  return values
+    .slice(-MAX_HANDOFF_ITEMS)
+    .map((value) => compactHandoffResult(value, MAX_HANDOFF_GUIDANCE_CHARS))
 }
 
 export interface GoalStepIterationBudget {
@@ -81,6 +94,8 @@ export interface GoalPlannerConfig {
   fullFilesystemAccess?: boolean
   fileService: FileService
   terminalService: TerminalService
+  modelPools?: ModelPool[]
+  providerRegistry?: ProviderRegistry
   maxSteps?: number
   timeout?: number
   /** Creates a hidden, durable child conversation for each Goal step. */
@@ -211,11 +226,12 @@ export class GoalPlanner {
 
         for (let attempt = 1; attempt <= GOAL_STEP_MAX_ATTEMPTS; attempt += 1) {
           step.attempt = attempt
-          step.startedAt = Date.now()
+          const attemptStartedAt = Date.now()
+          step.startedAt = attemptStartedAt
           if (attempt > 1) {
             step.attempts = (step.attempts || []).some((entry) => entry.attempt === attempt)
-              ? (step.attempts || []).map((entry) => entry.attempt === attempt ? { ...entry, startedAt: step.startedAt } : entry)
-              : [...(step.attempts || []), { attempt, status: 'in_progress', startedAt: step.startedAt }]
+              ? (step.attempts || []).map((entry) => entry.attempt === attempt ? { ...entry, startedAt: attemptStartedAt } : entry)
+              : [...(step.attempts || []), { attempt, status: 'in_progress', startedAt: attemptStartedAt }]
           }
 
           let attemptFailed = false
@@ -491,13 +507,26 @@ Rules:
     const adaptiveToolBudget = goalStepIterationBudget(step, this.config.agentConfig.maxIterations)
     const dependencyResults = previousResults
       .filter((previous) => previous.status === 'completed')
-      .map((previous) => ({ stepId: previous.id, description: previous.description, result: compactHandoffResult(previous.result || 'No structured result was recorded.') }))
+      .slice(-MAX_HANDOFF_ITEMS)
+      .map((previous) => ({ stepId: previous.id, description: previous.description, result: compactHandoffResult(previous.result || 'No structured result was recorded.', MAX_HANDOFF_RESULT_CHARS) }))
+    const upstreamIssues = previousResults
+      .filter((previous): previous is GoalStep & { status: 'failed' | 'cancelled' } => previous.status === 'failed' || previous.status === 'cancelled')
+      .slice(-MAX_HANDOFF_ITEMS)
+      .map((previous) => ({
+        stepId: previous.id,
+        description: previous.description,
+        status: previous.status,
+        detail: compactHandoffResult(previous.result || 'No detailed failure result was recorded.', MAX_HANDOFF_RESULT_CHARS),
+      }))
     const handoff: GoalStepHandoff = {
       goal,
       step: step.description,
       acceptanceCriteria: ['Complete the assigned step.', 'Report changed files, verification, and unresolved risks explicitly.'],
       workspacePath: this.config.workspacePath || undefined,
+      parentContext: compactHandoffResult(this.config.contextManager.getDurableMemory(), MAX_HANDOFF_CONTEXT_CHARS) || undefined,
+      userGuidance: compactHandoffItems(this.feedback.map((feedback) => feedback.content)),
       dependencyResults,
+      upstreamIssues,
     }
     step.handoff = handoff
     let stepConversationId = step.agentConversationId
@@ -515,7 +544,7 @@ Rules:
         id: `goal-step-${step.id}-${Date.now()}`,
         conversationId: '',
         role: 'user',
-        content: this.buildStepPrompt(handoff),
+        content: goalStepHandoffPrompt(handoff),
         timestamp: Date.now(),
       }
     }
@@ -525,15 +554,16 @@ Rules:
       agentConfig: this.config.agentConfig,
       provider: this.config.provider,
       toolRegistry: this.config.toolRegistry,
-      // Each step gets a fresh context manager. The parent planner's durable
-      // memory is intentionally not copied into the child transcript; the
-      // explicit handoff above is the only cross-step contract.
-      contextManager: new ContextManager(),
+      // Each step gets a fresh transcript. The explicit handoff is the only
+      // task context that crosses the boundary, while machine policy remains.
+      contextManager: this.config.contextManager.createStepContext(),
       workspacePath: this.config.workspacePath,
       fileAccessGrants: this.config.fileAccessGrants,
       fullFilesystemAccess: this.config.fullFilesystemAccess,
       fileService: this.config.fileService,
       terminalService: this.config.terminalService,
+      modelPools: this.config.modelPools,
+      providerRegistry: this.config.providerRegistry,
       adaptiveToolBudget,
       requestSource: 'goal-step',
     })
@@ -603,22 +633,6 @@ Rules:
     } finally {
       this.currentRunner = null
     }
-  }
-
-  private buildStepPrompt(handoff: GoalStepHandoff): string {
-    const dependencies = handoff.dependencyResults.length
-      ? handoff.dependencyResults.map((item) => `- ${item.stepId}: ${item.description}\n  Result: ${item.result}`).join('\n')
-      : '(No upstream step results.)'
-    return [
-      `Goal: ${handoff.goal}`,
-      `Assigned step: ${handoff.step}`,
-      `Workspace: ${handoff.workspacePath || '(not restricted to one workspace)'}`,
-      'Acceptance criteria:',
-      ...handoff.acceptanceCriteria.map((criterion) => `- ${criterion}`),
-      'Upstream handoffs:',
-      dependencies,
-      'This is an isolated Goal step conversation. Work only on this step. Do not assume another step completed unless its handoff above says so.',
-    ].join('\n')
   }
 
   private async evaluateAndAdjust(

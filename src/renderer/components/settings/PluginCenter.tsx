@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
-import { isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type LocalSearxngStatus, type MarketplacePluginView, type PluginConfigField } from '../../../shared/types/plugin'
+import { isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type LocalSearxngStatus, type MarketplacePluginView, type PluginConfigField, type SearchProviderConnectivity } from '../../../shared/types/plugin'
 
 function PermissionPills({ plugin }: { plugin: Pick<InstalledPlugin, 'permissions'> }) {
   return (
@@ -33,6 +33,8 @@ export function PluginCenter() {
   const [visibleSecrets, setVisibleSecrets] = useState<Record<string, boolean>>({})
   const [localSearxngStatus, setLocalSearxngStatus] = useState<LocalSearxngStatus | null>(null)
   const [localSearxngWorking, setLocalSearxngWorking] = useState(false)
+  const [connectionTest, setConnectionTest] = useState<SearchProviderConnectivity | null>(null)
+  const [connectionTesting, setConnectionTesting] = useState(false)
 
   const refresh = useCallback(async () => {
     const [nextInstalled, nextMarketplace] = await Promise.all([
@@ -50,6 +52,7 @@ export function PluginCenter() {
   const importPlugin = async () => {
     setWorkingId('import')
     setNotice(null)
+    setConnectionTest(null)
     try {
       const plugin = await window.eva.plugins.importManifest()
       if (!plugin) return
@@ -154,6 +157,20 @@ export function PluginCenter() {
       setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to stop Local Search.' })
     } finally {
       setLocalSearxngWorking(false)
+    }
+  }
+
+  const testConnection = async () => {
+    const endpoint = configValues.endpoint?.trim() || ''
+    setConnectionTesting(true)
+    setConnectionTest(null)
+    try {
+      const result = await window.eva.plugins.testConnection(endpoint)
+      setConnectionTest(result)
+    } catch (error) {
+      setConnectionTest({ reachable: false, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message: error instanceof Error ? error.message : 'Unable to test the endpoint.' })
+    } finally {
+      setConnectionTesting(false)
     }
   }
 
@@ -318,12 +335,17 @@ export function PluginCenter() {
                       {localSearxngStatus?.running ? <span className="font-medium">{localSearxngStatus.endpoint}</span> : null}
                     </div>
                     <div className="mt-4 flex flex-wrap justify-end gap-2">
+                      <Button variant="outline" size="sm" onClick={() => void testConnection()} disabled={connectionTesting || !configValues.endpoint?.trim()}>
+                        {connectionTesting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+                        Test connection
+                      </Button>
                       {localSearxngStatus?.running ? <Button variant="outline" size="sm" onClick={() => void stopLocalSearxng()} disabled={localSearxngWorking}><Square className="mr-1.5 h-3.5 w-3.5" />Stop service</Button> : null}
                       <Button size="sm" onClick={() => void installLocalSearxng()} disabled={localSearxngWorking || localSearxngStatus?.dockerAvailable === false}>
                         {localSearxngWorking ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Download className="mr-1.5 h-3.5 w-3.5" />}
                         {localSearxngStatus?.installed ? 'Start Local Search' : 'Install Local Search'}
                       </Button>
                     </div>
+                    {connectionTest ? <div className={cn('mt-3 rounded-lg px-3 py-2.5 text-xs', connectionTest.apiValid && connectionTest.unresponsiveEngines.length === 0 ? 'bg-emerald-50 text-emerald-700' : connectionTest.reachable ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-700')} role="status">{connectionTest.message}</div> : null}
                     {localSearxngStatus?.dockerAvailable === false ? <p className="mt-3 text-xs leading-5 text-amber-700">Docker Desktop must be installed and running before Eva can install Local Search.</p> : null}
                   </section>
                 ) : null}

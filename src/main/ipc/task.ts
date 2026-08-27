@@ -1,4 +1,5 @@
-import { ipcMain, BrowserWindow, type IpcMainEvent } from 'electron'
+import { BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import { markGoalProgressCancelled, markGoalProgressFailed, type GoalConfig, type GoalProgress, type TaskCheckpoint, type TaskFeedback, type TaskPlan, type TaskRunSnapshot, type TeamEvent } from '../../shared/types/task'
 import type { AgentConfig } from '../../shared/types/agent'
@@ -10,73 +11,98 @@ import { ContextManager } from '../agent-engine/context'
 import { TeamOrchestrator } from '../agent-engine/team-orchestrator'
 import { GoalPlanner } from '../agent-engine/goal-planner'
 import type { GoalEvent } from '../agent-engine/goal-planner'
-import { getStorage } from '../storage'
+import { getStorage, type StorageManager } from '../storage'
 import { recordActivity } from '../services/activity-log'
 import { toTaskArtifactRun } from '../services/task-artifact-service'
 import { getAgentOsScheduler } from '../services/agent-os-scheduler'
 import { controlBackgroundGoal } from '../services/background-goal-control'
 import { resolveEffectiveAgentConfig } from '../services/effective-agent-config'
 import type { TaskQueueUpdate } from '../services/task-execution-queue'
+import { TaskRunLifecycleService } from '../services/task-run-lifecycle-service'
 import { v4 as uuidv4 } from 'uuid'
 import { prepareGoalStepConversation, persistGoalStepEvent } from '../services/goal-step-conversation'
+import { activeRunRegistry } from '../services/run-registry'
 
 export interface TaskServices {
+  storage: StorageManager
   toolRegistry: ToolRegistry
   providerRegistry: ProviderRegistry
   fileService: FileService
   terminalService: TerminalService
 }
 
+export interface ExpertTaskStartInput {
+  conversationId: string
+  goal: string
+  resume?: boolean
+  recoveryReason?: 'user-continue' | 'app-restart'
+}
+
+export interface GoalTaskStartInput {
+  goal: string
+  config?: Partial<GoalConfig>
+  conversationId: string
+  agentId: string
+  resume?: boolean
+  recoveryReason?: 'user-continue' | 'app-restart'
+}
+
 // Execution controls are keyed by conversation so separate chats can run in
 // parallel without sharing a cancellation handle or status.
-const activeOrchestrators = new Map<string, TeamOrchestrator>()
-const activeGoalPlanners = new Map<string, GoalPlanner>()
+const activeOrchestrators = activeRunRegistry.forKind<TeamOrchestrator>('task-team')
+const activeGoalPlanners = activeRunRegistry.forKind<GoalPlanner>('task-goal')
 let taskServices: TaskServices | null = null
+let taskLifecycle: TaskRunLifecycleService | null = null
+type TaskIpcEvent = IpcMainEvent | IpcMainInvokeEvent
+let startExpertTask: ((event: TaskIpcEvent, payload: ExpertTaskStartInput) => Promise<void>) | undefined
+let startGoalTask: ((event: TaskIpcEvent, payload: GoalTaskStartInput) => Promise<void>) | undefined
 
-function notifyConversationChanged(event: IpcMainEvent, conversationId: string): void {
+/** Temporary compatibility seam while handlers are migrated off the legacy singleton. */
+function taskStorage(): StorageManager {
+  return taskServices?.storage || getStorage()
+}
+
+function taskRunLifecycle(): TaskRunLifecycleService {
+  return taskLifecycle || new TaskRunLifecycleService(taskStorage())
+}
+
+/** Internal entry point for recovery and runtime actions; IPC only adapts into it. */
+export async function startExpertTaskRun(event: TaskIpcEvent, payload: ExpertTaskStartInput): Promise<void> {
+  if (!startExpertTask) throw new Error('Task handlers are not initialized.')
+  await startExpertTask(event, payload)
+}
+
+/** Internal entry point for recovery and runtime actions; IPC only adapts into it. */
+export async function startGoalTaskRun(event: TaskIpcEvent, payload: GoalTaskStartInput): Promise<void> {
+  if (!startGoalTask) throw new Error('Task handlers are not initialized.')
+  await startGoalTask(event, payload)
+}
+
+function notifyConversationChanged(event: TaskIpcEvent, conversationId: string): void {
   const window = BrowserWindow.fromWebContents(event.sender)
   if (window && !window.isDestroyed()) window.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 }
 
 async function resolveTaskRuntimeScope(conversationId: string): Promise<{ workspaceId?: string; resourceKey: string }> {
-  const conversation = await getStorage().conversations.getConversation(conversationId)
-  if (conversation?.workspaceId) return { workspaceId: conversation.workspaceId, resourceKey: `workspace:${conversation.workspaceId}` }
-  if (conversation?.workspacePath?.trim()) return { resourceKey: `workspace-path:${conversation.workspacePath.trim().toLowerCase()}` }
-  return { resourceKey: `conversation:${conversationId}` }
+  return taskRunLifecycle().resolveRuntimeScope(conversationId)
 }
 
 /** Mirrors durable Goal/Team checkpoints into the workspace's visible active plan. */
 async function syncActivePlan(conversationId: string): Promise<void> {
-  const [conversation, snapshot] = await Promise.all([
-    getStorage().conversations.getConversation(conversationId),
-    getStorage().taskRuns.get(conversationId),
-  ])
-  if (!conversation || !snapshot) return
-  const goal = snapshot.goal || snapshot.plan?.goal || snapshot.progress?.goal
-  if (!goal) return
-  await getStorage().activePlans.syncTask({
-    conversationId,
-    workspaceId: conversation.workspaceId,
-    workspacePath: conversation.workspacePath,
-    kind: snapshot.kind,
-    status: snapshot.status,
-    goal,
-    plan: snapshot.plan,
-    progress: snapshot.progress,
-  })
+  return taskRunLifecycle().syncActivePlan(conversationId)
 }
 
 function resolveGoalAgentConnection(agentConfig: AgentConfig, services: TaskServices): { agentConfig: AgentConfig; provider: NonNullable<ReturnType<ProviderRegistry['get']>>; usedFallback: boolean } {
   const effectiveAgentConfig = resolveEffectiveAgentConfig(agentConfig, {
-    providerId: getStorage().config.get('activeProviderId'),
-    model: getStorage().config.getActiveModel(),
+    providerId: taskStorage().config.get('activeProviderId'),
+    model: taskStorage().config.getActiveModel(),
   })
   const configuredConnections = [
     { providerId: effectiveAgentConfig.providerId, model: effectiveAgentConfig.model },
     ...(effectiveAgentConfig.modelCandidates || []),
     ...(effectiveAgentConfig.isBuiltIn ? [] : [{
-      providerId: getStorage().config.get('activeProviderId'),
-      model: getStorage().config.getActiveModel(),
+      providerId: taskStorage().config.get('activeProviderId'),
+      model: taskStorage().config.getActiveModel(),
     }]),
   ]
   const seen = new Set<string>()
@@ -112,10 +138,10 @@ export async function cancelTaskRun(
   goalPlanner?.abort()
   teamOrchestrator?.abort()
 
-  const snapshot = await getStorage().taskRuns.get(conversationId)
+  const snapshot = await taskStorage().taskRuns.get(conversationId)
   if (snapshot && (!kind || snapshot.kind === kind)) {
     const stoppedAt = Date.now()
-    await getStorage().taskRuns.save({
+    await taskStorage().taskRuns.save({
       ...snapshot,
       status: 'cancelled',
       progress: snapshot.kind === 'goal' && snapshot.progress
@@ -126,7 +152,7 @@ export async function cancelTaskRun(
         ? { ...snapshot.execution, state: 'cancelled', lastActivityAt: stoppedAt, nextRetryAt: undefined }
         : undefined,
     })
-    await getStorage().conversations.updateConversation(conversationId, {
+    await taskStorage().conversations.updateConversation(conversationId, {
       executionStatus: 'cancelled',
       executionUpdatedAt: Date.now(),
     })
@@ -148,22 +174,22 @@ export async function controlForegroundGoal(
 ): Promise<{ handled: boolean; status?: TaskRunSnapshot['status'] }> {
   const planner = activeGoalPlanners.get(conversationId)
   const queued = getAgentOsScheduler().hasTask(conversationId, 'goal')
-  const snapshot = await getStorage().taskRuns.get(conversationId)
+  const snapshot = await taskStorage().taskRuns.get(conversationId)
 
   if (action === 'status') {
     return { handled: Boolean(planner || queued || snapshot), status: snapshot?.status }
   }
   if (action === 'pause' && planner) {
     planner.pause()
-    if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
-    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
+    if (snapshot) await taskStorage().taskRuns.save({ ...snapshot, status: 'paused' })
+    await taskStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'paused', 'Paused by the user.')
     return { handled: true, status: 'paused' }
   }
   if (action === 'resume' && planner) {
     planner.resume()
-    if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
-    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
+    if (snapshot) await taskStorage().taskRuns.save({ ...snapshot, status: 'running' })
+    await taskStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'running', 'Resumed by the user.')
     return { handled: true, status: 'running' }
   }
@@ -175,44 +201,7 @@ export async function controlForegroundGoal(
 }
 
 async function persistQueueUpdate(update: TaskQueueUpdate): Promise<void> {
-  const snapshot = await getStorage().taskRuns.get(update.conversationId)
-  if (!snapshot) return
-
-  const status = update.state === 'queued' || update.state === 'retrying'
-    ? 'queued'
-    : update.state === 'running'
-      ? 'running'
-      : update.state === 'completed'
-        ? 'completed'
-        : update.state === 'failed'
-          ? 'failed'
-          : 'cancelled'
-  const error = update.state === 'retrying'
-    ? `${update.error || 'Task failed'} Retrying automatically.`
-    : update.state === 'queued' || update.state === 'running'
-      ? undefined
-      : update.state === 'failed'
-        ? update.error || snapshot.error
-        : undefined
-
-  await getStorage().taskRuns.save({
-    ...snapshot,
-    status,
-    error,
-    execution: {
-      state: update.state,
-      attempt: update.attempt,
-      maxAttempts: update.maxAttempts,
-      queuedAt: update.queuedAt,
-      startedAt: update.startedAt || snapshot.execution?.startedAt,
-      lastActivityAt: Date.now(),
-      nextRetryAt: update.nextRetryAt,
-    },
-  })
-  await getStorage().conversations.updateConversation(update.conversationId, {
-    executionStatus: status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'failed' ? 'failed' : 'running',
-    executionUpdatedAt: Date.now(),
-  })
+  return taskRunLifecycle().persistQueueUpdate(update)
 }
 
 /**
@@ -408,6 +397,7 @@ function checkpointForGoalEvent(event: GoalEvent): Omit<TaskCheckpoint, 'feedbac
 export function registerTaskHandlers(services?: TaskServices): void {
   if (services) {
     taskServices = services
+    taskLifecycle = new TaskRunLifecycleService(services.storage)
   }
 
   const scheduler = getAgentOsScheduler()
@@ -415,7 +405,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const window = context as BrowserWindow
     const goal = run.payload?.goal
     if (!goal || !window || window.isDestroyed()) return false
-    ipcMain.emit(IPC.TASK_START, { sender: window.webContents } as IpcMainEvent, {
+    await startExpertTaskRun({ sender: window.webContents } as IpcMainEvent, {
       conversationId: run.conversationId,
       goal,
       resume: run.payload?.resume ?? false,
@@ -428,7 +418,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const goal = run.payload?.goal
     const agentId = run.payload?.agentId
     if (!goal || !agentId || !window || window.isDestroyed()) return false
-    ipcMain.emit(IPC.TASK_GOAL_START, { sender: window.webContents } as IpcMainEvent, {
+    await startGoalTaskRun({ sender: window.webContents } as IpcMainEvent, {
       conversationId: run.conversationId,
       goal,
       agentId,
@@ -442,9 +432,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
   // ─── Expert Mode ────────────────────────────────────────────────────────────
 
   // Expert mode - start task (fire-and-forget; events streamed via TASK_STREAM)
-  ipcMain.on(
-    IPC.TASK_START,
-    async (event, payload: { conversationId: string; goal: string; resume?: boolean; recoveryReason?: 'user-continue' | 'app-restart' }) => {
+  startExpertTask = async (event: TaskIpcEvent, payload: ExpertTaskStartInput): Promise<void> => {
       const { conversationId, goal } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
@@ -644,12 +632,14 @@ export function registerTaskHandlers(services?: TaskServices): void {
           providerForAgent: (agent) => taskServices?.providerRegistry.get(agent.providerId),
           fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
           toolRegistry: activeTaskServices.toolRegistry,
-          contextManager: new ContextManager({ durableMemory }),
+          contextManager: new ContextManager({ durableMemory, environmentRules: getStorage().config.get('environmentRules') }),
           workspacePath,
           fileAccessGrants: workspaceAccess.grants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
           fileService: activeTaskServices.fileService,
           terminalService: activeTaskServices.terminalService,
+      modelPools: getStorage().config.get('modelPools'),
+      providerRegistry: activeTaskServices.providerRegistry,
           createWorkerConversation,
           onWorkerEvent: persistWorkerEvent,
         })
@@ -766,8 +756,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
           }
         }
       })
-    }
-  )
+  }
+  ipcMain.on(IPC.TASK_START, (event, payload: ExpertTaskStartInput) => {
+    void startExpertTaskRun(event, payload)
+  })
 
   // Expert mode - abort
   ipcMain.on(IPC.TASK_ABORT, (event, conversationId: string) => {
@@ -868,9 +860,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
   // ─── Goal Mode ──────────────────────────────────────────────────────────────
 
   // Goal mode - start (fire-and-forget; events streamed via TASK_GOAL_STREAM)
-  ipcMain.on(
-    IPC.TASK_GOAL_START,
-    async (event, payload: { goal: string; config?: Partial<GoalConfig>; conversationId: string; agentId: string; resume?: boolean; recoveryReason?: 'user-continue' | 'app-restart' }) => {
+  startGoalTask = async (event: TaskIpcEvent, payload: GoalTaskStartInput): Promise<void> => {
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
       if (getAgentOsScheduler().hasTask(payload.conversationId, 'goal')) return
@@ -969,6 +959,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         if (payload.conversationId) {
           conversation = await getStorage().conversations.getConversation(payload.conversationId)
         }
+        if (!conversation) throw new Error('The Goal conversation is unavailable.')
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
         const durableMemory = await getStorage().runtimeMemory.buildContext(payload.conversationId, conversation?.workspaceId)
@@ -986,12 +977,14 @@ export function registerTaskHandlers(services?: TaskServices): void {
           agentConfig: goalAgentConfig,
           provider,
           toolRegistry: activeTaskServices.toolRegistry,
-          contextManager: new ContextManager({ durableMemory }),
+          contextManager: new ContextManager({ durableMemory, environmentRules: getStorage().config.get('environmentRules') }),
           workspacePath,
           fileAccessGrants: workspaceAccess.grants,
           fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
           fileService: activeTaskServices.fileService,
           terminalService: activeTaskServices.terminalService,
+      modelPools: getStorage().config.get('modelPools'),
+      providerRegistry: activeTaskServices.providerRegistry,
           maxSteps: goalConfig.maxSteps,
           timeout: goalConfig.timeout,
           prepareStepConversation: async ({ step, handoff }) => {
@@ -1111,8 +1104,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
           }
         }
       })
-    }
-  )
+  }
+  ipcMain.on(IPC.TASK_GOAL_START, (event, payload: GoalTaskStartInput) => {
+    void startGoalTaskRun(event, payload)
+  })
 
   // Goal mode - abort
   ipcMain.on(IPC.TASK_GOAL_ABORT, (event, conversationId: string) => {
@@ -1183,7 +1178,7 @@ export async function recoverQueuedTasks(window: BrowserWindow): Promise<void> {
     const event = { sender: window.webContents } as IpcMainEvent
     const hasSavedProgress = Boolean(snapshot.progress?.steps.length || snapshot.plan?.subtasks.length)
     if (snapshot.kind === 'expert') {
-      ipcMain.emit(IPC.TASK_START, event, { conversationId: snapshot.conversationId, goal, resume: hasSavedProgress, recoveryReason: 'app-restart' })
+      await startExpertTaskRun(event, { conversationId: snapshot.conversationId, goal, resume: hasSavedProgress, recoveryReason: 'app-restart' })
       continue
     }
 
@@ -1196,6 +1191,6 @@ export async function recoverQueuedTasks(window: BrowserWindow): Promise<void> {
       })
       continue
     }
-    ipcMain.emit(IPC.TASK_GOAL_START, event, { goal, conversationId: snapshot.conversationId, agentId, resume: hasSavedProgress, recoveryReason: 'app-restart' })
+    await startGoalTaskRun(event, { goal, conversationId: snapshot.conversationId, agentId, resume: hasSavedProgress, recoveryReason: 'app-restart' })
   }
 }

@@ -1,9 +1,7 @@
-import { app, BrowserWindow, clipboard, Menu, shell, type WebContents } from 'electron'
-import { execFile } from 'child_process'
+import { BrowserWindow, clipboard, Menu, shell, type WebContents } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
 import { createHash, randomUUID } from 'crypto'
-import { promisify } from 'util'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from './project-index-service'
 import type { ChatDocumentAttachment, Conversation } from '../../shared/types/conversation'
@@ -11,29 +9,16 @@ import type { RequirementClarificationAnswer, RequirementClarificationQuestion, 
 import { getStorage } from '../storage'
 import { buildDocumentAttachmentContext } from './document-attachment-service'
 import { recordActivity } from './activity-log'
+import { RequirementRunRepository } from './requirement-run-repository'
+import * as requirementPrompts from './requirement-prompt-factory'
+import { DeterministicCodingService } from './deterministic-coding-service'
+import { activeRunRegistry } from './run-registry'
 
 const QUALITY_THRESHOLD = 80
 const SPEC_QUALITY_THRESHOLD = 85
 const MAX_CONTEXT_CHARS = 48_000
 const MAX_GENERATION_CONTINUATIONS = 4
 const MAX_CONTINUATION_TAIL_CHARS = 18_000
-const execFileAsync = promisify(execFile)
-
-interface ParsedDslField {
-  name: string
-  type: string
-}
-
-interface ParsedDslAggregate {
-  name: string
-  fields: ParsedDslField[]
-}
-
-interface ParsedDomainDsl {
-  domain: string
-  aggregates: ParsedDslAggregate[]
-  rules: string[]
-}
 const REQUIREMENT_CLARIFICATION_POLICY = `澄清仅面向需求本身：业务目标、用户角色与权限、业务规则、数据含义、流程边界、异常业务场景、验收标准和合规约束。不得向用户询问技术实现方案、接口、数据库表或字段映射、框架能力、代码模块或其他实现细节。代码分析只能作为内部证据：技术冲突应记录为实现风险或由 AI 自行推理，不得转换为用户澄清问题。`
 const REQUIREMENT_DIMENSIONS = [
   ['scope', '范围与目标'],
@@ -49,27 +34,33 @@ const EVALUATION_DIMENSIONS = [
   ['testability', '可验证性'],
   ['feasibility', '实现可行性'],
 ] as const
+const activeRequirementControllers = activeRunRegistry.forKind<AbortController>('requirement')
 
 export class RequirementEngineeringService {
   private readonly activeSubmissions = new Map<string, Promise<RequirementRun>>()
   private readonly abortControllers = new Map<string, AbortController>()
+  private readonly injectedStorage?: ReturnType<typeof getStorage>
+  private readonly runs: RequirementRunRepository
+  private readonly deterministicCoding = new DeterministicCodingService()
 
   constructor(
     private readonly providers: ProviderRegistry,
     private readonly projectIndex?: ProjectIndexService,
-  ) {}
+    dependencies: { storage?: ReturnType<typeof getStorage>; runs?: RequirementRunRepository } = {},
+  ) {
+    this.injectedStorage = dependencies.storage
+    this.runs = dependencies.runs || new RequirementRunRepository()
+  }
+
+  private get storage(): ReturnType<typeof getStorage> {
+    return this.injectedStorage || getStorage()
+  }
 
   async list(conversationId?: string): Promise<RequirementRun[]> {
-    const root = this.runsRoot()
-    try {
-      const entries = await fs.readdir(root, { withFileTypes: true })
-      const runs = await Promise.all(entries.filter((entry) => entry.isDirectory()).map(async (entry) => this.readRun(entry.name)))
-      return runs.filter((run): run is RequirementRun => run !== null)
-        .filter((run) => !conversationId || run.conversationId === conversationId)
-        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    } catch {
-      return []
-    }
+    const runs = await Promise.all((await this.runs.listIds()).map((id) => this.readRun(id)))
+    return runs.filter((run): run is RequirementRun => run !== null)
+      .filter((run) => !conversationId || run.conversationId === conversationId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   }
 
   async submit(input: SubmitRequirementInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
@@ -79,14 +70,7 @@ export class RequirementEngineeringService {
 
     const controller = new AbortController()
     const submission = this.submitInternal(input, onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   async answerClarifications(input: SubmitClarificationAnswersInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
@@ -98,20 +82,13 @@ export class RequirementEngineeringService {
       throw new Error('没有可提交的待澄清问题。')
     }
     const answers = this.validateClarificationAnswers(run.clarificationQuestions, input.answers)
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     await this.ensureWorkspacePackage(run, conversation)
 
     const controller = new AbortController()
     const submission = this.advance(run, conversation, this.formatClarificationAnswers(answers), onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   async modelRequirements(input: SubmitRequirementModelingInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
@@ -122,29 +99,22 @@ export class RequirementEngineeringService {
     if (!run) {
       throw new Error('需求尚未明确，请先完成 /requirement 的需求澄清与评测，再执行 /requirement-modeling。')
     }
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     await this.ensureWorkspacePackage(run, conversation)
 
     const controller = new AbortController()
     const submission = this.modelRequirementsInternal(run, conversation, onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   async buildSpecification(input: SubmitSpecificationInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
     if (this.activeSubmissions.has(input.conversationId)) {
       throw new Error('当前需求工程正在处理中，请等待本轮完成。')
     }
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
-    const allConversations = await getStorage().conversations.listConversations()
+    const allConversations = await this.storage.conversations.listConversations()
     const conversationsById = new Map(allConversations.map((item) => [item.id, item]))
     const normalizeWorkspacePath = (value?: string): string | undefined => {
       if (!value) return undefined
@@ -181,14 +151,7 @@ export class RequirementEngineeringService {
     }
     const controller = new AbortController()
     const submission = this.buildSpecificationInternal(run, conversation, onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   async resolveSpecificationBlockers(input: SubmitSpecificationResolutionInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
@@ -198,22 +161,35 @@ export class RequirementEngineeringService {
       throw new Error('没有可提交的规格阻塞处置选项。')
     }
     const answers = this.validateClarificationAnswers(run.specResolutionQuestions, input.answers)
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     const controller = new AbortController()
     const submission = this.resolveSpecificationBlockersInternal(run, conversation, answers, onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   abort(conversationId: string): void {
+    activeRunRegistry.transition('requirement', conversationId, 'cancelling', 'Cancellation requested.')
+    activeRequirementControllers.get(conversationId)?.abort()
     this.abortControllers.get(conversationId)?.abort()
+  }
+
+  private async awaitSubmission(conversationId: string, controller: AbortController, submission: Promise<RequirementRun>): Promise<RequirementRun> {
+    this.activeSubmissions.set(conversationId, submission)
+    this.abortControllers.set(conversationId, controller)
+    activeRequirementControllers.set(conversationId, controller)
+    try {
+      const result = await submission
+      activeRunRegistry.transition('requirement', conversationId, controller.signal.aborted ? 'cancelled' : 'completed')
+      return result
+    } catch (error) {
+      activeRunRegistry.transition('requirement', conversationId, controller.signal.aborted ? 'cancelled' : 'failed', error instanceof Error ? error.message : String(error))
+      throw error
+    } finally {
+      this.activeSubmissions.delete(conversationId)
+      this.abortControllers.delete(conversationId)
+      activeRequirementControllers.delete(conversationId)
+    }
   }
 
   async showDocumentContextMenu(webContents: WebContents, requestedPath: string): Promise<void> {
@@ -231,7 +207,7 @@ export class RequirementEngineeringService {
   }
 
   private async submitInternal(input: SubmitRequirementInput, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     this.requireProjectWorkspace(conversation)
     const active = (await this.list(input.conversationId)).find((run) => run.status === 'awaiting-clarification' || run.status === 'analyzing')
@@ -367,7 +343,7 @@ export class RequirementEngineeringService {
     ].join('\n\n').slice(0, MAX_CONTEXT_CHARS)
     await this.addDocument(run, 'modeling', 'final-merged', 'Workspace final requirement modeling', `${mergedModeling}\n`)
     await this.persist(run)
-    await getStorage().conversations.addMessage(conversation.id, {
+    await this.storage.conversations.addMessage(conversation.id, {
       id: randomUUID(), role: 'assistant', agentName: 'Specification',
       content: `Imported workspace modeling package from \`${selectedPackage.modelingDirectory}\`. /spec is using these persisted workspace files, not conversation history.`,
       timestamp: Date.now(),
@@ -379,7 +355,7 @@ export class RequirementEngineeringService {
     if (this.activeSubmissions.has(input.conversationId)) {
       throw new Error('当前需求工程正在处理中，请等待本轮完成。')
     }
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation')
     if (!run) throw new Error('当前工作区没有通过 /spec 的最终实施规格，请先完成 /spec。')
@@ -393,14 +369,7 @@ export class RequirementEngineeringService {
 
     const controller = new AbortController()
     const submission = this.buildDslInternal(run, conversation, finalSpec, onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   private async buildDslInternal(run: RequirementRun, conversation: Conversation, finalSpec: RequirementDocument, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
@@ -468,7 +437,7 @@ export class RequirementEngineeringService {
       await fs.writeFile(dslDocument.workspacePath, dslContent, 'utf8')
       run.dslStatus = 'ready'
       await this.persist(run)
-      await getStorage().conversations.addMessage(conversation.id, {
+      await this.storage.conversations.addMessage(conversation.id, {
         id: randomUUID(), role: 'assistant', agentName: 'DSL',
         content: `## DSL 阶段完成\n\n领域语言中间文档和最终 DSL 文件已保存到：\`${run.dslOutputPath}\`\n\n最终文件：\`${dslDocument.workspacePath}\``,
         timestamp: Date.now(),
@@ -494,7 +463,7 @@ export class RequirementEngineeringService {
     if (this.activeSubmissions.has(input.conversationId)) {
       throw new Error('The requirement workflow is already processing this conversation. Wait for it to finish first.')
     }
-    const conversation = await getStorage().conversations.getConversation(input.conversationId)
+    const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation')
     if (!run?.dslOutputPath || run.dslStatus !== 'ready') {
@@ -511,7 +480,7 @@ export class RequirementEngineeringService {
         const currentHash = createHash('sha256').update(currentDsl).digest('hex')
         if (manifest.status === 'completed' && manifest.sourceDslSha256 === currentHash) {
           await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/coding')
-          await getStorage().conversations.addMessage(conversation.id, {
+          await this.storage.conversations.addMessage(conversation.id, {
             id: randomUUID(), role: 'assistant', agentName: 'Coding',
             content: `## Deterministic code generation reused\n\nThe persisted DSL has not changed, so the verified code package is reused at \`${run.codingOutputPath}\`.`,
             timestamp: Date.now(),
@@ -526,14 +495,7 @@ export class RequirementEngineeringService {
 
     const controller = new AbortController()
     const submission = this.buildCodingInternal(run, conversation, onProgress, controller.signal)
-    this.activeSubmissions.set(input.conversationId, submission)
-    this.abortControllers.set(input.conversationId, controller)
-    try {
-      return await submission
-    } finally {
-      this.activeSubmissions.delete(input.conversationId)
-      this.abortControllers.delete(input.conversationId)
-    }
+    return this.awaitSubmission(input.conversationId, controller, submission)
   }
 
   private async buildCodingInternal(run: RequirementRun, conversation: Conversation, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
@@ -571,12 +533,12 @@ export class RequirementEngineeringService {
 
       this.throwIfAborted(signal)
       this.reportProgress(onProgress, run, 'coding', 'Parsing the persisted DSL file')
-      const parsedDsl = this.parseDomainDsl(dslContent)
+      const parsedDsl = this.deterministicCoding.parseDomainDsl(dslContent)
       const semanticDslPath = path.join(intermediateRoot, '01-semantic-dsl')
       await this.snapshotUpstream(run, 'coding', [{ name: 'domain-language.dsl', content: dslContent }])
       const inputPath = path.join(intermediateRoot, '00-input')
-      await this.writeDeterministicFile(path.join(inputPath, 'domain-language.dsl'), dslContent)
-      await this.writeSemanticDslPackage(semanticDslPath, parsedDsl, dslContent, dslHash)
+      await this.deterministicCoding.writeImmutableFile(path.join(inputPath, 'domain-language.dsl'), dslContent)
+      await this.deterministicCoding.writeSemanticDslPackage(semanticDslPath, parsedDsl, dslContent, dslHash)
       const semanticDocument = await this.addDocument(
         run,
         'coding',
@@ -592,20 +554,20 @@ export class RequirementEngineeringService {
       const pipelineRoot = path.join(workspaceRoot, 'code-production-pipeline')
       const python = process.platform === 'win32' ? 'python.exe' : 'python3'
       const targetModelPath = path.join(intermediateRoot, '02-generation-ir', 'target-model.yaml')
-      await this.writeDeterministicFile(targetModelPath, `${JSON.stringify({
+      await this.deterministicCoding.writeImmutableFile(targetModelPath, `${JSON.stringify({
         schema_version: '1.0',
-        target_id: `eva-${this.toJavaPackageSegment(parsedDsl.domain)}-reference`,
+        target_id: `eva-${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}-reference`,
         approval_status: 'approved-for-non-production-reference-output',
         production_output: false,
-        java_package: `com.cmcc.xcerp.generated.${this.toJavaPackageSegment(parsedDsl.domain)}`,
+        java_package: `com.cmcc.xcerp.generated.${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}`,
         overwrite_policy: 'refuse-non-empty-output',
       }, null, 2)}\n`)
 
       this.reportProgress(onProgress, run, 'coding', 'Validating semantic DSL and building deterministic generation IR')
-      const validation = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_semantic_dsl.py'), semanticDslPath], workspaceRoot, signal)
+      const validation = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_semantic_dsl.py'), semanticDslPath], workspaceRoot, signal)
       const irPath = path.join(intermediateRoot, '02-generation-ir', 'generation-ir.yaml')
-      const transform = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'transformers', 'dsl_to_generation_ir.py'), semanticDslPath, '--output', irPath], workspaceRoot, signal)
-      const irValidation = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_generation_ir.py'), irPath, '--dsl-package', semanticDslPath], workspaceRoot, signal)
+      const transform = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'transformers', 'dsl_to_generation_ir.py'), semanticDslPath, '--output', irPath], workspaceRoot, signal)
+      const irValidation = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_generation_ir.py'), irPath, '--dsl-package', semanticDslPath], workspaceRoot, signal)
       const irContent = await fs.readFile(irPath, 'utf8')
       const irDocument = await this.addDocument(run, 'coding', 'generation-ir', 'Deterministic generation IR', irContent)
       generatedDocuments.push(irDocument)
@@ -615,8 +577,8 @@ export class RequirementEngineeringService {
       this.throwIfAborted(signal)
       this.reportProgress(onProgress, run, 'coding', 'Generating isolated Java code with the deterministic adapter')
       const generatedCodePath = path.join(outputRoot, '03-generated-code')
-      const adapter = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'generic_semantic_java_adapter.py'), '--ir', irPath, '--target-model', targetModelPath, '--output', generatedCodePath], workspaceRoot, signal)
-      const verification = await this.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'verify_generic_semantic_java_output.py'), generatedCodePath], workspaceRoot, signal)
+      const adapter = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'generic_semantic_java_adapter.py'), '--ir', irPath, '--target-model', targetModelPath, '--output', generatedCodePath], workspaceRoot, signal)
+      const verification = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'verify_generic_semantic_java_output.py'), generatedCodePath], workspaceRoot, signal)
       const generationResult = await fs.readFile(path.join(generatedCodePath, 'generation-result.yaml'), 'utf8')
       const resultDocument = await this.addDocument(run, 'coding', 'generation-result', 'Generated Java code package', generationResult)
       generatedDocuments.push(resultDocument)
@@ -643,7 +605,7 @@ export class RequirementEngineeringService {
       run.codingStatus = 'ready'
       await this.persist(run)
       await this.persistDocuments(conversation.id, generatedDocuments, 'Coding')
-      await getStorage().conversations.addMessage(conversation.id, {
+      await this.storage.conversations.addMessage(conversation.id, {
         id: randomUUID(), role: 'assistant', agentName: 'Coding',
         content: `## Deterministic code generation completed\n\nNo model was called after DSL. The isolated generated Java package, IR, manifest, and verification report are in \`${outputRoot}\`.`,
         timestamp: Date.now(),
@@ -660,130 +622,6 @@ export class RequirementEngineeringService {
     }
   }
 
-  private parseDomainDsl(content: string): ParsedDomainDsl {
-    const domainMatch = content.match(/^\s*domain\s+([A-Za-z][A-Za-z0-9]*)\s*$/im)
-    if (!domainMatch) throw new Error('The DSL must start with a valid ASCII domain identifier.')
-    const aggregates: ParsedDslAggregate[] = []
-    const seenAggregates = new Set<string>()
-    const entityPattern = /^\s*entity\s+([A-Za-z][A-Za-z0-9]*)\s*\{([\s\S]*?)^\s*\}/gim
-    for (const match of content.matchAll(entityPattern)) {
-      const name = match[1]
-      if (seenAggregates.has(name)) throw new Error(`Duplicate DSL entity: ${name}`)
-      seenAggregates.add(name)
-      const fields: ParsedDslField[] = []
-      const seenFields = new Set<string>()
-      for (const line of match[2].split(/\r?\n/)) {
-        const field = line.trim().match(/^([A-Za-z][A-Za-z0-9_]*)\s*:\s*([A-Za-z][A-Za-z0-9_<>?,]*)/)
-        if (!field || ['trace', 'description'].includes(field[1].toLowerCase())) continue
-        if (seenFields.has(field[1])) throw new Error(`Duplicate field '${field[1]}' in entity ${name}`)
-        seenFields.add(field[1])
-        fields.push({ name: field[1], type: field[2] })
-      }
-      aggregates.push({ name, fields })
-    }
-    if (aggregates.length === 0) throw new Error('The DSL does not define any entity blocks to generate code from.')
-    const rules = [...content.matchAll(/^\s*rule\s+([A-Za-z][A-Za-z0-9_]*)\s*:/gim)].map((match) => match[1])
-    return { domain: domainMatch[1], aggregates, rules }
-  }
-
-  private async writeSemanticDslPackage(directory: string, parsed: ParsedDomainDsl, sourceContent: string, sourceHash: string): Promise<void> {
-    const aggregateIds = parsed.aggregates.map((_, index) => `DSL-AGG-${String(index + 1).padStart(3, '0')}`)
-    let fieldIndex = 0
-    const domain = {
-      aggregates: parsed.aggregates.map((aggregate, aggregateIndex) => ({
-        id: aggregateIds[aggregateIndex],
-        name: aggregate.name,
-        semantic_fields: aggregate.fields.map((field) => ({
-          id: `DSL-FIELD-${String(++fieldIndex).padStart(3, '0')}`,
-          name: field.name,
-          type: field.type,
-          trace_to: ['SPEC-001'],
-        })),
-        trace_to: ['SPEC-001'],
-      })),
-      excluded_capabilities: [],
-      asset_constraints: [],
-    }
-    const allElementIds = domain.aggregates.flatMap((aggregate) => [aggregate.id, ...aggregate.semantic_fields.map((field) => field.id)])
-    const manifest = {
-      schema_version: '1.0',
-      package: {
-        package_id: `DSL-${this.toJavaPackageSegment(parsed.domain).toUpperCase()}-001`,
-        module: parsed.domain,
-        source_spec_release: 'implementation-ready',
-        status: 'approved-for-core-generation-ir',
-      },
-      inputs: { required: ['domain-language.dsl'] },
-      input_sha256: { 'domain-language.dsl': sourceHash },
-      artifacts: {
-        domain: 'domain.yaml',
-        state_machine: 'state-machine.yaml',
-        rules: 'rules.yaml',
-        authorization: 'authorization.yaml',
-        integration: 'integration.yaml',
-        generation_map: 'generation-map.yaml',
-      },
-      open_item_gates: [{ id: 'OPEN-001', description: 'No physical production target is approved.' }],
-      generation_scope: { allowed: ['isolated-reference-java'], prohibited: ['production-write', 'schema-migration'] },
-      traceability: { required_chain: 'SPEC-* -> DSL-* -> GEN-* -> CODE-* -> TEST-*' },
-    }
-    const rules = { rules: parsed.rules.map((name, index) => ({ id: `DSL-RULE-${String(index + 1).padStart(3, '0')}`, name, trace_to: ['SPEC-001'] })) }
-    const generationMap = {
-      targets: domain.aggregates.map((aggregate, index) => ({
-        id: `GEN-${String(index + 1).padStart(3, '0')}`,
-        dsl_elements: [aggregate.id, ...aggregate.semantic_fields.map((field) => field.id)],
-        blocked_by: [],
-        generator_capabilities: ['isolated-reference-java'],
-        required_ir_sections: ['aggregates'],
-        trace_to: ['SPEC-001'],
-      })),
-      non_generatable: [{ id: 'GEN-OPEN-001', blocked_by: 'OPEN-001', reason: 'Production delivery requires a separately approved target model.' }],
-    }
-    const files: Record<string, unknown> = {
-      'dsl-manifest.yaml': manifest,
-      'domain.yaml': domain,
-      'state-machine.yaml': { state_machines: [] },
-      'rules.yaml': rules,
-      'authorization.yaml': { authorization: {} },
-      'integration.yaml': { integrations: [], blocked_contracts: [] },
-      'generation-map.yaml': generationMap,
-    }
-    await this.writeDeterministicFile(path.join(directory, 'domain-language.dsl'), sourceContent)
-    for (const [name, document] of Object.entries(files)) {
-      await this.writeDeterministicFile(path.join(directory, name), `${JSON.stringify(document, null, 2)}\n`)
-    }
-  }
-
-  private async runPipelineCommand(executable: string, args: string[], cwd: string, signal?: AbortSignal): Promise<string> {
-    this.throwIfAborted(signal)
-    try {
-      const { stdout, stderr } = await execFileAsync(executable, args, { cwd, windowsHide: true, maxBuffer: 256 * 1024 })
-      this.throwIfAborted(signal)
-      return [stdout, stderr].map((value) => value.trim()).filter(Boolean).join('\n') || 'completed'
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new Error(`Deterministic pipeline command failed: ${detail}`)
-    }
-  }
-
-  private async writeDeterministicFile(filePath: string, content: string): Promise<void> {
-    try {
-      const existing = await fs.readFile(filePath, 'utf8')
-      if (existing !== content) throw new Error(`Existing deterministic artifact differs: ${filePath}`)
-      return
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Existing deterministic artifact differs:')) throw error
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    await fs.mkdir(path.dirname(filePath), { recursive: true })
-    await fs.writeFile(filePath, content, 'utf8')
-  }
-
-  private toJavaPackageSegment(value: string): string {
-    const normalized = value.replace(/[^A-Za-z0-9]/g, '').toLowerCase()
-    return normalized || 'generated'
-  }
-
   private assertWithinDirectory(candidate: string, directory: string): void {
     const relative = path.relative(path.resolve(directory), path.resolve(candidate))
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
@@ -792,7 +630,7 @@ export class RequirementEngineeringService {
   }
 
   private async findWorkspaceRun(conversation: Conversation, status: RequirementRun['status']): Promise<RequirementRun | undefined> {
-    const allConversations = await getStorage().conversations.listConversations()
+    const allConversations = await this.storage.conversations.listConversations()
     const conversationsById = new Map(allConversations.map((item) => [item.id, item]))
     const normalize = (value?: string): string | undefined => {
       if (!value) return undefined
@@ -845,8 +683,8 @@ export class RequirementEngineeringService {
    * next /spec stage remains usable and auditable instead of forcing a rerun.
    */
   private async importExistingModelingRun(conversation: Conversation): Promise<RequirementRun | undefined> {
-    const messages = await getStorage().conversations.getMessages(conversation.id)
-    const snapshot = await getStorage().taskRuns.get(conversation.id)
+    const messages = await this.storage.conversations.getMessages(conversation.id)
+    const snapshot = await this.storage.taskRuns.get(conversation.id)
     const candidatePaths = new Set<string>()
     const addPath = (value: unknown) => {
       if (typeof value !== 'string' || !/\.md$/i.test(value.trim())) return
@@ -911,7 +749,7 @@ export class RequirementEngineeringService {
       }
     }
     await this.persist(run)
-    await getStorage().conversations.addMessage(conversation.id, {
+    await this.storage.conversations.addMessage(conversation.id, {
       id: randomUUID(), role: 'assistant', agentName: '规格构建',
       content: `已导入当前对话的 ${importedFiles.length || 1} 份既有建模成果，作为本次 /spec 的可追溯输入；无需重新执行 /requirement-modeling。`, timestamp: Date.now(),
     })
@@ -986,7 +824,7 @@ export class RequirementEngineeringService {
 
       await this.persist(run)
       await this.persistDocuments(conversation.id, generatedDocuments)
-      await getStorage().conversations.addMessage(conversation.id, {
+      await this.storage.conversations.addMessage(conversation.id, {
         id: randomUUID(),
         role: 'assistant',
         agentName: '需求建模',
@@ -1081,7 +919,7 @@ export class RequirementEngineeringService {
         const finalSpec = await this.generateDocument(run, 'specification', 'implementation-ready', '最终实施规格', this.finalSpecificationPrompt(sourcePack, [...generatedDocuments]), signal, onProgress)
         await publish(finalSpec)
         run.status = 'ready-for-implementation'
-        await getStorage().conversations.addMessage(conversation.id, {
+        await this.storage.conversations.addMessage(conversation.id, {
           id: randomUUID(), role: 'assistant', agentName: '规格构建',
           content: `## 规格构建完成\n\n规格一致性评分：**${evaluation.score}/${SPEC_QUALITY_THRESHOLD}**。业务规格、代码对齐规格、追溯矩阵、检测报告和最终实施规格均已保存；现在可以进入实现阶段。`, timestamp: Date.now(),
         })
@@ -1089,7 +927,7 @@ export class RequirementEngineeringService {
       } else {
         run.specResolutionQuestions = this.specificationResolutionQuestions(evaluation)
         run.status = 'awaiting-spec-resolution'
-        await getStorage().conversations.addMessage(conversation.id, {
+        await this.storage.conversations.addMessage(conversation.id, {
           id: randomUUID(), role: 'assistant', agentName: '规格构建',
           content: this.specificationBlockedSummary(evaluation, run.specResolutionQuestions), timestamp: Date.now(),
         })
@@ -1156,7 +994,7 @@ export class RequirementEngineeringService {
       if (!finalRequirement) throw new Error('缺少最终明确需求，无法补充代码证据。')
       this.reportProgress(onProgress, run, 'code-analysis', '正在按你的选择补充代码证据与影响分析')
       const evidence = await this.codeEvidence(conversation, finalRequirement.content)
-      const codeAnalysis = await this.generateDocument(run, 'code-analysis', 'spec-resolution-evidence', '规格阻塞代码证据补充', this.codePrompt('为规格阻塞项补充可验证的代码证据', finalRequirement.content, evidence), signal, onProgress)
+      const codeAnalysis = await this.generateDocument(run, 'code-analysis', 'spec-resolution-evidence', '规格阻塞代码证据补充', requirementPrompts.codePrompt('为规格阻塞项补充可验证的代码证据', finalRequirement.content, evidence), signal, onProgress)
       await this.persistDocuments(conversation.id, [codeAnalysis], '规格构建')
     }
 
@@ -1195,7 +1033,7 @@ export class RequirementEngineeringService {
     run.status = 'awaiting-clarification'
     await this.persist(run)
     await this.persistDocuments(conversation.id, [clarification], '规格构建')
-    await getStorage().conversations.addMessage(conversation.id, {
+    await this.storage.conversations.addMessage(conversation.id, {
       id: randomUUID(), role: 'assistant', agentName: '规格构建',
       content: '## 已进入需求澄清\n\n已根据你选择的处置路径生成业务澄清问题。请在下方选择后提交；这些答复会进入下一轮需求分析、建模和规格检测。', timestamp: Date.now(),
     })
@@ -1223,7 +1061,7 @@ export class RequirementEngineeringService {
       createdAt: now,
       updatedAt: now,
     }
-    run.workspacePackagePath = this.createWorkspacePackagePath(conversation, run.requirementTitle, runId)
+    run.workspacePackagePath = this.createWorkspacePackagePath(conversation, run.requirementTitle || 'requirement', runId)
     if (run.workspacePackagePath) {
       run.workspaceOutputPath = path.join(run.workspacePackagePath, 'spec', 'output')
       await this.initializeRmsdPackage(run)
@@ -1453,8 +1291,8 @@ export class RequirementEngineeringService {
     context?: { title: string; stage: RequirementDocumentStage; dimension: string; outputContract: string },
   ): Promise<string> {
     this.throwIfAborted(signal)
-    const providerId = getStorage().config.get('activeProviderId')
-    const model = getStorage().config.getActiveModel()
+    const providerId = this.storage.config.get('activeProviderId')
+    const model = this.storage.config.getActiveModel()
     const provider = this.providers.get(providerId)
     if (!provider || !model) {
       throw new Error('尚未配置可用模型，无法执行需求工程。请在设置中配置模型后重试。')
@@ -1646,19 +1484,19 @@ export class RequirementEngineeringService {
   }
 
   private analysisPrompt(title: string, source: string, codeEvidence: string): string {
-    return `分析维度：${title}\n\n# 原始需求\n${source}\n\n# 代码库证据\n${codeEvidence}\n\n请输出：已确认事实、业务规则、缺失信息、边界条件、验收标准。每项必须可追溯到材料或标明为待确认。`
+    return requirementPrompts.analysisPrompt(title, source, codeEvidence)
   }
 
   private codePrompt(title: string, source: string, codeEvidence: string): string {
-    return `代码分析维度：${title}\n\n# 待实现需求\n${source}\n\n# 项目索引证据\n${codeEvidence}\n\n请输出：可复用位置、可能修改范围、接口/数据影响、技术风险、需要阅读的文件。不要假设未列出的源码内容。`
+    return requirementPrompts.codePrompt(title, source, codeEvidence)
   }
 
   private clarificationPrompt(title: string, source: string, analyses: RequirementDocument[]): string {
-    return `澄清维度：${title}\n\n${REQUIREMENT_CLARIFICATION_POLICY}\n\n# 原始需求\n${source}\n\n# 本轮分析\n${analyses.map((item) => item.content).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}\n\n请仅输出必须由业务用户确认的问题。原始需求中“已确认的用户澄清”属于既定事实，不得重复询问或将其列为阻塞项；若出现冲突，只能说明需求冲突和业务影响。每个问题单独以 "- 问题：" 开头，并给出 2 至 4 个业务选项；若无问题，输出 "- 无待澄清问题"。`
+    return requirementPrompts.clarificationPrompt(title, source, analyses, MAX_CONTEXT_CHARS)
   }
 
   private evaluationPrompt(title: string, source: string, documents: RequirementDocument[]): string {
-    return `评测维度：${title}\n\n${REQUIREMENT_CLARIFICATION_POLICY}\n\n# 原始需求\n${source}\n\n# 本轮中间文档\n${documents.map((item) => `## ${item.title}\n${item.content}`).join('\n\n').slice(0, MAX_CONTEXT_CHARS)}\n\n你必须做语义审查，不得通过搜索“待确认”等字词来判断。凡是业务事实、范围、规则、角色权限、异常路径、验收条件或非功能指标仍需要业务方决定，且会影响实施或验收时，均必须列入结构化未决项并标记 blocking=true。只有没有任何 blocking=true 的未决项时，READINESS 才能写 READY。代码、接口或建模证据不足但不要求业务方决定的事项可标记 blocking=false，留给后续规格核验。\n\n严格按以下固定格式输出；UNRESOLVED_ITEMS_JSON 必须是合法 JSON 数组，不能用 Markdown 代码块，也不能省略字段：\nSCORE: 0-100\nREADINESS: READY 或 BLOCKED\nUNRESOLVED_ITEMS_JSON:\n[{"id":"U-001","fact":"尚未确定的业务事实","impact":"它会造成的实施或验收影响","requiredDecision":"业务方必须确认的决策","blocking":true,"options":["选项 A","选项 B"],"recommendedIndex":0}]\nBLOCKERS:\n- 对 blocking=true 项的简短摘要；无则写“无”\nASSESSMENT:\n从业务完整性、一致性、可验收性和合规性说明评测依据、通过条件和下一步。\n\n若没有未决项，UNRESOLVED_ITEMS_JSON 必须写 []、READINESS 必须写 READY、BLOCKERS 必须写“无”。不得把技术实现细节伪装为业务方待确认项。`
+    return requirementPrompts.evaluationPrompt(title, source, documents, MAX_CONTEXT_CHARS)
   }
 
   private specificationSourcePack(finalRequirement: RequirementDocument, modelingDocuments: RequirementDocument[], codeAnalysis: RequirementDocument | undefined, codeEvidence: string, resolutionDocuments: RequirementDocument[] = []): string {
@@ -2019,8 +1857,7 @@ export class RequirementEngineeringService {
     const sameKindCount = run.documents.filter((document) => document.round === run.round && document.stage === stage && document.dimension === dimension).length
     const suffix = sameKindCount > 0 ? `-${sameKindCount + 1}` : ''
     const fileName = `${String(run.round).padStart(2, '0')}-${stage}-${dimension}${suffix}.md`
-    const filePath = path.join(this.runDirectory(run.id), fileName)
-    await fs.writeFile(filePath, content, 'utf8')
+    const filePath = await this.runs.writeDocument(run.id, fileName, content)
     const workspacePath = this.workspaceDocumentPath(run, stage, dimension, fileName)
     if (workspacePath) {
       await fs.mkdir(path.dirname(workspacePath), { recursive: true })
@@ -2033,13 +1870,13 @@ export class RequirementEngineeringService {
 
   private async persist(run: RequirementRun): Promise<void> {
     run.updatedAt = new Date().toISOString()
-    await fs.mkdir(this.runDirectory(run.id), { recursive: true })
-    await fs.writeFile(path.join(this.runDirectory(run.id), 'manifest.json'), JSON.stringify(run, null, 2), 'utf8')
+    await this.runs.writeManifest(run)
   }
 
   private async readRun(id: string): Promise<RequirementRun | null> {
     try {
-      const run = JSON.parse(await fs.readFile(path.join(this.runDirectory(id), 'manifest.json'), 'utf8')) as RequirementRun
+      const run = await this.runs.readManifest(id)
+      if (!run) return null
       if (run.clarificationQuestions.some((question) => typeof question === 'string')) {
         const legacyQuestions = run.clarificationQuestions as unknown as string[]
         const clarificationDocument = [...run.documents].reverse().find((document) => document.stage === 'clarification')
@@ -2079,8 +1916,8 @@ export class RequirementEngineeringService {
     onProgress?.({ conversationId: run.conversationId, runId: run.id, stage, message })
   }
 
-  private runsRoot(): string { return path.join(app.getPath('userData'), 'requirement-engineering', 'runs') }
-  private runDirectory(id: string): string { return path.join(this.runsRoot(), id) }
+  private runsRoot(): string { return this.runs.root() }
+  private runDirectory(id: string): string { return this.runs.directory(id) }
 
   private createWorkspacePackagePath(conversation: Conversation, name: string, runId: string): string | undefined {
     const configuredWorkspacePath = conversation.gitWorktreePath || conversation.workspacePath
@@ -2280,7 +2117,7 @@ export class RequirementEngineeringService {
   }
 
   private async persistCommand(conversationId: string, input: SubmitRequirementInput, content: string): Promise<void> {
-    await getStorage().conversations.addMessage(conversationId, { id: randomUUID(), role: 'user', content, attachments: input.attachments, timestamp: Date.now() })
+    await this.storage.conversations.addMessage(conversationId, { id: randomUUID(), role: 'user', content, attachments: input.attachments, timestamp: Date.now() })
   }
 
   private async persistRoundDocuments(conversationId: string, run: RequirementRun): Promise<void> {
@@ -2290,7 +2127,7 @@ export class RequirementEngineeringService {
 
   private async persistDocuments(conversationId: string, documents: RequirementDocument[], agentName = '需求工程'): Promise<void> {
     for (const document of documents) {
-      await getStorage().conversations.addMessage(conversationId, {
+      await this.storage.conversations.addMessage(conversationId, {
         id: randomUUID(),
         role: 'assistant',
         agentName,
@@ -2302,7 +2139,7 @@ export class RequirementEngineeringService {
 
   private async persistSummary(conversationId: string, run: RequirementRun): Promise<void> {
     if (run.status === 'cancelled') {
-      await getStorage().conversations.addMessage(conversationId, {
+      await this.storage.conversations.addMessage(conversationId, {
         id: randomUUID(),
         role: 'assistant',
         agentName: '需求工程',
@@ -2326,6 +2163,6 @@ export class RequirementEngineeringService {
         ].join('\n')
       : '需求阶段阻塞：未提供评测明细（导入的既有文档）。'
     const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${ready ? '需求已明确，可进入规格阶段。' : '等待你在下方选择澄清选项。'}\n${blockerSection}\n${projectLocation}运行档案：\`${this.runDirectory(run.id)}\`${questions}\n\n${ready ? '通过仅表示没有未解决的需求阶段阻塞；“后续规格核验事项”会在 /spec 中继续验证。' : '请在对话中的澄清卡片完成选择，然后点击“提交确认”继续。'}`
-    await getStorage().conversations.addMessage(conversationId, { id: randomUUID(), role: 'assistant', agentName: '需求工程', content, timestamp: Date.now() })
+    await this.storage.conversations.addMessage(conversationId, { id: randomUUID(), role: 'assistant', agentName: '需求工程', content, timestamp: Date.now() })
   }
 }

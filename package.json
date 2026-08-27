@@ -1,17 +1,20 @@
 {
   "name": "eva",
-  "version": "0.1.116",
+  "version": "0.1.131",
   "description": "Eva - AI Coding Agent Desktop Client",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "node scripts/clean-output.mjs && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json",
     "preview": "electron-vite preview",
     "rebuild": "electron-rebuild -f -w node-pty",
     "build:win": "npm run build && electron-builder --win",
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "test": "vitest run",
+    "verify:package-files": "node scripts/verify-package-files.mjs",
+    "verify:ipc-boundary": "node scripts/check-ipc-boundary.mjs",
     "test:watch": "vitest"
   },
   "dependencies": {

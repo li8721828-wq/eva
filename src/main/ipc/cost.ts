@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { ModelRateCard } from '../../shared/types/cost'
 import { getStorage } from '../storage'

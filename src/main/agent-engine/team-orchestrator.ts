@@ -8,6 +8,8 @@ import { AgentRunner } from './agent-runner'
 import { ContextManager } from './context'
 import { v4 as uuidv4 } from 'uuid'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import type { ModelPool } from '../../shared/types/model-pool'
+import type { ProviderRegistry } from '../providers'
 
 export interface TeamOrchestratorConfig {
   conversationId?: string
@@ -24,6 +26,8 @@ export interface TeamOrchestratorConfig {
   fullFilesystemAccess?: boolean
   fileService: FileService
   terminalService: TerminalService
+  modelPools?: ModelPool[]
+  providerRegistry?: ProviderRegistry
   /** Creates a persisted, isolated conversation for an assigned worker. */
   createWorkerConversation?: (subtask: SubTask, worker: AgentConfig) => Promise<string>
   /** Receives worker events for persistence without exposing the worker's context to other agents. */
@@ -684,6 +688,8 @@ Rules:
       fullFilesystemAccess: this.config.fullFilesystemAccess,
       fileService: this.config.fileService,
       terminalService: this.config.terminalService,
+      modelPools: this.config.modelPools,
+      providerRegistry: this.config.providerRegistry,
     })
 
     this.currentRunners.set(subtask.id, runner)

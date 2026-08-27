@@ -4,6 +4,7 @@ import { getStorage } from '../storage'
 import { RuntimeKernelStore } from '../storage/runtime-kernel-store'
 import { RuntimeRunStore } from '../storage/runtime-run-store'
 import { TaskExecutionQueue, type TaskQueueJob, type TaskQueueResult, type TaskQueueUpdate } from './task-execution-queue'
+import { activeRunRegistry, type ActiveRunStatus } from './run-registry'
 
 type TaskKind = TaskQueueJob['kind']
 
@@ -45,8 +46,8 @@ type RecoveryHandler = (run: RuntimeRunDescriptor, context: unknown) => Promise<
  */
 export class AgentOsScheduler {
   private readonly taskQueue: TaskExecutionQueue
-  private readonly interactiveRuns = new Map<string, InteractiveRun>()
-  private readonly taskProcesses = new Map<string, { processId: string; kind: Extract<RuntimeProcessKind, 'goal' | 'team'> }>()
+  private readonly interactiveRuns = activeRunRegistry.forKind<InteractiveRun>('scheduler-interactive')
+  private readonly taskProcesses = activeRunRegistry.forKind<{ processId: string; kind: Extract<RuntimeProcessKind, 'goal' | 'team'> }>('scheduler-task')
   private readonly recoveryHandlers = new Map<RuntimeProcessKind, RecoveryHandler>()
 
   constructor(
@@ -74,6 +75,7 @@ export class AgentOsScheduler {
       summary: input.summary,
     })
     this.taskProcesses.set(input.conversationId, { processId: process.id, kind: input.runtimeKind })
+    activeRunRegistry.transition('scheduler-task', input.conversationId, 'queued')
     await this.persistRun(process, 'queued', 'auto-queued', input.recoveryPayload)
 
     const accepted = this.taskQueue.enqueue({
@@ -83,6 +85,7 @@ export class AgentOsScheduler {
       maxAttempts: input.maxAttempts,
       run: input.run,
       onUpdate: async (update) => {
+        activeRunRegistry.transition('scheduler-task', input.conversationId, this.toRegistryStatus(update.state), this.detailForUpdate(update))
         await input.onUpdate?.(update)
         await this.runtimeKernel.transition(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update))
         await this.runtimeRuns?.transition(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update))
@@ -123,15 +126,19 @@ export class AgentOsScheduler {
   async finishInteractive(processId: string, status: Extract<RuntimeProcessStatus, 'completed' | 'failed' | 'cancelled'>, detail?: string): Promise<void> {
     await this.runtimeKernel.transition(processId, status, detail)
     await this.runtimeRuns?.transition(processId, status, detail)
-    for (const [conversationId, run] of this.interactiveRuns) {
+    this.interactiveRuns.forEach((run, conversationId) => {
+      if (run.processId === processId) activeRunRegistry.transition('scheduler-interactive', conversationId, status, detail)
+    })
+    this.interactiveRuns.forEach((run, conversationId) => {
       if (run.processId === processId) this.interactiveRuns.delete(conversationId)
-    }
+    })
   }
 
   async cancelInteractive(conversationId: string, detail = 'Stopped by the user.'): Promise<boolean> {
     const run = this.interactiveRuns.get(conversationId)
     if (!run) return false
     run.abort?.()
+    activeRunRegistry.transition('scheduler-interactive', conversationId, 'cancelling', detail)
     this.interactiveRuns.delete(conversationId)
     await this.runtimeKernel.transition(run.processId, 'cancelled', detail)
     await this.runtimeRuns?.transition(run.processId, 'cancelled', detail)
@@ -140,6 +147,7 @@ export class AgentOsScheduler {
 
   async cancelTask(conversationId: string, kind?: TaskKind, detail = 'Stopped by the user.'): Promise<boolean> {
     const cancelled = this.taskQueue.cancel(conversationId, kind)
+    activeRunRegistry.transition('scheduler-task', conversationId, 'cancelling', detail)
     const process = this.taskProcesses.get(conversationId)
     if (process) {
       await this.runtimeKernel.transition(process.processId, 'cancelled', detail)
@@ -245,6 +253,11 @@ export class AgentOsScheduler {
     if (state === 'failed') return 'failed'
     if (state === 'cancelled') return 'cancelled'
     return 'queued'
+  }
+
+  private toRegistryStatus(state: TaskQueueUpdate['state']): ActiveRunStatus {
+    if (state === 'retrying') return 'queued'
+    return this.toRuntimeStatus(state)
   }
 
   private detailForUpdate(update: TaskQueueUpdate): string | undefined {

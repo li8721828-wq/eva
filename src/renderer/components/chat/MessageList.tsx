@@ -724,7 +724,7 @@ export function MessageList({ className }: MessageListProps) {
         {/* Render the in-flight Markdown through the same assistant-message surface.
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
-        {isStreaming && (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0) && (
+        {isStreaming && (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) && (
           <MessageBubble
             isStreaming
             message={{

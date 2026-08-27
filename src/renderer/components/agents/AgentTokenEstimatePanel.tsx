@@ -108,7 +108,7 @@ export function AgentTokenEstimatePanel({ agent, onUpdate }: { agent: AgentConfi
             </div>
             <div className="rounded-md border border-violet-100 bg-violet-50/50 px-4 py-3">
               <p className="text-xs text-violet-700">已分配工具</p>
-              <p className="mt-1 text-2xl font-semibold tabular-nums text-violet-900">{estimate.tools.length}</p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-violet-900">{agent.tools.length}</p>
             </div>
           </div>
 

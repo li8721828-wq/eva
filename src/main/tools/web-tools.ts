@@ -12,11 +12,12 @@ const MAX_REDIRECTS = 4
 const USER_AGENT = 'Eva AI Coding Agent/0.1'
 const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000
 const SEARCH_MIN_INTERVAL_MS = 250
+const MAX_CONCURRENT_SEARCHES = 3
 const SEARCH_MAX_RETRIES = 2
 const WEB_REQUEST_TIMEOUT_MS = 15_000
 const MAX_RESPONSE_BYTES = 2_000_000
 
-interface SearchResult {
+export interface SearchResult {
   title: string
   url: string
   snippet: string
@@ -29,8 +30,10 @@ type SearchProvider =
 
 const searchCache = new Map<string, { results: SearchResult[]; expiresAt: number }>()
 const inFlightSearches = new Map<string, Promise<SearchResult[]>>()
-let searchQueue: Promise<void> = Promise.resolve()
 let nextSearchAt = 0
+let activeSearches = 0
+const searchSlotWaiters: Array<() => void> = []
+let searchStartQueue: Promise<void> = Promise.resolve()
 
 export function createWebTools(): ToolExecutor[] {
   return [webSearchTool, readWebPageTool]
@@ -45,6 +48,7 @@ const webSearchTool: ToolExecutor = {
       properties: {
         query: { type: 'string', description: 'Search query' },
         maxResults: { type: 'number', description: 'Maximum results from 1 to 8 (default 5)' },
+        language: { type: 'string', description: 'Optional provider language preference, such as zh-CN or en-US. Omit to use the configured search service default.' },
       },
       required: ['query'],
     },
@@ -53,10 +57,12 @@ const webSearchTool: ToolExecutor = {
     const query = String(params.query || '').trim()
     if (!query) return 'A search query is required.'
     const maxResults = Math.max(1, Math.min(Number(params.maxResults) || 5, MAX_RESULTS))
-    const results = await fetchSearchResults(query)
+    const language = typeof params.language === 'string' ? params.language.trim() : undefined
+    const results = await fetchSearchResults(query, language)
 
     if (results.length === 0) return 'No public web results were found. Try a more specific query.'
-    return results.slice(0, maxResults).map((result, index) => `${index + 1}. ${result.title}\n${result.url}${result.snippet ? `\n${result.snippet}` : ''}`).join('\n\n')
+    const resultList = results.slice(0, maxResults).map((result, index) => `${index + 1}. ${result.title}\n${result.url}${result.snippet ? `\n${result.snippet}` : ''}`).join('\n\n')
+    return `Search results are titles, URLs, and snippets only; they are not webpage evidence. For research or current claims, read the most relevant returned URL with read_web_page before issuing another web_search.\n\n${resultList}`
   },
 }
 
@@ -86,9 +92,9 @@ const readWebPageTool: ToolExecutor = {
   },
 }
 
-async function fetchSearchResults(query: string): Promise<SearchResult[]> {
+async function fetchSearchResults(query: string, language?: string): Promise<SearchResult[]> {
   const provider = getConfiguredSearchProvider()
-  const cacheKey = `${provider.id}:${query.trim().toLocaleLowerCase()}`
+  const cacheKey = `${provider.id}:${language || 'default'}:${query.trim().toLocaleLowerCase()}`
   const cached = searchCache.get(cacheKey)
   if (cached && cached.expiresAt > Date.now()) return cached.results
 
@@ -96,9 +102,13 @@ async function fetchSearchResults(query: string): Promise<SearchResult[]> {
   if (existing) return existing
 
   const request = enqueueSearch(async () => {
-    const response = await fetchSearchProvider(query, provider)
-    searchCache.set(cacheKey, { results: response, expiresAt: Date.now() + SEARCH_CACHE_TTL_MS })
-    return response
+    const response = await fetchSearchProvider(query, provider, language)
+    const relevantResults = filterSearchResultsForRelevance(query, response)
+    if (response.length > 0 && relevantResults.length === 0) {
+      throw new Error('The search service returned only low-relevance results. No title, snippet, or URL matched the query\'s key terms, so these results were rejected rather than used as evidence. Check the search provider or refine the named entity.')
+    }
+    searchCache.set(cacheKey, { results: relevantResults, expiresAt: Date.now() + SEARCH_CACHE_TTL_MS })
+    return relevantResults
   })
   inFlightSearches.set(cacheKey, request)
   try {
@@ -129,10 +139,10 @@ function getConfiguredSearchProvider(): SearchProvider {
   return { id: 'searxng-search', endpoint }
 }
 
-async function fetchSearchProvider(query: string, provider: SearchProvider): Promise<SearchResult[]> {
+async function fetchSearchProvider(query: string, provider: SearchProvider, language?: string): Promise<SearchResult[]> {
   if (provider.id === 'brave-search') return fetchBraveSearch(query, provider.apiKey)
   if (provider.id === 'tavily-search') return fetchTavilySearch(query, provider.apiKey)
-  return fetchSearxngSearch(query, provider.endpoint)
+  return fetchSearxngSearch(query, provider.endpoint, language)
 }
 
 async function fetchBraveSearch(query: string, apiKey: string): Promise<SearchResult[]> {
@@ -181,14 +191,21 @@ async function fetchTavilySearch(query: string, apiKey: string): Promise<SearchR
   return normalizeSearchResults(data.results || [], 'content')
 }
 
-async function fetchSearxngSearch(query: string, endpoint: string): Promise<SearchResult[]> {
-  const url = new URL(`${endpoint}/search`)
-  url.searchParams.set('q', query)
-  url.searchParams.set('format', 'json')
+async function fetchSearxngSearch(query: string, endpoint: string, language?: string): Promise<SearchResult[]> {
+  const url = buildSearxngSearchUrl(endpoint, query, language)
   const response = await net.fetch(url.toString(), { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT } })
   if (!response.ok) throw new Error(`SearXNG Search request failed (${response.status}). Check the endpoint and JSON API setting.`)
   const data = await response.json() as { results?: Array<{ title?: string; url?: string; content?: string }> }
   return normalizeSearchResults(data.results || [], 'content')
+}
+
+export function buildSearxngSearchUrl(endpoint: string, query: string, language?: string): URL {
+  const url = new URL(`${endpoint}/search`)
+  url.searchParams.set('q', query)
+  url.searchParams.set('format', 'json')
+  url.searchParams.set('categories', 'general')
+  if (language) url.searchParams.set('language', language)
+  return url
 }
 
 function normalizeSearchResults(results: Array<{ title?: string; url?: string; description?: string; content?: string }>, snippetKey: 'description' | 'content'): SearchResult[] {
@@ -201,19 +218,94 @@ function normalizeSearchResults(results: Array<{ title?: string; url?: string; d
     .filter((result) => result.title && result.url)
 }
 
+/** Reject fallback-engine noise before it becomes model evidence. */
+export function filterSearchResultsForRelevance(query: string, results: SearchResult[]): SearchResult[] {
+  const anchors = extractSearchAnchors(query)
+  if (!anchors.length) return results
+
+  return results.filter((result) => {
+    const searchable = normalizeSearchText(`${result.title}\n${result.snippet}\n${decodeSearchUrl(result.url)}`)
+    return anchors.some((anchor) => searchable.includes(anchor))
+  })
+}
+
+function extractSearchAnchors(query: string): string[] {
+  const anchors = new Set<string>()
+  const fragments = query.toLocaleLowerCase().match(/[\u3400-\u9fff]+|[a-z][a-z0-9-]+/g) || []
+
+  for (const fragment of fragments) {
+    if (/^[\u3400-\u9fff]+$/.test(fragment)) {
+      if (fragment.length >= 4) anchors.add(fragment)
+      // Use query-derived four-character windows so unspaced Chinese queries
+      // can still be matched without any predefined vocabulary or entities.
+      for (let index = 0; index <= fragment.length - 4; index += 1) {
+        anchors.add(fragment.slice(index, index + 4))
+      }
+    } else if (fragment.length >= 3) {
+      anchors.add(fragment)
+    }
+  }
+
+  return Array.from(anchors)
+}
+
+function decodeSearchUrl(url: string): string {
+  try {
+    return decodeURIComponent(url)
+  } catch {
+    return url
+  }
+}
+
+function normalizeSearchText(value: string): string {
+  return value.toLocaleLowerCase().replace(/\s+/g, ' ')
+}
+
 function enqueueSearch<T>(work: () => Promise<T>): Promise<T> {
-  const scheduled = searchQueue.then(async () => {
+  return withSearchSlot(async () => {
+    await waitForSearchStart()
+    return work()
+  })
+}
+
+async function withSearchSlot<T>(work: () => Promise<T>): Promise<T> {
+  await acquireSearchSlot()
+  try {
+    return await work()
+  } finally {
+    releaseSearchSlot()
+  }
+}
+
+async function acquireSearchSlot(): Promise<void> {
+  if (activeSearches < MAX_CONCURRENT_SEARCHES) {
+    activeSearches += 1
+    return
+  }
+  await new Promise<void>((resolve) => searchSlotWaiters.push(resolve))
+}
+
+function releaseSearchSlot(): void {
+  const next = searchSlotWaiters.shift()
+  if (next) {
+    next()
+    return
+  }
+  activeSearches -= 1
+}
+
+async function waitForSearchStart(): Promise<void> {
+  let releaseStartQueue!: () => void
+  const previousStart = searchStartQueue
+  searchStartQueue = new Promise<void>((resolve) => { releaseStartQueue = resolve })
+  await previousStart
+  try {
     const waitMs = Math.max(0, nextSearchAt - Date.now())
     if (waitMs > 0) await delay(waitMs)
-    try {
-      return await work()
-    } finally {
-      nextSearchAt = Date.now() + SEARCH_MIN_INTERVAL_MS
-    }
-  })
-  // Keep the shared queue alive after a failed request so later searches can recover.
-  searchQueue = scheduled.then(() => undefined, () => undefined)
-  return scheduled
+    nextSearchAt = Date.now() + SEARCH_MIN_INTERVAL_MS
+  } finally {
+    releaseStartQueue()
+  }
 }
 
 async function fetchPublicText(input: string, accept: string, maxRetries = 0): Promise<string> {

@@ -45,7 +45,7 @@ export function AgentEditor({
   const [description, setDescription] = useState(agent?.description || '')
   const [role, setRole] = useState<AgentRole>(agent?.role || 'custom')
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt || '')
-  const [showThinking, setShowThinking] = useState(Boolean(agent?.showThinking))
+  const [processOutput, setProcessOutput] = useState<NonNullable<AgentConfig['processOutput']>>(agent?.processOutput || (agent?.showThinking ? 'detailed' : 'compact'))
   const [outputFormat, setOutputFormat] = useState<NonNullable<AgentConfig['outputFormat']>>(agent?.outputFormat || 'default')
   const [outputFormatInstructions, setOutputFormatInstructions] = useState(agent?.outputFormatInstructions || '')
   const [outputStyle, setOutputStyle] = useState<NonNullable<AgentConfig['outputStyle']>>(agent?.outputStyle || 'balanced')
@@ -68,7 +68,7 @@ export function AgentEditor({
       setDescription(agent.description)
       setRole(agent.role)
       setSystemPrompt(agent.systemPrompt)
-      setShowThinking(Boolean(agent.showThinking))
+      setProcessOutput(agent.processOutput || (agent.showThinking ? 'detailed' : 'compact'))
       setOutputFormat(agent.outputFormat || 'default')
       setOutputFormatInstructions(agent.outputFormatInstructions || '')
       setOutputStyle(agent.outputStyle || 'balanced')
@@ -128,7 +128,8 @@ export function AgentEditor({
       description,
       role,
       systemPrompt,
-      showThinking,
+      processOutput,
+      showThinking: processOutput === 'detailed',
       outputFormat,
       outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '',
       outputStyle,
@@ -222,7 +223,7 @@ export function AgentEditor({
         outputFontSize={outputFontSize}
         outputTextEffect={outputTextEffect}
         markdownRenderer={markdownRenderer}
-        showThinking={showThinking}
+        processOutput={processOutput}
         onOutputFormatChange={setOutputFormat}
         onOutputFormatInstructionsChange={setOutputFormatInstructions}
         onOutputStyleChange={setOutputStyle}
@@ -231,7 +232,7 @@ export function AgentEditor({
         onOutputFontSizeChange={setOutputFontSize}
         onOutputTextEffectChange={setOutputTextEffect}
         onMarkdownRendererChange={setMarkdownRenderer}
-        onShowThinkingChange={setShowThinking}
+        onProcessOutputChange={setProcessOutput}
       />
 
       {/* Provider + Model (cascading) */}

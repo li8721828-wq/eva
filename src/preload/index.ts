@@ -5,14 +5,14 @@ import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMes
 import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
-import type { LLMProviderConfig, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
+import type { ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { ModelPool, ModelRouteRequest, ModelRouteResult } from '../shared/types/model-pool'
 import type { CostUsageReport, ModelRateCard, SupplierRateRefreshResult } from '../shared/types/cost'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
 import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
-import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView } from '../shared/types/plugin'
+import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView, SearchProviderConnectivity } from '../shared/types/plugin'
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
@@ -20,6 +20,7 @@ import type { ActivePlan } from '../shared/types/active-plan'
 import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
+import type { ContractArgs, ContractChannel, ContractResult } from '../shared/ipc-contract'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -40,6 +41,10 @@ function onStream<T>(channel: string, callback: EventCallback<T>): Unsubscribe {
   }
 }
 
+function invokeContract<K extends ContractChannel>(channel: K, ...args: ContractArgs<K>): Promise<ContractResult<K>> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<ContractResult<K>>
+}
+
 export interface EvaAPI {
   windowControls: {
     minimize(): Promise<void>
@@ -54,7 +59,7 @@ export interface EvaAPI {
     create(data: Partial<Conversation>): Promise<Conversation>
     delete(id: string): Promise<void>
     load(id: string): Promise<{ conversation: Conversation; messages: ChatMessage[] }>
-    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt' | 'contextHandoff'>>): Promise<void>
+    update(id: string, data: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'symposium' | 'executionStatusAcknowledgedAt'>>): Promise<void>
     updateMessage(conversationId: string, messageId: string, data: Partial<Pick<ChatMessage, 'favorited'>>): Promise<void>
     deleteMessagesFrom(conversationId: string, messageId: string): Promise<void>
     continueFromHandoff(conversationId: string): Promise<Conversation>
@@ -180,7 +185,6 @@ export interface EvaAPI {
   // Provider
   provider: {
     list(): Promise<ProviderConfigEntry[]>
-    getConfig(id: string): Promise<LLMProviderConfig>
     saveConfig(config: ProviderConfigEntry): Promise<void>
     delete(id: string): Promise<void>
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
@@ -240,6 +244,7 @@ export interface EvaAPI {
     getLocalSearxngStatus(): Promise<LocalSearxngStatus>
     installLocalSearxng(): Promise<LocalSearxngStatus>
     stopLocalSearxng(): Promise<LocalSearxngStatus>
+    testConnection(endpoint: string): Promise<SearchProviderConnectivity>
   }
 
   requirements: {
@@ -280,7 +285,7 @@ const evaAPI: EvaAPI = {
     list: () => ipcRenderer.invoke(IPC.CONVERSATION_LIST),
     create: (data) => ipcRenderer.invoke(IPC.CONVERSATION_CREATE, data),
     delete: (id) => ipcRenderer.invoke(IPC.CONVERSATION_DELETE, id),
-    load: (id) => ipcRenderer.invoke(IPC.CONVERSATION_LOAD, id),
+    load: (id) => invokeContract(IPC.CONVERSATION_LOAD, id),
     update: (id, data) => ipcRenderer.invoke(IPC.CONVERSATION_UPDATE, id, data),
     updateMessage: (conversationId, messageId, data) => ipcRenderer.invoke(IPC.CONVERSATION_MESSAGE_UPDATE, conversationId, messageId, data),
     deleteMessagesFrom: (conversationId, messageId) => ipcRenderer.invoke(IPC.CONVERSATION_MESSAGES_DELETE_FROM, conversationId, messageId),
@@ -323,9 +328,9 @@ const evaAPI: EvaAPI = {
       ipcRenderer.send(IPC.TASK_ABORT, conversationId)
       return Promise.resolve()
     },
-    cancel: (conversationId) => ipcRenderer.invoke(IPC.TASK_CANCEL, conversationId),
+    cancel: (conversationId) => invokeContract(IPC.TASK_CANCEL, conversationId),
     getStatus: (conversationId) => ipcRenderer.invoke(IPC.TASK_STATUS, conversationId),
-    getSnapshot: (conversationId) => ipcRenderer.invoke(IPC.TASK_SNAPSHOT, conversationId),
+    getSnapshot: (conversationId) => invokeContract(IPC.TASK_SNAPSHOT, conversationId),
     listArtifacts: (workspaceId) => ipcRenderer.invoke(IPC.TASK_ARTIFACTS_LIST, workspaceId),
     addFeedback: (conversationId, content, checkpointId, pauseAfterCurrentOperation) => ipcRenderer.invoke(IPC.TASK_FEEDBACK_ADD, { conversationId, content, checkpointId, pauseAfterCurrentOperation }),
     resumeFromCheckpoint: (conversationId) => ipcRenderer.invoke(IPC.TASK_CHECKPOINT_RESUME, conversationId),
@@ -360,8 +365,8 @@ const evaAPI: EvaAPI = {
 
   // 文件系统
   file: {
-    read: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_READ, path, workspacePath),
-    write: (path, content, workspacePath) => ipcRenderer.invoke(IPC.FILE_WRITE, path, content, workspacePath),
+    read: (path, workspacePath) => invokeContract(IPC.FILE_READ, path, workspacePath),
+    write: (path, content, workspacePath) => invokeContract(IPC.FILE_WRITE, path, content, workspacePath),
     tree: (path, workspacePath) => ipcRenderer.invoke(IPC.FILE_TREE, path, workspacePath),
     search: (path, query, workspacePath) => ipcRenderer.invoke(IPC.FILE_SEARCH, query, workspacePath),
     selectFolder: () => ipcRenderer.invoke(IPC.FILE_SELECT_FOLDER),
@@ -435,15 +440,14 @@ const evaAPI: EvaAPI = {
 
   // 配置
   config: {
-    get: (key) => ipcRenderer.invoke(IPC.CONFIG_GET, key),
-    set: (key, value) => ipcRenderer.invoke(IPC.CONFIG_SET, key, value),
-    getAll: () => ipcRenderer.invoke(IPC.CONFIG_GET_ALL),
+    get: <T = unknown>(key: string) => invokeContract(IPC.CONFIG_GET, key) as Promise<T>,
+    set: (key, value) => invokeContract(IPC.CONFIG_SET, key, value),
+    getAll: () => invokeContract(IPC.CONFIG_GET_ALL),
   },
 
   // Provider
   provider: {
     list: () => ipcRenderer.invoke(IPC.PROVIDER_LIST),
-    getConfig: (id) => ipcRenderer.invoke(IPC.PROVIDER_CONFIG, id),
     saveConfig: (config) => ipcRenderer.invoke(IPC.PROVIDER_CONFIG, config),
     delete: (id) => ipcRenderer.invoke(IPC.PROVIDER_DELETE, id),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
@@ -503,19 +507,20 @@ const evaAPI: EvaAPI = {
     getLocalSearxngStatus: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STATUS),
     installLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_INSTALL),
     stopLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STOP),
+    testConnection: (endpoint) => ipcRenderer.invoke(IPC.PLUGIN_TEST_CONNECTION, endpoint),
   },
 
   requirements: {
-    listRuns: (conversationId) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_LIST, conversationId),
-    submit: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_SUBMIT, input),
-    answer: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_CLARIFICATION_ANSWER, input),
-    model: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_MODELING_SUBMIT, input),
-    spec: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, input),
-    dsl: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_DSL_SUBMIT, input),
-    coding: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_CODING_SUBMIT, input),
-    resolveSpec: (input) => ipcRenderer.invoke(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
-    abort: (conversationId) => ipcRenderer.invoke(IPC.REQUIREMENT_RUN_ABORT, conversationId),
-    showDocumentContextMenu: (document) => ipcRenderer.invoke(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, document),
+    listRuns: (conversationId) => invokeContract(IPC.REQUIREMENT_RUN_LIST, conversationId),
+    submit: (input) => invokeContract(IPC.REQUIREMENT_RUN_SUBMIT, input),
+    answer: (input) => invokeContract(IPC.REQUIREMENT_CLARIFICATION_ANSWER, input),
+    model: (input) => invokeContract(IPC.REQUIREMENT_MODELING_SUBMIT, input),
+    spec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, input),
+    dsl: (input) => invokeContract(IPC.REQUIREMENT_DSL_SUBMIT, input),
+    coding: (input) => invokeContract(IPC.REQUIREMENT_CODING_SUBMIT, input),
+    resolveSpec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
+    abort: (conversationId) => invokeContract(IPC.REQUIREMENT_RUN_ABORT, conversationId),
+    showDocumentContextMenu: (document) => invokeContract(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, document),
     onProgress: (callback) => onStream(IPC.REQUIREMENT_PROGRESS, callback),
   },
 

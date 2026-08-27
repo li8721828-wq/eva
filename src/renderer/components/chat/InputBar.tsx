@@ -9,51 +9,15 @@ import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
 import { Bot, ClipboardList, FileText, FolderOpen, Quote, Send, Settings2, Square, X } from 'lucide-react'
-import type { ChatDocumentAttachment, ChatImageAttachment, ConversationPermissionLevel } from '../../../shared/types'
+import type { ConversationPermissionLevel } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useShallow } from 'zustand/react/shallow'
+import { CHAT_SLASH_COMMANDS, activeSlashCommand, type ChatSlashCommand } from '@/lib/chat-commands'
+import { useChatAttachments } from '@/hooks/use-chat-attachments'
 
 export interface InputBarProps {
   className?: string
 }
-
-const SLASH_COMMANDS = [
-  {
-    command: 'requirement',
-    label: '/requirement',
-    description: '开始需求分析、代码分析、澄清与评测',
-  },
-  {
-    command: 'requirement-modeling',
-    label: '/requirement-modeling',
-    description: '将已明确需求建模为标准化规格与验收文档',
-  },
-  {
-    command: 'spec',
-    label: '/spec',
-    description: '基于需求建模和代码证据构建并校验实施规格',
-  },
-  {
-    command: 'dsl',
-    label: '/dsl',
-    description: 'Use the completed specification to generate domain-language DSL files',
-  },
-  {
-    command: 'coding',
-    label: '/coding',
-    description: 'Generate and verify isolated Java code from the persisted DSL without AI',
-  },
-  {
-    command: 'file',
-    label: '/file',
-    description: '添加一个或多个文件到当前消息',
-  },
-  {
-    command: 'folder',
-    label: '/folder',
-    description: '添加一个文件夹到当前消息',
-  },
-] as const
 
 const COMMAND_INPUT_SEPARATOR = ' '
 
@@ -106,7 +70,6 @@ export function InputBar({ className }: InputBarProps) {
   const startExpertTask = useTaskStore((state) => state.startExpertTask)
   const abortExpertTask = useTaskStore((state) => state.abortExpertTask)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDraggingAttachments, setIsDraggingAttachments] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [isConversationSettingsOpen, setIsConversationSettingsOpen] = useState(false)
@@ -120,6 +83,15 @@ export function InputBar({ className }: InputBarProps) {
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
+  const {
+    attachmentError,
+    setAttachmentError,
+    addDocumentPaths,
+    handleAttachmentDrop,
+    handlePaste,
+    removeReferenceImage,
+    removeDocumentAttachment,
+  } = useChatAttachments({ referenceImages, documentAttachments, setReferenceImages, setDocumentAttachments })
 
   const symposiumMention = useMemo(() => {
     if (!isSymposiumConversation) return null
@@ -144,13 +116,12 @@ export function InputBar({ className }: InputBarProps) {
   }, [symposiumMention, symposiumMentionOptions])
 
   const slashCommand = useMemo(() => {
-    const match = inputText.match(/^\/([a-z-]*)$/i)
-    return !isSymposiumConversation && match ? match[1].toLowerCase() : null
+    return activeSlashCommand(inputText, isSymposiumConversation)
   }, [inputText, isSymposiumConversation])
 
   const filteredSlashCommands = useMemo(() => {
     if (slashCommand === null) return []
-    return SLASH_COMMANDS.filter((item) => item.command.startsWith(slashCommand))
+    return CHAT_SLASH_COMMANDS.filter((item) => item.command.startsWith(slashCommand))
   }, [slashCommand])
 
   const selectedSlashCommand = useMemo(() => {
@@ -482,77 +453,7 @@ export function InputBar({ className }: InputBarProps) {
     abortStream()
   }
 
-  const addReferenceFiles = useCallback((selected: File[]) => {
-    if (!selected.length) return
-
-    const slots = 4 - referenceImages.length
-    if (slots <= 0) {
-      setAttachmentError('You can attach up to four reference images.')
-      return
-    }
-
-    const supported = selected.filter((file) => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type))
-    let validationMessage: string | null = supported.length !== selected.length ? 'Use JPG, PNG, or WebP reference images.' : null
-    const sized = supported.filter((file) => file.size <= 12 * 1024 * 1024).slice(0, slots)
-    if (sized.length !== supported.length) validationMessage = 'Each reference image must be 12 MB or smaller.'
-
-    const additions: ChatImageAttachment[] = sized
-      .map((file) => ({ path: window.eva.file.getPath(file), name: file.name, mediaType: file.type as ChatImageAttachment['mediaType'], size: file.size }))
-      .filter((image) => image.path)
-    if (additions.length) {
-      setReferenceImages([...referenceImages, ...additions])
-    }
-    setAttachmentError(validationMessage)
-  }, [referenceImages, setReferenceImages])
-
-  const addClipboardImages = useCallback(async (files: File[]) => {
-    const slots = 4 - referenceImages.length
-    if (slots <= 0) {
-      setAttachmentError('You can attach up to four reference images.')
-      return
-    }
-    const supported = files.filter((file) => ['image/jpeg', 'image/png', 'image/webp'].includes(file.type)).slice(0, slots)
-    if (!supported.length) {
-      setAttachmentError('Use JPG, PNG, or WebP reference images.')
-      return
-    }
-    try {
-      const saved = await Promise.all(supported.map(async (file) => {
-        if (file.size > 12 * 1024 * 1024) throw new Error('Each reference image must be 12 MB or smaller.')
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read clipboard image.'))
-          reader.onerror = () => reject(new Error('Could not read clipboard image.'))
-          reader.readAsDataURL(file)
-        })
-        const stored = await window.eva.file.saveClipboardImage({ dataUrl, mediaType: file.type as ChatImageAttachment['mediaType'] })
-        return { ...stored, mediaType: file.type as ChatImageAttachment['mediaType'] }
-      }))
-      setReferenceImages([...referenceImages, ...saved])
-      setAttachmentError(null)
-    } catch (error) {
-      setAttachmentError(error instanceof Error ? error.message : 'Could not attach clipboard image.')
-    }
-  }, [referenceImages, setReferenceImages])
-
-  const addDocumentPaths = useCallback(async (paths: string[]) => {
-    if (!paths.length) return
-    const uniquePaths = paths.filter((filePath) => filePath && !documentAttachments.some((attachment) => attachment.path === filePath))
-    const additions: ChatDocumentAttachment[] = []
-    for (const filePath of uniquePaths.slice(0, 20 - documentAttachments.length)) {
-      try {
-        const entries = await window.eva.file.tree(filePath)
-        const isFolder = entries.length > 0
-        additions.push({ path: filePath, name: filePath.replace(/^.*[\\/]/, ''), size: 0, kind: isFolder ? 'folder' : 'file' })
-      } catch {
-        additions.push({ path: filePath, name: filePath.replace(/^.*[\\/]/, ''), size: 0, kind: 'file' })
-      }
-    }
-    if (additions.length) setDocumentAttachments([...documentAttachments, ...additions])
-    if (uniquePaths.length > additions.length) setAttachmentError('You can attach up to 20 files or folders at once.')
-  }, [documentAttachments, setDocumentAttachments])
-
-  const insertSlashCommand = useCallback((command: typeof SLASH_COMMANDS[number]['command']) => {
+  const insertSlashCommand = useCallback((command: ChatSlashCommand) => {
     if (command === 'file' || command === 'folder') {
       setInputText('')
       setCaretPosition(0)
@@ -560,7 +461,7 @@ export function InputBar({ className }: InputBarProps) {
       const selection = command === 'file'
         ? window.eva.file.selectFiles()
         : window.eva.file.selectFolder().then((path) => path ? [path] : [])
-      void selection.then(addDocumentPaths).catch(() => setAttachmentError('Could not select attachments.'))
+      void selection.then((paths) => addDocumentPaths(paths, command === 'folder' ? 'folder' : 'file')).catch(() => setAttachmentError('Could not select attachments.'))
       return
     }
     const nextInput = `/${command}${COMMAND_INPUT_SEPARATOR}`
@@ -571,45 +472,6 @@ export function InputBar({ className }: InputBarProps) {
       textareaRef.current?.setSelectionRange(nextInput.length, nextInput.length)
     })
   }, [addDocumentPaths, setInputText])
-
-  const handleAttachmentDrop = (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    setIsDraggingAttachments(false)
-    const workspacePath = event.dataTransfer.getData('application/x-eva-workspace-path')
-    if (workspacePath) {
-      void addDocumentPaths([workspacePath])
-      return
-    }
-    const files = Array.from(event.dataTransfer.files)
-    const images = files.filter((file) => file.type.startsWith('image/'))
-    const documents = files.filter((file) => !file.type.startsWith('image/'))
-    if (images.length) addReferenceFiles(images)
-    void addDocumentPaths(documents.map((file) => window.eva.file.getPath(file)).filter(Boolean))
-  }
-
-  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const pastedFiles = Array.from(event.clipboardData.items)
-      .filter((item) => item.kind === 'file')
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => Boolean(file))
-    if (pastedFiles.length) {
-      event.preventDefault()
-      const images = pastedFiles.filter((file) => file.type.startsWith('image/'))
-      const documents = pastedFiles.filter((file) => !file.type.startsWith('image/'))
-      if (images.length) void addClipboardImages(images)
-      void addDocumentPaths(documents.map((file) => window.eva.file.getPath(file)).filter(Boolean))
-    }
-  }
-
-  const removeReferenceImage = (path: string) => {
-    setReferenceImages(referenceImages.filter((image) => image.path !== path))
-    setAttachmentError(null)
-  }
-
-  const removeDocumentAttachment = (path: string) => {
-    setDocumentAttachments(documentAttachments.filter((attachment) => attachment.path !== path))
-    setAttachmentError(null)
-  }
 
   const saveModelSelection = async (providerId: string, model: string) => {
     if (providerId === activeProviderId && model === activeModel) return
@@ -651,7 +513,10 @@ export function InputBar({ className }: InputBarProps) {
           )}
           onDragOver={(event) => { event.preventDefault(); setIsDraggingAttachments(true) }}
           onDragLeave={() => setIsDraggingAttachments(false)}
-          onDrop={handleAttachmentDrop}
+          onDrop={(event) => {
+            setIsDraggingAttachments(false)
+            handleAttachmentDrop(event)
+          }}
         >
           {quotedMessage && (
             <div className="flex min-w-0 items-start gap-2.5 rounded-t-[7px] border-b border-violet-100 bg-violet-50/55 px-4 py-2.5">

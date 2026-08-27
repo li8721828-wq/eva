@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { ActivityLogFilter } from '../../shared/types/activity'
 import { getStorage } from '../storage'

@@ -1,5 +1,6 @@
 import fs from 'fs/promises'
-import { dialog, ipcMain } from 'electron'
+import { dialog } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { InstalledPlugin, MarketplacePluginView } from '../../shared/types/plugin'
 import { getStorage } from '../storage'
@@ -74,4 +75,5 @@ export function registerPluginHandlers(): void {
   ipcMain.handle(IPC.PLUGIN_LOCAL_SEARXNG_STATUS, async () => localSearxng.getStatus())
   ipcMain.handle(IPC.PLUGIN_LOCAL_SEARXNG_INSTALL, async () => localSearxng.installAndStart())
   ipcMain.handle(IPC.PLUGIN_LOCAL_SEARXNG_STOP, async () => localSearxng.stop())
+  ipcMain.handle(IPC.PLUGIN_TEST_CONNECTION, async (_event, endpoint: string) => localSearxng.testConnection(endpoint))
 }

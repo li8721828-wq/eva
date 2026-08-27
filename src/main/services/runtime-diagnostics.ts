@@ -89,7 +89,7 @@ export function diagnoseRuntime(input: RuntimeDiagnosticInput, focus: RuntimeDia
   if (include('permissions')) {
     const registered = new Set(input.tools.map((tool) => tool.name))
     const staleAgentTools = input.agents.flatMap((agent) => agent.tools.filter((tool) => !registered.has(tool)).map((tool) => `${agent.name}: ${tool}`))
-    const privilegedPlugins = input.plugins.filter((plugin) => plugin.enabled && plugin.permissions.some((permission) => permission === 'network' || permission === 'filesystem' || permission === 'process'))
+    const privilegedPlugins = input.plugins.filter((plugin) => plugin.enabled && plugin.permissions.some((permission) => permission === 'network' || permission === 'filesystem-read' || permission === 'filesystem-write' || permission === 'terminal'))
     if (staleAgentTools.length) findings.push({
       id: 'stale-agent-tools', severity: 'error', title: 'Agents reference tools that are not registered',
       evidence: staleAgentTools,
@@ -98,7 +98,7 @@ export function diagnoseRuntime(input: RuntimeDiagnosticInput, focus: RuntimeDia
     })
     if (privilegedPlugins.length) findings.push({
       id: 'privileged-plugin-review', severity: 'warning', title: 'Enabled plugins have elevated permissions',
-      evidence: privilegedPlugins.map((plugin) => `${plugin.name}: ${plugin.permissions.filter((permission) => permission === 'network' || permission === 'filesystem' || permission === 'process').join(', ')}`),
+      evidence: privilegedPlugins.map((plugin) => `${plugin.name}: ${plugin.permissions.filter((permission) => permission === 'network' || permission === 'filesystem-read' || permission === 'filesystem-write' || permission === 'terminal').join(', ')}`),
       impact: 'These plugins can access resources beyond ordinary UI configuration.',
       recommendation: 'Review each plugin source and keep only permissions required for its active workflow.',
     })

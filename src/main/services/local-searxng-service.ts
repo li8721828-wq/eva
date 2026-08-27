@@ -4,7 +4,7 @@ import fs from 'fs/promises'
 import path from 'path'
 import { randomBytes } from 'crypto'
 import { getStorage } from '../storage'
-import type { LocalSearxngStatus } from '../../shared/types/plugin'
+import type { LocalSearxngStatus, SearchProviderConnectivity } from '../../shared/types/plugin'
 
 const LOCAL_ENDPOINT = 'http://127.0.0.1:8080'
 const SERVICE_DIRECTORY = 'eva-searxng'
@@ -58,6 +58,45 @@ export class LocalSearxngService {
     const result = await this.runDocker(['compose', '-f', this.composePath(), 'stop'], 30_000)
     if (result.code !== 0) throw new Error(this.commandError('Unable to stop Eva Local Search.', result.output))
     return this.getStatus()
+  }
+
+  async testConnection(endpoint: string): Promise<SearchProviderConnectivity> {
+    const normalizedEndpoint = endpoint.trim().replace(/\/$/, '')
+    let baseUrl: URL
+    try {
+      baseUrl = new URL(normalizedEndpoint)
+      if (!['http:', 'https:'].includes(baseUrl.protocol)) throw new Error()
+    } catch {
+      return { reachable: false, apiValid: false, endpoint: normalizedEndpoint, resultCount: 0, unresponsiveEngines: [], message: 'Endpoint must be a valid HTTP(S) URL.' }
+    }
+
+    const url = new URL(`${baseUrl.toString()}/search`)
+    url.searchParams.set('q', 'connectivity')
+    url.searchParams.set('format', 'json')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 10_000)
+    try {
+      const response = await net.fetch(url.toString(), { headers: { Accept: 'application/json' }, signal: controller.signal })
+      if (!response.ok) {
+        return { reachable: true, apiValid: false, endpoint: normalizedEndpoint, resultCount: 0, unresponsiveEngines: [], message: `Endpoint reachable, but returned HTTP ${response.status}.` }
+      }
+      const data = await response.json() as { results?: unknown; unresponsive_engines?: unknown }
+      if (!Array.isArray(data.results)) {
+        return { reachable: true, apiValid: false, endpoint: normalizedEndpoint, resultCount: 0, unresponsiveEngines: [], message: 'Endpoint reachable, but did not return a valid SearXNG JSON response.' }
+      }
+      const unresponsiveEngines = Array.isArray(data.unresponsive_engines)
+        ? data.unresponsive_engines.map((entry) => Array.isArray(entry) ? String(entry[0] || '') : String(entry || '')).filter(Boolean)
+        : []
+      const message = unresponsiveEngines.length
+        ? `Connected. ${data.results.length} results returned, but ${unresponsiveEngines.length} search engine(s) are unavailable or rate-limited.`
+        : `Connected. ${data.results.length} results returned and the search API is responding normally.`
+      return { reachable: true, apiValid: true, endpoint: normalizedEndpoint, resultCount: data.results.length, unresponsiveEngines, message }
+    } catch (error) {
+      const message = controller.signal.aborted ? 'Connection timed out after 10 seconds.' : error instanceof Error ? error.message : 'Unable to reach the endpoint.'
+      return { reachable: false, apiValid: false, endpoint: normalizedEndpoint, resultCount: 0, unresponsiveEngines: [], message }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   private configureEvaPlugin(): void {
@@ -115,6 +154,10 @@ export class LocalSearxngService {
   }
 
   private dataDirectory(): string {
+    // Keep the local search image configuration and cache outside the user
+    // profile, where it can be inspected and managed alongside other D-drive
+    // development services on this Windows installation.
+    if (process.platform === 'win32') return 'D:\\Eva\\searxng'
     return path.join(app.getPath('userData'), SERVICE_DIRECTORY)
   }
 

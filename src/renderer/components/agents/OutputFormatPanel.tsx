@@ -1,6 +1,6 @@
 import React from 'react'
-import { AlignLeft, BookOpenText, Braces, Check, CircleSlash, FileCode2, Gauge, ListFilter, MessageCircleMore, PanelTop, Sparkles } from 'lucide-react'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect } from '../../../shared/types'
+import { AlignLeft, BookOpenText, BrainCircuit, Check, CircleSlash, FileCode2, Gauge, ListFilter, MessageCircleMore, PanelTop, Sparkles } from 'lucide-react'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, AgentProcessOutput } from '../../../shared/types'
 import { Textarea } from '@/components/ui/Textarea'
 import { cn } from '@/lib/utils'
 
@@ -13,7 +13,7 @@ export interface OutputFormatPanelProps {
   outputFontSize: AgentOutputFontSize
   outputTextEffect: AgentOutputTextEffect
   markdownRenderer: AgentMarkdownRenderer
-  showThinking: boolean
+  processOutput: AgentProcessOutput
   onOutputFormatChange: (format: AgentOutputFormat) => void
   onOutputFormatInstructionsChange: (instructions: string) => void
   onOutputStyleChange: (style: AgentOutputStyle) => void
@@ -22,7 +22,7 @@ export interface OutputFormatPanelProps {
   onOutputFontSizeChange: (size: AgentOutputFontSize) => void
   onOutputTextEffectChange: (effect: AgentOutputTextEffect) => void
   onMarkdownRendererChange: (renderer: AgentMarkdownRenderer) => void
-  onShowThinkingChange: (enabled: boolean) => void
+  onProcessOutputChange: (processOutput: AgentProcessOutput) => void
 }
 
 const responseModes: Array<{ value: AgentOutputFormat; label: string; description: string; icon: React.ElementType }> = [
@@ -94,7 +94,7 @@ function ChoiceRow({ selected, icon: Icon, label, description, onClick }: { sele
   </button>
 }
 
-export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, showThinking, onOutputFormatChange, onOutputFormatInstructionsChange, onOutputStyleChange, onOutputFontChange, onOutputColorChange, onOutputFontSizeChange, onOutputTextEffectChange, onMarkdownRendererChange, onShowThinkingChange }: OutputFormatPanelProps) {
+export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, processOutput, onOutputFormatChange, onOutputFormatInstructionsChange, onOutputStyleChange, onOutputFontChange, onOutputColorChange, onOutputFontSizeChange, onOutputTextEffectChange, onMarkdownRendererChange, onProcessOutputChange }: OutputFormatPanelProps) {
   return <div className="space-y-8">
     <section>
       <div><h2 className="text-base font-semibold text-zinc-900">Markdown 渲染器</h2><p className="mt-1 text-sm leading-6 text-zinc-500">决定回复在对话中的视觉排版，不改变模型生成的内容。</p></div>
@@ -120,10 +120,12 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
     </section> : null}
 
     <section className="border-t border-zinc-100 pt-7">
-      <label className="flex cursor-pointer items-start gap-3 rounded-md bg-zinc-50 px-3.5 py-3.5 transition-colors hover:bg-zinc-100/70">
-        <input type="checkbox" checked={showThinking} onChange={(event) => onShowThinkingChange(event.target.checked)} className="mt-0.5 h-4 w-4 accent-violet-600" />
-        <span className="min-w-0"><span className="flex items-center gap-2 text-sm font-medium text-zinc-800"><Braces className="h-4 w-4 text-violet-600" />显示模型慢思考</span><span className="mt-1 block text-xs leading-5 text-zinc-500">支持时显示模型的慢思考过程；不支持时提示能力缺失并正常输出。</span></span>
-      </label>
+      <div><h2 className="text-base font-semibold text-zinc-900">过程输出</h2><p className="mt-1 text-sm leading-6 text-zinc-500">控制用户在对话中看到的处理过程，不改变工具执行本身。</p></div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <ChoiceRow selected={processOutput === 'off'} icon={CircleSlash} label="关闭" description="只保留最终回复与执行动效。" onClick={() => onProcessOutputChange('off')} />
+        <ChoiceRow selected={processOutput === 'compact'} icon={Gauge} label="简洁" description="仅在阶段变化时显示短进度。" onClick={() => onProcessOutputChange('compact')} />
+        <ChoiceRow selected={processOutput === 'detailed'} icon={BrainCircuit} label="详细" description="支持时请求并显示模型慢思考。" onClick={() => onProcessOutputChange('detailed')} />
+      </div>
     </section>
   </div>
 }

@@ -11,6 +11,16 @@ const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {
   run_command: 'execute_command',
 }
 
+// DeepSeek's DSML examples use lineStart/lineEnd, while Eva's read_file
+// schema exposes startLine/endLine. Normalize this known dialect difference
+// before validating the call against the actual tool schema.
+const LEGACY_TOOL_ARGUMENT_ALIASES: Record<string, Record<string, string>> = {
+  read_file: {
+    lineStart: 'startLine',
+    lineEnd: 'endLine',
+  },
+}
+
 type LegacyTextToolCall = {
   id: string
   name: string
@@ -35,18 +45,19 @@ function createLegacyTextToolCall(
   const args: Record<string, unknown> = {}
   const schema = tool.parameters as { properties?: Record<string, { type?: string }>; required?: unknown }
   for (const [key, rawValue] of parameters) {
+    const normalizedKey = LEGACY_TOOL_ARGUMENT_ALIASES[name]?.[key] || key
     const value = rawValue.trim()
-    if (!value || key in args || (schema.properties && !(key in schema.properties))) return undefined
-    const expectedType = schema.properties?.[key]?.type
+    if (!value || normalizedKey in args || (schema.properties && !(normalizedKey in schema.properties))) return undefined
+    const expectedType = schema.properties?.[normalizedKey]?.type
     if (expectedType === 'number' || expectedType === 'integer') {
       const numeric = Number(value)
       if (!Number.isFinite(numeric)) return undefined
-      args[key] = expectedType === 'integer' ? Math.trunc(numeric) : numeric
+      args[normalizedKey] = expectedType === 'integer' ? Math.trunc(numeric) : numeric
     } else if (expectedType === 'boolean') {
       if (!/^(?:true|false)$/i.test(value)) return undefined
-      args[key] = value.toLowerCase() === 'true'
+      args[normalizedKey] = value.toLowerCase() === 'true'
     } else {
-      args[key] = value
+      args[normalizedKey] = value
     }
   }
 
@@ -104,7 +115,9 @@ function attributeValue(attributes: string, name: string): string | undefined {
 
 function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): LegacyTextToolCall[] {
   if (!tools?.length) return []
-  const marker = '[|｜]\\s*DSML\\s*[|｜]'
+  // DeepSeek can emit either `<｜DSML｜...>` or the double-pipe variant
+  // `<| | DSML | | ...>` when a tool call is serialized as text.
+  const marker = '(?:[|｜]\\s*){1,2}DSML(?:\\s*[|｜]){1,2}'
   const openEnvelope = new RegExp(`<\\s*${marker}\\s*tool_calls\\s*>`, 'i')
   const closeEnvelope = new RegExp(`<\\s*[\\/／]\\s*${marker}\\s*tool_calls\\s*>`, 'i')
   const openMatch = openEnvelope.exec(content)
@@ -151,7 +164,7 @@ function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): Lega
 }
 
 function hasSuspectedTextToolCall(content: string, tools?: ToolDefinition[]): boolean {
-  if (/<\s*[|｜]\s*DSML\s*[|｜]\s*(?:tool_calls|invoke|parameter)\b/i.test(content)) return true
+  if (/<\s*(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls|invoke|parameter)\b/i.test(content)) return true
   if (/<tool_call\b|<function=/i.test(content)) return true
   return Boolean(tools?.some((tool) => new RegExp(`<\\s*${tool.name}\\b`, 'i').test(content)))
 }
@@ -168,6 +181,10 @@ export class OpenAIProvider implements LLMProvider {
   private client: OpenAI
   private defaultModel?: string
   private baseUrl: string
+  // OpenAI-compatible gateways vary widely. Remember optional features that
+  // this connection has rejected so later requests do not repeat a failed
+  // probe before doing useful work.
+  private customStreamCapabilities = { usage: true, thinking: true }
 
   constructor(id: string, name: string, type: 'openai' | 'deepseek' | 'custom', options: ProviderCreateOptions) {
     this.id = id
@@ -245,13 +262,27 @@ export class OpenAIProvider implements LLMProvider {
     return { baseUrl: this.baseUrl }
   }
 
+  private canDowngradeCustomRequest(error: unknown): boolean {
+    if (this.type !== 'custom') return false
+    const code = (error as { code?: string })?.code
+    const status = (error as { status?: number; statusCode?: number })?.status ?? (error as { statusCode?: number })?.statusCode
+    return code === 'invalid_request' || status === 400 || status === 422
+  }
+
+  private rejectedCustomExtension(error: unknown): 'usage' | 'thinking' | undefined {
+    const message = `${(error as { message?: string })?.message || ''}`.toLowerCase()
+    if (/\bthinking\b|reasoning/.test(message)) return 'thinking'
+    if (/stream_options|include_usage/.test(message)) return 'usage'
+    return undefined
+  }
+
   async *chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk> {
     const toolCallsAccumulator: Map<
       number,
       { id?: string; name?: string; arguments: string }
     > = new Map()
 
-    const createStream = (includeUsage: boolean) =>
+    const createStream = (includeUsage: boolean, includeThinking: boolean) =>
       this.client.chat.completions.create(
           {
             model: params.model || this.defaultModel || 'gpt-4o',
@@ -263,24 +294,45 @@ export class OpenAIProvider implements LLMProvider {
             ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
             temperature: params.temperature,
             max_tokens: params.maxTokens,
-            ...(params.reasoning && (this.type === 'deepseek' || this.type === 'custom')
-              ? { thinking: { type: params.reasoning.enabled ? 'enabled' : 'disabled' } }
+            ...(params.reasoning?.enabled && (this.type === 'deepseek' || this.type === 'custom') && includeThinking
+              ? { thinking: { type: 'enabled' } }
               : {}),
           },
           { signal },
         )
 
+    const requestedThinking = Boolean(params.reasoning?.enabled)
+    let includeUsage = this.type === 'custom' ? this.customStreamCapabilities.usage : true
+    let includeThinking = requestedThinking && (this.type !== 'custom' || this.customStreamCapabilities.thinking)
     let stream
     try {
-      stream = await withRetry(() => createStream(true), this.id)
+      stream = await withRetry(() => createStream(includeUsage, includeThinking), this.id)
     } catch (error) {
-      // Some older gateways reject stream_options entirely. Retrying without
-      // the optional extension preserves the existing chat behavior.
-      if (this.type !== 'custom') throw error
-      stream = await withRetry(() => createStream(false), this.id)
+      if (!this.canDowngradeCustomRequest(error)) throw error
+      const rejectedExtension = this.rejectedCustomExtension(error)
+      if (includeThinking && rejectedExtension === 'thinking') {
+        this.customStreamCapabilities.thinking = false
+        includeThinking = false
+        stream = await withRetry(() => createStream(includeUsage, false), this.id)
+      } else if (includeUsage) {
+        this.customStreamCapabilities.usage = false
+        includeUsage = false
+        try {
+          stream = await withRetry(() => createStream(false, includeThinking), this.id)
+        } catch (retryError) {
+          error = retryError
+        }
+      }
+      if (!stream && includeThinking && this.canDowngradeCustomRequest(error)) {
+        this.customStreamCapabilities.thinking = false
+        includeThinking = false
+        stream = await withRetry(() => createStream(false, false), this.id)
+      }
+      if (!stream) throw error
     }
 
     let textContent = ''
+    let emittedStructuredToolCalls = false
     for await (const chunk of stream) {
       const usage = this.mapUsage(chunk.usage)
       const choice = chunk.choices[0]
@@ -325,6 +377,7 @@ export class OpenAIProvider implements LLMProvider {
         // Tool argument deltas are not forwarded. AgentRunner accepts completed
         // calls, so emitting both deltas and this final value would duplicate JSON.
         if (finishReason === 'tool_calls' && toolCallsAccumulator.size > 0) {
+          emittedStructuredToolCalls = true
           yieldChunk.toolCalls = Array.from(toolCallsAccumulator.entries()).map(([index, acc]) => ({
             index,
             id: acc.id,
@@ -346,7 +399,21 @@ export class OpenAIProvider implements LLMProvider {
     // `finish_reason: stop`. Convert only the complete, strictly validated
     // legacy envelope. AgentRunner will reset the provisional streamed text
     // before showing the actual tool activity.
-    if (toolCallsAccumulator.size === 0) {
+    if (toolCallsAccumulator.size > 0 && !emittedStructuredToolCalls) {
+      // A number of OpenAI-compatible relays stream valid tool deltas but
+      // finish with `stop` instead of `tool_calls`. The deltas are stronger
+      // evidence than that non-standard finish reason.
+      yield {
+        content: '',
+        finishReason: 'tool_calls',
+        toolCalls: Array.from(toolCallsAccumulator.entries()).map(([index, acc]) => ({
+          index,
+          id: acc.id,
+          name: acc.name,
+          arguments: acc.arguments,
+        })),
+      }
+    } else if (toolCallsAccumulator.size === 0) {
       const legacyToolCalls = parseTextToolCalls(textContent, params.tools)
       if (legacyToolCalls.length > 0) {
         yield {

@@ -7,18 +7,18 @@ import type { ChatMessage, ChatUsage } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
-import { compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
+import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
 import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
 import type { FileAccessGrant } from '../../shared/types/file-access'
-import type { ModelPoolEntry } from '../../shared/types/model-pool'
+import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
 import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
-import { getStorage } from '../storage'
-import { providerRegistry } from '../providers'
+import type { ProviderRegistry } from '../providers'
 import { ModelRouter } from '../services/model-router'
 import { modelHealthService } from '../services/model-health-service'
 import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../services/usage-pricing-service'
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
+import { createDeferredToolState, formatToolSearchResult, searchDeferredTools, TOOL_SEARCH_DEFINITION } from './tool-loading'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -46,6 +46,8 @@ export interface AgentRunnerConfig {
   adaptiveToolBudget?: AdaptiveToolBudget
   /** Identifies the caller in a provider error without changing the request. */
   requestSource?: ProviderRequestSource
+  modelPools?: ModelPool[]
+  providerRegistry?: ProviderRegistry
 }
 
 export interface AdaptiveToolBudget {
@@ -90,9 +92,13 @@ interface CompletedToolResult {
 }
 
 const MAX_TOOL_REVIEW_IMAGES = 4
+const ROLLING_TOOL_EVIDENCE_START = '--- Earlier completed tool evidence ---'
+const ROLLING_TOOL_EVIDENCE_END = '--- End earlier completed tool evidence ---'
 // A provider may impose a lower, hidden per-request output cap. Continue only
 // when it explicitly reports `length`; a natural `stop` must end the turn.
 const MAX_PROVIDER_CONTINUATIONS = 3
+const MAX_NORMAL_TOOL_CYCLES = 12
+const MAX_AGENT_RESPONSE_TOKENS = 2_048
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
 // A complete virtual desktop can include multiple high-resolution displays.
 // Keep this distinct from ordinary user attachment limits so desktop_observe
@@ -148,9 +154,9 @@ const SPEC_TOOL: ToolDefinition = {
   parameters: { type: 'object', properties: { templateId: { type: 'string', description: 'Template identifier.' }, parameters: { type: 'object', description: 'Template parameter values.' } }, required: ['templateId'] },
 }
 
-function modelPoolDelegationTool(allowedPoolIds?: string[]): ToolDefinition | undefined {
+function modelPoolDelegationTool(modelPools: ModelPool[] | undefined, allowedPoolIds?: string[]): ToolDefinition | undefined {
   if (!allowedPoolIds?.length) return undefined
-  const pools = getStorage().config.get('modelPools').filter((pool) => allowedPoolIds.includes(pool.id))
+  const pools = (modelPools || []).filter((pool) => allowedPoolIds.includes(pool.id))
   if (!pools.length) return undefined
   const availablePools = pools.map((pool) => `${pool.name} (id: ${pool.id}; capabilities: ${[...new Set(pool.entries.flatMap((entry) => entry.capabilities))].join(', ') || 'none'})`).join('; ')
   return {
@@ -178,15 +184,9 @@ export class AgentRunner {
   }
 
   /**
-   * Execute the ReAct (Reason-Act) loop.
-   *
-   * Flow per iteration:
-   *  1. Build/update context messages
-   *  2. Stream LLM response → yield real-time text_delta events
-   *  3. If no tool_calls → yield { type: 'done' } and stop
-   *  4. If tool_calls → yield text (full reasoning), execute each tool,
-   *     yield tool_call / tool_result events, append to history, loop
-   *  5. Abort or max-iterations → stop
+   * Execute one direct tool batch for ordinary chat, then synthesize its
+   * results. Goal steps opt into the bounded ReAct loop because dependent
+   * actions such as inspect -> edit -> verify need later tool decisions.
    */
   async *run(params: RunParams): AsyncGenerator<AgentEvent> {
     if (this.isRunning) {
@@ -207,15 +207,19 @@ export class AgentRunner {
       const maxIter = adaptiveToolBudget
         ? Math.max(1, Math.min(configuredMaxIterations, adaptiveToolBudget.maxIterations))
         : configuredMaxIterations
+      // Normal chat follows only model-requested tool calls. It has a generous
+      // safety ceiling, while exact repeated tool batches terminate early to
+      // prevent a failed lookup from turning into an open-ended loop.
+      const toolCycleLimit = adaptiveToolBudget ? maxIter : Math.min(maxIter, MAX_NORMAL_TOOL_CYCLES)
       let nextBudgetCheck = adaptiveToolBudget
-        ? Math.max(1, Math.min(maxIter, adaptiveToolBudget.initialIterations))
-        : maxIter
+        ? Math.max(1, Math.min(toolCycleLimit, adaptiveToolBudget.initialIterations))
+        : toolCycleLimit
       if (agentConfig.showThinking && !this.config.provider.supportsReasoning(agentConfig.model)) {
         yield { type: 'thinking', content: '当前模型不支持慢思考内容输出，将按普通模式继续执行。' }
       }
 
       // Tool definitions filtered by agent's allowed tool list
-      const poolTool = agentConfig.tools.includes('delegate_to_model_pool') ? modelPoolDelegationTool(agentConfig.modelPoolIds) : undefined
+      const poolTool = agentConfig.tools.includes('delegate_to_model_pool') ? modelPoolDelegationTool(this.config.modelPools, agentConfig.modelPoolIds) : undefined
       const allToolDefs: ToolDefinition[] = [
         ...toolRegistry.getDefinitionsByNames(agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool')),
         ...(poolTool ? [poolTool] : []),
@@ -263,6 +267,7 @@ export class AgentRunner {
       // result. Reuse the result during one ReAct run instead of re-reading the
       // same file/page/search result over and over.
       const readOnlyToolCache = new Map<string, CompletedToolResult>()
+      let mustReadWebPageBeforeMoreSearch = false
       const pendingWriteVerifications = new Set<string>()
       let recentVisualAttachments: ToolResultImage[] = dedupeToolImages(
         allHistory.flatMap((message) => (message.images || []).map((image) => ({
@@ -275,17 +280,23 @@ export class AgentRunner {
       let completedResponse = ''
       let providerContinuationCount = 0
       let protocolRepairAttempts = 0
+      let latestProtocolResults: NonNullable<CompletedToolResult['protocol']>[] = []
+      let rollingToolEvidence = ''
+      const previousNormalToolBatches = new Set<string>()
 
-      // Send the complete configured tool set on every model turn. Tool
-      // selection remains the model's responsibility; filtering here can
-      // hide a needed capability when the user uses a short follow-up.
-      const activeToolDefs = allToolDefs
+      // Claude Code-style tool loading: a small core remains available while
+      // larger catalogs are discovered on demand and retained once loaded.
+      const deferredState = createDeferredToolState(allToolDefs)
+      const loadedDeferredToolNames = new Set<string>()
+      let activeToolDefs = deferredState.initial
+      let deferredToolDefs = deferredState.deferred
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
         activeToolDefs,
+        deferredToolDefs,
       )
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -295,10 +306,11 @@ export class AgentRunner {
         fullFilesystemAccess,
         maxContextTokens: getModelInputBudgetTokens(agentConfig.model),
         tools: activeToolDefs,
+        deferredTools: deferredToolDefs,
       })
 
-      // ── ReAct loop ──────────────────────────────────────────────────────────
-      for (let iteration = 0; iteration < maxIter; iteration++) {
+      // ── Tool execution loop ─────────────────────────────────────────────────
+      for (let iteration = 0; iteration < toolCycleLimit; iteration++) {
         if (this.abortController.signal.aborted) {
           yield { type: 'done', content: '' }
           return
@@ -311,7 +323,7 @@ export class AgentRunner {
 
         // Call LLM (yields real-time text_delta events to caller)
         const response = yield* this.executeLLMCall(messages, activeToolDefs)
-        accumulatedUsage = this.mergeUsage(accumulatedUsage, response.usage)
+        accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, response.usage)
 
         const hasToolCalls = response.toolCalls.length > 0
 
@@ -355,7 +367,7 @@ export class AgentRunner {
             }
             continue
           }
-          if (pendingWriteVerifications.size > 0 && activeToolDefs.some((tool) => tool.name === 'read_file') && iteration < maxIter - 1) {
+          if (pendingWriteVerifications.size > 0 && activeToolDefs.some((tool) => tool.name === 'read_file') && iteration < toolCycleLimit - 1) {
             messages.push({ role: 'assistant', content: response.content })
             messages.push({
               role: 'user',
@@ -369,17 +381,17 @@ export class AgentRunner {
           return
         }
 
-        // Text is streamed optimistically for responsiveness. Once this turn
-        // proves to be a tool-call turn, remove that provisional prose from
-        // the visible reply; the final no-tool turn remains streamed normally.
-        if (response.content) yield { type: 'text_reset', discardProvisionalText: response.textToolCallEnvelope }
+        // A normal pre-tool reply is meaningful user-facing process and is
+        // promoted to the accumulated progress view by the conversation
+        // handler. Only protocol text such as a DSML envelope is discarded.
+        if (response.content) yield { type: 'text_reset', discardProvisionalText: Boolean(response.textToolCallEnvelope) }
         completedResponse = ''
 
         // A model may request several independent reads in one turn. Execute
         // only a wholly read-only batch in parallel; any mutation, terminal,
         // browser, or desktop action keeps the original strict ordering.
         const toolResults = new Map<string, CompletedToolResult>()
-        const parallelReadBatch = response.toolCalls.length > 1
+        const parallelReadBatch = !mustReadWebPageBeforeMoreSearch && response.toolCalls.length > 1
           && response.toolCalls.every((toolCall) => PARALLEL_SAFE_READ_TOOL_NAMES.has(toolCall.name))
         if (parallelReadBatch) {
           const visualAttachments = dedupeToolImages(recentVisualAttachments)
@@ -401,12 +413,20 @@ export class AgentRunner {
               toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments },
             }
           }
+          const inFlightReadExecutions = new Map<string, Promise<CompletedToolResult>>()
           const completedBatch = await Promise.all(response.toolCalls.map(async (toolCall) => {
             const cacheKey = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
-            const cached = readOnlyToolCache.get(cacheKey)
-            const rawResult = cached || await this.executeTool(toolCall, baseContext)
-            const result = cached || this.normalizeToolResult(rawResult)
-            if (!cached) readOnlyToolCache.set(cacheKey, result)
+            let execution = inFlightReadExecutions.get(cacheKey)
+            if (!execution) {
+              execution = Promise.resolve(readOnlyToolCache.get(cacheKey))
+                .then(async (cached) => cached || this.normalizeToolResult(await this.executeTool(toolCall, baseContext)))
+                .then((result) => {
+                  readOnlyToolCache.set(cacheKey, result)
+                  return result
+                })
+              inFlightReadExecutions.set(cacheKey, execution)
+            }
+            const result = await execution
             return { toolCall, result }
           }))
           for (const { toolCall, result } of completedBatch) {
@@ -437,6 +457,18 @@ export class AgentRunner {
           }
 
           const isDesktopAction = toolCall.name === 'mouse_control' || toolCall.name === 'keyboard_control'
+          if (toolCall.name === 'web_search' && mustReadWebPageBeforeMoreSearch) {
+            const deferredResult: CompletedToolResult = {
+              result: 'Search results already returned readable source URLs. Read a relevant result with read_web_page before issuing another web_search.',
+              isError: true,
+            }
+            toolResults.set(toolCall.id, deferredResult)
+            yield {
+              type: 'tool_result',
+              toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: deferredResult.result, isError: true },
+            }
+            continue
+          }
           if (isDesktopAction && desktopActionExecuted) {
             const deferredResult: CompletedToolResult = {
               result: 'Deferred: a desktop action already ran in this cycle. Inspect its automatic post-action screenshot and model-pool visual analysis before choosing the next desktop action.',
@@ -467,13 +499,21 @@ export class AgentRunner {
             visualAttachments,
             agentContext: this.buildModelPoolContext(messages, toolResults),
           }
-          const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
-          const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
-          const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
-          const rawResult = cached || await this.executeTool(toolCall, toolContext)
-          const result = this.normalizeToolResult(rawResult)
+          let result: CompletedToolResult
+          if (toolCall.name === TOOL_SEARCH_DEFINITION.name) {
+            const query = typeof toolCall.arguments.query === 'string' ? toolCall.arguments.query.trim() : ''
+            const matches = searchDeferredTools(query, deferredToolDefs)
+            matches.forEach((tool) => loadedDeferredToolNames.add(tool.name))
+            result = { result: formatToolSearchResult(query, matches), isError: false }
+          } else {
+            const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
+            const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
+            const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
+            const rawResult = cached || await this.executeTool(toolCall, toolContext)
+            result = this.normalizeToolResult(rawResult)
+            if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
+          }
           if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
-          if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           toolResults.set(toolCall.id, result)
           if (isDesktopAction && !result.isError) desktopActionExecuted = true
           if (result.images?.length) {
@@ -500,13 +540,32 @@ export class AgentRunner {
 
         // Append assistant tool_calls + tool results to message history
         messages = this.appendToolMessages(messages, response.toolCalls, toolResults)
+        const completedPageRead = response.toolCalls.some((toolCall) => toolCall.name === 'read_web_page' && !toolResults.get(toolCall.id)?.isError)
+        const returnedReadableSearchResult = response.toolCalls.some((toolCall) => {
+          const result = toolResults.get(toolCall.id)
+          return toolCall.name === 'web_search' && !result?.isError && /https?:\/\/\S+/i.test(result?.result || '')
+        })
+        if (completedPageRead) mustReadWebPageBeforeMoreSearch = false
+        else if (returnedReadableSearchResult && activeToolDefs.some((tool) => tool.name === 'read_web_page')) mustReadWebPageBeforeMoreSearch = true
+        latestProtocolResults = Array.from(toolResults.values())
+          .map((toolResult) => toolResult.protocol)
+          .filter((protocol): protocol is NonNullable<CompletedToolResult['protocol']> => Boolean(protocol))
+        if (loadedDeferredToolNames.size > 0) {
+          deferredToolDefs = deferredToolDefs.filter((tool) => !loadedDeferredToolNames.has(tool.name))
+          activeToolDefs = [
+            ...activeToolDefs.filter((tool) => tool.name !== TOOL_SEARCH_DEFINITION.name),
+            ...allToolDefs.filter((tool) => loadedDeferredToolNames.has(tool.name)),
+            ...(deferredToolDefs.length ? [TOOL_SEARCH_DEFINITION] : []),
+          ].filter((tool, index, tools) => tools.findIndex((candidate) => candidate.name === tool.name) === index)
+        }
 
         const nextSystemPrompt = contextManager.buildSystemPrompt(
           agentConfig,
           workspacePath,
           fileAccessGrants,
           fullFilesystemAccess,
-          allToolDefs,
+          activeToolDefs,
+          deferredToolDefs,
         )
         const currentSystemMessage = messages[0]
         const preservedSystemSuffix = currentSystemMessage?.role === 'system' && currentSystemMessage.content.startsWith(activeSystemPrompt)
@@ -517,7 +576,11 @@ export class AgentRunner {
         }
         activeSystemPrompt = nextSystemPrompt
 
-        const integrityReminder = this.buildToolIntegrityReminder(response.toolCalls, toolResults)
+        const integrityReminder = this.buildToolIntegrityReminder(
+          response.toolCalls,
+          toolResults,
+          activeToolDefs.some((tool) => tool.name === 'read_web_page'),
+        )
         if (integrityReminder) messages.push({ role: 'user', content: integrityReminder })
 
         // Tool-role messages cannot safely carry multimodal content for every
@@ -578,11 +641,35 @@ export class AgentRunner {
           }
         }
 
+        const compactedHistory = compactCompletedToolTransactions(messages)
+        messages = compactedHistory.messages
+        rollingToolEvidence = appendRollingToolEvidence(rollingToolEvidence, compactedHistory.evidence)
+        if (rollingToolEvidence && messages[0]?.role === 'system') {
+          messages[0] = {
+            ...messages[0],
+            content: this.withRollingToolEvidence(messages[0].content, rollingToolEvidence),
+          }
+        }
+
+        if (!adaptiveToolBudget) {
+          const batchSignature = response.toolCalls
+            .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`)
+            .sort()
+            .join('|')
+          // A repeated search can be deliberately rejected so the model reads
+          // a source first. Let that corrective instruction reach the next
+          // turn instead of treating it as an ordinary no-progress loop.
+          const deferredForPageRead = mustReadWebPageBeforeMoreSearch
+            && response.toolCalls.some((toolCall) => toolCall.name === 'web_search')
+          if (previousNormalToolBatches.has(batchSignature) && !deferredForPageRead) break
+          previousNormalToolBatches.add(batchSignature)
+        }
+
         // Goal steps should not blindly consume their maximum tool budget. At
         // each checkpoint the model first decides whether the evidence is
         // sufficient. The existing message history stays intact if it needs
         // another bounded block of tool calls.
-        if (adaptiveToolBudget && iteration + 1 >= nextBudgetCheck && nextBudgetCheck < maxIter) {
+        if (adaptiveToolBudget && iteration + 1 >= nextBudgetCheck && nextBudgetCheck < toolCycleLimit) {
           yield { type: 'thinking', content: `Reviewing progress after ${iteration + 1} tool cycles...` }
           const decision = yield* this.executeLLMCall([
             ...messages,
@@ -591,10 +678,10 @@ export class AgentRunner {
               content: `You have completed ${iteration + 1} model-and-tool cycles for this task. Do not call tools in this response. Decide whether the work can now be completed with the evidence already collected.\n\nReply with exactly one of:\nFINAL: followed by the concise, complete result for the user.\nCONTINUE: followed by a short reason why additional tool evidence is essential.\n\nChoose CONTINUE only when a specific unresolved fact, failed verification, or necessary change still requires tools. Do not continue merely to improve wording.`,
             },
           ], [])
-          accumulatedUsage = this.mergeUsage(accumulatedUsage, decision.usage)
+          accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, decision.usage)
           const decisionContent = decision.content.trim()
           if (/^CONTINUE\s*:/i.test(decisionContent)) {
-            nextBudgetCheck = Math.min(maxIter, nextBudgetCheck + Math.max(1, adaptiveToolBudget.extensionIterations))
+            nextBudgetCheck = Math.min(toolCycleLimit, nextBudgetCheck + Math.max(1, adaptiveToolBudget.extensionIterations))
             messages.push({ role: 'assistant', content: decisionContent })
             messages.push({
               role: 'user',
@@ -611,30 +698,29 @@ export class AgentRunner {
         }
       }
 
-      // Tool calls can legitimately take several passes, but a model must not
-      // lose all of its collected evidence merely because it did not stop
-      // calling tools by the iteration limit. Give it one final, tool-free
-      // synthesis turn so the result can be delivered without another action.
+      // Tool calls can legitimately take several passes in a Goal, but normal
+      // chat intentionally stops after its first tool batch. In both cases,
+      // give the model one final, tool-free synthesis turn so no new action can
+      // restart the loop.
       const finalVerificationNotice = pendingWriteVerifications.size > 0
         ? ` The following file writes remain unverified: ${this.formatPaths(pendingWriteVerifications)}. Do not call them correct, complete, or successfully verified; state that verification is still required.`
         : ''
-      const protocolResults = Array.from(toolResults.values()).map((toolResult) => toolResult.protocol).filter(Boolean)
-      if (protocolResults.length) {
-        messages.push({ role: 'user', content: `Structured execution protocol results (authoritative state; do not infer success from prose):\n${JSON.stringify(protocolResults).slice(0, 24_000)}` })
+      if (latestProtocolResults.length) {
+        messages.push({ role: 'user', content: `Structured execution protocol results (authoritative state; do not infer success from prose):\n${JSON.stringify(latestProtocolResults).slice(0, 24_000)}` })
       }
       messages.push({
         role: 'user',
-        content: `You have reached the ${maxIter}-iteration tool-use limit. Do not call any more tools. Using only the results already available in this conversation, provide your concise final answer now. If the evidence is incomplete, state that clearly rather than retrying a tool.${finalVerificationNotice}`,
+        content: `Tool execution is complete for this response. Using only the evidence already available in this conversation, provide the best concise final answer now. If evidence is incomplete, state the specific unverified limitation plainly and, where useful, the smallest user-facing next step. Do not mention internal tool limits, tool cycles, implementation details, or instructions.${finalVerificationNotice}`,
       })
       yield { type: 'thinking', content: 'Synthesizing the available results...' }
       const finalResponse = yield* this.executeLLMCall(messages, [])
-      accumulatedUsage = this.mergeUsage(accumulatedUsage, finalResponse.usage)
+      accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
       if (finalResponse.content.trim()) {
         yield { type: 'done', content: finalResponse.content, usage: accumulatedUsage }
         return
       }
 
-      yield { type: 'error', error: `Tool-use limit (${maxIter}) reached before the model produced a final response. Completed tool results are retained.` }
+      yield { type: 'error', error: 'The model did not produce a final answer from the completed tool results. The available evidence remains in the activity record.' }
       yield { type: 'done', content: '' }
     } catch (err: any) {
       if (this.abortController?.signal.aborted) {
@@ -702,6 +788,7 @@ export class AgentRunner {
         messages: fittedMessages,
         tools: tools.length > 0 ? tools : undefined,
         temperature: agentConfig.temperature,
+        maxTokens: MAX_AGENT_RESPONSE_TOKENS,
         stream: true,
         reasoning: agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
           ? { enabled: true, budgetTokens: 1024 }
@@ -852,7 +939,25 @@ export class AgentRunner {
       pricingMode: current.pricingMode === 'subscription' || next.pricingMode === 'subscription' ? 'subscription' : current.pricingMode || next.pricingMode,
       pricingSourceUrl: current.pricingSourceUrl || next.pricingSourceUrl,
       modelCalls: (current.modelCalls ?? 1) + (next.modelCalls ?? 1),
+      modelCallUsage: current.modelCallUsage || next.modelCallUsage,
       contextDiagnostics: next.contextDiagnostics || current.contextDiagnostics,
+    }
+  }
+
+  /** Keep the provider usage boundary for each model request as well as the aggregate. */
+  private recordModelCallUsage(total?: ChatUsage, callUsage?: ChatUsage): ChatUsage | undefined {
+    const merged = this.mergeUsage(total, callUsage)
+    if (!merged || !callUsage) return merged
+    const call = {
+      promptTokens: callUsage.promptTokens,
+      completionTokens: callUsage.completionTokens,
+      ...(callUsage.cachedTokens !== undefined ? { cachedTokens: callUsage.cachedTokens } : {}),
+      ...(callUsage.cacheMissTokens !== undefined ? { cacheMissTokens: callUsage.cacheMissTokens } : {}),
+      ...(callUsage.contextDiagnostics ? { contextDiagnostics: callUsage.contextDiagnostics } : {}),
+    }
+    return {
+      ...merged,
+      modelCallUsage: [...(total?.modelCallUsage || []), call],
     }
   }
 
@@ -873,6 +978,11 @@ export class AgentRunner {
     if (next.estimatedCost === undefined) return current.estimatedCost
     if (current.estimatedCostCurrency !== next.estimatedCostCurrency) return undefined
     return current.estimatedCost + next.estimatedCost
+  }
+
+  private withRollingToolEvidence(systemPrompt: string, evidence: string): string {
+    const existingBlock = new RegExp(`\\n*${ROLLING_TOOL_EVIDENCE_START}[\\s\\S]*?${ROLLING_TOOL_EVIDENCE_END}`, 'g')
+    return `${systemPrompt.replace(existingBlock, '').trimEnd()}\n\n${ROLLING_TOOL_EVIDENCE_START}\n${evidence}\n${ROLLING_TOOL_EVIDENCE_END}`
   }
 
   /**
@@ -1057,7 +1167,8 @@ export class AgentRunner {
 
   private buildToolIntegrityReminder(
     toolCalls: CompletedToolCall[],
-    toolResults: Map<string, CompletedToolResult>
+    toolResults: Map<string, CompletedToolResult>,
+    canReadWebPages: boolean,
   ): string | undefined {
     const failures = toolCalls
       .map((toolCall) => ({ toolCall, result: toolResults.get(toolCall.id) }))
@@ -1070,7 +1181,9 @@ export class AgentRunner {
 
     const successfulSearch = toolCalls.some((toolCall) => toolCall.name === 'web_search' && !toolResults.get(toolCall.id)?.isError)
     if (successfulSearch) {
-      return 'Research integrity notice: base current-information claims only on the returned search results or pages read in this execution. Include the relevant returned source URLs or explicitly distinguish your own inference from sourced facts.'
+      return canReadWebPages
+        ? 'Research continuation: the search result contains navigation snippets, not webpage evidence. Before another web_search or a source-backed conclusion, use read_web_page on one or more relevant returned URLs. Search again only if those pages are inaccessible, irrelevant, or reveal a specific evidence gap.'
+        : 'Research integrity notice: base current-information claims only on the returned search results or pages read in this execution. Include the relevant returned source URLs or explicitly distinguish your own inference from sourced facts.'
     }
 
     return undefined
@@ -1126,7 +1239,9 @@ export class AgentRunner {
 
     const candidates: ModelPoolEntry[] = []
     const seen = new Set<string>()
-    const router = new ModelRouter(getStorage().config.get('modelPools'), (entry) => Boolean(providerRegistry.get(entry.providerId)))
+    const providerRegistry = this.config.providerRegistry
+    if (!providerRegistry) return undefined
+    const router = new ModelRouter(this.config.modelPools || [], (entry) => Boolean(providerRegistry.get(entry.providerId)))
     for (const poolId of poolIds) {
       for (const capability of ['vision', 'image'] as const) {
         const route = router.resolve({ poolId, capability })

@@ -15,6 +15,8 @@ export type AgentOutputFontSize = 'xsmall' | 'small' | 'medium' | 'large' | 'xla
 export type AgentOutputTextEffect = 'none' | 'three-d' | 'floating' | 'crystal'
 /** Markdown document renderer selected independently from the model's output guidance. */
 export type AgentMarkdownRenderer = 'enhanced' | 'classic' | 'streamdown'
+/** Controls how much of an Agent's work-in-progress is visible in chat. */
+export type AgentProcessOutput = 'off' | 'compact' | 'detailed'
 
 export interface AgentModelCandidate {
   /** Saved model connection ID. It remains usable even when hidden from chat. */
@@ -50,6 +52,8 @@ export interface AgentConfig {
   markdownRenderer?: AgentMarkdownRenderer
   /** Request and display provider-supplied slow reasoning when supported. */
   showThinking?: boolean
+  /** User-facing execution visibility. Detailed mode also requests slow reasoning. */
+  processOutput?: AgentProcessOutput
   model: string
   providerId: string
   /** Models this agent may use for delegated work, ordered by user preference. */

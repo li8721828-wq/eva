@@ -245,6 +245,61 @@ describe('OpenAIProvider streaming tool calls', () => {
     ])
   })
 
+  it('executes complete structured tool deltas even when a gateway ends with stop', async () => {
+    async function* streamToolCall() {
+      yield {
+        choices: [{
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: 'call_stop',
+              function: { name: 'read_file', arguments: '{"path":"README.md"}' },
+            }],
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = { chat: { completions: { create: vi.fn().mockResolvedValue(streamToolCall()) } } }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model', messages: [],
+      tools: [{ name: 'read_file', description: 'Read a file.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)).toMatchObject({
+      finishReason: 'tool_calls',
+      toolCalls: [{ id: 'call_stop', name: 'read_file', arguments: '{"path":"README.md"}' }],
+    })
+  })
+
+  it('disables rejected optional gateway extensions for later requests', async () => {
+    async function* responseStream() {
+      yield { choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }
+    }
+    const invalidRequest = Object.assign(new Error('unknown parameter: stream_options'), { status: 400 })
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    const create = vi.fn()
+      .mockRejectedValueOnce(invalidRequest)
+      .mockResolvedValue(responseStream())
+      .mockResolvedValue(responseStream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+
+    for await (const _chunk of provider.chat({ model: 'test-model', messages: [] })) {
+      // Exhaust the stream.
+    }
+    for await (const _chunk of provider.chat({ model: 'test-model', messages: [] })) {
+      // Exhaust the stream.
+    }
+
+    expect(create).toHaveBeenCalledTimes(3)
+    expect(create.mock.calls[1][0]).not.toHaveProperty('stream_options')
+    expect(create.mock.calls[2][0]).not.toHaveProperty('stream_options')
+  })
+
   it('converts a complete legacy XML command call into the offered structured tool', async () => {
     async function* legacyToolCallStream() {
       yield {
@@ -367,6 +422,39 @@ describe('OpenAIProvider streaming tool calls', () => {
       finishReason: 'tool_calls',
       textToolCallEnvelope: true,
       toolCalls: [{ name: 'execute_command', arguments: '{"command":"netstat -ano | findstr \\"LISTENING\\"","timeout":30000}' }],
+    })
+  })
+
+  it('converts DeepSeek DSML file reads into structured calls with Eva parameter names', async () => {
+    async function* dsmlToolCallStream() {
+      yield {
+        choices: [{
+          delta: {
+            content: '< | | DSML | | tool_calls>< | | DSML | | invoke name="read_file">< | | DSML | | parameter name="path" string="true">src/main/ProjectTaskInfoDomainService.java< / | | DSML | | parameter>< | | DSML | | parameter name="lineStart" string="false">1< / | | DSML | | parameter>< | | DSML | | parameter name="lineEnd" string="false">120< / | | DSML | | parameter>< / | | DSML | | invoke>< | | DSML | | invoke name="read_file">< | | DSML | | parameter name="path" string="true">src/main/README.md< / | | DSML | | parameter>< / | | DSML | | invoke>< / | | DSML | | tool_calls>',
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('deepseek', 'DeepSeek', 'deepseek', { apiKey: 'test-key' })
+    ;(provider as any).client = { chat: { completions: { create: vi.fn().mockResolvedValue(dsmlToolCallStream()) } } }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'deepseek-v4-flash',
+      messages: [],
+      tools: [{ name: 'read_file', description: 'Read a file.', parameters: { type: 'object', properties: { path: { type: 'string' }, startLine: { type: 'number' }, endLine: { type: 'number' } }, required: ['path'] } }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)).toMatchObject({
+      content: '',
+      finishReason: 'tool_calls',
+      textToolCallEnvelope: true,
+      toolCalls: [
+        { name: 'read_file', arguments: '{"path":"src/main/ProjectTaskInfoDomainService.java","startLine":1,"endLine":120}' },
+        { name: 'read_file', arguments: '{"path":"src/main/README.md"}' },
+      ],
     })
   })
 

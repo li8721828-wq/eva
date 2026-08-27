@@ -1,8 +1,10 @@
-import { ipcMain, type IpcMainEvent } from 'electron'
+import { type IpcMainEvent } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { RuntimeProposalStatus } from '../../shared/types/runtime-evolution'
 import { recordActivity } from '../services/activity-log'
 import { getStorage } from '../storage'
+import { startGoalTaskRun } from './task'
 
 function implementationGoal(proposal: import('../../shared/types/runtime-evolution').RuntimeEvolutionProposal): string {
   return [
@@ -41,7 +43,7 @@ export function registerRuntimeProposalHandlers(): void {
     if (!agentId) throw new Error('No agent is available to implement the approved proposal.')
 
     const proposal = await getStorage().runtimeProposals.beginImplementation(id, conversationId)
-    ipcMain.emit(IPC.TASK_GOAL_START, { sender: event.sender } as IpcMainEvent, {
+    await startGoalTaskRun({ sender: event.sender } as IpcMainEvent, {
       conversationId,
       agentId,
       goal: implementationGoal(proposal),

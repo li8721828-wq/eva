@@ -3,8 +3,9 @@ import type { AgentConfig } from '../../shared/types/agent'
 import type { ChatMessage, ContextDiagnostics } from '../../shared/types/conversation'
 import { CONTEXT_WINDOW_TOKENS } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
-import { buildSharedEnvironmentPrompt, normalizeEnvironmentRules } from '../services/environment-profile-service'
-import { getStorage } from '../storage'
+import type { EnvironmentRulesConfig } from '../../shared/types/environment-rules'
+import { buildSharedEnvironmentPrompt } from '../services/environment-profile-service'
+import { buildToolIndex } from './tool-dispatch'
 
 const COMPRESSED_HISTORY_MAX_CHARS = 8_000
 const OLD_MESSAGE_MAX_CHARS = 520
@@ -55,11 +56,15 @@ export interface ContextOptions {
   fullFilesystemAccess?: boolean
   maxContextTokens?: number
   tools: ToolDefinition[]
+  /** Deferred tools shown as a compact catalog for on-demand tool_search. */
+  deferredTools?: ToolDefinition[]
 }
 
 export interface ContextManagerOptions {
   /** Bounded historical reference supplied by the Agent OS memory store. */
   durableMemory?: string
+  /** Shared environment policy supplied by the application composition root. */
+  environmentRules?: EnvironmentRulesConfig
 }
 
 /**
@@ -102,6 +107,11 @@ export class ContextManager {
 
   getDurableMemory(): string {
     return this.options.durableMemory?.trim() || ''
+  }
+
+  /** A Goal step starts a fresh transcript but keeps the machine policy. */
+  createStepContext(): ContextManager {
+    return new ContextManager({ environmentRules: this.options.environmentRules })
   }
 
   getLastDiagnostics(): ContextDiagnostics | undefined {
@@ -168,13 +178,13 @@ export class ContextManager {
    * 3. Trim to fit within the context window (most recent messages first)
    */
   buildContext(options: ContextOptions): ChatMessageInput[] {
-    const { agentConfig, messages, workspacePath, fileAccessGrants, fullFilesystemAccess, tools } = options
+    const { agentConfig, messages, workspacePath, fileAccessGrants, fullFilesystemAccess, tools, deferredTools } = options
     const maxTokens = options.maxContextTokens ?? CONTEXT_WINDOW_TOKENS
     // Progress notes are for the user to follow execution. They are not new
     // task evidence and should not consume the model's working context.
     const modelMessages = messages.filter((message) => !message.progressKind)
 
-    const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools)
+    const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools, deferredTools)
     const memory = this.options.durableMemory?.trim()
     const promptBeforeHistory = memory ? `${baseSystemPrompt}\n\n${memory}` : baseSystemPrompt
     const rawHistoryBudget = Math.max(0, maxTokens - this.estimateTokens(promptBeforeHistory) - CONTEXT_SAFETY_TOKENS)
@@ -323,7 +333,8 @@ export class ContextManager {
     workspacePath: string,
     fileAccessGrants: FileAccessGrant[] | undefined,
     fullFilesystemAccess: boolean | undefined,
-    tools: ToolDefinition[]
+    tools: ToolDefinition[],
+    deferredTools?: ToolDefinition[],
   ): string {
     const parts: string[] = []
 
@@ -331,18 +342,19 @@ export class ContextManager {
 
     parts.push('')
     parts.push('--- Eva Platform Capabilities ---')
+    const capabilityTools = tools
     const internalCapabilities: string[] = []
-    if (tools.some((tool) => tool.name === 'delegate_to_team')) internalCapabilities.push('Team orchestration: for complex work, call delegate_to_team directly. The team leader may compose task-scoped custom specialists when the saved agents do not fit; each gets isolated context, an appropriate configured model, and only allowed tools. Do not ask the user to switch modes.')
-    if (tools.some((tool) => tool.name === 'run_task')) internalCapabilities.push('Task execution: call run_task for a bounded implementation or investigation that can be carried out by an isolated worker with the current permissions.')
-    if (tools.some((tool) => tool.name === 'run_goal')) internalCapabilities.push('Goal execution: call run_goal only for a genuinely complex, measurable outcome with at least 5 independent execution steps and progress evaluation. Include the estimatedSteps argument.')
-    if (tools.some((tool) => tool.name === 'manage_goal')) internalCapabilities.push('Goal control: call manage_goal to inspect, pause, continue, or cancel this conversation\'s Goal. Use it whenever the user asks to control Goal work; do not redirect them to Task Center as a substitute.')
-    if (tools.some((tool) => tool.name === 'create_execution_plan')) internalCapabilities.push('Execution planning: call create_execution_plan when a structured plan is needed before work.')
-    if (tools.some((tool) => tool.name === 'apply_spec_template')) internalCapabilities.push('Specification templates: call apply_spec_template when an existing template provides useful structure.')
-    if (tools.some((tool) => tool.name === 'delegate_to_model_pool')) internalCapabilities.push('Model pool delegation: keep ownership of the user request, then call delegate_to_model_pool for a bounded independent analysis, specialist draft, review, or multimodal task. The selected pool automatically receives the owning Agent\'s recent task context, tool results, and available images. Vision/Image routes receive those images by default; text routes receive the same context as text. Give the delegated model the desired outcome, verify its result against available evidence, and synthesize the final response yourself.')
+    if (capabilityTools.some((tool) => tool.name === 'delegate_to_team')) internalCapabilities.push('Team orchestration: for complex work, call delegate_to_team directly. The team leader may compose task-scoped custom specialists when the saved agents do not fit; each gets isolated context, an appropriate configured model, and only allowed tools. Do not ask the user to switch modes.')
+    if (capabilityTools.some((tool) => tool.name === 'run_task')) internalCapabilities.push('Task execution: call run_task for a bounded implementation or investigation that can be carried out by an isolated worker with the current permissions.')
+    if (capabilityTools.some((tool) => tool.name === 'run_goal')) internalCapabilities.push('Goal execution: call run_goal only for a genuinely complex, measurable outcome with at least 5 independent execution steps and progress evaluation. Include the estimatedSteps argument.')
+    if (capabilityTools.some((tool) => tool.name === 'manage_goal')) internalCapabilities.push('Goal control: call manage_goal to inspect, pause, continue, or cancel this conversation\'s Goal. Use it whenever the user asks to control Goal work; do not redirect them to Task Center as a substitute.')
+    if (capabilityTools.some((tool) => tool.name === 'create_execution_plan')) internalCapabilities.push('Execution planning: call create_execution_plan when a structured plan is needed before work.')
+    if (capabilityTools.some((tool) => tool.name === 'apply_spec_template')) internalCapabilities.push('Specification templates: call apply_spec_template when an existing template provides useful structure.')
+    if (capabilityTools.some((tool) => tool.name === 'delegate_to_model_pool')) internalCapabilities.push('Model pool delegation: keep ownership of the user request, then call delegate_to_model_pool for a bounded independent analysis, specialist draft, review, or multimodal task. The selected pool automatically receives the owning Agent\'s recent task context, tool results, and available images. Vision/Image routes receive those images by default; text routes receive the same context as text. Give the delegated model the desired outcome, verify its result against available evidence, and synthesize the final response yourself.')
     if (internalCapabilities.length) {
       parts.push('Internal capabilities available to this conversation:')
       internalCapabilities.forEach((capability) => parts.push(`- ${capability}`))
-      if (tools.some((tool) => tool.name === 'run_goal')) {
+      if (capabilityTools.some((tool) => tool.name === 'run_goal')) {
         parts.push('Execution policy: use run_goal only when the outcome is genuinely complex, long-lived, and requires at least 5 independent execution steps with checkpointed progress and adaptation. You must include estimatedSteps (an integer from 5 to 50). Never use it for one-to-four-step work, ordinary research, file changes, or verification; use the available tools directly instead. Calling it asks the user for confirmation before any Goal starts. If Goal is declined, continue the request normally without asking again during this turn.')
       }
     }
@@ -351,6 +363,13 @@ export class ContextManager {
     parts.push('')
     parts.push('--- Response Presentation ---')
     parts.push(this.buildOutputPresentationGuidance(agentConfig))
+    if (agentConfig.processOutput === 'off') {
+      parts.push('Do not emit eva-progress markup or routine process commentary. Give the user the final answer only.')
+    } else if (agentConfig.processOutput === 'compact') {
+      parts.push('For work with material progress, you may emit at most three concise <eva-progress kind="thinking|finding|action|issue">user-facing updates</eva-progress> tags. Each must state a concrete finding, decision, or changed plan that helps the user understand the work. Never emit generic execution status, tool names, repeated progress, or commentary such as “reviewing results” or “adjusting the next step”. It is better to emit no update than a low-information update.')
+    } else {
+      parts.push('Detailed process output is enabled. When this provider returns genuine slow-reasoning content, it will be shown while the response is in progress. Do not fabricate reasoning or fill the process with tool status. You may emit at most three <eva-progress kind="thinking|finding|action|issue">user-facing updates</eva-progress> tags, each limited to a concrete finding, decision, or changed plan.')
+    }
     parts.push('When tools are needed, invoke only the structured tools supplied below. Do not emit XML/HTML tool tags, command markup, or tentative tool results as user-visible prose. Do not claim a command, search, file action, or external lookup succeeded until its tool result confirms it.')
     parts.push('')
     parts.push('--- Evidence and Action Integrity ---')
@@ -359,11 +378,12 @@ export class ContextManager {
     parts.push('For current or web-derived claims, use only sources returned in this execution. If web search or page reading fails, say that current information could not be verified; you may offer clearly-labelled general/offline reasoning, but never present it as current research.')
     parts.push('For file changes, do not say the saved content is correct or complete until it has been independently checked with read_file or an equivalent inspection. If verification is unavailable, say the write is unverified.')
     parts.push('When the required capability is absent, do not work around it by guessing. State the blocked action, the reason, and the smallest next step: grant a tool, configure a service, provide a source, or approve an action.')
-    parts.push('Tools are atomic operations, not workflow controllers. Choose the tool sequence yourself from the task and previous evidence. Use project metadata only as an optional candidate locator; use search_code for exact or broad occurrence coverage and read_file for source evidence. Do not treat any index result as a conclusion.')
-    if (tools.some((tool) => tool.name === 'write_terminal')) {
+    parts.push('Each available tool is an atomic operation. Call structured tools directly. Batch only independent read-only calls; after a result can change the next decision, inspect it before calling another tool. Keep writes, terminal, browser, desktop, and other high-risk calls separate and verify their result before continuing.')
+    parts.push('For web research, web_search returns navigation snippets, not page evidence. After a successful search, read one to three relevant returned URLs with read_web_page before making source-backed claims or issuing another web_search. Repeat search only when those pages are inaccessible, irrelevant, or expose a specific material evidence gap. For a broad current-events or market overview, make one diverse initial batch of independent searches, then inspect the best returned sources and synthesize. Do not expose routine search-planning commentary such as “search quality is low” as a user-facing update.')
+    if (capabilityTools.some((tool) => tool.name === 'write_terminal')) {
       parts.push('Eva controlled terminal protocol: use execute_command for ordinary command work; it runs in the background and returns output without opening the terminal panel. Use open_terminal only for an interactive or externally connected session (such as SSH, a database console, or a remote computer) when the user needs to see or type in that live session. write_terminal only types into the controlled shell and does not reveal it; call open_terminal first when visibility is needed. Do not open the terminal merely for routine filesystem reads/writes, scripts, builds, installations, or checks. Do not use desktop_observe, mouse_control, or keyboard_control merely to operate Eva\'s own terminal.')
     }
-    if (tools.some((tool) => tool.name === 'desktop_observe') && tools.some((tool) => tool.name === 'mouse_control')) {
+    if (capabilityTools.some((tool) => tool.name === 'desktop_observe') && capabilityTools.some((tool) => tool.name === 'mouse_control')) {
       parts.push('--- Visible Desktop Control Protocol ---')
       parts.push('Use this protocol only when the user explicitly requests desktop control, mouse control, keyboard control, or a visible on-screen operation. Do not infer desktop control merely because a normal request could also be completed through a visible application; in ordinary tasks, choose the most appropriate permitted tool yourself, including execute_command.')
       parts.push('For an explicitly requested desktop-control task, use a strict closed loop: desktop_observe -> inspect the resulting screenshot and structured controls -> perform exactly one mouse_control or keyboard_control action -> inspect its automatic post-action screenshot and structured result -> choose the next action or correction. Do not issue a second desktop action until the previous result has been observed. The agent runtime enforces this one-action cycle. If visible control is blocked or unreliable, explain the observed limitation and ask the user before switching to a command, browser automation, or another non-visible fallback. Never silently substitute a background/system action for a requested visible action.')
@@ -371,7 +391,7 @@ export class ContextManager {
       parts.push('desktop_observe includes a point-in-time screenshot of the complete visible virtual desktop across all displays. Coordinates are native virtual-desktop pixels: never scale coordinates from a resized chat preview, and never send a point outside the returned screen bounds. Use that screenshot to understand the whole screen, but treat structured controls as limited to the foreground window and taskbars. Act only on controls returned by the most recent desktop_observe result. Prefer semantic taskbar or foreground controls over coordinates. Do not close, minimize, or rearrange unrelated applications just to reveal another one. Do not claim a visible action occurred unless mouse_control or keyboard_control returned a verified result.')
       parts.push('If the required target is not visible, input is unavailable, or the visible result cannot be verified, stop and report the limitation. Wait for the user\'s approval before using any non-visible fallback.')
     }
-    if (tools.some((tool) => tool.name === 'browser_control')) {
+    if (capabilityTools.some((tool) => tool.name === 'browser_control')) {
       parts.push('--- Browser Control Protocol ---')
       parts.push('browser_control is a general browser primitive. For ordinary web pages, use observe plus DOM selectors, the accessibility tree, and page-supported browser APIs; this is semantic access and does not require screenshots. Interact only with selectors or accessibility nodes returned by observe. Canvas is only a pixel surface unless the page exposes an accessibility tree, DOM proxy, or an application-specific API. For a canvas page, first look for those semantic interfaces. Call observe_visual and use screenshot-relative canvas coordinates only when no semantic interface is available; it is a visual fallback, not the default browser path. Re-observe after every meaningful visual change; never guess coordinates or reuse expired observations. Never read or fill password fields, bypass login/CAPTCHA/MFA, or submit a form without explicit user approval and confirmSubmit: true. form_fill_workflow is a separate higher-level workflow and must not be conflated with browser_control.')
     }
@@ -395,14 +415,10 @@ export class ContextManager {
     // prompt caching can reuse it across turns instead of missing every second.
     parts.push(`Current date: ${new Date().toISOString().slice(0, 10)}`)
 
-    try {
-      const sharedEnvironment = buildSharedEnvironmentPrompt(normalizeEnvironmentRules(getStorage().config.get('environmentRules')))
-      if (sharedEnvironment) {
-        parts.push('')
-        parts.push(sharedEnvironment)
-      }
-    } catch {
-      // Tests and isolated construction can run before application storage exists.
+    const sharedEnvironment = buildSharedEnvironmentPrompt(this.options.environmentRules)
+    if (sharedEnvironment) {
+      parts.push('')
+      parts.push(sharedEnvironment)
     }
 
     if (tools.length > 0) {
@@ -411,6 +427,12 @@ export class ContextManager {
       for (const tool of tools) {
         parts.push(`- ${tool.name}: ${tool.description}`)
       }
+    }
+    if (deferredTools?.length) {
+      parts.push('')
+      parts.push('--- Deferred Tool Catalog ---')
+      parts.push(buildToolIndex(deferredTools))
+      parts.push('Tool definitions in this catalog are not loaded yet. Call tool_search with a concrete capability when one is needed. Up to five matching tools will be loaded and remain available for later turns. Do not call tool_search for a tool already listed under Available Tools.')
     }
 
     const defaultPrompt = parts.join('\n')

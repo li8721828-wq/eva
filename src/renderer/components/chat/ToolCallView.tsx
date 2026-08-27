@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { ChevronRight, FileCode, Terminal, Search, Loader2, CheckCircle2, XCircle, Wrench, ExternalLink } from 'lucide-react'
 
 function getToolIcon(name: string) {
+  if (name === 'dispatch_tools') return <Wrench className="h-3.5 w-3.5" />
   if (name.includes('file') || name.includes('read') || name.includes('write'))
     return <FileCode className="h-3.5 w-3.5" />
   if (name.includes('execute') || name.includes('terminal') || name.includes('command'))
@@ -14,6 +15,17 @@ function getToolIcon(name: string) {
 }
 
 function getToolLabel(toolCall: ToolCall): { title: string; detail?: string; resultCount?: number } {
+  if (toolCall.name === 'dispatch_tools') {
+    const calls = Array.isArray(toolCall.arguments.calls) ? toolCall.arguments.calls : []
+    const names = Array.from(new Set(calls.flatMap((call) => typeof call === 'object' && call && typeof (call as Record<string, unknown>).name === 'string'
+      ? [(call as Record<string, unknown>).name as string]
+      : [])))
+    return {
+      title: '工具批次',
+      detail: names.length ? `${calls.length} 项：${names.slice(0, 3).join('、')}${names.length > 3 ? '…' : ''}` : undefined,
+    }
+  }
+
   if (toolCall.name === 'delegate_to_model_pool') {
     const poolId = typeof toolCall.arguments.poolId === 'string' ? toolCall.arguments.poolId : ''
     const capability = typeof toolCall.arguments.capability === 'string' ? toolCall.arguments.capability : ''
@@ -76,6 +88,15 @@ function formatArgumentValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
+function dispatchCallSummary(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const call = value as Record<string, unknown>
+  const name = typeof call.name === 'string' ? call.name : ''
+  const id = typeof call.id === 'string' ? call.id : ''
+  if (!name) return undefined
+  return id ? `${name} (${id})` : name
+}
+
 export interface ToolCallViewProps {
   toolCall: ToolCall
   className?: string
@@ -86,75 +107,13 @@ export interface ToolCallGroupViewProps {
   className?: string
 }
 
-function operationKey(toolCall: ToolCall): string {
-  return `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
-}
-
 export function ToolCallGroupView({ toolCalls, className }: ToolCallGroupViewProps) {
-  const [expanded, setExpanded] = useState(false)
-  const groupedCalls = Array.from(toolCalls.reduce((groups, toolCall) => {
-    const key = operationKey(toolCall)
-    const current = groups.get(key)
-    if (current) {
-      current.count += 1
-      if (toolCall.isError || !current.toolCall.result) current.toolCall = toolCall
-    } else {
-      groups.set(key, { toolCall, count: 1 })
-    }
-    return groups
-  }, new Map<string, { toolCall: ToolCall; count: number }>()).values())
-  const repeatedCount = toolCalls.length - groupedCalls.length
-
-  const researchTools = toolCalls.filter((toolCall) => toolCall.name === 'web_search' || toolCall.name === 'read_web_page')
-  const isResearchOnly = researchTools.length === toolCalls.length
-  const completedCount = toolCalls.filter((toolCall) => Boolean(toolCall.result) && !toolCall.isError).length
-  const errorCount = toolCalls.filter((toolCall) => toolCall.isError).length
-  const runningCount = toolCalls.length - completedCount - errorCount
-  const activeTool = [...toolCalls].reverse().find((toolCall) => !toolCall.result && !toolCall.isError)
-  const activeLabel = activeTool ? getToolLabel(activeTool) : null
-  const searchCount = toolCalls.filter((toolCall) => toolCall.name === 'web_search').length
-  const pageCount = toolCalls.filter((toolCall) => toolCall.name === 'read_web_page').length
-  const status = errorCount > 0
-    ? `${errorCount} needs attention`
-    : runningCount > 0
-      ? `${runningCount} in progress`
-      : `${completedCount} completed`
-  const detail = isResearchOnly
-    ? `${toolCalls.length} actions${searchCount ? ` · ${searchCount} searches` : ''}${pageCount ? ` · ${pageCount} pages` : ''}`
-    : `${toolCalls.length} actions`
-  const displayDetail = repeatedCount > 0
-    ? `${groupedCalls.length} unique action${groupedCalls.length === 1 ? '' : 's'} - ${repeatedCount} repeated call${repeatedCount === 1 ? '' : 's'} merged`
-    : detail
+  const isRunning = toolCalls.some((toolCall) => !toolCall.result && !toolCall.isError)
+  if (!isRunning) return null
 
   return (
-    <div className={cn('tool-call-group inline-flex max-w-full flex-col', className)}>
-      <button
-        onClick={() => setExpanded((value) => !value)}
-        className="tool-call-summary flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors"
-        aria-expanded={expanded}
-      >
-        <ChevronRight className={cn('h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform', expanded && 'rotate-90')} />
-        <span className="text-zinc-500">
-          {isResearchOnly ? <Search className="h-3.5 w-3.5" /> : <Wrench className="h-3.5 w-3.5" />}
-        </span>
-        <span className="text-sm font-medium text-zinc-700">{activeLabel?.title || (isResearchOnly ? 'Research activity' : 'Tool activity')}</span>
-        <span className="min-w-0 truncate text-xs text-zinc-500">{activeLabel?.detail || displayDetail}</span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-zinc-500">
-          {activeTool && <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />}
-          {status}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="tool-call-group__details mt-1.5 ml-4 space-y-1 pl-3 pb-1">
-          {groupedCalls.map(({ toolCall, count }) => (
-            <div key={toolCall.id} className="flex min-w-0 items-start gap-2">
-              <ToolCallView toolCall={toolCall} className="min-w-0 flex-1" />
-              {count > 1 && <span className="mt-1.5 shrink-0 rounded-full bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-500">x{count}</span>}
-            </div>
-          ))}
-        </div>
-      )}
+    <div className={cn('tool-execution-status', className)} role="status" aria-live="polite">
+      <span className="tool-execution-status__text">正在执行 . . .</span>
     </div>
   )
 }
@@ -227,6 +186,21 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
                   </li>
                 ))}
               </ol>
+            </>
+          ) : toolCall.name === 'dispatch_tools' && Array.isArray(toolCall.arguments.calls) ? (
+            <>
+              <div className="text-xs text-zinc-500">本批工具</div>
+              <ul className="space-y-1 text-sm text-zinc-600">
+                {toolCall.arguments.calls
+                  .map(dispatchCallSummary)
+                  .filter((summary): summary is string => Boolean(summary))
+                  .map((summary, index) => <li key={`${summary}-${index}`}>{summary}</li>)}
+              </ul>
+              {toolCall.result && (
+                <div className={cn('tool-call-result', toolCall.isError && 'tool-call-result--error')}>
+                  {toolCall.result}
+                </div>
+              )}
             </>
           ) : (
             <>

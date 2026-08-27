@@ -18,12 +18,71 @@ const BLENDER_TOOLS = new Set(['blender_inspect_scene', 'blender_run_script', 'b
 const ORCHESTRATION_TOOLS = new Set(['delegate_to_team', 'delegate_to_model_pool', 'run_task', 'run_goal', 'manage_goal', 'create_execution_plan', 'apply_spec_template'])
 const WEB_TOOLS = new Set(['web_search', 'read_web_page'])
 
+export const TOOL_SEARCH_DEFINITION: ToolDefinition = {
+  name: 'tool_search',
+  description: 'Find and load tools from the deferred tool catalog. Use this only when the required capability is not in the currently loaded tools. Returns up to five matching tools that remain available in later turns.',
+  parameters: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Capability or task to find, for example "search public web" or "inspect Blender scene".' },
+    },
+    required: ['query'],
+  },
+}
+
+/** Claude Code keeps a small set of core tools loaded and defers the rest. */
+export const CORE_TOOL_NAMES = new Set([
+  'read_file',
+  'write_file',
+  'edit_file',
+  'list_directory',
+  'search_files',
+  'execute_command',
+])
+const TOOL_SEARCH_MAX_RESULTS = 5
+const TOOL_SEARCH_UPFRONT_LIMIT = 10
+
 function byNames(available: ToolDefinition[], names: Set<string>): ToolDefinition[] {
   return available.filter((tool) => names.has(tool.name))
 }
 
 function includesAny(value: string, pattern: RegExp): boolean {
   return pattern.test(value)
+}
+
+export interface DeferredToolState {
+  initial: ToolDefinition[]
+  deferred: ToolDefinition[]
+}
+
+export function createDeferredToolState(availableTools: ToolDefinition[]): DeferredToolState {
+  if (availableTools.length <= TOOL_SEARCH_UPFRONT_LIMIT) return { initial: availableTools, deferred: [] }
+  const initial = availableTools.filter((tool) => CORE_TOOL_NAMES.has(tool.name))
+  const deferred = availableTools.filter((tool) => !CORE_TOOL_NAMES.has(tool.name))
+  return {
+    initial: [...initial, ...(deferred.length ? [TOOL_SEARCH_DEFINITION] : [])],
+    deferred,
+  }
+}
+
+export function searchDeferredTools(query: string, definitions: ToolDefinition[], limit = TOOL_SEARCH_MAX_RESULTS): ToolDefinition[] {
+  const terms = query.toLocaleLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter((term) => term.length > 1)
+  if (!terms.length) return []
+  return definitions
+    .map((definition, index) => {
+      const haystack = `${definition.name} ${definition.description}`.toLocaleLowerCase()
+      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? (definition.name.toLocaleLowerCase().includes(term) ? 3 : 1) : 0), 0)
+      return { definition, score, index }
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, limit)
+    .map((entry) => entry.definition)
+}
+
+export function formatToolSearchResult(query: string, matches: ToolDefinition[]): string {
+  if (!matches.length) return `No deferred tools matched "${query}". Try a concrete capability or tool name.`
+  return `Loaded ${matches.length} tool(s) for "${query}":\n${matches.map((tool) => `- ${tool.name}: ${tool.description}`).join('\n')}`
 }
 
 export interface ToolLoadingPlan {

@@ -121,7 +121,19 @@ export interface ChatUsage {
   pricingSourceUrl?: string
   /** Number of model calls that contributed to this response. */
   modelCalls?: number
+  /** Provider-reported token usage for each model request within this response. */
+  modelCallUsage?: ModelCallUsage[]
   /** Local context accounting recorded immediately before the latest model call. */
+  contextDiagnostics?: ContextDiagnostics
+}
+
+/** Usage boundary for one provider request made while producing an assistant reply. */
+export interface ModelCallUsage {
+  promptTokens: number
+  completionTokens: number
+  cachedTokens?: number
+  cacheMissTokens?: number
+  /** Local context accounting recorded immediately before this request. */
   contextDiagnostics?: ContextDiagnostics
 }
 

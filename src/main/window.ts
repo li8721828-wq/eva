@@ -3,6 +3,7 @@ import path from 'path'
 import { is } from '@electron-toolkit/utils'
 import { hasActiveDesktopControlSession } from './tools/desktop-observation-store'
 import { disposeDesktopControlOverlay } from './services/desktop-control-overlay'
+import { isSafeExternalUrl } from './services/external-url-policy'
 
 let isQuitting = false
 
@@ -30,7 +31,7 @@ export function createMainWindow(): BrowserWindow {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   })
 
@@ -53,9 +54,9 @@ export function createMainWindow(): BrowserWindow {
     mainWindow.setTitle(windowTitle)
   })
 
-  // Open external links in default browser
+  // Open only explicit web/mail links in the default browser.
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (isSafeExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
   })
 
@@ -65,6 +66,12 @@ export function createMainWindow(): BrowserWindow {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
   }
+
+  // Register after the initial app document has been requested. Subsequent
+  // renderer navigation is never a valid application action.
+  mainWindow.webContents.on('will-navigate', (event) => {
+    event.preventDefault()
+  })
 
   return mainWindow
 }

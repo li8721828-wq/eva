@@ -1027,7 +1027,12 @@ html, body, #root {
 
 @media (prefers-reduced-motion: reduce) {
   .text-effect-preview--floating,
-  .chat-message-markdown--effect-floating :is(h1, h2, h3, h4) { animation: none; }
+  .chat-message-markdown--effect-floating :is(h1, h2, h3, h4),
+  .tool-execution-status__text {
+    animation: none;
+    color: #8b5cf6;
+    background: none;
+  }
 
   .agent-card,
   .agent-card:hover,
@@ -1375,6 +1380,43 @@ html, body, #root {
   box-shadow: none;
   backdrop-filter: none;
   padding-top: 0.25rem;
+}
+
+.tool-execution-status {
+  min-height: 28px;
+  padding: 0.25rem 0;
+  font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: 0.015em;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+.tool-execution-status__text {
+  display: inline-block;
+  color: transparent;
+  background: linear-gradient(
+    100deg,
+    #a5afc0 0%,
+    #a5afc0 25%,
+    #a78bfa 39%,
+    #8b5cf6 47%,
+    #ddd6fe 53%,
+    #8b5cf6 59%,
+    #a78bfa 67%,
+    #a5afc0 81%,
+    #a5afc0 100%
+  );
+  background-size: 260% 100%;
+  background-position: 100% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: tool-execution-sweep 3.4s linear infinite;
+}
+
+@keyframes tool-execution-sweep {
+  0%, 20% { background-position: 100% 0; }
+  76%, 100% { background-position: 0 0; }
 }
 
 .tool-call-summary {

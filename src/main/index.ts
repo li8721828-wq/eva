@@ -3,14 +3,12 @@ import { createApplicationMenu, createMainWindow } from './window'
 import { registerAllIpcHandlers } from './ipc'
 import { recoverQueuedTasks } from './ipc/task'
 import { initializeStorage, getStorage } from './storage'
-import { FileServiceImpl } from './services/file-service'
-import { TerminalServiceImpl } from './services/terminal-service'
-import { createToolRegistry } from './tools'
 import { providerRegistry } from './providers'
 import { setupGlobalErrorHandlers } from './utils/error-handler'
 import { QqRemoteBridge } from './services/qq-remote-bridge'
 import { registerQqRemoteHandlers } from './ipc/qq-remote'
-import { ProjectIndexService } from './services/project-index-service'
+import { registerTrustedRenderer } from './ipc/trusted-ipc'
+import { createApplicationServices } from './services/application-services'
 import { LocalSearxngService } from './services/local-searxng-service'
 import { applyNetworkConfig } from './services/network-settings-service'
 
@@ -32,39 +30,16 @@ app.whenReady().then(async () => {
   // Center instead of rendering a stale task as still running.
   await getStorage().taskRuns.markRunningAsInterrupted()
 
-  // 2. Instantiate core services
-  const fileService = new FileServiceImpl()
-  const terminalService = new TerminalServiceImpl()
-  const projectIndexService = new ProjectIndexService(getStorage().projectIndexes, getStorage().workspaces)
+  // 2. Assemble all long-lived dependencies before exposing renderer IPC.
+  const services = createApplicationServices(getStorage(), providerRegistry)
 
-  // 3. Create and populate tool registry
-  const toolRegistry = createToolRegistry(projectIndexService, providerRegistry)
+  // 3. Create the trusted renderer before registering renderer-facing IPC.
+  createApplicationMenu()
+  mainWindow = createMainWindow()
+  registerTrustedRenderer(mainWindow.webContents)
 
-  // 4. Load provider configs and register providers
-  const providerConfigs = getStorage().config.getProviders()
-  for (const cfg of providerConfigs) {
-    if (cfg.apiKey) {
-      providerRegistry.register({
-        id: cfg.id,
-        name: cfg.name,
-        type: cfg.type,
-        apiKey: cfg.apiKey,
-        baseUrl: cfg.baseUrl,
-        models: [],
-        defaultModel: cfg.defaultModel || '',
-        isEnabled: true,
-      })
-    }
-  }
-
-  // 5. Register all IPC handlers with service references
-  registerAllIpcHandlers({
-    fileService,
-    terminalService,
-    toolRegistry,
-    providerRegistry,
-    projectIndexService,
-  })
+  // 4. Register all IPC handlers with explicit service references.
+  registerAllIpcHandlers(services)
 
   // NSIS invokes this once after the application files are copied to disk.
   // Failure is deliberately isolated from normal Eva startup because Docker
@@ -81,21 +56,16 @@ app.whenReady().then(async () => {
   }
 
   const qqRemoteBridge = new QqRemoteBridge({
-    fileService,
-    terminalService,
-    toolRegistry,
-    providerRegistry,
+    storage: services.storage,
+    fileService: services.fileService,
+    terminalService: services.terminalService,
+    toolRegistry: services.toolRegistry,
+    providerRegistry: services.providerRegistry,
   })
   registerQqRemoteHandlers(qqRemoteBridge)
 
-  // 6. Set the native menu before creating the main window
-  createApplicationMenu()
-
-  // 7. Create the main window
-  mainWindow = createMainWindow()
-
   // Index metadata in the background. Subsequent edits update only changed files.
-  void projectIndexService.bootstrap(await getStorage().workspaces.list())
+  void services.projectIndexService?.bootstrap(await getStorage().workspaces.list())
 
   // Start work that was queued before execution began after the renderer has
   // had a chance to subscribe to task streams. Interrupted work remains in
@@ -111,6 +81,7 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createMainWindow()
+      registerTrustedRenderer(mainWindow.webContents)
     }
   })
 })

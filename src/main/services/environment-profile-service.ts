@@ -11,7 +11,7 @@ const MAX_TOKEN_BUDGET = 1_200
 export function normalizeEnvironmentRules(value: unknown): EnvironmentRulesConfig {
   const candidate = value as Partial<EnvironmentRulesConfig> | undefined
   const maxTokens = Math.max(MIN_TOKEN_BUDGET, Math.min(MAX_TOKEN_BUDGET, Number(candidate?.maxTokens) || DEFAULT_ENVIRONMENT_RULES.maxTokens))
-  const normalizedRules = Array.isArray(candidate?.rules)
+  const normalizedRules: EnvironmentRule[] = Array.isArray(candidate?.rules)
     ? candidate.rules
       .filter((rule): rule is EnvironmentRule => Boolean(rule && typeof rule.id === 'string' && typeof rule.title === 'string' && typeof rule.content === 'string'))
       .map((rule) => ({

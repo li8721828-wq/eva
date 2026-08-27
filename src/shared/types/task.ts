@@ -107,7 +107,13 @@ export interface GoalStepHandoff {
   step: string
   acceptanceCriteria: string[]
   workspacePath?: string
+  /** Bounded durable context containing confirmed parent-task facts and constraints. */
+  parentContext?: string
+  /** User guidance received while the Goal is running. Newer guidance wins on conflict. */
+  userGuidance: string[]
   dependencyResults: Array<{ stepId: string; description: string; result: string }>
+  /** Failed or cancelled upstream work that must not be assumed successful. */
+  upstreamIssues: Array<{ stepId: string; description: string; status: 'failed' | 'cancelled'; detail: string }>
 }
 
 export interface GoalProgress {

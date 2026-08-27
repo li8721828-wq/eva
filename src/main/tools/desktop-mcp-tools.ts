@@ -114,7 +114,6 @@ const desktopObserveTool: ToolExecutor = {
           kind: 'observe',
           summary: `Observed ${snapshot.activeWindow.title || snapshot.activeWindow.process || 'foreground window'}${snapshot.controls ? ` with ${snapshot.controlCount || 0} accessible controls` : ''}.`,
           observationId: observation.id,
-          revision: observation.revision,
         })
       }
       return {

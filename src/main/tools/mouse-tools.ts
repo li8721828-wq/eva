@@ -6,6 +6,7 @@ import {
   storeDesktopObservation,
   DESKTOP_OBSERVATION_TTL_MS,
   type DesktopControl,
+  type DesktopBounds,
   type DesktopObservation,
 } from './desktop-observation-store'
 import { observeVisibleDesktop } from './desktop-mcp-tools'
@@ -120,7 +121,7 @@ const mouseControlTool: ToolExecutor = {
       }
 
       if (action === 'screen_info') {
-        const report = await runMouseCommand({ action, button })
+        const report = await runMouseCommand({ action, button, pacing })
         return `Screen bounds: left ${report.screen.left}, top ${report.screen.top}, width ${report.screen.width}, height ${report.screen.height}. Cursor: ${report.cursor.x}, ${report.cursor.y}.`
       }
 

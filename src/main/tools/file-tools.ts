@@ -1,5 +1,5 @@
 import path from 'path'
-import type { ToolExecutor, ToolContext } from './index'
+import { createExecutionEnvelope, type ToolExecutor, type ToolContext } from './index'
 
 export function createFileTools(): ToolExecutor[] {
   return [readFileTool, editFileTool, writeFileTool, listDirectoryTool, searchFilesTool, fileInfoTool]
@@ -112,7 +112,7 @@ const listDirectoryTool: ToolExecutor = {
       required: [],
     },
   },
-  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string | { content: string; protocol: ReturnType<typeof createExecutionEnvelope> }> {
     const dirPath = (params.path as string) || '.'
 
     const entries = await context.fileService.listDirectory(dirPath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
@@ -127,7 +127,13 @@ const listDirectoryTool: ToolExecutor = {
       return `${type}  ${size.padStart(10)}  ${entry.name}`
     })
 
-    return lines.join('\n')
+    return {
+      content: lines.join('\n'),
+      protocol: createExecutionEnvelope('observation', 'observed', {
+        path: dirPath,
+        entries: entries.map((entry) => ({ name: entry.name, path: entry.path, isDirectory: entry.isDirectory, size: entry.size })),
+      }),
+    }
   },
 }
 
@@ -145,7 +151,7 @@ const searchFilesTool: ToolExecutor = {
       required: ['pattern'],
     },
   },
-  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+  async execute(params: Record<string, unknown>, context: ToolContext): Promise<string | { content: string; protocol: ReturnType<typeof createExecutionEnvelope> }> {
     const pattern = params.pattern as string
     const maxResults = (params.maxResults as number) ?? 50
 
@@ -165,7 +171,14 @@ const searchFilesTool: ToolExecutor = {
 
     const output = limited.map((p) => path.relative(context.workspacePath, p)).join('\n')
     const suffix = results.length > maxResults ? `\n\n... and ${results.length - maxResults} more results` : ''
-    return output + suffix
+    return {
+      content: output + suffix,
+      protocol: createExecutionEnvelope('observation', 'observed', {
+        matches: limited,
+        totalMatches: results.length,
+        truncated: results.length > limited.length,
+      }),
+    }
   },
 }
 

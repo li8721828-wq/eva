@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { AgentConfig } from '../../shared/types/agent'
 import type { AgentTokenEstimate } from '../../shared/types/agent-token-estimate'
@@ -8,10 +8,13 @@ import type { ToolRegistry } from '../tools'
 import { ContextManager } from '../agent-engine/context'
 import { TOOL_CATALOG } from '../../shared/tool-catalog'
 import { buildSharedEnvironmentPrompt, normalizeEnvironmentRules } from '../services/environment-profile-service'
+import { createDeferredToolState } from '../agent-engine/tool-loading'
 
 function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegistry): AgentTokenEstimate {
   const definitions = toolRegistry?.getDefinitionsByNames(agent.tools) || []
-  const contextManager = new ContextManager()
+  const deferredState = createDeferredToolState(definitions)
+  const requestToolDefinitions = deferredState.initial
+  const contextManager = new ContextManager({ environmentRules: getStorage().config.get('environmentRules') })
   const workspacePath = '(workspace selected by the conversation)'
   const defaultConfiguredAgent: AgentConfig = {
     ...agent,
@@ -24,14 +27,14 @@ function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegist
   }
   const genericPrompt = contextManager.buildSystemPrompt(defaultConfiguredAgent, workspacePath, undefined, false, [])
   const promptWithoutTools = contextManager.buildSystemPrompt(agent, workspacePath, undefined, false, [])
-  const fullPrompt = contextManager.buildSystemPrompt(agent, workspacePath, undefined, false, definitions)
+  const fullPrompt = contextManager.buildSystemPrompt(agent, workspacePath, undefined, false, requestToolDefinitions, deferredState.deferred)
   const sharedEnvironmentPrompt = buildSharedEnvironmentPrompt(normalizeEnvironmentRules(getStorage().config.get('environmentRules')))
   const systemPromptTokens = contextManager.estimateTokens(`${agent.systemPrompt || ''}\n${sharedEnvironmentPrompt}`)
   const genericRuleTokens = contextManager.estimateTokens(genericPrompt)
   const basePromptTokens = contextManager.estimateTokens(promptWithoutTools)
   const fullPromptTokens = contextManager.estimateTokens(fullPrompt)
   const toolInstructionTokens = Math.max(0, fullPromptTokens - basePromptTokens)
-  const toolSchemaTokens = contextManager.estimateTokens(JSON.stringify(definitions))
+  const toolSchemaTokens = contextManager.estimateTokens(JSON.stringify(requestToolDefinitions))
   // genericPrompt already contains the shared environment rules. Subtract the
   // agent-only prompt here so the shared segment is counted exactly once under
   // system_prompt rather than being removed a second time from agent context.
@@ -43,7 +46,8 @@ function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegist
     totalTokens: fullPromptTokens + toolSchemaTokens,
     evaRulesPreview: genericPrompt,
     sharedEnvironmentPrompt,
-    toolInstructionsPreview: definitions.map((definition) => `- ${definition.name}: ${definition.description}`).join('\n'),
+    toolInstructionsPreview: requestToolDefinitions.map((definition) => `${definition.name}: ${definition.description}`).join('\n')
+      + (deferredState.deferred.length ? `\nDeferred tools: ${deferredState.deferred.length} (loaded by tool_search)` : ''),
     parts: [
       { kind: 'system_prompt', tokens: systemPromptTokens },
       { kind: 'eva_rules', tokens: evaRuleTokens },
@@ -51,7 +55,7 @@ function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegist
       { kind: 'tool_instructions', tokens: toolInstructionTokens },
       { kind: 'tool_schema', tokens: toolSchemaTokens },
     ],
-    tools: definitions.map((definition) => ({
+    tools: requestToolDefinitions.map((definition) => ({
       id: definition.name,
       label: TOOL_CATALOG.find((tool) => tool.id === definition.name)?.label || definition.name,
       tokens: contextManager.estimateTokens(JSON.stringify(definition)),
@@ -95,7 +99,12 @@ export function registerAgentHandlers(toolRegistry?: ToolRegistry): void {
         outputFontSize: data.outputFontSize || 'medium',
         outputTextEffect: data.outputTextEffect || 'none',
         markdownRenderer: data.markdownRenderer === 'classic' || data.markdownRenderer === 'streamdown' ? data.markdownRenderer : 'enhanced',
-        showThinking: Boolean(data.showThinking),
+        processOutput: data.processOutput === 'off' || data.processOutput === 'compact' || data.processOutput === 'detailed'
+          ? data.processOutput
+          : data.showThinking ? 'detailed' : 'compact',
+        showThinking: data.processOutput
+          ? data.processOutput === 'detailed'
+          : Boolean(data.showThinking),
         model: data.model || 'gpt-4o',
         providerId: data.providerId || 'openai',
         modelCandidates: data.modelCandidates || [],
@@ -112,7 +121,13 @@ export function registerAgentHandlers(toolRegistry?: ToolRegistry): void {
   ipcMain.handle(
     IPC.AGENT_UPDATE,
     async (_event, id: string, data: Partial<AgentConfig>): Promise<AgentConfig> => {
-      const agent = await getStorage().agents.updateAgent(id, data)
+      const processOutput = data.processOutput === 'off' || data.processOutput === 'compact' || data.processOutput === 'detailed'
+        ? data.processOutput
+        : data.showThinking === undefined ? undefined : data.showThinking ? 'detailed' : 'compact'
+      const updates = processOutput
+        ? { ...data, processOutput, showThinking: processOutput === 'detailed' }
+        : data
+      const agent = await getStorage().agents.updateAgent(id, updates)
       void recordActivity({ category: 'system', action: 'agent.updated', status: 'success', summary: `Updated Agent "${agent.name}".` })
       return agent
     }

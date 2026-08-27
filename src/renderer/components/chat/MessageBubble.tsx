@@ -6,9 +6,9 @@ import 'streamdown/styles.css'
 import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ProgressUpdate } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
-import { ToolCallGroupView, ToolCallView } from './ToolCallView'
+import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, CircleAlert, ExternalLink, Loader2 } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -76,31 +76,33 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
     : 0
 
   return (
-    <div className="chat-usage-summary mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-2.5 text-[11px] font-medium tabular-nums text-zinc-400">
-      <span>
-        {usage.modelCalls && usage.modelCalls > 1 ? `${usage.modelCalls} 次调用 · ` : ''}
-        本次 {formatTokenCount(totalTokens)} tokens
-      </span>
-      <span>输入 {formatTokenCount(usage.promptTokens)} · 输出 {formatTokenCount(usage.completionTokens)}</span>
-      {cacheRate !== null ? <span>缓存 {cacheRate}%</span> : null}
-      {usage.providerReportedCost !== undefined ? (
-        <span title={usage.providerReportedCurrency ? '由供应商响应返回的本次实际费用。' : '供应商响应返回了金额，但未声明币种，未纳入人民币汇总。'}>
-          {usage.providerReportedCurrency ? '费用' : '供应商金额'} {formatSupplierCost(usage.providerReportedCost, usage.providerReportedCurrency)}
+    <div className="mt-4 pt-2.5">
+      <div className="chat-usage-summary flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] font-medium tabular-nums text-zinc-400">
+        <span>
+          {usage.modelCalls && usage.modelCalls > 1 ? `${usage.modelCalls} 次调用 · ` : ''}
+          本次 {formatTokenCount(totalTokens)} tokens
         </span>
-      ) : usage.estimatedCostCny !== undefined ? (
-        <span title="按此连接保存的模型价格卡计算；实际账单以供应商记录为准。">
-          预计 ¥{formatCny(usage.estimatedCostCny)}
-        </span>
-      ) : usage.estimatedCost !== undefined ? (
-        <span title={usage.pricingSourceUrl ? `按该供应商官网同步的费率计算：${usage.pricingSourceUrl}` : '按此连接保存的模型价格卡计算；实际账单以供应商记录为准。'}>
-          预计 {formatSupplierCost(usage.estimatedCost, usage.estimatedCostCurrency)}
-        </span>
-      ) : usage.pricingMode === 'subscription' ? (
-        <span title={usage.pricingSourceUrl ? `该连接为订阅额度制：${usage.pricingSourceUrl}` : '该连接为订阅额度制，无法按本次 Token 计算单独费用。'}>订阅额度制</span>
-      ) : null}
-      {conversationUsage && conversationTokens > totalTokens ? (
-        <span className="text-zinc-350">本对话 {formatTokenCount(conversationTokens)}</span>
-      ) : null}
+        <span>输入 {formatTokenCount(usage.promptTokens)} · 输出 {formatTokenCount(usage.completionTokens)}</span>
+        {cacheRate !== null ? <span>缓存 {cacheRate}%</span> : null}
+        {usage.providerReportedCost !== undefined ? (
+          <span title={usage.providerReportedCurrency ? '由供应商响应返回的本次实际费用。' : '供应商响应返回了金额，但未声明币种，未纳入人民币汇总。'}>
+            {usage.providerReportedCurrency ? '费用' : '供应商金额'} {formatSupplierCost(usage.providerReportedCost, usage.providerReportedCurrency)}
+          </span>
+        ) : usage.estimatedCostCny !== undefined ? (
+          <span title="按此连接保存的模型价格卡计算；实际账单以供应商记录为准。">
+            预计 ¥{formatCny(usage.estimatedCostCny)}
+          </span>
+        ) : usage.estimatedCost !== undefined ? (
+          <span title={usage.pricingSourceUrl ? `按该供应商官网同步的费率计算：${usage.pricingSourceUrl}` : '按此连接保存的模型价格卡计算；实际账单以供应商记录为准。'}>
+            预计 {formatSupplierCost(usage.estimatedCost, usage.estimatedCostCurrency)}
+          </span>
+        ) : usage.pricingMode === 'subscription' ? (
+          <span title={usage.pricingSourceUrl ? `该连接为订阅额度制：${usage.pricingSourceUrl}` : '该连接为订阅额度制，无法按本次 Token 计算单独费用。'}>订阅额度制</span>
+        ) : null}
+        {conversationUsage && conversationTokens > totalTokens ? (
+          <span className="text-zinc-350">本对话 {formatTokenCount(conversationTokens)}</span>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -121,60 +123,35 @@ function ReasoningPanel({ content, streaming = false }: { content: string; strea
   )
 }
 
-function ExecutionTimelineView({ entries, streaming = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean }) {
-  const [expanded, setExpanded] = useState(false)
+function ExecutionTimelineView({ entries, streaming = false, showReasoning = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean; showReasoning?: boolean }) {
   if (!entries.length) return null
-  const hasActiveEntry = streaming || entries.some((entry) => entry.kind === 'tool' && !entry.toolCall?.result && !entry.toolCall?.isError)
-  const hasFailedEntry = entries.some((entry) => entry.kind === 'tool' && entry.toolCall?.isError)
-  const statusText = hasFailedEntry ? '执行记录包含失败项' : hasActiveEntry ? '正在执行' : '执行记录'
-  const StatusIcon = hasFailedEntry ? CircleAlert : hasActiveEntry ? Loader2 : Wrench
+  const toolCalls = entries.flatMap((entry) => entry.kind === 'tool' && entry.toolCall ? [entry.toolCall] : [])
+  const reasoningEntries = showReasoning ? entries.filter((entry) => entry.kind === 'reasoning') : []
+  const toolsAreComplete = toolCalls.length > 0 && toolCalls.every((toolCall) => Boolean(toolCall.result) || toolCall.isError)
 
   return (
-    <section className="mb-2" aria-label="执行记录">
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        aria-expanded={expanded}
-        title={statusText}
-        className="inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200"
-      >
-        <StatusIcon className={cn('h-3 w-3', hasActiveEntry && 'animate-spin', hasFailedEntry && 'text-rose-500')} />
-        <span>{statusText}</span>
-        <span className="tabular-nums text-zinc-300">{entries.length}</span>
-        <ChevronDown className={cn('h-3 w-3 transition-transform', expanded && 'rotate-180')} />
-      </button>
-
-      {expanded && (
-        <div className="mt-1.5 space-y-2 border-l border-violet-200 pl-3">
-          {entries.map((entry, index) => {
-            const isLatestEntry = index === entries.length - 1
-            if (entry.kind === 'reasoning') {
-              return (
-                <details key={entry.id} open={streaming && isLatestEntry} className="rounded-md bg-violet-50/50 px-2.5 py-2">
-                  <summary className="cursor-pointer text-xs font-medium text-violet-700">慢思考{streaming && isLatestEntry ? '中' : ''}</summary>
-                  <div className="mt-1 whitespace-pre-wrap text-xs leading-5 text-zinc-500">{entry.content}</div>
-                </details>
-              )
-            }
-            if (!entry.toolCall) return null
-            return (
-              <div key={entry.id} className="rounded-md border border-zinc-100 bg-white/70 px-2.5 py-2">
-                <div className="mb-1 text-xs font-medium text-zinc-500">行动与反馈</div>
-                <ToolCallView toolCall={entry.toolCall} />
-              </div>
-            )
-          })}
+    <section className="mb-2" aria-label="工具调用">
+      {toolCalls.length > 0 ? <ToolCallGroupView toolCalls={toolCalls} /> : null}
+      {streaming && toolsAreComplete ? <ExecutionStatusIndicator /> : null}
+      {reasoningEntries.length > 0 ? (
+        <div className="mt-1.5 border-y border-violet-100 bg-violet-50/45 px-3 py-2">
+          <div className="flex items-center gap-1 text-xs font-medium text-violet-700">
+            <BrainCircuit className="h-3 w-3" />
+            <span>慢思考{streaming ? '中' : ''}</span>
+          </div>
+          <div className="mt-1.5 space-y-1.5 whitespace-pre-wrap text-xs leading-5 text-zinc-500">
+            {reasoningEntries.map((entry) => <div key={entry.id} className="whitespace-pre-wrap text-xs leading-5 text-zinc-500">{entry.content}</div>)}
+          </div>
         </div>
-      )}
+      ) : null}
     </section>
   )
 }
 
 function ExecutionStatusIndicator() {
   return (
-    <div className="mb-2 inline-flex h-6 items-center gap-1.5 px-1.5 text-[11px] font-medium text-zinc-400" aria-live="polite">
-      <Loader2 className="h-3 w-3 animate-spin text-violet-500" />
-      <span>正在执行</span>
+    <div className="tool-execution-status mt-3 mb-2" role="status" aria-live="polite">
+      <span className="tool-execution-status__text">正在执行 . . .</span>
     </div>
   )
 }
@@ -336,6 +313,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
 export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
+  const timelineReasoning = message.executionTimeline?.filter((entry) => entry.kind === 'reasoning') || []
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
@@ -366,7 +344,8 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const outputAgent = message.agentId
     ? agents.find((agent) => agent.id === message.agentId)
     : undefined
-  const shouldShowReasoning = isStreaming || Boolean(outputAgent?.showThinking)
+  const processOutput = outputAgent?.processOutput || (outputAgent?.showThinking ? 'detailed' : 'compact')
+  const shouldShowReasoning = processOutput === 'detailed'
   const outputStyle = outputAgent?.outputStyle || 'balanced'
   const outputFormat = outputAgent?.outputFormat || 'default'
   const outputFont = outputAgent?.outputFont || 'system'
@@ -378,6 +357,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   // A progress event can be left on its own when a run is interrupted before
   // its final assistant message is persisted. Keep it visible in that case.
   if (message.progressKind) {
+    if (processOutput === 'off') return null
     if (isInternalToolLifecycleUpdate(message.content)) return null
     return (
       <article className={cn('group flex items-start gap-3', className)}>
@@ -472,25 +452,30 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
       <div className="min-w-0 max-w-[66rem]">
         <div className={cn('chat-message-surface chat-assistant-message py-4 pl-3 pr-5', `chat-assistant-message--format-${outputFormat}`)}>
           {message.agentName && (
-            <div className="chat-agent-label mb-2.5 flex items-center gap-2">
+            <div className="chat-agent-label mb-3 flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
               <Badge variant="primary" className="px-1.5 py-0 text-[11px] leading-5">
                 {message.agentName}
               </Badge>
             </div>
           )}
-          {isStreaming && message.progressUpdates?.length ? (
+          {isStreaming && processOutput !== 'off' && message.progressUpdates?.length ? (
             <ProgressUpdatesView
               updates={message.progressUpdates}
               streaming={isStreaming}
               markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
             />
           ) : null}
-          {isStreaming && !message.executionTimeline?.length ? <ExecutionStatusIndicator /> : null}
-          {message.executionTimeline?.length
-            ? <ExecutionTimelineView entries={message.executionTimeline} streaming={isStreaming} />
-            : shouldShowReasoning ? <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} /> : null}
+          {!isStreaming && shouldShowReasoning && timelineReasoning.length > 0
+            ? <ExecutionTimelineView entries={timelineReasoning} showReasoning />
+            : !message.executionTimeline?.length && shouldShowReasoning
+              ? <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />
+              : null}
           <MarkdownMessageContent content={message.content} isStreaming={isStreaming} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
+          {isStreaming && !message.executionTimeline?.length ? <ExecutionStatusIndicator /> : null}
+          {isStreaming && message.executionTimeline?.length
+            ? <ExecutionTimelineView entries={message.executionTimeline} streaming showReasoning={shouldShowReasoning} />
+            : null}
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
         </div>
 
@@ -508,12 +493,6 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
           </div>
         )}
 
-        {message.toolCalls?.length && !message.executionTimeline?.length ? (
-          <details className="mt-3 border-t border-zinc-100 pt-2">
-            <summary className="cursor-pointer text-xs font-medium text-zinc-400 hover:text-zinc-600">技术执行明细（{message.toolCalls.length} 项）</summary>
-            <ToolCallGroupView toolCalls={message.toolCalls} className="mt-2" />
-          </details>
-        ) : null}
       </div>
     </article>
   )

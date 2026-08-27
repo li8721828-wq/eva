@@ -46,6 +46,7 @@ import { CostCenter } from '@/components/cost/CostCenter'
 import { ModelPoolPanel } from './ModelPoolPanel'
 import { RuntimeIntrospectionPanel } from './RuntimeIntrospectionPanel'
 import { uiCopy } from '@/lib/ui-copy'
+import { buildProviderProfile, providerValidationError } from '@/lib/provider-profile'
 
 type ProviderType = ProviderConfigEntry['type']
 
@@ -135,18 +136,13 @@ export function SettingsDialog() {
 
   const validateProviderConfig = (): string | null => {
     const config = getProviderTestConfig()
-    if (!config.name) return 'Enter a name for this saved connection.'
-    if (!config.apiKey) return 'Enter an API key before saving.'
-    if (config.type === 'custom' && !config.baseUrl) return 'Enter a base URL for a custom provider.'
-    if (!config.defaultModel) return 'Select at least one model for this connection.'
-    return null
+    return providerValidationError(config, true)
   }
 
   const validateProviderConnection = (): string | null => {
     const config = getProviderTestConfig()
-    if (!config.apiKey) return 'Enter an API key before testing the connection.'
-    if (config.type === 'custom' && !config.baseUrl) return 'Enter a base URL for a custom provider.'
-    return null
+    const error = providerValidationError(config, false)
+    return error === 'Enter a name for this saved connection.' ? null : error
   }
 
   const invalidateModels = () => {
@@ -348,17 +344,7 @@ export function SettingsDialog() {
     setSaving(true)
     try {
       const configToSave = getProviderTestConfig()
-      const config: ProviderConfigEntry = {
-        id: configToSave.id,
-        name: configToSave.name,
-        type: configToSave.type,
-        apiKey: configToSave.apiKey,
-        baseUrl: configToSave.baseUrl,
-        pricingGroup: pricingGroup.trim() || undefined,
-        isEnabled: providerEnabled,
-        defaultModel: configToSave.defaultModel,
-        models: availableModels.filter((model) => selectedModelIds.includes(model.id)),
-      }
+      const config = buildProviderProfile({ ...configToSave, pricingGroup, isEnabled: providerEnabled, selectedModelIds, availableModels })
 
       await window.eva.provider.saveConfig(config)
       setSavedProviders((providers) => {

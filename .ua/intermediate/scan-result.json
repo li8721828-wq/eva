@@ -1,0 +1,2297 @@
+{
+  "name": "eva",
+  "description": "Eva 是一个基于 Electron 的桌面端 AI 编程助手，支持多 AI Agent 协作、多 Provider、目标驱动任务规划、Monaco 编辑器和 xterm.js 终端。",
+  "languages": [
+    "batch",
+    "css",
+    "html",
+    "javascript",
+    "json",
+    "markdown",
+    "nsh",
+    "powershell",
+    "python",
+    "template",
+    "txt",
+    "typescript",
+    "unknown",
+    "yaml"
+  ],
+  "frameworks": [
+    "Electron",
+    "React",
+    "Vite",
+    "Vitest",
+    "Tailwind CSS",
+    "Zustand"
+  ],
+  "files": [
+    {
+      "path": ".github/workflows/verify.yml",
+      "language": "yaml",
+      "sizeLines": 22,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "README.md",
+      "language": "markdown",
+      "sizeLines": 107,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/2026-08-25-技术实现与验证.md",
+      "language": "markdown",
+      "sizeLines": 87,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/2026-08-25-项目更新概览.md",
+      "language": "markdown",
+      "sizeLines": 44,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/code-production-pipeline架构说明.md",
+      "language": "markdown",
+      "sizeLines": 256,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/确定性代码生成流程说明.md",
+      "language": "markdown",
+      "sizeLines": 162,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "docs/需求到代码生成工作流说明.md",
+      "language": "markdown",
+      "sizeLines": 294,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "electron.vite.config.ts",
+      "language": "typescript",
+      "sizeLines": 29,
+      "fileCategory": "code"
+    },
+    {
+      "path": "env_check.py",
+      "language": "python",
+      "sizeLines": 68,
+      "fileCategory": "code"
+    },
+    {
+      "path": "package.json",
+      "language": "json",
+      "sizeLines": 215,
+      "fileCategory": "config"
+    },
+    {
+      "path": "resources/.gitkeep",
+      "language": "unknown",
+      "sizeLines": 3,
+      "fileCategory": "code"
+    },
+    {
+      "path": "resources/installer.nsh",
+      "language": "nsh",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "resources/searxng/docker-compose.yml",
+      "language": "yaml",
+      "sizeLines": 9,
+      "fileCategory": "infra"
+    },
+    {
+      "path": "resources/searxng/settings.yml.template",
+      "language": "template",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/apply-windows-icon.cjs",
+      "language": "javascript",
+      "sizeLines": 29,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/check-ipc-boundary.mjs",
+      "language": "javascript",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/clean-output.mjs",
+      "language": "javascript",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/generate-icon.cjs",
+      "language": "javascript",
+      "sizeLines": 83,
+      "fileCategory": "code"
+    },
+    {
+      "path": "scripts/start-dev.ps1",
+      "language": "powershell",
+      "sizeLines": 6,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/update-local-eva.ps1",
+      "language": "powershell",
+      "sizeLines": 26,
+      "fileCategory": "script"
+    },
+    {
+      "path": "scripts/verify-package-files.mjs",
+      "language": "javascript",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/agent-runner.ts",
+      "language": "typescript",
+      "sizeLines": 1239,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/context.ts",
+      "language": "typescript",
+      "sizeLines": 441,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/goal-planner.ts",
+      "language": "typescript",
+      "sizeLines": 755,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/team-orchestrator.ts",
+      "language": "typescript",
+      "sizeLines": 885,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/tool-history.ts",
+      "language": "typescript",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/tool-loading.ts",
+      "language": "typescript",
+      "sizeLines": 128,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/agent-engine/tool-result-context.ts",
+      "language": "typescript",
+      "sizeLines": 36,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/index.ts",
+      "language": "typescript",
+      "sizeLines": 127,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/active-plan.ts",
+      "language": "typescript",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/activity.ts",
+      "language": "typescript",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/agent.ts",
+      "language": "typescript",
+      "sizeLines": 130,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/conversation.ts",
+      "language": "typescript",
+      "sizeLines": 1860,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/cost.ts",
+      "language": "typescript",
+      "sizeLines": 36,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/git.ts",
+      "language": "typescript",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/index.ts",
+      "language": "typescript",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/plugin.ts",
+      "language": "typescript",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/qq-remote.ts",
+      "language": "typescript",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/requirement-engineering.ts",
+      "language": "typescript",
+      "sizeLines": 36,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/runtime-kernel.ts",
+      "language": "typescript",
+      "sizeLines": 8,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/runtime-proposal.ts",
+      "language": "typescript",
+      "sizeLines": 61,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/system.ts",
+      "language": "typescript",
+      "sizeLines": 391,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/task.ts",
+      "language": "typescript",
+      "sizeLines": 1239,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/trusted-ipc.ts",
+      "language": "typescript",
+      "sizeLines": 36,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/ipc/workspace.ts",
+      "language": "typescript",
+      "sizeLines": 63,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/providers/anthropic.ts",
+      "language": "typescript",
+      "sizeLines": 334,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/providers/base-provider.ts",
+      "language": "typescript",
+      "sizeLines": 98,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/providers/errors.ts",
+      "language": "typescript",
+      "sizeLines": 178,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/providers/index.ts",
+      "language": "typescript",
+      "sizeLines": 110,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/providers/openai.ts",
+      "language": "typescript",
+      "sizeLines": 449,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/activity-log.ts",
+      "language": "typescript",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/agent-os-scheduler.ts",
+      "language": "typescript",
+      "sizeLines": 281,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/background-goal-control.ts",
+      "language": "typescript",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/conversation-title-service.ts",
+      "language": "typescript",
+      "sizeLines": 128,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/cost-usage-service.ts",
+      "language": "typescript",
+      "sizeLines": 67,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/desktop-control-overlay.ts",
+      "language": "typescript",
+      "sizeLines": 207,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/document-attachment-service.ts",
+      "language": "typescript",
+      "sizeLines": 92,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/effective-agent-config.ts",
+      "language": "typescript",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/environment-profile-service.ts",
+      "language": "typescript",
+      "sizeLines": 119,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/external-url-policy.ts",
+      "language": "typescript",
+      "sizeLines": 8,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/file-service.ts",
+      "language": "typescript",
+      "sizeLines": 216,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/git-worktree-service.ts",
+      "language": "typescript",
+      "sizeLines": 157,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/goal-step-conversation.ts",
+      "language": "typescript",
+      "sizeLines": 97,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/local-searxng-service.ts",
+      "language": "typescript",
+      "sizeLines": 172,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/model-health-service.ts",
+      "language": "typescript",
+      "sizeLines": 59,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/model-router.ts",
+      "language": "typescript",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/network-settings-service.ts",
+      "language": "typescript",
+      "sizeLines": 81,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/project-index-service.ts",
+      "language": "typescript",
+      "sizeLines": 642,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/provider-request-diagnostics.ts",
+      "language": "typescript",
+      "sizeLines": 29,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/qq-message-format.ts",
+      "language": "typescript",
+      "sizeLines": 116,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/qq-remote-bridge.ts",
+      "language": "typescript",
+      "sizeLines": 272,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/remote-command-policy.ts",
+      "language": "typescript",
+      "sizeLines": 15,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/remote-conversation-executor.ts",
+      "language": "typescript",
+      "sizeLines": 156,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/remote-tool-policy.ts",
+      "language": "typescript",
+      "sizeLines": 97,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/requirement-engineering-service.ts",
+      "language": "typescript",
+      "sizeLines": 2336,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/requirement-prompt-factory.ts",
+      "language": "typescript",
+      "sizeLines": 19,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/requirement-run-repository.ts",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/run-registry.ts",
+      "language": "typescript",
+      "sizeLines": 100,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/runtime-diagnostics.ts",
+      "language": "typescript",
+      "sizeLines": 114,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/spec-service.ts",
+      "language": "typescript",
+      "sizeLines": 259,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/supplier-pricing-service.ts",
+      "language": "typescript",
+      "sizeLines": 300,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/task-artifact-service.ts",
+      "language": "typescript",
+      "sizeLines": 139,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/task-execution-queue.ts",
+      "language": "typescript",
+      "sizeLines": 186,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/terminal-panel-controller.ts",
+      "language": "typescript",
+      "sizeLines": 12,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/terminal-service.ts",
+      "language": "typescript",
+      "sizeLines": 317,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/services/usage-pricing-service.ts",
+      "language": "typescript",
+      "sizeLines": 80,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/active-plan-store.ts",
+      "language": "typescript",
+      "sizeLines": 123,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/activity-log-store.ts",
+      "language": "typescript",
+      "sizeLines": 68,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/agent-store.ts",
+      "language": "typescript",
+      "sizeLines": 179,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/config-store.ts",
+      "language": "typescript",
+      "sizeLines": 199,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/conversation-store.ts",
+      "language": "typescript",
+      "sizeLines": 302,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/credential-store.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/index.ts",
+      "language": "typescript",
+      "sizeLines": 97,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/plugin-store.ts",
+      "language": "typescript",
+      "sizeLines": 139,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/project-index-store.ts",
+      "language": "typescript",
+      "sizeLines": 63,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/qq-remote-store.ts",
+      "language": "typescript",
+      "sizeLines": 85,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/runtime-kernel-store.ts",
+      "language": "typescript",
+      "sizeLines": 198,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/runtime-memory-store.ts",
+      "language": "typescript",
+      "sizeLines": 124,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/runtime-proposal-store.ts",
+      "language": "typescript",
+      "sizeLines": 87,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/runtime-run-store.ts",
+      "language": "typescript",
+      "sizeLines": 98,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/task-run-store.ts",
+      "language": "typescript",
+      "sizeLines": 84,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/storage/workspace-store.ts",
+      "language": "typescript",
+      "sizeLines": 68,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/blender-tools.ts",
+      "language": "typescript",
+      "sizeLines": 404,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/browser-control-tools.ts",
+      "language": "typescript",
+      "sizeLines": 585,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/desktop-mcp-tools.ts",
+      "language": "typescript",
+      "sizeLines": 478,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/desktop-observation-store.ts",
+      "language": "typescript",
+      "sizeLines": 295,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/desktop-session-tools.ts",
+      "language": "typescript",
+      "sizeLines": 69,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/file-tools.ts",
+      "language": "typescript",
+      "sizeLines": 206,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/form-fill-workflow.ts",
+      "language": "typescript",
+      "sizeLines": 52,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/index.ts",
+      "language": "typescript",
+      "sizeLines": 167,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/keyboard-tools.ts",
+      "language": "typescript",
+      "sizeLines": 230,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/model-pool-tools.ts",
+      "language": "typescript",
+      "sizeLines": 136,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/mouse-tools.ts",
+      "language": "typescript",
+      "sizeLines": 638,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/powershell-runner.ts",
+      "language": "typescript",
+      "sizeLines": 39,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/project-index-tools.ts",
+      "language": "typescript",
+      "sizeLines": 86,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/runtime-diagnostic-tools.ts",
+      "language": "typescript",
+      "sizeLines": 29,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/runtime-inspection-tools.ts",
+      "language": "typescript",
+      "sizeLines": 156,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/runtime-proposal-tools.ts",
+      "language": "typescript",
+      "sizeLines": 55,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/search-tools.ts",
+      "language": "typescript",
+      "sizeLines": 277,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/terminal-tools.ts",
+      "language": "typescript",
+      "sizeLines": 196,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/web-tools.ts",
+      "language": "typescript",
+      "sizeLines": 330,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/tools/web-url-policy.ts",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/utils/error-handler.ts",
+      "language": "typescript",
+      "sizeLines": 141,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/main/window.ts",
+      "language": "typescript",
+      "sizeLines": 77,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/preload/index.ts",
+      "language": "typescript",
+      "sizeLines": 527,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/App.tsx",
+      "language": "typescript",
+      "sizeLines": 321,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/assets.d.ts",
+      "language": "typescript",
+      "sizeLines": 4,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ErrorBoundary.tsx",
+      "language": "typescript",
+      "sizeLines": 80,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/activity/ActivityPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 113,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/AgentEditor.tsx",
+      "language": "typescript",
+      "sizeLines": 287,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/AgentManagementWorkspace.tsx",
+      "language": "typescript",
+      "sizeLines": 499,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/AgentManagerDialog.tsx",
+      "language": "typescript",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/AgentSelector.tsx",
+      "language": "typescript",
+      "sizeLines": 196,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/AgentTokenEstimatePanel.tsx",
+      "language": "typescript",
+      "sizeLines": 197,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/ModelAccessPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 86,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/OutputFormatPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 129,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/agents/ToolAccessPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 117,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/ChatPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 304,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/ExecutionMonitor.tsx",
+      "language": "typescript",
+      "sizeLines": 158,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/GoalConfirmationCard.tsx",
+      "language": "typescript",
+      "sizeLines": 43,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/GoalExecutionCard.tsx",
+      "language": "typescript",
+      "sizeLines": 232,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/InputBar.tsx",
+      "language": "typescript",
+      "sizeLines": 792,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/MessageBubble.tsx",
+      "language": "typescript",
+      "sizeLines": 544,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/MessageList.tsx",
+      "language": "typescript",
+      "sizeLines": 780,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/ReferenceImagePreview.tsx",
+      "language": "typescript",
+      "sizeLines": 67,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/RequirementClarificationCard.tsx",
+      "language": "typescript",
+      "sizeLines": 93,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/TeamCollaborationPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 99,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/ToolCallView.tsx",
+      "language": "typescript",
+      "sizeLines": 260,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/chat/WelcomeScreen.tsx",
+      "language": "typescript",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/cost/CostCenter.tsx",
+      "language": "typescript",
+      "sizeLines": 297,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/editor/CodeEditor.tsx",
+      "language": "typescript",
+      "sizeLines": 117,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/editor/FileExplorer.tsx",
+      "language": "typescript",
+      "sizeLines": 232,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/editor/ProjectNavigator.tsx",
+      "language": "typescript",
+      "sizeLines": 393,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/goal/GoalInput.tsx",
+      "language": "typescript",
+      "sizeLines": 116,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/goal/GoalProgress.tsx",
+      "language": "typescript",
+      "sizeLines": 266,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/layout/AppTitlebar.tsx",
+      "language": "typescript",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/settings/EnvironmentRulesPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 131,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/settings/ModelPoolPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/settings/PluginCenter.tsx",
+      "language": "typescript",
+      "sizeLines": 367,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/settings/RuntimeIntrospectionPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 138,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/settings/SettingsDialog.tsx",
+      "language": "typescript",
+      "sizeLines": 1160,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/sidebar/ConversationList.tsx",
+      "language": "typescript",
+      "sizeLines": 349,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/sidebar/ModeSelector.tsx",
+      "language": "typescript",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/sidebar/Sidebar.tsx",
+      "language": "typescript",
+      "sizeLines": 216,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/specs/SpecParameterForm.tsx",
+      "language": "typescript",
+      "sizeLines": 152,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/specs/SpecSelector.tsx",
+      "language": "typescript",
+      "sizeLines": 279,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/symposium/SymposiumWorkspace.tsx",
+      "language": "typescript",
+      "sizeLines": 255,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/task-board/TaskBoard.tsx",
+      "language": "typescript",
+      "sizeLines": 217,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/task-board/TaskCard.tsx",
+      "language": "typescript",
+      "sizeLines": 191,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/tasks/TaskArtifactCenter.tsx",
+      "language": "typescript",
+      "sizeLines": 410,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/tasks/TaskWorkspacePanel.tsx",
+      "language": "typescript",
+      "sizeLines": 676,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/terminal/TerminalPanel.tsx",
+      "language": "typescript",
+      "sizeLines": 357,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Badge.tsx",
+      "language": "typescript",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Button.tsx",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Dialog.tsx",
+      "language": "typescript",
+      "sizeLines": 128,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Input.tsx",
+      "language": "typescript",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/ScrollArea.tsx",
+      "language": "typescript",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Select.tsx",
+      "language": "typescript",
+      "sizeLines": 157,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Separator.tsx",
+      "language": "typescript",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Tabs.tsx",
+      "language": "typescript",
+      "sizeLines": 137,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/components/ui/Textarea.tsx",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/hooks/use-chat-attachments.ts",
+      "language": "typescript",
+      "sizeLines": 91,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/hooks/use-conversation.ts",
+      "language": "typescript",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/hooks/use-ipc.ts",
+      "language": "typescript",
+      "sizeLines": 50,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/hooks/use-streaming.ts",
+      "language": "typescript",
+      "sizeLines": 95,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/index.css",
+      "language": "css",
+      "sizeLines": 2304,
+      "fileCategory": "markup"
+    },
+    {
+      "path": "src/renderer/index.html",
+      "language": "html",
+      "sizeLines": 12,
+      "fileCategory": "markup"
+    },
+    {
+      "path": "src/renderer/lib/chat-attachments.ts",
+      "language": "typescript",
+      "sizeLines": 27,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/chat-commands.ts",
+      "language": "typescript",
+      "sizeLines": 17,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/collapse-tool-history.ts",
+      "language": "typescript",
+      "sizeLines": 91,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/goal-event.ts",
+      "language": "typescript",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/ipc-client.ts",
+      "language": "typescript",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/markdown-display.ts",
+      "language": "typescript",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/provider-profile.ts",
+      "language": "typescript",
+      "sizeLines": 23,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/runtime-introspection.ts",
+      "language": "typescript",
+      "sizeLines": 12,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/team-routing.ts",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/ui-copy.ts",
+      "language": "typescript",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/lib/utils.ts",
+      "language": "typescript",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/main.tsx",
+      "language": "typescript",
+      "sizeLines": 13,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-activity-log-store.ts",
+      "language": "typescript",
+      "sizeLines": 33,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-agent-store.ts",
+      "language": "typescript",
+      "sizeLines": 109,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-app-store.ts",
+      "language": "typescript",
+      "sizeLines": 188,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-chat-store.ts",
+      "language": "typescript",
+      "sizeLines": 751,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-symposium-store.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-task-store.ts",
+      "language": "typescript",
+      "sizeLines": 337,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/renderer/stores/use-workspace-store.ts",
+      "language": "typescript",
+      "sizeLines": 66,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/constants.ts",
+      "language": "typescript",
+      "sizeLines": 111,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/goal-step-handoff.ts",
+      "language": "typescript",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/ipc-channels.ts",
+      "language": "typescript",
+      "sizeLines": 158,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/ipc-contract.ts",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/plugin-marketplace.ts",
+      "language": "typescript",
+      "sizeLines": 172,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/terminal-session.ts",
+      "language": "typescript",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/tool-catalog.ts",
+      "language": "typescript",
+      "sizeLines": 48,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/active-plan.ts",
+      "language": "typescript",
+      "sizeLines": 38,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/activity.ts",
+      "language": "typescript",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/agent-token-estimate.ts",
+      "language": "typescript",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/agent.ts",
+      "language": "typescript",
+      "sizeLines": 96,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/automation.ts",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/conversation.ts",
+      "language": "typescript",
+      "sizeLines": 238,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/cost.ts",
+      "language": "typescript",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/environment-rules.ts",
+      "language": "typescript",
+      "sizeLines": 53,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/execution-protocol.ts",
+      "language": "typescript",
+      "sizeLines": 56,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/file-access.ts",
+      "language": "typescript",
+      "sizeLines": 6,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/git.ts",
+      "language": "typescript",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/index.ts",
+      "language": "typescript",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/model-pool.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/network.ts",
+      "language": "typescript",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/pdf-parse.d.ts",
+      "language": "typescript",
+      "sizeLines": 8,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/plugin.ts",
+      "language": "typescript",
+      "sizeLines": 83,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/project-index.ts",
+      "language": "typescript",
+      "sizeLines": 109,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/provider.ts",
+      "language": "typescript",
+      "sizeLines": 112,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/qq.ts",
+      "language": "typescript",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/requirement-engineering.ts",
+      "language": "typescript",
+      "sizeLines": 140,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/runtime-evolution.ts",
+      "language": "typescript",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/runtime-kernel.ts",
+      "language": "typescript",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/runtime-memory.ts",
+      "language": "typescript",
+      "sizeLines": 31,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/runtime-run.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/spec.ts",
+      "language": "typescript",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/symposium.ts",
+      "language": "typescript",
+      "sizeLines": 116,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/task.ts",
+      "language": "typescript",
+      "sizeLines": 244,
+      "fileCategory": "code"
+    },
+    {
+      "path": "src/shared/types/workspace.ts",
+      "language": "typescript",
+      "sizeLines": 7,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step3_paper_to_desktop.py",
+      "language": "python",
+      "sizeLines": 104,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step3_write_doc.py",
+      "language": "python",
+      "sizeLines": 67,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step4_reverify.py",
+      "language": "python",
+      "sizeLines": 82,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step4_verify.py",
+      "language": "python",
+      "sizeLines": 45,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step5_md_to_docx.py",
+      "language": "python",
+      "sizeLines": 321,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step5_readback.py",
+      "language": "python",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step5_verify_keywords.py",
+      "language": "python",
+      "sizeLines": 59,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step6_docx_out.txt",
+      "language": "txt",
+      "sizeLines": 39,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "step6_final_verify.py",
+      "language": "python",
+      "sizeLines": 151,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step6_out.txt",
+      "language": "txt",
+      "sizeLines": 18,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "step6_readback.txt",
+      "language": "txt",
+      "sizeLines": 4,
+      "fileCategory": "docs"
+    },
+    {
+      "path": "step6_verify_docx.py",
+      "language": "python",
+      "sizeLines": 276,
+      "fileCategory": "code"
+    },
+    {
+      "path": "step7_verify_report.py",
+      "language": "python",
+      "sizeLines": 182,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/active-plan-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 35,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/agent-os-scheduler.test.ts",
+      "language": "typescript",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/agent-runner-adaptive-budget.test.ts",
+      "language": "typescript",
+      "sizeLines": 455,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/chat-attachments.test.ts",
+      "language": "typescript",
+      "sizeLines": 18,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/chat-commands.test.ts",
+      "language": "typescript",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/chat-stream-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/collapse-tool-history.test.ts",
+      "language": "typescript",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/context.test.ts",
+      "language": "typescript",
+      "sizeLines": 296,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/document-attachment-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/effective-agent-config.test.ts",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/environment-profile-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/execution-protocol.test.ts",
+      "language": "typescript",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/expert-task-cancellation.test.ts",
+      "language": "typescript",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/external-url-policy.test.ts",
+      "language": "typescript",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/file-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 78,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/file-tools.test.ts",
+      "language": "typescript",
+      "sizeLines": 54,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/goal-step-budget.test.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/goal-step-conversation.test.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/ipc-contract.test.ts",
+      "language": "typescript",
+      "sizeLines": 12,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/markdown-display.test.ts",
+      "language": "typescript",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/model-router.test.ts",
+      "language": "typescript",
+      "sizeLines": 47,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/plugin-marketplace.test.ts",
+      "language": "typescript",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/project-index-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 129,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/provider-errors.test.ts",
+      "language": "typescript",
+      "sizeLines": 10,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/provider-profile.test.ts",
+      "language": "typescript",
+      "sizeLines": 8,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/provider-request-diagnostics.test.ts",
+      "language": "typescript",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/providers.test.ts",
+      "language": "typescript",
+      "sizeLines": 448,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/qq-message-format.test.ts",
+      "language": "typescript",
+      "sizeLines": 45,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/remote-command-policy.test.ts",
+      "language": "typescript",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/requirement-engineering-integrity.test.ts",
+      "language": "typescript",
+      "sizeLines": 121,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/requirement-run-repository.test.ts",
+      "language": "typescript",
+      "sizeLines": 41,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/requirement-workspace-package.test.ts",
+      "language": "typescript",
+      "sizeLines": 52,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/run-registry.test.ts",
+      "language": "typescript",
+      "sizeLines": 37,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-diagnostics.test.ts",
+      "language": "typescript",
+      "sizeLines": 26,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-inspection-tools.test.ts",
+      "language": "typescript",
+      "sizeLines": 35,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-introspection.test.ts",
+      "language": "typescript",
+      "sizeLines": 14,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-kernel-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 57,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-memory-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-proposal-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-proposal-tools.test.ts",
+      "language": "typescript",
+      "sizeLines": 21,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/runtime-run-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 32,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/security-boundary-smoke.test.ts",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/spec-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 74,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/storage.test.ts",
+      "language": "typescript",
+      "sizeLines": 380,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/supplier-pricing-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/task-artifact-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 131,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/task-execution-queue.test.ts",
+      "language": "typescript",
+      "sizeLines": 90,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/task-progress.test.ts",
+      "language": "typescript",
+      "sizeLines": 45,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/task-store-isolation.test.ts",
+      "language": "typescript",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/team-routing.test.ts",
+      "language": "typescript",
+      "sizeLines": 22,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/terminal-tool-policy.test.ts",
+      "language": "typescript",
+      "sizeLines": 140,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/tool-catalog.test.ts",
+      "language": "typescript",
+      "sizeLines": 24,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/tool-history.test.ts",
+      "language": "typescript",
+      "sizeLines": 46,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/tool-loading.test.ts",
+      "language": "typescript",
+      "sizeLines": 42,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/tool-registry.test.ts",
+      "language": "typescript",
+      "sizeLines": 80,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/tool-result-context.test.ts",
+      "language": "typescript",
+      "sizeLines": 28,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/trusted-ipc-registration.test.ts",
+      "language": "typescript",
+      "sizeLines": 25,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/trusted-ipc.test.ts",
+      "language": "typescript",
+      "sizeLines": 16,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/usage-pricing-service.test.ts",
+      "language": "typescript",
+      "sizeLines": 43,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/web-url-policy.test.ts",
+      "language": "typescript",
+      "sizeLines": 30,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tests/unit/workspace-store.test.ts",
+      "language": "typescript",
+      "sizeLines": 34,
+      "fileCategory": "code"
+    },
+    {
+      "path": "tsconfig.json",
+      "language": "json",
+      "sizeLines": 19,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tsconfig.node.json",
+      "language": "json",
+      "sizeLines": 9,
+      "fileCategory": "config"
+    },
+    {
+      "path": "tsconfig.web.json",
+      "language": "json",
+      "sizeLines": 8,
+      "fileCategory": "config"
+    },
+    {
+      "path": "verify_draft.py",
+      "language": "python",
+      "sizeLines": 52,
+      "fileCategory": "code"
+    },
+    {
+      "path": "vitest.config.ts",
+      "language": "typescript",
+      "sizeLines": 20,
+      "fileCategory": "code"
+    },
+    {
+      "path": "启动 Eva.bat",
+      "language": "batch",
+      "sizeLines": 4,
+      "fileCategory": "script"
+    }
+  ],
+  "totalFiles": 321,
+  "filteredByIgnore": 17,
+  "estimatedComplexity": "large",
+  "importMap": {
+    ".github/workflows/verify.yml": [],
+    ".ua/.understandignore": [],
+    ".ua/config.json": [],
+    ".ua/tmp/ua-scan-files.json": [],
+    "ENV_REPORT.md": [],
+    "README.md": [],
+    "STEP4_REPORT.md": [],
+    "STEP5_REPORT.md": [],
+    "STEP6_REPORT.md": [],
+    "black_swan_chibi_final.blend": [],
+    "black_swan_chibi_final_v2.blend": [],
+    "black_swan_chibi_model.blend": [],
+    "black_swan_chibi_v2.blend": [],
+    "black_swan_chibi_v3.blend": [],
+    "docs/2026-08-25-技术实现与验证.md": [],
+    "docs/2026-08-25-项目更新概览.md": [],
+    "docs/code-production-pipeline架构说明.md": [],
+    "docs/确定性代码生成流程说明.md": [],
+    "docs/需求到代码生成工作流说明.md": [],
+    "electron.vite.config.ts": [],
+    "env_check.py": [],
+    "package.json": [],
+    "resources/.gitkeep": [],
+    "resources/installer.nsh": [],
+    "resources/searxng/docker-compose.yml": [],
+    "resources/searxng/settings.yml.template": [],
+    "scripts/apply-windows-icon.cjs": [],
+    "scripts/check-ipc-boundary.mjs": [],
+    "scripts/clean-output.mjs": [],
+    "scripts/generate-icon.cjs": [],
+    "scripts/start-dev.ps1": [],
+    "scripts/update-local-eva.ps1": [],
+    "scripts/verify-package-files.mjs": [],
+    "src/main/agent-engine/agent-runner.ts": [],
+    "src/main/agent-engine/context.ts": [],
+    "src/main/agent-engine/goal-planner.ts": [],
+    "src/main/agent-engine/team-orchestrator.ts": [],
+    "src/main/agent-engine/tool-history.ts": [],
+    "src/main/agent-engine/tool-loading.ts": [],
+    "src/main/agent-engine/tool-result-context.ts": [],
+    "src/main/index.ts": [],
+    "src/main/ipc/active-plan.ts": [],
+    "src/main/ipc/activity.ts": [],
+    "src/main/ipc/agent.ts": [],
+    "src/main/ipc/conversation.ts": [],
+    "src/main/ipc/cost.ts": [],
+    "src/main/ipc/git.ts": [],
+    "src/main/ipc/index.ts": [],
+    "src/main/ipc/plugin.ts": [],
+    "src/main/ipc/qq-remote.ts": [],
+    "src/main/ipc/requirement-engineering.ts": [],
+    "src/main/ipc/runtime-kernel.ts": [],
+    "src/main/ipc/runtime-proposal.ts": [],
+    "src/main/ipc/system.ts": [],
+    "src/main/ipc/task.ts": [],
+    "src/main/ipc/trusted-ipc.ts": [],
+    "src/main/ipc/workspace.ts": [],
+    "src/main/providers/anthropic.ts": [],
+    "src/main/providers/base-provider.ts": [],
+    "src/main/providers/errors.ts": [],
+    "src/main/providers/index.ts": [],
+    "src/main/providers/openai.ts": [],
+    "src/main/services/activity-log.ts": [],
+    "src/main/services/agent-os-scheduler.ts": [],
+    "src/main/services/background-goal-control.ts": [],
+    "src/main/services/conversation-title-service.ts": [],
+    "src/main/services/cost-usage-service.ts": [],
+    "src/main/services/desktop-control-overlay.ts": [],
+    "src/main/services/document-attachment-service.ts": [],
+    "src/main/services/effective-agent-config.ts": [],
+    "src/main/services/environment-profile-service.ts": [],
+    "src/main/services/external-url-policy.ts": [],
+    "src/main/services/file-service.ts": [],
+    "src/main/services/git-worktree-service.ts": [],
+    "src/main/services/goal-step-conversation.ts": [],
+    "src/main/services/local-searxng-service.ts": [],
+    "src/main/services/model-health-service.ts": [],
+    "src/main/services/model-router.ts": [],
+    "src/main/services/network-settings-service.ts": [],
+    "src/main/services/project-index-service.ts": [],
+    "src/main/services/provider-request-diagnostics.ts": [],
+    "src/main/services/qq-message-format.ts": [],
+    "src/main/services/qq-remote-bridge.ts": [],
+    "src/main/services/remote-command-policy.ts": [],
+    "src/main/services/remote-conversation-executor.ts": [],
+    "src/main/services/remote-tool-policy.ts": [],
+    "src/main/services/requirement-engineering-service.ts": [],
+    "src/main/services/requirement-prompt-factory.ts": [],
+    "src/main/services/requirement-run-repository.ts": [],
+    "src/main/services/run-registry.ts": [],
+    "src/main/services/runtime-diagnostics.ts": [],
+    "src/main/services/spec-service.ts": [],
+    "src/main/services/supplier-pricing-service.ts": [],
+    "src/main/services/task-artifact-service.ts": [],
+    "src/main/services/task-execution-queue.ts": [],
+    "src/main/services/terminal-panel-controller.ts": [],
+    "src/main/services/terminal-service.ts": [],
+    "src/main/services/usage-pricing-service.ts": [],
+    "src/main/storage/active-plan-store.ts": [],
+    "src/main/storage/activity-log-store.ts": [],
+    "src/main/storage/agent-store.ts": [],
+    "src/main/storage/config-store.ts": [],
+    "src/main/storage/conversation-store.ts": [],
+    "src/main/storage/credential-store.ts": [],
+    "src/main/storage/index.ts": [],
+    "src/main/storage/plugin-store.ts": [],
+    "src/main/storage/project-index-store.ts": [],
+    "src/main/storage/qq-remote-store.ts": [],
+    "src/main/storage/runtime-kernel-store.ts": [],
+    "src/main/storage/runtime-memory-store.ts": [],
+    "src/main/storage/runtime-proposal-store.ts": [],
+    "src/main/storage/runtime-run-store.ts": [],
+    "src/main/storage/task-run-store.ts": [],
+    "src/main/storage/workspace-store.ts": [],
+    "src/main/tools/blender-tools.ts": [],
+    "src/main/tools/browser-control-tools.ts": [],
+    "src/main/tools/desktop-mcp-tools.ts": [],
+    "src/main/tools/desktop-observation-store.ts": [],
+    "src/main/tools/desktop-session-tools.ts": [],
+    "src/main/tools/file-tools.ts": [],
+    "src/main/tools/form-fill-workflow.ts": [],
+    "src/main/tools/index.ts": [],
+    "src/main/tools/keyboard-tools.ts": [],
+    "src/main/tools/model-pool-tools.ts": [],
+    "src/main/tools/mouse-tools.ts": [],
+    "src/main/tools/powershell-runner.ts": [],
+    "src/main/tools/project-index-tools.ts": [],
+    "src/main/tools/runtime-diagnostic-tools.ts": [],
+    "src/main/tools/runtime-inspection-tools.ts": [],
+    "src/main/tools/runtime-proposal-tools.ts": [],
+    "src/main/tools/search-tools.ts": [],
+    "src/main/tools/terminal-tools.ts": [],
+    "src/main/tools/web-tools.ts": [],
+    "src/main/tools/web-url-policy.ts": [],
+    "src/main/utils/error-handler.ts": [],
+    "src/main/window.ts": [],
+    "src/preload/index.ts": [],
+    "src/renderer/App.tsx": [],
+    "src/renderer/assets.d.ts": [],
+    "src/renderer/components/ErrorBoundary.tsx": [],
+    "src/renderer/components/activity/ActivityPanel.tsx": [],
+    "src/renderer/components/agents/AgentEditor.tsx": [],
+    "src/renderer/components/agents/AgentManagementWorkspace.tsx": [],
+    "src/renderer/components/agents/AgentManagerDialog.tsx": [],
+    "src/renderer/components/agents/AgentSelector.tsx": [],
+    "src/renderer/components/agents/AgentTokenEstimatePanel.tsx": [],
+    "src/renderer/components/agents/ModelAccessPanel.tsx": [],
+    "src/renderer/components/agents/OutputFormatPanel.tsx": [],
+    "src/renderer/components/agents/ToolAccessPanel.tsx": [],
+    "src/renderer/components/chat/ChatPanel.tsx": [],
+    "src/renderer/components/chat/ExecutionMonitor.tsx": [],
+    "src/renderer/components/chat/GoalConfirmationCard.tsx": [],
+    "src/renderer/components/chat/GoalExecutionCard.tsx": [],
+    "src/renderer/components/chat/InputBar.tsx": [],
+    "src/renderer/components/chat/MessageBubble.tsx": [],
+    "src/renderer/components/chat/MessageList.tsx": [],
+    "src/renderer/components/chat/ReferenceImagePreview.tsx": [],
+    "src/renderer/components/chat/RequirementClarificationCard.tsx": [],
+    "src/renderer/components/chat/TeamCollaborationPanel.tsx": [],
+    "src/renderer/components/chat/ToolCallView.tsx": [],
+    "src/renderer/components/chat/WelcomeScreen.tsx": [],
+    "src/renderer/components/cost/CostCenter.tsx": [],
+    "src/renderer/components/editor/CodeEditor.tsx": [],
+    "src/renderer/components/editor/FileExplorer.tsx": [],
+    "src/renderer/components/editor/ProjectNavigator.tsx": [],
+    "src/renderer/components/goal/GoalInput.tsx": [],
+    "src/renderer/components/goal/GoalProgress.tsx": [],
+    "src/renderer/components/layout/AppTitlebar.tsx": [],
+    "src/renderer/components/settings/EnvironmentRulesPanel.tsx": [],
+    "src/renderer/components/settings/ModelPoolPanel.tsx": [],
+    "src/renderer/components/settings/PluginCenter.tsx": [],
+    "src/renderer/components/settings/RuntimeIntrospectionPanel.tsx": [],
+    "src/renderer/components/settings/SettingsDialog.tsx": [],
+    "src/renderer/components/sidebar/ConversationList.tsx": [],
+    "src/renderer/components/sidebar/ModeSelector.tsx": [],
+    "src/renderer/components/sidebar/Sidebar.tsx": [],
+    "src/renderer/components/specs/SpecParameterForm.tsx": [],
+    "src/renderer/components/specs/SpecSelector.tsx": [],
+    "src/renderer/components/symposium/SymposiumWorkspace.tsx": [],
+    "src/renderer/components/task-board/TaskBoard.tsx": [],
+    "src/renderer/components/task-board/TaskCard.tsx": [],
+    "src/renderer/components/tasks/TaskArtifactCenter.tsx": [],
+    "src/renderer/components/tasks/TaskWorkspacePanel.tsx": [],
+    "src/renderer/components/terminal/TerminalPanel.tsx": [],
+    "src/renderer/components/ui/Badge.tsx": [],
+    "src/renderer/components/ui/Button.tsx": [],
+    "src/renderer/components/ui/Dialog.tsx": [],
+    "src/renderer/components/ui/Input.tsx": [],
+    "src/renderer/components/ui/ScrollArea.tsx": [],
+    "src/renderer/components/ui/Select.tsx": [],
+    "src/renderer/components/ui/Separator.tsx": [],
+    "src/renderer/components/ui/Tabs.tsx": [],
+    "src/renderer/components/ui/Textarea.tsx": [],
+    "src/renderer/hooks/use-chat-attachments.ts": [],
+    "src/renderer/hooks/use-conversation.ts": [],
+    "src/renderer/hooks/use-ipc.ts": [],
+    "src/renderer/hooks/use-streaming.ts": [],
+    "src/renderer/index.css": [],
+    "src/renderer/index.html": [],
+    "src/renderer/lib/chat-attachments.ts": [],
+    "src/renderer/lib/chat-commands.ts": [],
+    "src/renderer/lib/collapse-tool-history.ts": [],
+    "src/renderer/lib/goal-event.ts": [],
+    "src/renderer/lib/ipc-client.ts": [],
+    "src/renderer/lib/markdown-display.ts": [],
+    "src/renderer/lib/provider-profile.ts": [],
+    "src/renderer/lib/runtime-introspection.ts": [],
+    "src/renderer/lib/team-routing.ts": [],
+    "src/renderer/lib/ui-copy.ts": [],
+    "src/renderer/lib/utils.ts": [],
+    "src/renderer/main.tsx": [],
+    "src/renderer/stores/use-activity-log-store.ts": [],
+    "src/renderer/stores/use-agent-store.ts": [],
+    "src/renderer/stores/use-app-store.ts": [],
+    "src/renderer/stores/use-chat-store.ts": [],
+    "src/renderer/stores/use-symposium-store.ts": [],
+    "src/renderer/stores/use-task-store.ts": [],
+    "src/renderer/stores/use-workspace-store.ts": [],
+    "src/shared/constants.ts": [],
+    "src/shared/goal-step-handoff.ts": [],
+    "src/shared/ipc-channels.ts": [],
+    "src/shared/ipc-contract.ts": [],
+    "src/shared/plugin-marketplace.ts": [],
+    "src/shared/terminal-session.ts": [],
+    "src/shared/tool-catalog.ts": [],
+    "src/shared/types/active-plan.ts": [],
+    "src/shared/types/activity.ts": [],
+    "src/shared/types/agent-token-estimate.ts": [],
+    "src/shared/types/agent.ts": [],
+    "src/shared/types/automation.ts": [],
+    "src/shared/types/conversation.ts": [],
+    "src/shared/types/cost.ts": [],
+    "src/shared/types/environment-rules.ts": [],
+    "src/shared/types/execution-protocol.ts": [],
+    "src/shared/types/file-access.ts": [],
+    "src/shared/types/git.ts": [],
+    "src/shared/types/index.ts": [],
+    "src/shared/types/model-pool.ts": [],
+    "src/shared/types/network.ts": [],
+    "src/shared/types/pdf-parse.d.ts": [],
+    "src/shared/types/plugin.ts": [],
+    "src/shared/types/project-index.ts": [],
+    "src/shared/types/provider.ts": [],
+    "src/shared/types/qq.ts": [],
+    "src/shared/types/requirement-engineering.ts": [],
+    "src/shared/types/runtime-evolution.ts": [],
+    "src/shared/types/runtime-kernel.ts": [],
+    "src/shared/types/runtime-memory.ts": [],
+    "src/shared/types/runtime-run.ts": [],
+    "src/shared/types/spec.ts": [],
+    "src/shared/types/symposium.ts": [],
+    "src/shared/types/task.ts": [],
+    "src/shared/types/workspace.ts": [],
+    "step3_paper_to_desktop.py": [],
+    "step3_write_doc.py": [],
+    "step4_reverify.py": [],
+    "step4_verify.py": [],
+    "step5_md_to_docx.py": [],
+    "step5_readback.py": [],
+    "step5_verify_keywords.py": [],
+    "step6_docx_out.txt": [],
+    "step6_final_verify.py": [],
+    "step6_out.txt": [],
+    "step6_readback.txt": [],
+    "step6_verify_docx.py": [],
+    "step7_verify_report.py": [],
+    "tests/unit/active-plan-store.test.ts": [],
+    "tests/unit/agent-os-scheduler.test.ts": [],
+    "tests/unit/agent-runner-adaptive-budget.test.ts": [],
+    "tests/unit/chat-attachments.test.ts": [],
+    "tests/unit/chat-commands.test.ts": [],
+    "tests/unit/chat-stream-store.test.ts": [],
+    "tests/unit/collapse-tool-history.test.ts": [],
+    "tests/unit/context.test.ts": [],
+    "tests/unit/document-attachment-service.test.ts": [],
+    "tests/unit/effective-agent-config.test.ts": [],
+    "tests/unit/environment-profile-service.test.ts": [],
+    "tests/unit/execution-protocol.test.ts": [],
+    "tests/unit/expert-task-cancellation.test.ts": [],
+    "tests/unit/external-url-policy.test.ts": [],
+    "tests/unit/file-service.test.ts": [],
+    "tests/unit/file-tools.test.ts": [],
+    "tests/unit/goal-step-budget.test.ts": [],
+    "tests/unit/goal-step-conversation.test.ts": [],
+    "tests/unit/ipc-contract.test.ts": [],
+    "tests/unit/markdown-display.test.ts": [],
+    "tests/unit/model-router.test.ts": [],
+    "tests/unit/plugin-marketplace.test.ts": [],
+    "tests/unit/project-index-service.test.ts": [],
+    "tests/unit/provider-errors.test.ts": [],
+    "tests/unit/provider-profile.test.ts": [],
+    "tests/unit/provider-request-diagnostics.test.ts": [],
+    "tests/unit/providers.test.ts": [],
+    "tests/unit/qq-message-format.test.ts": [],
+    "tests/unit/remote-command-policy.test.ts": [],
+    "tests/unit/requirement-engineering-integrity.test.ts": [],
+    "tests/unit/requirement-run-repository.test.ts": [],
+    "tests/unit/requirement-workspace-package.test.ts": [],
+    "tests/unit/run-registry.test.ts": [],
+    "tests/unit/runtime-diagnostics.test.ts": [],
+    "tests/unit/runtime-inspection-tools.test.ts": [],
+    "tests/unit/runtime-introspection.test.ts": [],
+    "tests/unit/runtime-kernel-store.test.ts": [],
+    "tests/unit/runtime-memory-store.test.ts": [],
+    "tests/unit/runtime-proposal-store.test.ts": [],
+    "tests/unit/runtime-proposal-tools.test.ts": [],
+    "tests/unit/runtime-run-store.test.ts": [],
+    "tests/unit/security-boundary-smoke.test.ts": [],
+    "tests/unit/spec-service.test.ts": [],
+    "tests/unit/storage.test.ts": [],
+    "tests/unit/supplier-pricing-service.test.ts": [],
+    "tests/unit/task-artifact-service.test.ts": [],
+    "tests/unit/task-execution-queue.test.ts": [],
+    "tests/unit/task-progress.test.ts": [],
+    "tests/unit/task-store-isolation.test.ts": [],
+    "tests/unit/team-routing.test.ts": [],
+    "tests/unit/terminal-tool-policy.test.ts": [],
+    "tests/unit/tool-catalog.test.ts": [],
+    "tests/unit/tool-history.test.ts": [],
+    "tests/unit/tool-loading.test.ts": [],
+    "tests/unit/tool-registry.test.ts": [],
+    "tests/unit/tool-result-context.test.ts": [],
+    "tests/unit/trusted-ipc-registration.test.ts": [],
+    "tests/unit/trusted-ipc.test.ts": [],
+    "tests/unit/usage-pricing-service.test.ts": [],
+    "tests/unit/web-url-policy.test.ts": [],
+    "tests/unit/workspace-store.test.ts": [],
+    "tmp/house_model.blend": [],
+    "tmp/house_model.blend1": [],
+    "tsconfig.json": [],
+    "tsconfig.node.json": [],
+    "tsconfig.web.json": [],
+    "verify_draft.py": [],
+    "vitest.config.ts": [],
+    "启动 Eva.bat": [],
+    "论文草稿.md": []
+  }
+}

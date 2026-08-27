@@ -50,6 +50,7 @@ export const IPC = {
   PLUGIN_LOCAL_SEARXNG_STATUS: 'plugin:local-searxng-status',
   PLUGIN_LOCAL_SEARXNG_INSTALL: 'plugin:local-searxng-install',
   PLUGIN_LOCAL_SEARXNG_STOP: 'plugin:local-searxng-stop',
+  PLUGIN_TEST_CONNECTION: 'plugin:test-connection',
 
   // Requirement engineering workflow
   REQUIREMENT_RUN_LIST: 'requirement:run-list',

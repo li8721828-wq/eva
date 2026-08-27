@@ -1,4 +1,5 @@
-import { app, ipcMain, dialog, BrowserWindow, clipboard, Menu, shell } from 'electron'
+import { app, dialog, BrowserWindow, clipboard, Menu, shell } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { SpecTemplate } from '../../shared/types/spec'
 import type { ProviderConfigEntry } from '../storage/config-store'
@@ -29,6 +30,27 @@ const CLIPBOARD_IMAGE_TYPES: Record<string, { extension: string; mediaType: 'ima
   'image/jpeg': { extension: 'jpg', mediaType: 'image/jpeg' },
   'image/png': { extension: 'png', mediaType: 'image/png' },
   'image/webp': { extension: 'webp', mediaType: 'image/webp' },
+}
+const RENDERER_CONFIG_KEYS = new Set([
+  'theme', 'language', 'sidebarCollapsed', 'sidebarWidth', 'rightPanelWidth',
+  'taskNoteHeight', 'explorerHeight', 'workspacePath', 'fileAccessGrants',
+  'rightPanelVisible', 'terminalVisible', 'terminalHeight', 'terminalWidth',
+  'primaryChatAgentId', 'activeProviderId', 'activeModel', 'environmentRules',
+  'automation',
+])
+
+function assertRendererConfigKey(key: string): void {
+  if (!RENDERER_CONFIG_KEYS.has(key)) throw new Error(`Configuration key is not available to the renderer: ${key}`)
+}
+
+function rendererConfig(): Record<string, unknown> {
+  const config = getStorage().config.getAll() as unknown as Record<string, unknown>
+  return Object.fromEntries([...RENDERER_CONFIG_KEYS].map((key) => [key, config[key]]))
+}
+
+function isWithinDirectory(candidate: string, directory: string): boolean {
+  const relative = path.relative(directory, candidate)
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)
 }
 
 function recordWorkspaceActivity(
@@ -74,12 +96,8 @@ export function registerSystemHandlers(
   // ── File system handlers ──────────────────────────────────────────────────
 
   ipcMain.handle(IPC.FILE_READ, async (event, filePath: string, workspacePath?: string): Promise<string> => {
-    let content: string
-    if (fileService && workspacePath) {
-      content = await fileService.readFile(filePath, workspacePath)
-    } else {
-      content = fs.readFileSync(filePath, 'utf-8')
-    }
+    if (!fileService || !workspacePath) throw new Error('Reading files requires an authorized workspace.')
+    const content = await fileService.readFile(filePath, workspacePath)
     recordWorkspaceActivity(event, { category: 'file', action: 'file.read', status: 'success', summary: `Read ${path.basename(filePath)}.` }, workspacePath)
     return content
   })
@@ -87,11 +105,8 @@ export function registerSystemHandlers(
   ipcMain.handle(
     IPC.FILE_WRITE,
     async (event, filePath: string, content: string, workspacePath?: string): Promise<void> => {
-      if (fileService && workspacePath) {
-        await fileService.writeFile(filePath, content, workspacePath)
-      } else {
-        fs.writeFileSync(filePath, content, 'utf-8')
-      }
+      if (!fileService || !workspacePath) throw new Error('Writing files requires an authorized workspace.')
+      await fileService.writeFile(filePath, content, workspacePath)
       recordWorkspaceActivity(event, { category: 'file', action: 'file.write', status: 'success', summary: `Wrote ${path.basename(filePath)}.` }, workspacePath)
     }
   )
@@ -99,54 +114,16 @@ export function registerSystemHandlers(
   ipcMain.handle(
     IPC.FILE_TREE,
     async (_event, dirPath: string, workspacePath?: string): Promise<FileEntry[]> => {
-      if (fileService && workspacePath) {
-        return fileService.listDirectory(dirPath, workspacePath)
-      }
-      if (!fs.existsSync(dirPath)) return []
-      if (!fs.statSync(dirPath).isDirectory()) return []
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true })
-      return entries
-        .filter((e) => !e.name.startsWith('.'))
-        .map((e) => ({
-          name: e.name,
-          path: path.join(dirPath, e.name),
-          isDirectory: e.isDirectory(),
-        }))
-        .sort((a, b) => {
-          if (a.isDirectory && !b.isDirectory) return -1
-          if (!a.isDirectory && b.isDirectory) return 1
-          return a.name.localeCompare(b.name)
-        })
+      if (!fileService || !workspacePath) throw new Error('Browsing files requires an authorized workspace.')
+      return fileService.listDirectory(dirPath, workspacePath)
     }
   )
 
   ipcMain.handle(
     IPC.FILE_SEARCH,
     async (_event, query: string, workspacePath?: string): Promise<string[]> => {
-      if (fileService && workspacePath) {
-        return fileService.searchFiles(query, workspacePath)
-      }
-      const results: string[] = []
-      function search(dir: string): void {
-        if (results.length >= 50) return
-        try {
-          const entries = fs.readdirSync(dir, { withFileTypes: true })
-          for (const entry of entries) {
-            if (results.length >= 50) return
-            const fullPath = path.join(dir, entry.name)
-            if (entry.name.toLowerCase().includes(query.toLowerCase())) {
-              results.push(fullPath)
-            }
-            if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
-              search(fullPath)
-            }
-          }
-        } catch {
-          // Ignore permission errors
-        }
-      }
-      if (workspacePath) search(workspacePath)
-      return results
+      if (!fileService || !workspacePath) throw new Error('Searching files requires an authorized workspace.')
+      return fileService.searchFiles(query, workspacePath)
     }
   )
 
@@ -170,9 +147,12 @@ export function registerSystemHandlers(
     const mediaType = PREVIEW_IMAGE_TYPES[path.extname(filePath).toLowerCase()]
     if (!mediaType) return null
     try {
-      const stats = await fs.promises.stat(filePath)
+      const clipboardDirectory = path.join(app.getPath('userData'), 'clipboard-images')
+      const resolvedPath = await fs.promises.realpath(filePath)
+      if (!isWithinDirectory(resolvedPath, clipboardDirectory)) return null
+      const stats = await fs.promises.stat(resolvedPath)
       if (!stats.isFile() || stats.size > MAX_PREVIEW_IMAGE_BYTES) return null
-      const base64 = await fs.promises.readFile(filePath, 'base64')
+      const base64 = await fs.promises.readFile(resolvedPath, 'base64')
       return `data:${mediaType};base64,${base64}`
     } catch {
       return null
@@ -184,22 +164,19 @@ export function registerSystemHandlers(
     async (event, input: { path: string; workspacePath?: string; isDirectory: boolean }): Promise<void> => {
       if (!input?.path) throw new Error('A file path is required.')
       const workspacePath = input.workspacePath || ''
-      const fileInfo = fileService && workspacePath
-        ? await fileService.getFileInfo(input.path, workspacePath)
-        : fs.statSync(input.path)
-      const isDirectory = 'isDirectory' in fileInfo ? fileInfo.isDirectory : fileInfo.isDirectory()
+      if (!fileService || !workspacePath) throw new Error('Opening a file context menu requires an authorized workspace.')
+      const fileInfo = await fileService.getFileInfo(input.path, workspacePath)
+      const isDirectory = fileInfo.isDirectory
       // Task artifacts store paths relative to their workspace. FileExplorer
       // passes absolute paths, but both need the same native context menu.
-      const requestedPath = workspacePath && !path.isAbsolute(input.path)
+      const requestedPath = !path.isAbsolute(input.path)
         ? path.resolve(workspacePath, input.path)
         : input.path
       const resolvedPath = await fs.promises.realpath(requestedPath)
       const fileName = path.basename(resolvedPath)
       const content = isDirectory
         ? null
-        : fileService && workspacePath
-          ? await fileService.readFile(input.path, workspacePath)
-          : await fs.promises.readFile(resolvedPath, 'utf8')
+        : await fileService.readFile(input.path, workspacePath)
       const menu = Menu.buildFromTemplate([
         { label: '在文件资源管理器中显示', click: () => shell.showItemInFolder(resolvedPath) },
         { type: 'separator' },
@@ -257,15 +234,17 @@ export function registerSystemHandlers(
 
   // Config handlers
   ipcMain.handle(IPC.CONFIG_GET, async (_event, key: string): Promise<unknown> => {
+    assertRendererConfigKey(key)
     return getStorage().config.get(key as never)
   })
 
   ipcMain.handle(IPC.CONFIG_SET, async (_event, key: string, value: unknown): Promise<void> => {
+    assertRendererConfigKey(key)
     getStorage().config.set(key as never, value as never)
   })
 
   ipcMain.handle(IPC.CONFIG_GET_ALL, async (): Promise<unknown> => {
-    return getStorage().config.getAll()
+    return rendererConfig()
   })
 
   ipcMain.handle(IPC.NETWORK_GET_CONFIG, (): NetworkConfig => getStorage().config.get('network'))

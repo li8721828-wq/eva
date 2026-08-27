@@ -11,21 +11,14 @@ import { registerRuntimeProposalHandlers } from './runtime-proposal'
 import { registerRuntimeKernelHandlers } from './runtime-kernel'
 import { registerActivePlanHandlers } from './active-plan'
 import { registerRequirementEngineeringHandlers } from './requirement-engineering'
-import type { FileService, TerminalService, ToolRegistry } from '../tools'
-import type { ProviderRegistry } from '../providers'
-import type { ProjectIndexService } from '../services/project-index-service'
+import type { ApplicationServices } from '../services/application-services'
 
-export interface Services {
-  fileService: FileService
-  terminalService: TerminalService
-  toolRegistry: ToolRegistry
-  providerRegistry: ProviderRegistry
-  projectIndexService?: ProjectIndexService
-}
+export type Services = ApplicationServices
 
 export function registerAllIpcHandlers(services?: Services): void {
   const chatServices: ChatServices | undefined = services
     ? {
+        storage: services.storage,
         toolRegistry: services.toolRegistry,
         providerRegistry: services.providerRegistry,
         fileService: services.fileService,
@@ -33,6 +26,15 @@ export function registerAllIpcHandlers(services?: Services): void {
       }
     : undefined
 
+  const taskServices: TaskServices | undefined = services
+    ? {
+        storage: services.storage,
+        toolRegistry: services.toolRegistry,
+        providerRegistry: services.providerRegistry,
+        fileService: services.fileService,
+        terminalService: services.terminalService,
+      }
+    : undefined
   registerConversationHandlers(chatServices)
   registerWorkspaceHandlers(services?.projectIndexService)
   registerActivityHandlers()
@@ -41,17 +43,9 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerActivePlanHandlers()
   registerAgentHandlers(services?.toolRegistry)
   registerPluginHandlers()
-  if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService)
+  if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService, services.storage)
   registerGitHandlers()
   registerCostHandlers()
-  const taskServices: TaskServices | undefined = services
-    ? {
-        toolRegistry: services.toolRegistry,
-        providerRegistry: services.providerRegistry,
-        fileService: services.fileService,
-        terminalService: services.terminalService,
-      }
-    : undefined
   registerTaskHandlers(taskServices)
   registerSystemHandlers(services?.fileService, services?.terminalService, services?.providerRegistry)
 }

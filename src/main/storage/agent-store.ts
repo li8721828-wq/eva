@@ -161,7 +161,10 @@ function normalizeAgent(value: unknown): AgentConfig {
     outputFontSize: raw.outputFontSize || 'medium',
     outputTextEffect: raw.outputTextEffect || 'none',
     markdownRenderer: raw.markdownRenderer === 'classic' || raw.markdownRenderer === 'streamdown' ? raw.markdownRenderer : 'enhanced',
-    showThinking: Boolean(raw.showThinking),
+    processOutput: raw.processOutput === 'off' || raw.processOutput === 'compact' || raw.processOutput === 'detailed'
+      ? raw.processOutput
+      : raw.showThinking ? 'detailed' : 'compact',
+    showThinking: raw.processOutput === 'detailed' || (!raw.processOutput && Boolean(raw.showThinking)),
     model: typeof raw.model === 'string' ? raw.model : 'gpt-4o',
     providerId: typeof raw.providerId === 'string' ? raw.providerId : 'openai',
     modelCandidates: Array.isArray(raw.modelCandidates) ? raw.modelCandidates : [],

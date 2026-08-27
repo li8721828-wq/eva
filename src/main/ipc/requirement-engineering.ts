@@ -1,12 +1,13 @@
-import { ipcMain } from 'electron'
+import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from '../services/project-index-service'
+import type { StorageManager } from '../storage'
 import type { SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { RequirementEngineeringService } from '../services/requirement-engineering-service'
 
-export function registerRequirementEngineeringHandlers(providers: ProviderRegistry, projectIndex?: ProjectIndexService): void {
-  const service = new RequirementEngineeringService(providers, projectIndex)
+export function registerRequirementEngineeringHandlers(providers: ProviderRegistry, projectIndex: ProjectIndexService | undefined, storage: StorageManager): void {
+  const service = new RequirementEngineeringService(providers, projectIndex, { storage })
   ipcMain.handle(IPC.REQUIREMENT_RUN_LIST, async (_event, conversationId?: string) => service.list(conversationId))
   ipcMain.handle(IPC.REQUIREMENT_RUN_SUBMIT, async (event, input: SubmitRequirementInput) => {
     return service.submit(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))

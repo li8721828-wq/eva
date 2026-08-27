@@ -578,7 +578,6 @@ function disposeBrowserView(session: BrowserSession): void {
   if (session.disposed) return
   session.disposed = true
   if (!session.view.webContents.isDestroyed()) session.view.webContents.close()
-  session.view.destroy()
 }
 function getSession(value: unknown, conversationId?: string): BrowserSession { const id = stringParam(value, 'browserSessionId'); const session = sessions.get(id); if (!session) throw new Error('Browser session not found. Open a page first.'); if (session.ownerConversationId !== conversationId) throw new Error('This browser session belongs to a different conversation.'); return session }
 function parseAction(value: unknown): BrowserAction { if (value === 'open' || value === 'observe' || value === 'observe_visual' || value === 'interact' || value === 'close') return value; throw new Error('action must be open, observe, observe_visual, interact, or close.') }
