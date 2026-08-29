@@ -21,4 +21,28 @@ describe('RuntimeMemoryStore', () => {
       await fs.rm(dataDir, { recursive: true, force: true })
     }
   })
+
+  it('sanitizes truncated surrogate pairs from legacy memory before building context', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-runtime-memory-surrogate-'))
+    try {
+      await fs.writeFile(path.join(dataDir, 'runtime-memory.json'), JSON.stringify([{
+        id: 'legacy',
+        sourceKey: 'conversation:one:legacy',
+        kind: 'conversation-turn',
+        conversationId: 'one',
+        content: `Outcome: ${'x'.repeat(1_397)}${String.fromCharCode(0xd83c)}...`,
+        createdAt: 1,
+        updatedAt: 1,
+      }]), 'utf8')
+      const store = new RuntimeMemoryStore(dataDir)
+      const context = await store.buildContext('one')
+      for (let index = 0; index < context.length; index += 1) {
+        const code = context.charCodeAt(index)
+        if (code >= 0xd800 && code <= 0xdbff) expect(context.charCodeAt(index + 1)).toBeGreaterThanOrEqual(0xdc00)
+        if (code >= 0xdc00 && code <= 0xdfff) expect(context.charCodeAt(index - 1)).toBeGreaterThanOrEqual(0xd800)
+      }
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
+  })
 })

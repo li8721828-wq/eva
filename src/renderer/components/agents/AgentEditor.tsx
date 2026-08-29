@@ -53,6 +53,7 @@ export function AgentEditor({
   const [outputColor, setOutputColor] = useState<NonNullable<AgentConfig['outputColor']>>(agent?.outputColor || 'slate')
   const [outputFontSize, setOutputFontSize] = useState<NonNullable<AgentConfig['outputFontSize']>>(agent?.outputFontSize || 'medium')
   const [outputTextEffect, setOutputTextEffect] = useState<NonNullable<AgentConfig['outputTextEffect']>>(agent?.outputTextEffect || 'none')
+  const [allowEmojiSymbols, setAllowEmojiSymbols] = useState(Boolean(agent?.allowEmojiSymbols))
   const [markdownRenderer, setMarkdownRenderer] = useState<NonNullable<AgentConfig['markdownRenderer']>>(agent?.markdownRenderer || 'enhanced')
   const [providerId, setProviderId] = useState(agent?.providerId || defaultProviderId)
   const [model, setModel] = useState(agent?.model || defaultModel)
@@ -76,6 +77,7 @@ export function AgentEditor({
       setOutputColor(agent.outputColor || 'slate')
       setOutputFontSize(agent.outputFontSize || 'medium')
       setOutputTextEffect(agent.outputTextEffect || 'none')
+      setAllowEmojiSymbols(Boolean(agent.allowEmojiSymbols))
       setMarkdownRenderer(agent.markdownRenderer || 'enhanced')
       setProviderId(agent.providerId)
       setModel(agent.model)
@@ -137,6 +139,7 @@ export function AgentEditor({
       outputColor,
       outputFontSize,
       outputTextEffect,
+      allowEmojiSymbols,
       markdownRenderer,
       providerId,
       model,
@@ -222,6 +225,7 @@ export function AgentEditor({
         outputColor={outputColor}
         outputFontSize={outputFontSize}
         outputTextEffect={outputTextEffect}
+        allowEmojiSymbols={allowEmojiSymbols}
         markdownRenderer={markdownRenderer}
         processOutput={processOutput}
         onOutputFormatChange={setOutputFormat}
@@ -231,6 +235,7 @@ export function AgentEditor({
         onOutputColorChange={setOutputColor}
         onOutputFontSizeChange={setOutputFontSize}
         onOutputTextEffectChange={setOutputTextEffect}
+        onAllowEmojiSymbolsChange={setAllowEmojiSymbols}
         onMarkdownRendererChange={setMarkdownRenderer}
         onProcessOutputChange={setProcessOutput}
       />

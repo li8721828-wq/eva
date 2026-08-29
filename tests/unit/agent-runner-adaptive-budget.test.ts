@@ -374,7 +374,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(modelRequests[1].messages?.some((message) => message.content.includes('read_web_page'))).toBe(true)
     expect(events).toContainEqual(expect.objectContaining({
       type: 'tool_result',
-      toolResult: expect.objectContaining({ name: 'web_search', isError: true, result: expect.stringContaining('read_web_page') }),
+      toolResult: expect.objectContaining({ name: 'web_search', isError: false, result: expect.stringContaining('read_web_page') }),
     }))
     expect(events.find((event) => event.type === 'done')?.content).toBe('The report was reviewed.')
   })
@@ -566,7 +566,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(requestedTools[0]).toEqual(['execute_command'])
   })
 
-  it('discovers a deferred tool and keeps the loaded tools available for synthesis', async () => {
+  it('keeps all configured tools available for direct execution and synthesis', async () => {
     const registry = new ToolRegistry()
     const toolNames = ['read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'execute_command', 'inspect_runtime', 'web_search', 'read_web_page', 'desktop_observe', 'blender_inspect_scene']
     for (const name of toolNames) {
@@ -583,10 +583,8 @@ describe('AgentRunner adaptive tool budget', () => {
         request += 1
         requestedTools.push(params.tools?.map((tool) => tool.name))
         return request === 1
-          ? chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'find-runtime', name: 'tool_search', arguments: JSON.stringify({ query: 'inspect runtime diagnostics' }) }] })
-          : request === 2
-            ? chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'inspect', name: 'inspect_runtime', arguments: '{}' }] })
-            : chunks({ content: 'Runtime inspection complete.', finishReason: 'stop' })
+          ? chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'inspect', name: 'inspect_runtime', arguments: '{}' }] })
+          : chunks({ content: 'Runtime inspection complete.', finishReason: 'stop' })
       },
     }
     const runner = new AgentRunner({
@@ -601,9 +599,8 @@ describe('AgentRunner adaptive tool budget', () => {
       // Exhaust the event stream.
     }
 
-    expect(requestedTools[0]).toEqual(['read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'execute_command', 'tool_search'])
-    expect(requestedTools[1]).toContain('inspect_runtime')
-    expect(requestedTools[2]).toContain('inspect_runtime')
+    expect(requestedTools[0]).toEqual(toolNames)
+    expect(requestedTools[1]).toEqual(toolNames)
   })
 
   it('falls back to normal output when slow reasoning is unavailable', async () => {

@@ -161,11 +161,14 @@ export function PluginCenter() {
   }
 
   const testConnection = async () => {
+    const plugin = installed.find((item) => item.id === configuringId)
+    if (!plugin) return
     const endpoint = configValues.endpoint?.trim() || ''
+    const settings = plugin.id === 'searxng-search' ? { endpoint } : { apiKey: configValues.apiKey?.trim() || '' }
     setConnectionTesting(true)
     setConnectionTest(null)
     try {
-      const result = await window.eva.plugins.testConnection(endpoint)
+      const result = await window.eva.plugins.testConnection(plugin.id, settings)
       setConnectionTest(result)
     } catch (error) {
       setConnectionTest({ reachable: false, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message: error instanceof Error ? error.message : 'Unable to test the endpoint.' })
@@ -347,6 +350,21 @@ export function PluginCenter() {
                     </div>
                     {connectionTest ? <div className={cn('mt-3 rounded-lg px-3 py-2.5 text-xs', connectionTest.apiValid && connectionTest.unresponsiveEngines.length === 0 ? 'bg-emerald-50 text-emerald-700' : connectionTest.reachable ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-700')} role="status">{connectionTest.message}</div> : null}
                     {localSearxngStatus?.dockerAvailable === false ? <p className="mt-3 text-xs leading-5 text-amber-700">Docker Desktop must be installed and running before Eva can install Local Search.</p> : null}
+                  </section>
+                ) : null}
+                {plugin.id === 'tavily-search' || plugin.id === 'brave-search' ? (
+                  <section className="mt-6 border-t border-zinc-200 pt-5" aria-label="Test search connection">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <h5 className="text-sm font-semibold text-zinc-900">Test connection</h5>
+                        <p className="mt-1 text-xs leading-5 text-zinc-500">Runs one minimal search request with the current key. The key is not saved by this test.</p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={() => void testConnection()} disabled={connectionTesting || !configValues.apiKey?.trim()}>
+                        {connectionTesting ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+                        Test connection
+                      </Button>
+                    </div>
+                    {connectionTest ? <div className={cn('mt-3 rounded-lg px-3 py-2.5 text-xs', connectionTest.apiValid ? 'bg-emerald-50 text-emerald-700' : connectionTest.reachable ? 'bg-amber-50 text-amber-800' : 'bg-red-50 text-red-700')} role="status">{connectionTest.message}</div> : null}
                   </section>
                 ) : null}
                 <div className="mt-5 flex justify-end gap-2"><Button variant="outline" onClick={() => setConfiguringId(null)}>Cancel</Button><Button onClick={() => void saveConfiguration(plugin)} disabled={workingId !== null}>{workingId === plugin.id ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}Save settings</Button></div>

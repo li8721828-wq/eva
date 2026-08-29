@@ -141,6 +141,7 @@ export function MessageList({ className }: MessageListProps) {
   const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({})
   const itemElementsRef = useRef(new Map<string, HTMLDivElement>())
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
+  const streamingElementRef = useRef<HTMLDivElement | null>(null)
   const scrollIndicatorTimerRef = useRef<number | null>(null)
   const [scrollIndicatorVisible, setScrollIndicatorVisible] = useState(false)
   const [scrollIndicator, setScrollIndicator] = useState<ScrollIndicator>({ top: 0, height: 100 })
@@ -231,6 +232,9 @@ export function MessageList({ className }: MessageListProps) {
     if (!scrollArea) return false
     scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior })
     const nextScrollTop = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)
+    // Auto-follow must settle against the current physical height immediately;
+    // the next frame will correct it again if Markdown or a tool row expands.
+    if (behavior === 'auto') scrollArea.scrollTop = nextScrollTop
     lastScrollTopRef.current = nextScrollTop
     setScrollTop(nextScrollTop)
     updateScrollAffordances(scrollArea, behavior === 'smooth')
@@ -420,7 +424,14 @@ export function MessageList({ className }: MessageListProps) {
         let changed = false
         const next = { ...previous }
         for (const entry of entries) {
-          const id = (entry.target as HTMLElement).dataset.messageItemId
+          const target = entry.target as HTMLElement
+          if (target.dataset.streamingItem === 'true') {
+            if (followStreamRef.current && pendingRestoreRef.current !== currentConversationId) {
+              requestAnimationFrame(() => scrollToBottom('auto'))
+            }
+            continue
+          }
+          const id = target.dataset.messageItemId
           if (!id) continue
           const height = Math.ceil(entry.contentRect.height)
           if (height > 0 && next[id] !== height) {
@@ -449,6 +460,13 @@ export function MessageList({ className }: MessageListProps) {
       itemElementsRef.current.set(id, element)
       resizeObserverRef.current?.observe(element)
     }
+  }, [])
+
+  const attachStreamingRef = useCallback((element: HTMLDivElement | null) => {
+    const previousElement = streamingElementRef.current
+    if (previousElement && previousElement !== element) resizeObserverRef.current?.unobserve(previousElement)
+    streamingElementRef.current = element
+    if (element) resizeObserverRef.current?.observe(element)
   }, [])
 
   useEffect(() => {
@@ -590,19 +608,19 @@ export function MessageList({ className }: MessageListProps) {
     }
   }, [currentConversationId, itemLayout.totalHeight])
 
-  useEffect(() => {
-    // Tool state can update rapidly during desktop observation. Following on
-    // those updates kept resetting scrollTop near the bottom and made the
-    // rendered text visibly shake. Only follow newly streamed text.
+  useLayoutEffect(() => {
+    // Keep the reader pinned after any streamed surface changes, including
+    // tool rows and reasoning blocks that grow outside the virtual list.
     if (
       isStreaming &&
-    (streamingContent || streamingReasoningContent) &&
+      (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
       pendingRestoreRef.current !== currentConversationId &&
       followStreamRef.current
     ) {
-      scrollToBottom('auto')
+      const frame = requestAnimationFrame(() => scrollToBottom('auto'))
+      return () => cancelAnimationFrame(frame)
     }
-  }, [isStreaming, streamingContent, streamingReasoningContent])
+  }, [currentConversationId, isStreaming, streamingContent, streamingReasoningContent, streamingToolCalls.length, streamingExecutionTrace.length, streamingExecutionTimeline.length, streamingProgressUpdates.length])
 
   if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !isRequirementRunning) {
     return <WelcomeScreen className={className} />
@@ -725,23 +743,25 @@ export function MessageList({ className }: MessageListProps) {
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
         {isStreaming && (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) && (
-          <MessageBubble
-            isStreaming
-            message={{
-              id: `streaming-${currentConversationId || 'message'}`,
-              conversationId: currentConversationId || '',
-              role: 'assistant',
-              content: streamingContent,
-              agentId: streamingAgentId,
-              agentName: streamingAgentName,
-              reasoningContent: streamingReasoningContent || undefined,
-              toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-              executionTrace: streamingExecutionTrace.length > 0 ? streamingExecutionTrace : undefined,
-              executionTimeline: streamingExecutionTimeline.length > 0 ? streamingExecutionTimeline : undefined,
-              progressUpdates: streamingProgressUpdates.length > 0 ? streamingProgressUpdates : undefined,
-              timestamp: Date.now(),
-            }}
-          />
+          <div ref={attachStreamingRef} data-streaming-item="true" className="pb-9">
+            <MessageBubble
+              isStreaming
+              message={{
+                id: `streaming-${currentConversationId || 'message'}`,
+                conversationId: currentConversationId || '',
+                role: 'assistant',
+                content: streamingContent,
+                agentId: streamingAgentId,
+                agentName: streamingAgentName,
+                reasoningContent: streamingReasoningContent || undefined,
+                toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
+                executionTrace: streamingExecutionTrace.length > 0 ? streamingExecutionTrace : undefined,
+                executionTimeline: streamingExecutionTimeline.length > 0 ? streamingExecutionTimeline : undefined,
+                progressUpdates: streamingProgressUpdates.length > 0 ? streamingProgressUpdates : undefined,
+                timestamp: Date.now(),
+              }}
+            />
+          </div>
         )}
         </div>
       </ScrollArea>

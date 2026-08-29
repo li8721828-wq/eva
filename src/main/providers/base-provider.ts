@@ -1,4 +1,5 @@
 import type { ChatParams, ChatChunk, ToolDefinition, ChatMessageInput } from '../../shared/types/provider'
+import { sanitizeUnicode } from '../utils/unicode'
 
 export interface LLMProvider {
   readonly id: string
@@ -72,8 +73,8 @@ export function toOpenAIMessages(messages: ChatMessageInput[]): any[] {
     const base: any = {
       role: msg.role,
       content: imageParts.length > 0
-        ? [{ type: 'text', text: msg.content || '' }, ...imageParts]
-        : msg.content || '',
+        ? [{ type: 'text', text: sanitizeUnicode(msg.content || '') }, ...imageParts]
+        : sanitizeUnicode(msg.content || ''),
     }
 
     // If assistant message has tool_calls

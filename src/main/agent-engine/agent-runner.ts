@@ -18,7 +18,6 @@ import { modelHealthService } from '../services/model-health-service'
 import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../services/usage-pricing-service'
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
-import { createDeferredToolState, formatToolSearchResult, searchDeferredTools, TOOL_SEARCH_DEFINITION } from './tool-loading'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -220,8 +219,12 @@ export class AgentRunner {
 
       // Tool definitions filtered by agent's allowed tool list
       const poolTool = agentConfig.tools.includes('delegate_to_model_pool') ? modelPoolDelegationTool(this.config.modelPools, agentConfig.modelPoolIds) : undefined
+      const mcpToolNames = agentConfig.tools.includes('mcp:*')
+        ? toolRegistry.getAll().filter((tool) => tool.definition.name.startsWith('mcp__')).map((tool) => tool.definition.name)
+        : []
       const allToolDefs: ToolDefinition[] = [
-        ...toolRegistry.getDefinitionsByNames(agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool')),
+        ...toolRegistry.getDefinitionsByNames([...agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool' && name !== 'mcp:*'), ...mcpToolNames]),
+        ...(toolRegistry.has('manage_personal_preferences') && !agentConfig.tools.includes('manage_personal_preferences') ? toolRegistry.getDefinitionsByNames(['manage_personal_preferences']) : []),
         ...(poolTool ? [poolTool] : []),
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
         ...(this.config.runTask ? [TASK_TOOL] : []),
@@ -284,19 +287,16 @@ export class AgentRunner {
       let rollingToolEvidence = ''
       const previousNormalToolBatches = new Set<string>()
 
-      // Claude Code-style tool loading: a small core remains available while
-      // larger catalogs are discovered on demand and retained once loaded.
-      const deferredState = createDeferredToolState(allToolDefs)
-      const loadedDeferredToolNames = new Set<string>()
-      let activeToolDefs = deferredState.initial
-      let deferredToolDefs = deferredState.deferred
+      // Progressive tool disclosure is intentionally disabled. The active
+      // agent's configured capabilities are all visible to the model, so an
+      // intent heuristic can never prevent a legitimate tool call.
+      const activeToolDefs = allToolDefs
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
         activeToolDefs,
-        deferredToolDefs,
       )
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
@@ -306,7 +306,6 @@ export class AgentRunner {
         fullFilesystemAccess,
         maxContextTokens: getModelInputBudgetTokens(agentConfig.model),
         tools: activeToolDefs,
-        deferredTools: deferredToolDefs,
       })
 
       // ── Tool execution loop ─────────────────────────────────────────────────
@@ -460,12 +459,15 @@ export class AgentRunner {
           if (toolCall.name === 'web_search' && mustReadWebPageBeforeMoreSearch) {
             const deferredResult: CompletedToolResult = {
               result: 'Search results already returned readable source URLs. Read a relevant result with read_web_page before issuing another web_search.',
-              isError: true,
+              // This is a workflow hint, not a provider failure. Marking it
+              // as an error makes the model report that search failed and
+              // encourages the retry loop this guard is meant to stop.
+              isError: false,
             }
             toolResults.set(toolCall.id, deferredResult)
             yield {
               type: 'tool_result',
-              toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: deferredResult.result, isError: true },
+              toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: deferredResult.result, isError: false },
             }
             continue
           }
@@ -500,19 +502,12 @@ export class AgentRunner {
             agentContext: this.buildModelPoolContext(messages, toolResults),
           }
           let result: CompletedToolResult
-          if (toolCall.name === TOOL_SEARCH_DEFINITION.name) {
-            const query = typeof toolCall.arguments.query === 'string' ? toolCall.arguments.query.trim() : ''
-            const matches = searchDeferredTools(query, deferredToolDefs)
-            matches.forEach((tool) => loadedDeferredToolNames.add(tool.name))
-            result = { result: formatToolSearchResult(query, matches), isError: false }
-          } else {
-            const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
-            const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
-            const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
-            const rawResult = cached || await this.executeTool(toolCall, toolContext)
-            result = this.normalizeToolResult(rawResult)
-            if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
-          }
+          const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
+          const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
+          const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
+          const rawResult = cached || await this.executeTool(toolCall, toolContext)
+          result = this.normalizeToolResult(rawResult)
+          if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
           toolResults.set(toolCall.id, result)
           if (isDesktopAction && !result.isError) desktopActionExecuted = true
@@ -550,22 +545,12 @@ export class AgentRunner {
         latestProtocolResults = Array.from(toolResults.values())
           .map((toolResult) => toolResult.protocol)
           .filter((protocol): protocol is NonNullable<CompletedToolResult['protocol']> => Boolean(protocol))
-        if (loadedDeferredToolNames.size > 0) {
-          deferredToolDefs = deferredToolDefs.filter((tool) => !loadedDeferredToolNames.has(tool.name))
-          activeToolDefs = [
-            ...activeToolDefs.filter((tool) => tool.name !== TOOL_SEARCH_DEFINITION.name),
-            ...allToolDefs.filter((tool) => loadedDeferredToolNames.has(tool.name)),
-            ...(deferredToolDefs.length ? [TOOL_SEARCH_DEFINITION] : []),
-          ].filter((tool, index, tools) => tools.findIndex((candidate) => candidate.name === tool.name) === index)
-        }
-
         const nextSystemPrompt = contextManager.buildSystemPrompt(
           agentConfig,
           workspacePath,
           fileAccessGrants,
           fullFilesystemAccess,
           activeToolDefs,
-          deferredToolDefs,
         )
         const currentSystemMessage = messages[0]
         const preservedSystemSuffix = currentSystemMessage?.role === 'system' && currentSystemMessage.content.startsWith(activeSystemPrompt)
@@ -1060,7 +1045,9 @@ export class AgentRunner {
       return { result: `Error: Tool '${toolCall.name}' not found in registry.`, isError: true }
     }
 
-    if (!this.config.agentConfig.tools.includes(toolCall.name)) {
+    const mcpAllowed = toolCall.name.startsWith('mcp__') && this.config.agentConfig.tools.includes('mcp:*')
+    const isPersonalPreferenceTool = toolCall.name === 'manage_personal_preferences'
+    if (!this.config.agentConfig.tools.includes(toolCall.name) && !mcpAllowed && !isPersonalPreferenceTool) {
       return {
         result: `Error: Tool '${toolCall.name}' is not permitted for this agent.`,
         isError: true,

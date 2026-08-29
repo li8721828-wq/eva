@@ -1,5 +1,5 @@
 import React from 'react'
-import { AlignLeft, BookOpenText, BrainCircuit, Check, CircleSlash, FileCode2, Gauge, ListFilter, MessageCircleMore, PanelTop, Sparkles } from 'lucide-react'
+import { AlignLeft, BookOpenText, BrainCircuit, Check, CircleSlash, FileCode2, Gauge, ListFilter, MessageCircleMore, PanelTop, Sparkles, WandSparkles } from 'lucide-react'
 import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, AgentProcessOutput } from '../../../shared/types'
 import { Textarea } from '@/components/ui/Textarea'
 import { cn } from '@/lib/utils'
@@ -12,6 +12,7 @@ export interface OutputFormatPanelProps {
   outputColor: AgentOutputColor
   outputFontSize: AgentOutputFontSize
   outputTextEffect: AgentOutputTextEffect
+  allowEmojiSymbols: boolean
   markdownRenderer: AgentMarkdownRenderer
   processOutput: AgentProcessOutput
   onOutputFormatChange: (format: AgentOutputFormat) => void
@@ -21,6 +22,7 @@ export interface OutputFormatPanelProps {
   onOutputColorChange: (color: AgentOutputColor) => void
   onOutputFontSizeChange: (size: AgentOutputFontSize) => void
   onOutputTextEffectChange: (effect: AgentOutputTextEffect) => void
+  onAllowEmojiSymbolsChange: (allow: boolean) => void
   onMarkdownRendererChange: (renderer: AgentMarkdownRenderer) => void
   onProcessOutputChange: (processOutput: AgentProcessOutput) => void
 }
@@ -94,7 +96,7 @@ function ChoiceRow({ selected, icon: Icon, label, description, onClick }: { sele
   </button>
 }
 
-export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, processOutput, onOutputFormatChange, onOutputFormatInstructionsChange, onOutputStyleChange, onOutputFontChange, onOutputColorChange, onOutputFontSizeChange, onOutputTextEffectChange, onMarkdownRendererChange, onProcessOutputChange }: OutputFormatPanelProps) {
+export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, allowEmojiSymbols, markdownRenderer, processOutput, onOutputFormatChange, onOutputFormatInstructionsChange, onOutputStyleChange, onOutputFontChange, onOutputColorChange, onOutputFontSizeChange, onOutputTextEffectChange, onAllowEmojiSymbolsChange, onMarkdownRendererChange, onProcessOutputChange }: OutputFormatPanelProps) {
   return <div className="space-y-8">
     <section>
       <div><h2 className="text-base font-semibold text-zinc-900">Markdown 渲染器</h2><p className="mt-1 text-sm leading-6 text-zinc-500">决定回复在对话中的视觉排版，不改变模型生成的内容。</p></div>
@@ -107,6 +109,11 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
       <div><h2 className="text-base font-semibold text-zinc-900">回复表达</h2><p className="mt-1 text-sm leading-6 text-zinc-500">这只影响组织和阅读方式，不限制模型回答的内容与发挥。</p></div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2">{responseModes.map((mode) => <ChoiceRow key={mode.value} selected={outputFormat === mode.value} icon={mode.icon} label={mode.label} description={mode.description} onClick={() => onOutputFormatChange(mode.value)} />)}</div>
       {outputFormat === 'custom' && <div className="mt-4 rounded-md bg-zinc-50 p-3.5"><label className="mb-1.5 block text-xs font-medium text-zinc-700">写作偏好</label><Textarea value={outputFormatInstructions} onChange={(event) => onOutputFormatInstructionsChange(event.target.value)} placeholder="例如：先给结论，再简要说明关键取舍。" rows={3} className="bg-white text-sm" /><p className="mt-1.5 text-xs leading-5 text-zinc-500">这是一条偏好，而不是固定格式；智能体仍会根据任务调整回答。</p></div>}
+      <button type="button" onClick={() => onAllowEmojiSymbolsChange(!allowEmojiSymbols)} className={cn('mt-4 flex w-full items-center gap-3 rounded-md border px-3.5 py-3 text-left transition-colors', allowEmojiSymbols ? 'border-violet-200 bg-violet-50/70' : 'border-transparent bg-zinc-50/75 hover:border-zinc-200 hover:bg-white')}>
+        <span className={cn('flex h-7 w-7 shrink-0 items-center justify-center rounded-md', allowEmojiSymbols ? 'bg-violet-100 text-violet-600' : 'bg-white text-zinc-400')}><WandSparkles className="h-3.5 w-3.5" /></span>
+        <span className="min-w-0 flex-1"><span className="block text-sm font-medium text-zinc-800">适度使用 emoji 与符号</span><span className="mt-0.5 block text-xs leading-5 text-zinc-500">在有助于扫读或表达状态时使用，不装饰每段内容。</span></span>
+        <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded-full border', allowEmojiSymbols ? 'border-violet-500 bg-violet-500 text-white' : 'border-zinc-300 bg-white')} aria-hidden="true">{allowEmojiSymbols && <Check className="h-2.5 w-2.5" />}</span>
+      </button>
     </section>
 
     {markdownRenderer !== 'streamdown' ? <section className="border-t border-zinc-100 pt-7">

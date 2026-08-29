@@ -121,6 +121,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const [outputColor, setOutputColor] = useState<NonNullable<AgentConfig['outputColor']>>('slate')
   const [outputFontSize, setOutputFontSize] = useState<NonNullable<AgentConfig['outputFontSize']>>('medium')
   const [outputTextEffect, setOutputTextEffect] = useState<NonNullable<AgentConfig['outputTextEffect']>>('none')
+  const [allowEmojiSymbols, setAllowEmojiSymbols] = useState(false)
   const [markdownRenderer, setMarkdownRenderer] = useState<NonNullable<AgentConfig['markdownRenderer']>>('enhanced')
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [modelPools, setModelPools] = useState<ModelPool[]>([])
@@ -207,6 +208,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     setOutputColor(agent.outputColor || 'slate')
     setOutputFontSize(agent.outputFontSize || 'medium')
     setOutputTextEffect(agent.outputTextEffect || 'none')
+    setAllowEmojiSymbols(Boolean(agent.allowEmojiSymbols))
     setMarkdownRenderer(agent.markdownRenderer || 'enhanced')
     setView('output')
   }, [])
@@ -261,14 +263,14 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const handleSaveOutput = useCallback(async () => {
     if (!editingAgent) return
     try {
-      const updates = { processOutput, showThinking: processOutput === 'detailed', outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }
+      const updates = { processOutput, showThinking: processOutput === 'detailed', outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, allowEmojiSymbols, markdownRenderer }
       await updateAgent(editingAgent.id, updates)
       setEditingAgent({ ...editingAgent, ...updates })
       setView('details')
     } catch (error) {
       console.error('Failed to update output format:', error)
     }
-  }, [editingAgent, processOutput, outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer, updateAgent])
+  }, [editingAgent, processOutput, outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, allowEmojiSymbols, markdownRenderer, updateAgent])
 
   const handleSetPrimaryChatAgent = useCallback(async (agent: AgentConfig) => {
     try {
@@ -411,7 +413,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
       return (
         <div className="px-6 py-6 sm:px-8">
           <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
-          <OutputFormatPanel outputFormat={outputFormat} outputFormatInstructions={outputFormatInstructions} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} processOutput={processOutput} onOutputFormatChange={setOutputFormat} onOutputFormatInstructionsChange={setOutputFormatInstructions} onOutputStyleChange={setOutputStyle} onOutputFontChange={setOutputFont} onOutputColorChange={setOutputColor} onOutputFontSizeChange={setOutputFontSize} onOutputTextEffectChange={setOutputTextEffect} onMarkdownRendererChange={setMarkdownRenderer} onProcessOutputChange={setProcessOutput} />
+          <OutputFormatPanel outputFormat={outputFormat} outputFormatInstructions={outputFormatInstructions} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} allowEmojiSymbols={allowEmojiSymbols} markdownRenderer={markdownRenderer} processOutput={processOutput} onOutputFormatChange={setOutputFormat} onOutputFormatInstructionsChange={setOutputFormatInstructions} onOutputStyleChange={setOutputStyle} onOutputFontChange={setOutputFont} onOutputColorChange={setOutputColor} onOutputFontSizeChange={setOutputFontSize} onOutputTextEffectChange={setOutputTextEffect} onAllowEmojiSymbolsChange={setAllowEmojiSymbols} onMarkdownRendererChange={setMarkdownRenderer} onProcessOutputChange={setProcessOutput} />
           <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveOutput()}>{copy.save}</Button></div>
         </div>
       )

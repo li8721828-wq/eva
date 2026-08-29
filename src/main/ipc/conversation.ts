@@ -686,7 +686,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
           : conversation.workspacePath?.trim()
             ? `workspace-path:${conversation.workspacePath.trim().toLowerCase()}`
             : `conversation:${conversationId}`
-        const durableMemory = [memory, activePlanContext(await getStorage().activePlans.getActive(activePlanScope))]
+        const durableMemory = [
+          memory,
+          getStorage().personalPreferences.buildCapabilityContext(),
+          getStorage().personalPreferences.buildContext(message),
+          activePlanContext(await getStorage().activePlans.getActive(activePlanScope)),
+        ]
           .filter(Boolean)
           .join('\n\n')
         const historyMessages = sanitizeToolHistory(await convStore.getMessages(conversationId)).map((item) => ({
@@ -1452,6 +1457,19 @@ export function registerConversationHandlers(services?: ChatServices): void {
           outcome: assistantChatMessage.content,
           status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
         })
+        void getStorage().personalPreferences.distillTurn({
+          userMessage: message,
+          assistantMessage: assistantChatMessage.content,
+          recentTurns: [
+            ...historyMessages
+              .filter((item) => item.role === 'user' || item.role === 'assistant')
+              .slice(-6)
+              .map((item) => ({ role: item.role as 'user' | 'assistant', content: item.content })),
+            { role: 'user', content: message },
+            { role: 'assistant', content: assistantChatMessage.content },
+          ],
+          status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
+        }, provider, effectiveAgentConfig.model).catch((error) => console.warn('Personal preference distillation failed:', error))
         win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         void recordActivity({
           category: 'agent',

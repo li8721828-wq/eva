@@ -48,6 +48,8 @@ export interface AgentConfig {
   outputFontSize?: AgentOutputFontSize
   /** Decorative treatment limited to headings and strong emphasis. */
   outputTextEffect?: AgentOutputTextEffect
+  /** Allow restrained emoji and symbol markers when they improve scanning. */
+  allowEmojiSymbols?: boolean
   /** Visual renderer for final Markdown responses. */
   markdownRenderer?: AgentMarkdownRenderer
   /** Request and display provider-supplied slow reasoning when supported. */

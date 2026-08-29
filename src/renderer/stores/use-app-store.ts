@@ -3,7 +3,7 @@ import type { WorkMode } from '../../shared/types'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 
 export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts' | 'symposium' | 'cost'
-export type Theme = 'dark' | 'light'
+export type Theme = 'light' | 'dark' | 'starlight'
 export type AppLanguage = 'en' | 'zh' | 'ja'
 
 interface CurrentFile {
@@ -151,7 +151,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const config = await window.eva.config.getAll() as Record<string, unknown>
       set({
-        theme: (config.theme as Theme) || 'light',
+        theme: ['light', 'dark', 'starlight'].includes(config.theme as string) ? config.theme as Theme : 'light',
         language: ['en', 'zh', 'ja'].includes(config.language as string) ? config.language as AppLanguage : 'en',
         sidebarCollapsed: (config.sidebarCollapsed as boolean) ?? false,
         sidebarWidth: Math.max(240, Math.min(440, Number(config.sidebarWidth) || 304)),

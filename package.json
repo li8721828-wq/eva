@@ -1,6 +1,6 @@
 {
   "name": "eva",
-  "version": "0.1.131",
+  "version": "0.1.150",
   "description": "Eva - AI Coding Agent Desktop Client",
   "main": "./out/main/index.js",
   "scripts": {
@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
+    "@modelcontextprotocol/client": "^2.0.0",
     "@monaco-editor/react": "^4.6.0",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
@@ -78,6 +79,8 @@
     "files": [
       "out/**/*",
       "node_modules/@anthropic-ai/sdk/**/*",
+      "node_modules/@modelcontextprotocol/client/**/*",
+      "node_modules/@modelcontextprotocol/core/**/*",
       "node_modules/abort-controller/**/*",
       "node_modules/agentkeepalive/**/*",
       "node_modules/ajv/**/*",
@@ -89,6 +92,7 @@
       "node_modules/cheerio/**/*",
       "node_modules/cheerio-select/**/*",
       "node_modules/combined-stream/**/*",
+      "node_modules/cross-spawn/**/*",
       "node_modules/conf/**/*",
       "node_modules/css-select/**/*",
       "node_modules/css-what/**/*",
@@ -103,6 +107,8 @@
       "node_modules/electron-store/**/*",
       "node_modules/encoding-sniffer/**/*",
       "node_modules/entities/**/*",
+      "node_modules/eventsource/**/*",
+      "node_modules/eventsource-parser/**/*",
       "node_modules/env-paths/**/*",
       "node_modules/es-define-property/**/*",
       "node_modules/es-errors/**/*",
@@ -126,6 +132,7 @@
       "node_modules/humanize-ms/**/*",
       "node_modules/iconv-lite/**/*",
       "node_modules/is-obj/**/*",
+      "node_modules/jose/**/*",
       "node_modules/json-schema-traverse/**/*",
       "node_modules/json-schema-typed/**/*",
       "node_modules/locate-path/**/*",
@@ -168,6 +175,7 @@
       "node_modules/pkg-up/**/*",
       "node_modules/p-limit/**/*",
       "node_modules/p-locate/**/*",
+      "node_modules/pkce-challenge/**/*",
       "node_modules/punycode/**/*",
       "node_modules/safer-buffer/**/*",
       "node_modules/semver/**/*",

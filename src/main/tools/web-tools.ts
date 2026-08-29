@@ -82,6 +82,13 @@ const readWebPageTool: ToolExecutor = {
   async execute(params: Record<string, unknown>, _context: ToolContext): Promise<string> {
     const url = String(params.url || '').trim()
     const maxCharacters = Math.max(500, Math.min(Number(params.maxCharacters) || 12_000, MAX_PAGE_CHARACTERS))
+    const configuredPlugin = getStorage().plugins.list().find((entry) => entry.enabled && entry.id === 'tavily-search')
+    const tavilyApiKey = configuredPlugin ? String(configuredPlugin.settings.apiKey || '').trim() : ''
+    if (tavilyApiKey) {
+      const extracted = await fetchTavilyExtract(url, tavilyApiKey).catch(() => null)
+      if (extracted) return extracted
+    }
+
     const html = await fetchPublicText(url, 'text/html')
     const $ = load(html)
     $('script, style, noscript, svg, nav, footer, header, aside, form').remove()
@@ -103,8 +110,14 @@ async function fetchSearchResults(query: string, language?: string): Promise<Sea
 
   const request = enqueueSearch(async () => {
     const response = await fetchSearchProvider(query, provider, language)
-    const relevantResults = filterSearchResultsForRelevance(query, response)
-    if (response.length > 0 && relevantResults.length === 0) {
+    // Tavily and Brave already rank results against the query. Their snippets
+    // may be paraphrased or translated, so applying the local lexical guard
+    // can incorrectly discard every valid result. Keep the guard for SearXNG,
+    // where upstream engine noise is a known failure mode.
+    const relevantResults = provider.id === 'searxng-search'
+      ? filterSearchResultsForRelevance(query, response)
+      : response
+    if (provider.id === 'searxng-search' && response.length > 0 && relevantResults.length === 0) {
       throw new Error('The search service returned only low-relevance results. No title, snippet, or URL matched the query\'s key terms, so these results were rejected rather than used as evidence. Check the search provider or refine the named entity.')
     }
     searchCache.set(cacheKey, { results: relevantResults, expiresAt: Date.now() + SEARCH_CACHE_TTL_MS })
@@ -179,8 +192,8 @@ async function fetchBraveSearch(query: string, apiKey: string): Promise<SearchRe
 async function fetchTavilySearch(query: string, apiKey: string): Promise<SearchResult[]> {
   const response = await net.fetch('https://api.tavily.com/search', {
     method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT },
-    body: JSON.stringify({ api_key: apiKey, query, max_results: MAX_RESULTS, search_depth: 'basic' }),
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT, Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ query, max_results: MAX_RESULTS, search_depth: 'basic' }),
   })
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) throw new Error('Tavily rejected the configured API key. Check the plugin configuration.')
@@ -197,6 +210,19 @@ async function fetchSearxngSearch(query: string, endpoint: string, language?: st
   if (!response.ok) throw new Error(`SearXNG Search request failed (${response.status}). Check the endpoint and JSON API setting.`)
   const data = await response.json() as { results?: Array<{ title?: string; url?: string; content?: string }> }
   return normalizeSearchResults(data.results || [], 'content')
+}
+
+async function fetchTavilyExtract(url: string, apiKey: string): Promise<string> {
+  const response = await net.fetch('https://api.tavily.com/extract', {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT, Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ urls: [url], extract_depth: 'basic', format: 'markdown' }),
+  })
+  if (!response.ok) return ''
+  const data = await response.json() as { results?: Array<{ url?: string; raw_content?: string }> }
+  const result = data.results?.find((entry) => entry.raw_content?.trim())
+  if (!result?.raw_content?.trim()) return ''
+  return [`URL: ${result.url || url}`, '', result.raw_content.trim()].join('\n')
 }
 
 export function buildSearxngSearchUrl(endpoint: string, query: string, language?: string): URL {

@@ -18,6 +18,8 @@ import { createModelPoolTools } from './model-pool-tools'
 import { createRuntimeInspectionTools } from './runtime-inspection-tools'
 import { createRuntimeDiagnosticTools } from './runtime-diagnostic-tools'
 import { createRuntimeProposalTools } from './runtime-proposal-tools'
+import { createPersonalPreferenceTools } from './personal-preference-tools'
+import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
 import type { ProjectIndexService } from '../services/project-index-service'
 import type { ProviderRegistry } from '../providers'
 
@@ -115,6 +117,16 @@ export class ToolRegistry {
     this.tools.set(tool.definition.name, tool)
   }
 
+  unregister(name: string): void {
+    this.tools.delete(name)
+  }
+
+  unregisterByPrefix(prefix: string): void {
+    for (const name of this.tools.keys()) {
+      if (name.startsWith(prefix)) this.tools.delete(name)
+    }
+  }
+
   get(name: string): ToolExecutor | undefined {
     return this.tools.get(name)
   }
@@ -138,7 +150,7 @@ export class ToolRegistry {
   }
 }
 
-export function createToolRegistry(projectIndexService?: ProjectIndexService, providerRegistry?: ProviderRegistry): ToolRegistry {
+export function createToolRegistry(projectIndexService?: ProjectIndexService, providerRegistry?: ProviderRegistry, personalPreferenceStore?: PersonalPreferenceStore): ToolRegistry {
   const registry = new ToolRegistry()
 
   // Register all tools
@@ -162,6 +174,9 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createRuntimeInspectionTools(registry)) registry.register(tool)
   for (const tool of createRuntimeDiagnosticTools(registry)) registry.register(tool)
   for (const tool of createRuntimeProposalTools(registry)) registry.register(tool)
+  if (personalPreferenceStore) {
+    for (const tool of createPersonalPreferenceTools(personalPreferenceStore)) registry.register(tool)
+  }
 
   return registry
 }

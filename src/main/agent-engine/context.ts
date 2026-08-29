@@ -5,7 +5,7 @@ import { CONTEXT_WINDOW_TOKENS } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { EnvironmentRulesConfig } from '../../shared/types/environment-rules'
 import { buildSharedEnvironmentPrompt } from '../services/environment-profile-service'
-import { buildToolIndex } from './tool-dispatch'
+import { sanitizeUnicode, truncateUnicode, truncateUnicodeEnd } from '../utils/unicode'
 
 const COMPRESSED_HISTORY_MAX_CHARS = 8_000
 const OLD_MESSAGE_MAX_CHARS = 520
@@ -14,18 +14,18 @@ const CONTEXT_SAFETY_TOKENS = 2_048
 const IMAGE_TOKEN_ESTIMATE = 1_536
 
 function compactText(value: string, maxChars: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim()
+  const normalized = sanitizeUnicode(value.replace(/\s+/g, ' ').trim())
   if (normalized.length <= maxChars) return normalized
 
   const headLength = Math.floor(maxChars * 0.72)
   const tailLength = maxChars - headLength
-  return `${normalized.slice(0, headLength)} … ${normalized.slice(-tailLength)}`
+  return `${truncateUnicode(normalized, headLength)} … ${truncateUnicodeEnd(normalized, tailLength)}`
 }
 
 function structuredToolSummary(value: string, maxChars: number): string {
   const normalized = value.replace(/\r\n/g, '\n').trim()
   if (normalized.length <= maxChars) return normalized
-  if (maxChars < 96) return `[Compacted tool output: ${normalized.length} chars]`.slice(0, maxChars)
+  if (maxChars < 96) return truncateUnicode(`[Compacted tool output: ${normalized.length} chars]`, maxChars)
 
   const fields: string[] = []
   try {
@@ -45,7 +45,7 @@ function structuredToolSummary(value: string, maxChars: number): string {
   const available = Math.max(80, maxChars - keyFields.length - 64)
   const head = Math.floor(available * 0.58)
   const tail = available - head
-  return `${keyFields}[Tool output compacted from ${normalized.length} characters]\n${normalized.slice(0, head)}\n... [middle omitted] ...\n${normalized.slice(-tail)}`.slice(0, maxChars)
+  return truncateUnicode(`${keyFields}[Tool output compacted from ${normalized.length} characters]\n${truncateUnicode(normalized, head)}\n... [middle omitted] ...\n${truncateUnicodeEnd(normalized, tail)}`, maxChars)
 }
 
 export interface ContextOptions {
@@ -56,8 +56,6 @@ export interface ContextOptions {
   fullFilesystemAccess?: boolean
   maxContextTokens?: number
   tools: ToolDefinition[]
-  /** Deferred tools shown as a compact catalog for on-demand tool_search. */
-  deferredTools?: ToolDefinition[]
 }
 
 export interface ContextManagerOptions {
@@ -178,13 +176,13 @@ export class ContextManager {
    * 3. Trim to fit within the context window (most recent messages first)
    */
   buildContext(options: ContextOptions): ChatMessageInput[] {
-    const { agentConfig, messages, workspacePath, fileAccessGrants, fullFilesystemAccess, tools, deferredTools } = options
+    const { agentConfig, messages, workspacePath, fileAccessGrants, fullFilesystemAccess, tools } = options
     const maxTokens = options.maxContextTokens ?? CONTEXT_WINDOW_TOKENS
     // Progress notes are for the user to follow execution. They are not new
     // task evidence and should not consume the model's working context.
     const modelMessages = messages.filter((message) => !message.progressKind)
 
-    const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools, deferredTools)
+    const baseSystemPrompt = this.buildSystemPrompt(agentConfig, workspacePath, fileAccessGrants, fullFilesystemAccess, tools)
     const memory = this.options.durableMemory?.trim()
     const promptBeforeHistory = memory ? `${baseSystemPrompt}\n\n${memory}` : baseSystemPrompt
     const rawHistoryBudget = Math.max(0, maxTokens - this.estimateTokens(promptBeforeHistory) - CONTEXT_SAFETY_TOKENS)
@@ -334,7 +332,6 @@ export class ContextManager {
     fileAccessGrants: FileAccessGrant[] | undefined,
     fullFilesystemAccess: boolean | undefined,
     tools: ToolDefinition[],
-    deferredTools?: ToolDefinition[],
   ): string {
     const parts: string[] = []
 
@@ -363,6 +360,9 @@ export class ContextManager {
     parts.push('')
     parts.push('--- Response Presentation ---')
     parts.push(this.buildOutputPresentationGuidance(agentConfig))
+    if (agentConfig.allowEmojiSymbols) {
+      parts.push('Use emoji or simple symbols sparingly when they materially improve scanning or convey status. Keep them purposeful and avoid decorating every paragraph; never replace precise technical content with emoji.')
+    }
     if (agentConfig.processOutput === 'off') {
       parts.push('Do not emit eva-progress markup or routine process commentary. Give the user the final answer only.')
     } else if (agentConfig.processOutput === 'compact') {
@@ -428,13 +428,6 @@ export class ContextManager {
         parts.push(`- ${tool.name}: ${tool.description}`)
       }
     }
-    if (deferredTools?.length) {
-      parts.push('')
-      parts.push('--- Deferred Tool Catalog ---')
-      parts.push(buildToolIndex(deferredTools))
-      parts.push('Tool definitions in this catalog are not loaded yet. Call tool_search with a concrete capability when one is needed. Up to five matching tools will be loaded and remain available for later turns. Do not call tool_search for a tool already listed under Available Tools.')
-    }
-
     const defaultPrompt = parts.join('\n')
     const template = agentConfig.platformPromptTemplate?.trim()
     if (!template) return defaultPrompt

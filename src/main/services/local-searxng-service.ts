@@ -99,6 +99,62 @@ export class LocalSearxngService {
     }
   }
 
+  async testSearchProvider(pluginId: string, settings: Record<string, unknown>): Promise<SearchProviderConnectivity> {
+    if (pluginId === 'searxng-search') return this.testConnection(String(settings.endpoint || ''))
+
+    if (pluginId !== 'tavily-search' && pluginId !== 'brave-search') {
+      return {
+        reachable: false,
+        apiValid: false,
+        endpoint: pluginId,
+        resultCount: 0,
+        unresponsiveEngines: [],
+        message: 'This plugin does not provide a web search connectivity test.',
+      }
+    }
+
+    const apiKey = String(settings.apiKey || '').trim()
+    const endpoint = pluginId === 'tavily-search' ? 'https://api.tavily.com' : 'https://api.search.brave.com'
+    if (!apiKey) {
+      return { reachable: false, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message: 'Enter an API key before testing the connection.' }
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 15_000)
+    try {
+      const response = pluginId === 'tavily-search'
+        ? await net.fetch(`${endpoint}/search`, {
+          method: 'POST',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': 'Eva AI Coding Agent/0.1', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ query: 'Eva connectivity test', max_results: 1, search_depth: 'basic' }),
+          signal: controller.signal,
+        })
+        : await net.fetch(`${endpoint}/res/v1/web/search?q=Eva%20connectivity%20test&count=1`, {
+          headers: { Accept: 'application/json', 'User-Agent': 'Eva AI Coding Agent/0.1', 'X-Subscription-Token': apiKey },
+          signal: controller.signal,
+        })
+
+      if (response.status === 401 || response.status === 403) {
+        return { reachable: true, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message: `${pluginId === 'tavily-search' ? 'Tavily' : 'Brave'} rejected the API key.` }
+      }
+      if (response.status === 429) {
+        return { reachable: true, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message: `${pluginId === 'tavily-search' ? 'Tavily' : 'Brave'} is reachable, but the account quota or rate limit was reached.` }
+      }
+      if (!response.ok) {
+        return { reachable: true, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message: `Service is reachable, but returned HTTP ${response.status}.` }
+      }
+
+      const data = await response.json() as { results?: unknown[]; web?: { results?: unknown[] } }
+      const results = pluginId === 'tavily-search' ? data.results : data.web?.results
+      return { reachable: true, apiValid: true, endpoint, resultCount: Array.isArray(results) ? results.length : 0, unresponsiveEngines: [], message: `${pluginId === 'tavily-search' ? 'Tavily' : 'Brave'} connection is working.` }
+    } catch (error) {
+      const message = controller.signal.aborted ? 'Connection timed out after 15 seconds.' : error instanceof Error ? error.message : 'Unable to reach the search service.'
+      return { reachable: false, apiValid: false, endpoint, resultCount: 0, unresponsiveEngines: [], message }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   private configureEvaPlugin(): void {
     const plugins = getStorage().plugins
     if (!plugins.get('searxng-search')) plugins.installMarketplace('searxng-search')

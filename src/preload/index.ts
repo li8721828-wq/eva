@@ -20,6 +20,8 @@ import type { ActivePlan } from '../shared/types/active-plan'
 import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
+import type { McpServerConfig, McpServerState } from '../shared/types/mcp'
+import type { PersonalPreference, PersonalPreferenceSettings } from '../shared/types/personal-preferences'
 import type { ContractArgs, ContractChannel, ContractResult } from '../shared/ipc-contract'
 
 // GoalEvent type - defined locally to avoid importing from main process
@@ -244,7 +246,23 @@ export interface EvaAPI {
     getLocalSearxngStatus(): Promise<LocalSearxngStatus>
     installLocalSearxng(): Promise<LocalSearxngStatus>
     stopLocalSearxng(): Promise<LocalSearxngStatus>
-    testConnection(endpoint: string): Promise<SearchProviderConnectivity>
+    testConnection(pluginId: string, settings: Record<string, string>): Promise<SearchProviderConnectivity>
+  }
+
+  mcp: {
+    list(): Promise<McpServerState[]>
+    save(config: McpServerConfig): Promise<McpServerState[]>
+    remove(id: string): Promise<McpServerState[]>
+    setEnabled(id: string, enabled: boolean): Promise<McpServerState[]>
+    reconnect(id?: string): Promise<McpServerState[]>
+  }
+
+  personalPreferences: {
+    list(): Promise<PersonalPreference[]>
+    getSettings(): Promise<PersonalPreferenceSettings>
+    saveSettings(settings: Partial<PersonalPreferenceSettings>): Promise<PersonalPreferenceSettings>
+    remove(id: string): Promise<void>
+    clear(): Promise<void>
   }
 
   requirements: {
@@ -507,7 +525,23 @@ const evaAPI: EvaAPI = {
     getLocalSearxngStatus: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STATUS),
     installLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_INSTALL),
     stopLocalSearxng: () => ipcRenderer.invoke(IPC.PLUGIN_LOCAL_SEARXNG_STOP),
-    testConnection: (endpoint) => ipcRenderer.invoke(IPC.PLUGIN_TEST_CONNECTION, endpoint),
+  testConnection: (pluginId, settings) => ipcRenderer.invoke(IPC.PLUGIN_TEST_CONNECTION, pluginId, settings),
+  },
+
+  mcp: {
+    list: () => ipcRenderer.invoke(IPC.MCP_LIST),
+    save: (config) => ipcRenderer.invoke(IPC.MCP_SAVE, config),
+    remove: (id) => ipcRenderer.invoke(IPC.MCP_DELETE, id),
+    setEnabled: (id, enabled) => ipcRenderer.invoke(IPC.MCP_TOGGLE, id, enabled),
+    reconnect: (id) => ipcRenderer.invoke(IPC.MCP_RECONNECT, id),
+  },
+
+  personalPreferences: {
+    list: () => ipcRenderer.invoke(IPC.PREFERENCE_LIST),
+    getSettings: () => ipcRenderer.invoke(IPC.PREFERENCE_SETTINGS_GET),
+    saveSettings: (settings) => ipcRenderer.invoke(IPC.PREFERENCE_SETTINGS_SAVE, settings),
+    remove: (id) => ipcRenderer.invoke(IPC.PREFERENCE_DELETE, id),
+    clear: () => ipcRenderer.invoke(IPC.PREFERENCE_CLEAR),
   },
 
   requirements: {

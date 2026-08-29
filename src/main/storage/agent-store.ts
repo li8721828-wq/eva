@@ -160,6 +160,7 @@ function normalizeAgent(value: unknown): AgentConfig {
     outputColor: raw.outputColor || 'slate',
     outputFontSize: raw.outputFontSize || 'medium',
     outputTextEffect: raw.outputTextEffect || 'none',
+    allowEmojiSymbols: Boolean(raw.allowEmojiSymbols),
     markdownRenderer: raw.markdownRenderer === 'classic' || raw.markdownRenderer === 'streamdown' ? raw.markdownRenderer : 'enhanced',
     processOutput: raw.processOutput === 'off' || raw.processOutput === 'compact' || raw.processOutput === 'detailed'
       ? raw.processOutput

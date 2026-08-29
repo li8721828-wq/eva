@@ -15,6 +15,8 @@ import { RuntimeKernelStore } from './runtime-kernel-store'
 import { RuntimeMemoryStore } from './runtime-memory-store'
 import { RuntimeRunStore } from './runtime-run-store'
 import { ActivePlanStore } from './active-plan-store'
+import { McpServerStore } from './mcp-server-store'
+import { PersonalPreferenceStore } from './personal-preference-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -31,6 +33,8 @@ export class StorageManager {
   runtimeMemory: RuntimeMemoryStore
   runtimeRuns: RuntimeRunStore
   activePlans: ActivePlanStore
+  mcpServers: McpServerStore
+  personalPreferences: PersonalPreferenceStore
 
   private userDataPath: string
 
@@ -52,6 +56,8 @@ export class StorageManager {
     this.runtimeMemory = new RuntimeMemoryStore(this.userDataPath)
     this.runtimeRuns = new RuntimeRunStore(this.userDataPath)
     this.activePlans = new ActivePlanStore(this.userDataPath)
+    this.mcpServers = new McpServerStore()
+    this.personalPreferences = new PersonalPreferenceStore()
   }
 
   async initialize(): Promise<void> {

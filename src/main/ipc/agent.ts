@@ -8,12 +8,13 @@ import type { ToolRegistry } from '../tools'
 import { ContextManager } from '../agent-engine/context'
 import { TOOL_CATALOG } from '../../shared/tool-catalog'
 import { buildSharedEnvironmentPrompt, normalizeEnvironmentRules } from '../services/environment-profile-service'
-import { createDeferredToolState } from '../agent-engine/tool-loading'
 
 function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegistry): AgentTokenEstimate {
-  const definitions = toolRegistry?.getDefinitionsByNames(agent.tools) || []
-  const deferredState = createDeferredToolState(definitions)
-  const requestToolDefinitions = deferredState.initial
+  const requestedToolNames = agent.tools.includes('mcp:*')
+    ? [...agent.tools.filter((name) => name !== 'mcp:*'), ...(toolRegistry?.getAll().filter((tool) => tool.definition.name.startsWith('mcp__')).map((tool) => tool.definition.name) || [])]
+    : agent.tools
+  const definitions = toolRegistry?.getDefinitionsByNames(requestedToolNames) || []
+  const requestToolDefinitions = definitions
   const contextManager = new ContextManager({ environmentRules: getStorage().config.get('environmentRules') })
   const workspacePath = '(workspace selected by the conversation)'
   const defaultConfiguredAgent: AgentConfig = {
@@ -27,7 +28,7 @@ function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegist
   }
   const genericPrompt = contextManager.buildSystemPrompt(defaultConfiguredAgent, workspacePath, undefined, false, [])
   const promptWithoutTools = contextManager.buildSystemPrompt(agent, workspacePath, undefined, false, [])
-  const fullPrompt = contextManager.buildSystemPrompt(agent, workspacePath, undefined, false, requestToolDefinitions, deferredState.deferred)
+  const fullPrompt = contextManager.buildSystemPrompt(agent, workspacePath, undefined, false, requestToolDefinitions)
   const sharedEnvironmentPrompt = buildSharedEnvironmentPrompt(normalizeEnvironmentRules(getStorage().config.get('environmentRules')))
   const systemPromptTokens = contextManager.estimateTokens(`${agent.systemPrompt || ''}\n${sharedEnvironmentPrompt}`)
   const genericRuleTokens = contextManager.estimateTokens(genericPrompt)
@@ -46,8 +47,7 @@ function estimateStaticAgentTokens(agent: AgentConfig, toolRegistry?: ToolRegist
     totalTokens: fullPromptTokens + toolSchemaTokens,
     evaRulesPreview: genericPrompt,
     sharedEnvironmentPrompt,
-    toolInstructionsPreview: requestToolDefinitions.map((definition) => `${definition.name}: ${definition.description}`).join('\n')
-      + (deferredState.deferred.length ? `\nDeferred tools: ${deferredState.deferred.length} (loaded by tool_search)` : ''),
+    toolInstructionsPreview: requestToolDefinitions.map((definition) => `${definition.name}: ${definition.description}`).join('\n'),
     parts: [
       { kind: 'system_prompt', tokens: systemPromptTokens },
       { kind: 'eva_rules', tokens: evaRuleTokens },
@@ -98,6 +98,7 @@ export function registerAgentHandlers(toolRegistry?: ToolRegistry): void {
         outputColor: data.outputColor || 'slate',
         outputFontSize: data.outputFontSize || 'medium',
         outputTextEffect: data.outputTextEffect || 'none',
+        allowEmojiSymbols: Boolean(data.allowEmojiSymbols),
         markdownRenderer: data.markdownRenderer === 'classic' || data.markdownRenderer === 'streamdown' ? data.markdownRenderer : 'enhanced',
         processOutput: data.processOutput === 'off' || data.processOutput === 'compact' || data.processOutput === 'detailed'
           ? data.processOutput

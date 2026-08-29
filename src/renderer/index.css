@@ -1,4 +1,29 @@
 @import "tailwindcss";
+
+@keyframes eva-focus-float {
+  0%, 100% {
+    box-shadow: -14px 3px 15px -5px rgba(15, 23, 42, 0.32), 0 2px 4px rgba(15, 23, 42, 0.08);
+  }
+  50% {
+    box-shadow: 14px 3px 15px -5px rgba(15, 23, 42, 0.32), 0 2px 4px rgba(15, 23, 42, 0.08);
+  }
+}
+
+.eva-focus-float:focus {
+  border-color: transparent !important;
+  outline: none;
+  background: #fff;
+  animation: eva-focus-float 3s linear infinite;
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eva-focus-float:focus {
+    animation: none;
+    box-shadow: 0 3px 8px rgba(15, 23, 42, 0.1);
+  }
+}
 @source "../../node_modules/streamdown/dist/*.js";
 
 :root {
@@ -1637,6 +1662,240 @@ a.tool-call-source__title:hover {
   margin-top: 2px;
   color: #71717a;
   font-size: 0.8125rem;
+}
+
+/* Theme contract: components consume semantic tokens; themes only redefine
+   material, contrast and atmosphere. Layout, type scale and interaction
+   geometry remain system rules. */
+:root {
+  --theme-duration: 160ms;
+  --theme-ease: cubic-bezier(.2, .8, .2, 1);
+  --theme-focus: #6259d8;
+  --theme-overlay: rgba(255, 255, 255, .72);
+  --theme-surface-raised: rgba(255, 255, 255, .96);
+  --theme-surface-sunken: rgba(247, 248, 253, .92);
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-sidebar: #151923;
+  --bg-main: #0f1218;
+  --bg-card: #1a1f2a;
+  --bg-hover: #242b39;
+  --bg-active: #2e384b;
+  --bg-input: #171c25;
+  --bg-code: #11151d;
+  --text-primary: #eef2f7;
+  --text-secondary: #b4bfce;
+  --text-muted: #748197;
+  --text-accent: #a9b9ff;
+  --accent: #8999ff;
+  --accent-hover: #a9b5ff;
+  --accent-light: #262b48;
+  --accent-muted: rgba(137, 153, 255, .16);
+  --border: #303949;
+  --border-hover: #46536a;
+  --border-focus: #9ba8ff;
+  --ui-border: #2a3342;
+  --ui-border-strong: #3e4a5f;
+  --ui-surface: rgba(25, 30, 41, .94);
+  --ui-surface-muted: #171c25;
+  --ui-shadow-panel: 0 14px 36px -28px rgba(0, 0, 0, .8);
+  --ui-shadow-popover: 0 22px 46px -26px rgba(0, 0, 0, .9);
+  --theme-focus: #a9b5ff;
+  --theme-overlay: rgba(15, 18, 24, .78);
+  --theme-surface-raised: rgba(27, 33, 44, .96);
+  --theme-surface-sunken: rgba(13, 16, 22, .92);
+}
+
+:root[data-theme='starlight'] {
+  color-scheme: dark;
+  --bg-sidebar: #101824;
+  --bg-main: #09111c;
+  --bg-card: #142234;
+  --bg-hover: #1b3045;
+  --bg-active: #223d56;
+  --bg-input: #0f1b2a;
+  --bg-code: #0a1421;
+  --text-primary: #edf5ff;
+  --text-secondary: #b6c8da;
+  --text-muted: #7890a8;
+  --text-accent: #9ed6ed;
+  --accent: #70b8d3;
+  --accent-hover: #98d6e7;
+  --accent-light: #173346;
+  --accent-muted: rgba(112, 184, 211, .16);
+  --success: #72d2ad;
+  --success-light: #12352f;
+  --warning: #edbd78;
+  --warning-light: #3b2d1d;
+  --error: #f28f9c;
+  --error-light: #3b202b;
+  --info: #88b9f3;
+  --info-light: #1a2d49;
+  --border: #263b51;
+  --border-hover: #3c5d77;
+  --border-focus: #9ed6ed;
+  --ui-border: #22364b;
+  --ui-border-strong: #38546c;
+  --ui-surface: rgba(18, 32, 49, .94);
+  --ui-surface-muted: #102033;
+  --ui-shadow-panel: 0 18px 38px -30px rgba(0, 0, 0, .9);
+  --ui-shadow-popover: 0 24px 50px -28px rgba(0, 0, 0, .95);
+  --theme-focus: #9ed6ed;
+  --theme-overlay: rgba(9, 17, 28, .74);
+  --theme-surface-raised: rgba(19, 36, 55, .96);
+  --theme-surface-sunken: rgba(7, 14, 23, .92);
+}
+
+:root[data-theme='dark'] body,
+:root[data-theme='starlight'] body,
+:root[data-theme='dark'] #root,
+:root[data-theme='starlight'] #root {
+  background: var(--bg-main);
+  color: var(--text-primary);
+}
+
+:root[data-theme='dark'] .eva-app-shell,
+:root[data-theme='starlight'] .eva-app-shell {
+  position: relative;
+  isolation: isolate;
+  background: var(--bg-main);
+  transition: background-color var(--theme-duration) var(--theme-ease), color var(--theme-duration) var(--theme-ease);
+}
+
+:root[data-theme='starlight'] .eva-app-shell::before {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: '';
+  opacity: .24;
+  background-image: radial-gradient(circle at 18% 22%, rgba(210, 239, 255, .75) 0 1px, transparent 1.5px), radial-gradient(circle at 78% 14%, rgba(255, 218, 166, .55) 0 1px, transparent 1.5px), radial-gradient(circle at 64% 72%, rgba(163, 211, 255, .6) 0 1px, transparent 1.5px);
+  background-size: 137px 151px, 211px 193px, 173px 227px;
+}
+
+:root[data-theme='dark'] .eva-workspace,
+:root[data-theme='starlight'] .eva-workspace,
+:root[data-theme='dark'] .eva-chat-surface,
+:root[data-theme='starlight'] .eva-chat-surface,
+:root[data-theme='dark'] .eva-utility-rail,
+:root[data-theme='starlight'] .eva-utility-rail {
+  background: var(--theme-surface-sunken);
+}
+
+:root[data-theme='dark'] .eva-sidebar,
+:root[data-theme='starlight'] .eva-sidebar {
+  border-color: var(--ui-border);
+  background: var(--bg-sidebar);
+  box-shadow: 10px 0 28px -28px rgba(0, 0, 0, .9);
+}
+
+:root[data-theme='dark'] .eva-panel,
+:root[data-theme='starlight'] .eva-panel,
+:root[data-theme='dark'] .task-workspace-note,
+:root[data-theme='starlight'] .task-workspace-note,
+:root[data-theme='dark'] .settings-page__header,
+:root[data-theme='starlight'] .settings-page__header {
+  background: var(--theme-surface-raised);
+  border-color: var(--ui-border);
+  color: var(--text-primary);
+}
+
+:root[data-theme='dark'] .task-workspace-note__header,
+:root[data-theme='starlight'] .task-workspace-note__header,
+:root[data-theme='dark'] .task-workspace-note__tabs,
+:root[data-theme='starlight'] .task-workspace-note__tabs {
+  border-color: var(--ui-border);
+  background: var(--ui-surface-muted);
+}
+
+:root[data-theme='dark'] .bg-white,
+:root[data-theme='starlight'] .bg-white { background-color: var(--theme-surface-raised) !important; }
+:root[data-theme='dark'] .bg-zinc-50,
+:root[data-theme='starlight'] .bg-zinc-50 { background-color: var(--ui-surface-muted) !important; }
+:root[data-theme='dark'] .text-zinc-900,
+:root[data-theme='starlight'] .text-zinc-900 { color: var(--text-primary) !important; }
+:root[data-theme='dark'] .text-zinc-800,
+:root[data-theme='starlight'] .text-zinc-800 { color: var(--text-primary) !important; }
+:root[data-theme='dark'] .text-zinc-700,
+:root[data-theme='starlight'] .text-zinc-700 { color: var(--text-secondary) !important; }
+:root[data-theme='dark'] .text-zinc-600,
+:root[data-theme='starlight'] .text-zinc-600 { color: var(--text-secondary) !important; }
+:root[data-theme='dark'] .text-zinc-500,
+:root[data-theme='starlight'] .text-zinc-500 { color: var(--text-muted) !important; }
+:root[data-theme='dark'] .text-zinc-400,
+:root[data-theme='starlight'] .text-zinc-400 { color: var(--text-muted) !important; }
+:root[data-theme='dark'] [class*='border-zinc-'],
+:root[data-theme='starlight'] [class*='border-zinc-'] { border-color: var(--ui-border) !important; }
+:root[data-theme='dark'] input,
+:root[data-theme='dark'] textarea,
+:root[data-theme='dark'] select,
+:root[data-theme='starlight'] input,
+:root[data-theme='starlight'] textarea,
+:root[data-theme='starlight'] select {
+  border-color: var(--ui-border-strong);
+  background-color: var(--bg-input);
+  color: var(--text-primary);
+}
+
+:root[data-theme='dark'] button:hover,
+:root[data-theme='starlight'] button:hover { transition: background-color var(--theme-duration) var(--theme-ease), border-color var(--theme-duration) var(--theme-ease), color var(--theme-duration) var(--theme-ease); }
+:root[data-theme='dark'] .hover\:bg-zinc-100:hover,
+:root[data-theme='starlight'] .hover\:bg-zinc-100:hover { background-color: var(--bg-hover) !important; }
+:root[data-theme='dark'] .hover\:bg-zinc-50:hover,
+:root[data-theme='starlight'] .hover\:bg-zinc-50:hover { background-color: var(--bg-hover) !important; }
+:root[data-theme='dark'] .focus-visible\:ring-violet-200:focus-visible,
+:root[data-theme='starlight'] .focus-visible\:ring-violet-200:focus-visible { --tw-ring-color: var(--theme-focus) !important; }
+:root[data-theme='dark'] ::-webkit-scrollbar-thumb,
+:root[data-theme='starlight'] ::-webkit-scrollbar-thumb { background: var(--ui-border-strong); }
+:root[data-theme='dark'] ::selection,
+:root[data-theme='starlight'] ::selection { background: var(--accent-muted); }
+
+/* Theme changes should feel physical but never delay a click or keyboard flow.
+   The default light theme intentionally keeps the original interaction timing. */
+:root[data-theme='dark'] body,
+:root[data-theme='dark'] button,
+:root[data-theme='dark'] input,
+:root[data-theme='dark'] textarea,
+:root[data-theme='dark'] select,
+:root[data-theme='dark'] [role='dialog'],
+:root[data-theme='dark'] .eva-panel,
+:root[data-theme='dark'] .task-workspace-note,
+:root[data-theme='starlight'] body,
+:root[data-theme='starlight'] button,
+:root[data-theme='starlight'] input,
+:root[data-theme='starlight'] textarea,
+:root[data-theme='starlight'] select,
+:root[data-theme='starlight'] [role='dialog'],
+:root[data-theme='starlight'] .eva-panel,
+:root[data-theme='starlight'] .task-workspace-note {
+  transition: background-color var(--theme-duration) var(--theme-ease), border-color var(--theme-duration) var(--theme-ease), color var(--theme-duration) var(--theme-ease), box-shadow var(--theme-duration) var(--theme-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme='dark'] body,
+  :root[data-theme='dark'] button,
+  :root[data-theme='dark'] input,
+  :root[data-theme='dark'] textarea,
+  :root[data-theme='dark'] select,
+  :root[data-theme='dark'] [role='dialog'],
+  :root[data-theme='dark'] .eva-panel,
+  :root[data-theme='dark'] .task-workspace-note,
+  :root[data-theme='starlight'] body,
+  :root[data-theme='starlight'] button,
+  :root[data-theme='starlight'] input,
+  :root[data-theme='starlight'] textarea,
+  :root[data-theme='starlight'] select,
+  :root[data-theme='starlight'] [role='dialog'],
+  :root[data-theme='starlight'] .eva-panel,
+  :root[data-theme='starlight'] .task-workspace-note { transition: none; }
+  :root[data-theme='starlight'] .eva-app-shell::before { display: none; }
+}
+
+/* Keep configuration surfaces focused on the controls themselves. */
+.settings-help {
+  display: none !important;
 }
 
 .settings-dialog__tabs {

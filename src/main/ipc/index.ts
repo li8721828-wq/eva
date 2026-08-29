@@ -12,6 +12,8 @@ import { registerRuntimeKernelHandlers } from './runtime-kernel'
 import { registerActivePlanHandlers } from './active-plan'
 import { registerRequirementEngineeringHandlers } from './requirement-engineering'
 import type { ApplicationServices } from '../services/application-services'
+import { registerMcpHandlers } from './mcp'
+import { registerPersonalPreferenceHandlers } from './personal-preferences'
 
 export type Services = ApplicationServices
 
@@ -43,6 +45,8 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerActivePlanHandlers()
   registerAgentHandlers(services?.toolRegistry)
   registerPluginHandlers()
+  if (services) registerMcpHandlers(services.mcpClientManager)
+  registerPersonalPreferenceHandlers()
   if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService, services.storage)
   registerGitHandlers()
   registerCostHandlers()

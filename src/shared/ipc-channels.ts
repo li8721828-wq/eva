@@ -52,6 +52,20 @@ export const IPC = {
   PLUGIN_LOCAL_SEARXNG_STOP: 'plugin:local-searxng-stop',
   PLUGIN_TEST_CONNECTION: 'plugin:test-connection',
 
+  // Model Context Protocol servers
+  MCP_LIST: 'mcp:list',
+  MCP_SAVE: 'mcp:save',
+  MCP_DELETE: 'mcp:delete',
+  MCP_TOGGLE: 'mcp:toggle',
+  MCP_RECONNECT: 'mcp:reconnect',
+
+  // Personal preference learning and context injection
+  PREFERENCE_LIST: 'preference:list',
+  PREFERENCE_SETTINGS_GET: 'preference:settings-get',
+  PREFERENCE_SETTINGS_SAVE: 'preference:settings-save',
+  PREFERENCE_DELETE: 'preference:delete',
+  PREFERENCE_CLEAR: 'preference:clear',
+
   // Requirement engineering workflow
   REQUIREMENT_RUN_LIST: 'requirement:run-list',
   REQUIREMENT_RUN_SUBMIT: 'requirement:submit',

@@ -41,6 +41,8 @@ import type { NetworkConfig, NetworkTestResult } from '../../../shared/types/net
 import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
+import { McpPanel } from './McpPanel'
+import { PersonalPreferencePanel } from './PersonalPreferencePanel'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
 import { ModelPoolPanel } from './ModelPoolPanel'
@@ -87,6 +89,8 @@ export function SettingsDialog() {
     setActiveModel,
     language,
     setLanguage,
+    theme,
+    setTheme,
   } = useAppStore()
 
   const [providerType, setProviderType] = useState<ProviderType>('openai')
@@ -548,9 +552,9 @@ export function SettingsDialog() {
   return (
     <section className="settings-page" aria-label="Settings">
       <header className="settings-page__header">
-        <div>
+        <div className="settings-help-trigger">
           <h1 className="settings-page__title">{copy.title}</h1>
-          <p className="settings-page__description">{copy.description}</p>
+          <p className="settings-page__description settings-help">{copy.description}</p>
         </div>
         <Button variant="ghost" size="icon" className="settings-page__back" onClick={() => setSettingsOpen(false)} title="Back to workspace" aria-label="Back to workspace">
           <ArrowLeft className="h-4 w-4" />
@@ -567,6 +571,8 @@ export function SettingsDialog() {
           <TabsTrigger value="agents">{copy.agents}</TabsTrigger>
           <TabsTrigger value="automation">{copy.automation}</TabsTrigger>
           <TabsTrigger value="plugins">{copy.plugins}</TabsTrigger>
+          <TabsTrigger value="mcp">MCP</TabsTrigger>
+          <TabsTrigger value="preferences">偏好</TabsTrigger>
           <TabsTrigger value="qq">{copy.qq}</TabsTrigger>
           <TabsTrigger value="about">{copy.about}</TabsTrigger>
         </TabsList>
@@ -587,7 +593,24 @@ export function SettingsDialog() {
                   { value: 'ja', label: '日本語' },
                 ]}
               />
-              <p className="text-xs leading-5 text-zinc-500">{copy.languageDescription}</p>
+              <p className="settings-help text-xs leading-5 text-zinc-500">{copy.languageDescription}</p>
+            </div>
+
+            <div className="settings-dialog__card settings-dialog__field">
+              <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                <Eye className="h-4 w-4 text-zinc-500" />
+                主题皮肤
+              </label>
+              <Select
+                value={theme}
+                onChange={(event) => setTheme(event.target.value as typeof theme)}
+                options={[
+                  { value: 'light', label: '晨雾 · Light' },
+                  { value: 'dark', label: '墨夜 · Dark' },
+                  { value: 'starlight', label: '星空 · Starlight' },
+                ]}
+              />
+              <p className="settings-help text-xs leading-5 text-zinc-500">主题会同步调整界面层级、状态色、边框、阴影与动效。</p>
             </div>
 
             <div className="settings-dialog__card settings-dialog__field">
@@ -606,7 +629,7 @@ export function SettingsDialog() {
                   {copy.browse}
                 </Button>
               </div>
-              <p className="text-xs leading-5 text-zinc-500">
+              <p className="settings-help text-xs leading-5 text-zinc-500">
                 {copy.workspaceDescription}
               </p>
             </div>
@@ -617,12 +640,12 @@ export function SettingsDialog() {
           <section className="mx-auto w-full max-w-3xl">
             <div className="settings-dialog__card settings-dialog__model-card gap-5">
               <div className="flex items-start justify-between gap-6">
-                <div>
+                <div className="settings-help-trigger">
                   <div className="flex items-center gap-2 text-sm font-medium text-zinc-800">
                     <Network className="h-4 w-4 text-violet-500" />
                     网络路由
                   </div>
-                  <p className="mt-1 text-sm leading-6 text-zinc-500">
+                  <p className="settings-help mt-1 text-sm leading-6 text-zinc-500">
                     此设置会统一用于模型调用、供应商费率同步和 Eva 的其他网络服务。
                   </p>
                 </div>
@@ -646,7 +669,7 @@ export function SettingsDialog() {
                     { value: 'direct', label: '始终直连' },
                   ]}
                 />
-                <p className="text-xs leading-5 text-zinc-500">
+                <p className="settings-help text-xs leading-5 text-zinc-500">
                   系统代理会读取 Windows 当前代理设置；手动模式仅影响 Eva，不会修改系统设置。
                 </p>
               </div>
@@ -664,7 +687,7 @@ export function SettingsDialog() {
                     placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
                     autoComplete="off"
                   />
-                  <p className="text-xs leading-5 text-zinc-500">
+                  <p className="settings-help text-xs leading-5 text-zinc-500">
                     多协议可用分号分隔，例如 <code>http=127.0.0.1:7890;https=127.0.0.1:7890</code>。
                   </p>
                 </div>
@@ -679,7 +702,7 @@ export function SettingsDialog() {
                     placeholder="&lt;local&gt;;localhost;127.0.0.1"
                     autoComplete="off"
                   />
-                  <p className="text-xs leading-5 text-zinc-500">多个域名、IP 或网段请用分号分隔。</p>
+                  <p className="settings-help text-xs leading-5 text-zinc-500">多个域名、IP 或网段请用分号分隔。</p>
                 </div>
               </> : null}
 
@@ -693,7 +716,7 @@ export function SettingsDialog() {
                   placeholder="https://www.gstatic.com/generate_204"
                   autoComplete="off"
                 />
-                <p className="text-xs leading-5 text-zinc-500">检测不会发送模型密钥或供应商凭据。</p>
+                <p className="settings-help text-xs leading-5 text-zinc-500">检测不会发送模型密钥或供应商凭据。</p>
               </div>
 
               <div className="settings-dialog__actions">
@@ -1005,6 +1028,14 @@ export function SettingsDialog() {
 
         <TabsContent value="plugins" className="settings-dialog__content">
           <PluginCenter />
+        </TabsContent>
+
+        <TabsContent value="mcp" className="settings-dialog__content">
+          <McpPanel />
+        </TabsContent>
+
+        <TabsContent value="preferences" className="settings-dialog__content">
+          <PersonalPreferencePanel />
         </TabsContent>
 
         <TabsContent value="qq" className="settings-dialog__content">

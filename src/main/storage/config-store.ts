@@ -15,10 +15,11 @@ import { DEFAULT_ENVIRONMENT_RULES, type EnvironmentRulesConfig } from '../../sh
 import { CredentialStore } from './credential-store'
 
 export type { ProviderConfigEntry }
+export type AppTheme = 'light' | 'dark' | 'starlight'
 
 export interface AppConfig {
   // General
-  theme: 'dark' | 'light'
+  theme: AppTheme
   language: 'en' | 'zh' | 'ja'
   workspacePath: string
   fileAccessGrants: FileAccessGrant[]

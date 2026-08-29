@@ -98,7 +98,7 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           onClick={() => !disabled && setOpen((current) => !current)}
           onKeyDown={handleKeyDown}
           className={cn(
-            'flex h-9 w-full items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-3 py-1 text-left text-sm text-zinc-900 shadow-sm transition-[border-color,background-color,box-shadow] hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:border-violet-400 focus-visible:ring-2 focus-visible:ring-violet-100 disabled:cursor-not-allowed disabled:opacity-50',
+            'eva-focus-float flex h-9 w-full items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-3 py-1 text-left text-sm text-zinc-900 shadow-sm transition-[border-color,box-shadow] hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50',
             className
           )}
           aria-expanded={open}

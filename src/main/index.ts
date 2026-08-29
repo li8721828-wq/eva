@@ -11,11 +11,13 @@ import { registerTrustedRenderer } from './ipc/trusted-ipc'
 import { createApplicationServices } from './services/application-services'
 import { LocalSearxngService } from './services/local-searxng-service'
 import { applyNetworkConfig } from './services/network-settings-service'
+import type { ApplicationServices } from './services/application-services'
 
 // Set up global error handlers before anything else
 setupGlobalErrorHandlers()
 
 let mainWindow: BrowserWindow | null = null
+let applicationServices: ApplicationServices | null = null
 
 app.whenReady().then(async () => {
   // 1. Initialize persistent storage (creates dirs, seeds built-in agents)
@@ -32,6 +34,7 @@ app.whenReady().then(async () => {
 
   // 2. Assemble all long-lived dependencies before exposing renderer IPC.
   const services = createApplicationServices(getStorage(), providerRegistry)
+  applicationServices = services
 
   // 3. Create the trusted renderer before registering renderer-facing IPC.
   createApplicationMenu()
@@ -54,6 +57,8 @@ app.whenReady().then(async () => {
     }
     return
   }
+
+  void services.mcpClientManager.start(services.toolRegistry)
 
   const qqRemoteBridge = new QqRemoteBridge({
     storage: services.storage,
@@ -93,5 +98,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // MCP stdio transports own child processes and must be closed with the app.
+  void applicationServices?.mcpClientManager.dispose()
   mainWindow = null
 })

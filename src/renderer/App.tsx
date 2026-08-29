@@ -79,6 +79,7 @@ const App: React.FC = () => {
     sidebarCollapsed,
     sidebarWidth,
     rightPanelWidth,
+    theme,
     taskNoteHeight,
     setSidebarWidth,
     setRightPanelWidth,
@@ -103,6 +104,7 @@ const App: React.FC = () => {
     sidebarCollapsed: state.sidebarCollapsed,
     sidebarWidth: state.sidebarWidth,
     rightPanelWidth: state.rightPanelWidth,
+    theme: state.theme,
     taskNoteHeight: state.taskNoteHeight,
     setSidebarWidth: state.setSidebarWidth,
     setRightPanelWidth: state.setRightPanelWidth,
@@ -234,6 +236,14 @@ const App: React.FC = () => {
   useEffect(() => {
     document.documentElement.lang = language === 'zh' ? 'zh-CN' : language === 'ja' ? 'ja' : 'en'
   }, [language])
+
+  useEffect(() => {
+    if (theme === 'light') {
+      delete document.documentElement.dataset.theme
+    } else {
+      document.documentElement.dataset.theme = theme
+    }
+  }, [theme])
 
   const showRightPanel = currentView === 'chat' && (rightPanelVisible || terminalVisible)
 

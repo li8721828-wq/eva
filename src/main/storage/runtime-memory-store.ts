@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { RecordConversationMemoryInput, RecordTaskMemoryInput, RuntimeMemoryEntry } from '../../shared/types/runtime-memory'
+import { sanitizeUnicode, truncateUnicode } from '../utils/unicode'
 
 const MAX_ENTRIES = 800
 const MAX_ENTRY_CHARS = 1_400
@@ -9,9 +10,9 @@ const MAX_CONTEXT_ENTRIES = 14
 const MAX_CONTEXT_CHARS = 7_000
 
 function compact(value: string, maxChars: number): string {
-  const normalized = value.replace(/\s+/g, ' ').trim()
+  const normalized = sanitizeUnicode(value.replace(/\s+/g, ' ').trim())
   if (normalized.length <= maxChars) return normalized
-  return `${normalized.slice(0, maxChars - 1)}...`
+  return `${truncateUnicode(normalized, maxChars - 3)}...`
 }
 
 /**
@@ -101,7 +102,14 @@ export class RuntimeMemoryStore {
     try {
       if (!fs.existsSync(this.filePath)) return []
       const value = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'))
-      return Array.isArray(value) ? value : []
+      if (!Array.isArray(value)) return []
+      return value.map((entry) => {
+        if (!entry || typeof entry !== 'object') return entry
+        const candidate = entry as RuntimeMemoryEntry
+        return typeof candidate.content === 'string'
+          ? { ...candidate, content: sanitizeUnicode(candidate.content) }
+          : candidate
+      })
     } catch {
       return []
     }

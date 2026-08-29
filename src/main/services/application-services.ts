@@ -4,6 +4,7 @@ import { ProjectIndexService } from './project-index-service'
 import { TerminalServiceImpl } from './terminal-service'
 import { createToolRegistry, type FileService, type TerminalService, type ToolRegistry } from '../tools'
 import type { StorageManager } from '../storage'
+import { McpClientManager } from './mcp-client-manager'
 
 /**
  * The composition-root dependency set shared by renderer-facing handlers.
@@ -16,6 +17,7 @@ export interface ApplicationServices {
   toolRegistry: ToolRegistry
   providerRegistry: ProviderRegistry
   projectIndexService?: ProjectIndexService
+  mcpClientManager: McpClientManager
 }
 
 /** Build long-lived application dependencies once, before IPC handlers are registered. */
@@ -23,7 +25,8 @@ export function createApplicationServices(storage: StorageManager, providerRegis
   const fileService = new FileServiceImpl()
   const terminalService = new TerminalServiceImpl()
   const projectIndexService = new ProjectIndexService(storage.projectIndexes, storage.workspaces)
-  const toolRegistry = createToolRegistry(projectIndexService, providerRegistry)
+  const toolRegistry = createToolRegistry(projectIndexService, providerRegistry, storage.personalPreferences)
+  const mcpClientManager = new McpClientManager(storage.mcpServers)
 
   for (const config of storage.config.getProviders()) {
     if (!config.apiKey) continue
@@ -39,5 +42,5 @@ export function createApplicationServices(storage: StorageManager, providerRegis
     })
   }
 
-  return { storage, fileService, terminalService, toolRegistry, providerRegistry, projectIndexService }
+  return { storage, fileService, terminalService, toolRegistry, providerRegistry, projectIndexService, mcpClientManager }
 }
