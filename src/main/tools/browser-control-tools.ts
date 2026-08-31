@@ -63,8 +63,7 @@ const BROWSER_CANVAS_HTML = `<!doctype html>
 </style></head><body><header><div class="identity"><span class="mark"></span>Eva Browser</div><span class="status">AI session</span></header></body></html>`
 
 /**
- * General browser primitives only. Domain workflows, including form filling,
- * remain in separate tools and use the returned browserSessionId.
+ * General browser primitives for authorized page interactions.
  */
 export function createBrowserControlTools(): ToolExecutor[] {
   return [browserControlTool]
@@ -222,7 +221,7 @@ async function observeBrowser(session: BrowserSession): Promise<string> {
   session.url = session.view.webContents.getURL()
   const accessibility = await observeBrowserAccessibility(session)
   const snapshot = createBrowserSnapshot(session, 'page')
-  return JSON.stringify({ browserSessionId: session.id, snapshotId: snapshot.id, revision: snapshot.revision, url: session.url, elements: observed, accessibility, guidance: 'Use DOM selectors or interactive accessibility node IDs returned here. Password values are intentionally omitted. Canvas spreadsheets may expose cells, selection state, or an editor through accessibility. For bulk grid entry, use form_fill_workflow paste_table after selecting the starting cell. Do not submit or send without confirmSubmit: true.' })
+  return JSON.stringify({ browserSessionId: session.id, snapshotId: snapshot.id, revision: snapshot.revision, url: session.url, elements: observed, accessibility, guidance: 'Use DOM selectors or interactive accessibility node IDs returned here. Password values are intentionally omitted. Canvas spreadsheets may expose cells, selection state, or an editor through accessibility. Do not submit or send without confirmSubmit: true.' })
 }
 
 async function observeBrowserResult(session: BrowserSession): Promise<ToolExecutionResult> {

@@ -25,4 +25,17 @@ describe('provider request diagnostics', () => {
     expect(message).not.toContain('secret')
     expect(message).not.toContain('api_key')
   })
+
+  it('explains network failures with actionable metadata', () => {
+    const message = formatProviderRequestFailure(
+      Object.assign(new Error('The provider closed the connection before returning a response.'), { code: 'network', retryable: true }),
+      provider,
+      'deepseek-v4-flash-vision-exp',
+      'chat',
+    )
+
+    expect(message).toContain('code=network')
+    expect(message).toContain('retryable=true')
+    expect(message).toContain('检查 baseUrl')
+  })
 })

@@ -1,4 +1,6 @@
-# code-production-pipeline 架构说明
+# code-production-pipeline 架构说明（历史参考）
+
+> 本文描述的是旧版外部 Python 管线，仅作迁移参考。当前 Eva 的 `/coding` 已改为使用 `src/main/services/deterministic-coding-service.ts` 内置 TypeScript 实现，不再要求目标工作区存在 `code-production-pipeline`，也不执行本文中的外部脚本。
 
 ## 1. 定位与边界
 

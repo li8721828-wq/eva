@@ -68,7 +68,7 @@ function formatAttachmentSize(size: number): string {
 function MessageAttachments({ attachments }: { attachments: NonNullable<ChatMessage['attachments']> }) {
   if (attachments.length === 0) return null
   return (
-    <div className="chat-message-attachments mt-3 flex min-w-0 flex-wrap gap-2" aria-label="消息中的文件">
+    <div className="chat-message-attachments mt-3 mb-1 flex min-w-0 flex-wrap gap-2" aria-label="消息中的文件">
       {attachments.map((attachment) => {
         const isSpreadsheet = /\.(xlsx|xls|ods)$/iu.test(attachment.name)
         const Icon = attachment.kind === 'folder' ? FolderOpen : isSpreadsheet ? FileSpreadsheet : FileText
@@ -430,6 +430,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
                 {message.agentName}
               </Badge>
             )}
+            {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
             <div
               className="chat-user-message__content cursor-text select-text whitespace-pre-wrap"
               style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
@@ -443,7 +444,6 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             >
               {message.content}
             </div>
-            {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
             {message.quotedMessage ? (
               <div className="mt-3 flex max-w-full items-start gap-2 border-l-2 border-[#cdddf1] bg-white/45 px-3 py-2 text-left text-xs leading-5 text-[#59718f]">
                 <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#8da7cc]" aria-hidden="true" />

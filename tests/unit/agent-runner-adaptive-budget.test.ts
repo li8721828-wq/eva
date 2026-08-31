@@ -568,7 +568,7 @@ describe('AgentRunner adaptive tool budget', () => {
 
   it('keeps all configured tools available for direct execution and synthesis', async () => {
     const registry = new ToolRegistry()
-    const toolNames = ['read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'execute_command', 'inspect_runtime', 'web_search', 'read_web_page', 'desktop_observe', 'blender_inspect_scene']
+    const toolNames = ['read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'execute_command', 'inspect_runtime', 'web_search', 'read_web_page']
     for (const name of toolNames) {
       registry.register({
         definition: { name, description: name === 'inspect_runtime' ? 'Inspect runtime diagnostics and health.' : `Tool ${name}.`, parameters: { type: 'object' } },
@@ -601,6 +601,39 @@ describe('AgentRunner adaptive tool budget', () => {
 
     expect(requestedTools[0]).toEqual(toolNames)
     expect(requestedTools[1]).toEqual(toolNames)
+  })
+
+  it('prioritizes the structured spreadsheet tool for workbook attachments', async () => {
+    const registry = new ToolRegistry()
+    for (const name of ['execute_command', 'spreadsheet']) {
+      registry.register({
+        definition: { name, description: name === 'spreadsheet' ? 'Inspect and update workbooks.' : 'Run a shell command.', parameters: { type: 'object' } },
+        execute: async () => `${name} complete`,
+      })
+    }
+    const requestedTools: string[][] = []
+    const systemPrompts: string[] = []
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }>; messages?: Array<{ role: string; content: string }> }) => {
+        requestedTools.push((params.tools || []).map((tool) => tool.name))
+        systemPrompts.push(params.messages?.[0]?.content || '')
+        return chunks({ content: 'Workbook reviewed.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['execute_command'], maxIterations: 1 }, provider: provider as never,
+      toolRegistry: registry, contextManager: new ContextManager(), workspacePath: 'D:\\workspace', fileService: {} as never, terminalService: {} as never,
+    })
+
+    for await (const _event of runner.run({
+      messages: [],
+      newMessage: { id: 'xlsx-message', conversationId: 'conversation', role: 'user', content: '请分析这个文件', attachments: [{ path: 'D:\\workspace\\sales.xlsx', name: 'sales.xlsx', size: 12, kind: 'file' }], timestamp: Date.now() },
+    })) { /* exhaust */ }
+
+    expect(requestedTools[0]?.[0]).toBe('spreadsheet')
+    expect(systemPrompts[0]).toContain('Use the structured `spreadsheet` tool first')
   })
 
   it('falls back to normal output when slow reasoning is unavailable', async () => {

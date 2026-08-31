@@ -390,7 +390,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { inputText, quotedMessage, referenceImages, documentAttachments, currentConversationId } = get()
     if ((!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
 
-    const messageContent = inputText.trim() || (referenceImages.length ? 'Create an editable Blender model from the attached reference images.' : 'Read and analyze the attached files.')
+    const messageContent = inputText.trim() || (referenceImages.length ? 'Review the attached reference images.' : 'Read and analyze the attached files.')
 
     let convId = currentConversationId
     const existingConversation = convId

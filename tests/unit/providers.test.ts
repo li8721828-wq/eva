@@ -458,6 +458,35 @@ describe('OpenAIProvider streaming tool calls', () => {
     })
   })
 
+  it('converts DSML markers with single spaced pipes', async () => {
+    async function* dsmlToolCallStream() {
+      yield {
+        choices: [{
+          delta: {
+            content: '< | DSML | tool_calls>< | DSML | invoke name="spreadsheet">< | DSML | parameter name="action" string="true">inspect< / | DSML | parameter>< | DSML | parameter name="path" string="true">workbook.xlsx< / | DSML | parameter>< / | DSML | invoke>< / | DSML | tool_calls>',
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = { chat: { completions: { create: vi.fn().mockResolvedValue(dsmlToolCallStream()) } } }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model',
+      messages: [],
+      tools: [{ name: 'spreadsheet', description: 'Workbook tool.', parameters: { type: 'object', properties: { action: { type: 'string' }, path: { type: 'string' } }, required: ['action', 'path'] } }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)).toMatchObject({
+      finishReason: 'tool_calls',
+      textToolCallEnvelope: true,
+      toolCalls: [{ name: 'spreadsheet', arguments: '{"action":"inspect","path":"workbook.xlsx"}' }],
+    })
+  })
+
   it('marks malformed DSML as a retryable parse failure instead of a final answer', async () => {
     async function* malformedDsmlStream() {
       yield {

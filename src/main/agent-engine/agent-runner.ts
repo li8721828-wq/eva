@@ -10,14 +10,13 @@ import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/
 import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
 import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
 import type { FileAccessGrant } from '../../shared/types/file-access'
-import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
+import type { ModelPool } from '../../shared/types/model-pool'
 import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
 import type { ProviderRegistry } from '../providers'
-import { ModelRouter } from '../services/model-router'
-import { modelHealthService } from '../services/model-health-service'
 import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../services/usage-pricing-service'
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
+import { classifyError } from '../providers/errors'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -99,9 +98,7 @@ const MAX_PROVIDER_CONTINUATIONS = 3
 const MAX_NORMAL_TOOL_CYCLES = 12
 const MAX_AGENT_RESPONSE_TOKENS = 2_048
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
-// A complete virtual desktop can include multiple high-resolution displays.
-// Keep this distinct from ordinary user attachment limits so desktop_observe
-// does not silently drop a valid multi-display PNG before visual analysis.
+// Tool-generated screenshots need an independent bound from user attachments.
 const MAX_TOOL_REVIEW_IMAGE_BYTES = 32 * 1024 * 1024
 const TEAM_DELEGATION_TOOL: ToolDefinition = {
   name: 'delegate_to_team',
@@ -218,14 +215,21 @@ export class AgentRunner {
       }
 
       // Tool definitions filtered by agent's allowed tool list
+      const hasSpreadsheetAttachment = [
+        ...params.messages,
+        params.newMessage,
+      ].some((message) => message.attachments?.some((attachment) => /\.(xlsx|xls|ods)$/iu.test(attachment.name) || /\.(xlsx|xls|ods)$/iu.test(attachment.path)))
       const poolTool = agentConfig.tools.includes('delegate_to_model_pool') ? modelPoolDelegationTool(this.config.modelPools, agentConfig.modelPoolIds) : undefined
       const mcpToolNames = agentConfig.tools.includes('mcp:*')
         ? toolRegistry.getAll().filter((tool) => tool.definition.name.startsWith('mcp__')).map((tool) => tool.definition.name)
         : []
+      const configuredToolNames = agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool' && name !== 'mcp:*' && name !== 'spreadsheet')
+      const spreadsheetDefinition = toolRegistry.getDefinitionsByNames(['spreadsheet'])
       const allToolDefs: ToolDefinition[] = [
-        ...toolRegistry.getDefinitionsByNames([...agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool' && name !== 'mcp:*'), ...mcpToolNames]),
+        ...(hasSpreadsheetAttachment ? spreadsheetDefinition : []),
+        ...toolRegistry.getDefinitionsByNames([...configuredToolNames, ...mcpToolNames]),
         ...(toolRegistry.has('manage_personal_preferences') && !agentConfig.tools.includes('manage_personal_preferences') ? toolRegistry.getDefinitionsByNames(['manage_personal_preferences']) : []),
-        ...(toolRegistry.has('spreadsheet') && !agentConfig.tools.includes('spreadsheet') ? toolRegistry.getDefinitionsByNames(['spreadsheet']) : []),
+        ...(!hasSpreadsheetAttachment && toolRegistry.has('spreadsheet') ? spreadsheetDefinition : []),
         ...(poolTool ? [poolTool] : []),
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
         ...(this.config.runTask ? [TASK_TOOL] : []),
@@ -292,13 +296,16 @@ export class AgentRunner {
       // agent's configured capabilities are all visible to the model, so an
       // intent heuristic can never prevent a legitimate tool call.
       const activeToolDefs = allToolDefs
+      const spreadsheetPolicy = hasSpreadsheetAttachment
+        ? '\n\n--- Spreadsheet attachment policy ---\nA spreadsheet attachment is present. Use the structured `spreadsheet` tool first. Make one `inspect` call without a `sheet` argument to get the workbook and sheet overview; inspect an individual sheet only when the first result shows it is necessary. Use `create` or `update` only when the user explicitly requests a file change. Do not write Python, PowerShell, Node, or other scripts for spreadsheet work unless the spreadsheet tool returns an error or explicitly reports that the requested operation is unsupported. If fallback is needed, report the spreadsheet tool failure before using `execute_command`. Do not repeat an identical spreadsheet call.\n'
+        : ''
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
         activeToolDefs,
-      )
+      ) + spreadsheetPolicy
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
         messages: safeAllHistory,
@@ -307,6 +314,7 @@ export class AgentRunner {
         fullFilesystemAccess,
         maxContextTokens: getModelInputBudgetTokens(agentConfig.model),
         tools: activeToolDefs,
+        systemPromptSuffix: spreadsheetPolicy,
       })
 
       // ── Tool execution loop ─────────────────────────────────────────────────
@@ -324,6 +332,17 @@ export class AgentRunner {
         // Call LLM (yields real-time text_delta events to caller)
         const response = yield* this.executeLLMCall(messages, activeToolDefs)
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, response.usage)
+
+        // A few gateways duplicate the same tool invocation in one response
+        // while assembling DSML/function-call output. Keep the first call so
+        // the UI and tool protocol do not show or execute it repeatedly.
+        const seenToolCallSignatures = new Set<string>()
+        response.toolCalls = response.toolCalls.filter((toolCall) => {
+          const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
+          if (seenToolCallSignatures.has(signature)) return false
+          seenToolCallSignatures.add(signature)
+          return true
+        })
 
         const hasToolCalls = response.toolCalls.length > 0
 
@@ -444,7 +463,6 @@ export class AgentRunner {
             }
           }
         } else {
-          let desktopActionExecuted = false
           for (const toolCall of response.toolCalls) {
           // Emit tool_call event
           yield {
@@ -456,7 +474,6 @@ export class AgentRunner {
             },
           }
 
-          const isDesktopAction = toolCall.name === 'mouse_control' || toolCall.name === 'keyboard_control'
           if (toolCall.name === 'web_search' && mustReadWebPageBeforeMoreSearch) {
             const deferredResult: CompletedToolResult = {
               result: 'Search results already returned readable source URLs. Read a relevant result with read_web_page before issuing another web_search.',
@@ -472,19 +489,6 @@ export class AgentRunner {
             }
             continue
           }
-          if (isDesktopAction && desktopActionExecuted) {
-            const deferredResult: CompletedToolResult = {
-              result: 'Deferred: a desktop action already ran in this cycle. Inspect its automatic post-action screenshot and model-pool visual analysis before choosing the next desktop action.',
-              isError: false,
-            }
-            toolResults.set(toolCall.id, deferredResult)
-            yield {
-              type: 'tool_result',
-              toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: deferredResult.result, isError: false },
-            }
-            continue
-          }
-
           // Execute the tool
           const visualAttachments = dedupeToolImages([
             ...recentVisualAttachments,
@@ -511,7 +515,6 @@ export class AgentRunner {
           if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
           toolResults.set(toolCall.id, result)
-          if (isDesktopAction && !result.isError) desktopActionExecuted = true
           if (result.images?.length) {
             recentVisualAttachments = dedupeToolImages([...recentVisualAttachments, ...result.images]).slice(-8)
           }
@@ -552,7 +555,7 @@ export class AgentRunner {
           fileAccessGrants,
           fullFilesystemAccess,
           activeToolDefs,
-        )
+        ) + spreadsheetPolicy
         const currentSystemMessage = messages[0]
         const preservedSystemSuffix = currentSystemMessage?.role === 'system' && currentSystemMessage.content.startsWith(activeSystemPrompt)
           ? currentSystemMessage.content.slice(activeSystemPrompt.length)
@@ -569,62 +572,18 @@ export class AgentRunner {
         )
         if (integrityReminder) messages.push({ role: 'user', content: integrityReminder })
 
-        // Tool-role messages cannot safely carry multimodal content for every
-        // provider. Add generated renders as a new user turn so the next model
-        // iteration can visually compare them with the original references.
-        const reviewImages = await this.loadBlenderReviewImages(response.toolCalls, toolResults)
-        if (reviewImages.length > 0) {
-          messages.push({
-            role: 'user',
-            content: 'Blender generated these review renders of the current model. Compare them directly with the original reference image(s) still in this conversation. Identify visible mismatches in silhouette, proportions, colors, materials, hair, facial features, clothing, and accessories. Continue by correcting the same .blend file, then render another review before you finish.',
-            images: reviewImages,
-          })
-        }
-
-        const visualToolImages = await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe', 'browser_control', 'mouse_control', 'keyboard_control'])
+        const visualToolImages = await this.loadToolImages(response.toolCalls, toolResults, ['browser_control'])
         if (visualToolImages.length > 0 && this.supportsVisionInput()) {
           messages.push({
             role: 'user',
-            content: 'A desktop, mouse, keyboard, or browser tool supplied visual evidence. For desktop tools, the image is the complete visible virtual desktop after the latest observation or action. First decide whether the requested visible outcome actually occurred. If it did not, identify only one corrective next action and observe again after it; never treat pointer arrival or input dispatch as success by itself. Use the returned observationId with mouse_control or keyboard_control for desktop actions. For browser screenshots, use the returned visualObservationId with browser_control click_at, type_at, scroll_at, or press_key. Do not infer pixels obscured by another window or continuous monitoring.',
+            content: 'Browser control supplied visual evidence. First decide whether the requested visible outcome occurred. If it did not, identify one corrective next action and observe again after it. Use the returned visualObservationId with browser_control click_at, type_at, scroll_at, or press_key; do not reuse stale observations.',
             images: visualToolImages,
           })
         } else if (visualToolImages.length > 0) {
-          const desktopImages = await this.loadToolImages(response.toolCalls, toolResults, ['desktop_observe', 'mouse_control', 'keyboard_control'])
-          if (desktopImages.length > 0) {
-            const poolToolCallId = `model_pool_visual_${Date.now()}_${iteration}`
-            const poolIds = agentConfig.modelPoolIds || []
-            const poolToolCall = {
-              id: poolToolCallId,
-              name: 'delegate_to_model_pool',
-              arguments: {
-                poolId: poolIds[0] || 'authorized-vision-pool',
-                capability: 'vision',
-                includeImages: true,
-                task: 'Analyze the complete desktop screenshot after the latest Agent action. State whether the requested visible outcome occurred, visible evidence for or against it, and exactly one next corrective action if it did not.',
-                automatic: true,
-              },
-            }
-            yield { type: 'tool_call', toolCall: poolToolCall }
-            const analysis = await this.analyzeDesktopWithAuthorizedPool(desktopImages)
-            yield {
-              type: 'tool_result',
-              toolResult: {
-                toolCallId: poolToolCallId,
-                name: 'delegate_to_model_pool',
-                result: analysis || 'No authorized visual model pool could analyze the screenshot.',
-                isError: !analysis,
-              },
-            }
-            messages.push({
-              role: 'user',
-              content: analysis || 'A complete virtual-desktop screenshot was captured, but this text-only primary model has no authorized Vision or Image model pool to analyze it. Do not claim that the latest desktop action succeeded. Ask the user to authorize a visual model pool in Agent > Model access or select a vision-capable primary model.',
-            })
-          } else {
-            messages.push({
-              role: 'user',
-              content: 'A browser screenshot was captured, but this text-only primary model cannot inspect it. Do not guess visual coordinates; use a vision-capable primary model for visual browser interaction.',
-            })
-          }
+          messages.push({
+            role: 'user',
+            content: 'A browser screenshot was captured, but this text-only primary model cannot inspect it. Do not guess visual coordinates; use a vision-capable primary model for visual browser interaction.',
+          })
         }
 
         const compactedHistory = compactCompletedToolTransactions(messages)
@@ -793,44 +752,50 @@ export class AgentRunner {
     // Tool call accumulation state (keyed by chunk index)
     const tcAccumulator: Map<number, { id: string; name: string; argsStr: string }> = new Map()
 
-    for await (const chunk of stream) {
-      // Check abort between chunks
-      if (signal?.aborted) break
-      // A streaming request is still one model call. OpenAI-compatible
-      // gateways commonly repeat a cumulative usage snapshot on every text
-      // chunk, so adding it here inflates tokens and calls by chunk count.
-      usage = this.selectUsageSnapshot(usage, this.toChatUsage(chunk.usage))
-      if (chunk.toolCallParseFailure) toolCallParseFailure = chunk.toolCallParseFailure
-      if (chunk.textToolCallEnvelope) textToolCallEnvelope = true
+    try {
+      for await (const chunk of stream) {
+        // Check abort between chunks
+        if (signal?.aborted) break
+        // A streaming request is still one model call. OpenAI-compatible
+        // gateways commonly repeat a cumulative usage snapshot on every text
+        // chunk, so adding it here inflates tokens and calls by chunk count.
+        usage = this.selectUsageSnapshot(usage, this.toChatUsage(chunk.usage))
+        if (chunk.toolCallParseFailure) toolCallParseFailure = chunk.toolCallParseFailure
+        if (chunk.textToolCallEnvelope) textToolCallEnvelope = true
 
-      if (agentConfig.showThinking && chunk.reasoningContent) {
-        receivedReasoning = true
-        yield { type: 'reasoning', content: chunk.reasoningContent }
-      }
+        if (agentConfig.showThinking && chunk.reasoningContent) {
+          receivedReasoning = true
+          yield { type: 'reasoning', content: chunk.reasoningContent }
+        }
 
-      // ── Text content ──────────────────────────────────────────────────────
-      if (chunk.content) {
-        content += chunk.content
-        yield { type: 'text', content: chunk.content }
-      }
+        // ── Text content ──────────────────────────────────────────────────────
+        if (chunk.content) {
+          content += chunk.content
+          yield { type: 'text', content: chunk.content }
+        }
 
-      // ── Tool call fragments ───────────────────────────────────────────────
-      if (chunk.toolCalls) {
-        for (const tc of chunk.toolCalls) {
-          let acc = tcAccumulator.get(tc.index)
-          if (!acc) {
-            acc = { id: tc.id ?? '', name: tc.name ?? '', argsStr: '' }
-            tcAccumulator.set(tc.index, acc)
+        // ── Tool call fragments ───────────────────────────────────────────────
+        if (chunk.toolCalls) {
+          for (const tc of chunk.toolCalls) {
+            let acc = tcAccumulator.get(tc.index)
+            if (!acc) {
+              acc = { id: tc.id ?? '', name: tc.name ?? '', argsStr: '' }
+              tcAccumulator.set(tc.index, acc)
+            }
+            if (tc.id) acc.id = tc.id
+            if (tc.name) acc.name = tc.name
+            if (tc.arguments !== undefined) acc.argsStr += tc.arguments
           }
-          if (tc.id) acc.id = tc.id
-          if (tc.name) acc.name = tc.name
-          if (tc.arguments !== undefined) acc.argsStr += tc.arguments
+        }
+
+        if (chunk.finishReason) {
+          finishReason = chunk.finishReason
         }
       }
-
-      if (chunk.finishReason) {
-        finishReason = chunk.finishReason
-      }
+    } catch (error) {
+      const classified = classifyError(error, provider.id)
+      Object.assign(classified, { phase: 'stream' })
+      throw classified
     }
 
     // Parse accumulated tool calls
@@ -1178,19 +1143,6 @@ export class AgentRunner {
     return undefined
   }
 
-  /**
-   * Only Blender renders are sent back as multimodal user content. Tool
-   * screenshots (such as desktop_observe and browser_control) remain execution evidence and must
-   * not be attached to a follow-up model request: many OpenAI-compatible
-   * endpoints accept text-only message parts and reject image_url entirely.
-   */
-  private async loadBlenderReviewImages(
-    toolCalls: CompletedToolCall[],
-    toolResults: Map<string, CompletedToolResult>
-  ): Promise<NonNullable<ChatMessageInput['images']>> {
-    return this.loadToolImages(toolCalls, toolResults, ['blender_render_review', 'blender_model_from_reference'])
-  }
-
   private supportsVisionInput(): boolean {
     if (this.config.provider.type === 'anthropic') return true
     if (this.config.provider.type !== 'openai') return false
@@ -1213,69 +1165,6 @@ export class AgentRunner {
       .map(([id, result]) => `[tool:${id}] ${result.result.slice(0, 5_000)}`)
       .join('\n')
     return `${recentMessages}\n${currentTools}`.slice(-32_000)
-  }
-
-  /**
-   * Desktop screenshots are explicit user-authorized observations. When the
-   * primary model is text-only, use only the pools granted to this agent to
-   * turn that screenshot into a bounded visual handoff.
-   */
-  private async analyzeDesktopWithAuthorizedPool(
-    images: NonNullable<ChatMessageInput['images']>,
-  ): Promise<string | undefined> {
-    const poolIds = this.config.agentConfig.modelPoolIds || []
-    if (!poolIds.length) return undefined
-
-    const candidates: ModelPoolEntry[] = []
-    const seen = new Set<string>()
-    const providerRegistry = this.config.providerRegistry
-    if (!providerRegistry) return undefined
-    const router = new ModelRouter(this.config.modelPools || [], (entry) => Boolean(providerRegistry.get(entry.providerId)))
-    for (const poolId of poolIds) {
-      for (const capability of ['vision', 'image'] as const) {
-        const route = router.resolve({ poolId, capability })
-        for (const entry of [route.primary, ...route.fallbacks]) {
-          if (entry && !seen.has(entry.id)) {
-            seen.add(entry.id)
-            candidates.push(entry)
-          }
-        }
-      }
-    }
-    if (!candidates.length) return undefined
-
-    for (const entry of candidates) {
-      const provider = providerRegistry.get(entry.providerId)
-      if (!provider) continue
-      try {
-        const startedAt = Date.now()
-        const response = await provider.chatComplete({
-          model: entry.model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You analyze one user-authorized point-in-time screenshot of the complete Windows virtual desktop. Describe only visible pixels, including each display, desktop icons, taskbars, open windows, and relevant text. State uncertainty for small or unreadable content. Do not claim access to hidden windows, persistent monitoring, tools, or the computer outside this image.',
-            },
-            {
-              role: 'user',
-              content: 'Analyze this desktop screenshot for the primary assistant so it can answer the user or choose the next explicitly authorized desktop action.',
-              images,
-            },
-          ],
-          temperature: 0.1,
-          maxTokens: 4096,
-        })
-        if (response.content.trim()) {
-          modelHealthService.recordSuccess(entry.id, Date.now() - startedAt)
-          return `Visual analysis from the authorized desktop model ${entry.name} (${entry.providerId} / ${entry.model}):\n${response.content.trim()}`
-        }
-      } catch {
-        modelHealthService.recordFailure(entry.id)
-        // Try the next configured fallback without leaking provider internals
-        // into the primary model's desktop decision.
-      }
-    }
-    return undefined
   }
 
   private async loadToolImages(

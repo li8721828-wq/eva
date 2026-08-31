@@ -114,31 +114,7 @@ export class RequirementEngineeringService {
     }
     const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
-    const allConversations = await this.storage.conversations.listConversations()
-    const conversationsById = new Map(allConversations.map((item) => [item.id, item]))
-    const normalizeWorkspacePath = (value?: string): string | undefined => {
-      if (!value) return undefined
-      try { return path.resolve(value).toLowerCase() } catch { return undefined }
-    }
-    const targetPaths = new Set([
-      normalizeWorkspacePath(conversation.workspacePath),
-      normalizeWorkspacePath(conversation.gitRepositoryPath),
-      normalizeWorkspacePath(conversation.gitWorktreePath),
-    ].filter((value): value is string => Boolean(value)))
-    const isSameWorkspace = (run: RequirementRun): boolean => {
-      const owner = conversationsById.get(run.conversationId)
-      if (!owner) return false
-      if (conversation.workspaceId && owner.workspaceId && conversation.workspaceId === owner.workspaceId) return true
-      const ownerPaths = [owner.workspacePath, owner.gitRepositoryPath, owner.gitWorktreePath]
-        .map(normalizeWorkspacePath)
-        .filter((value): value is string => Boolean(value))
-      return ownerPaths.some((value) => targetPaths.has(value))
-    }
-    let run = (await this.list())
-      .find((item) => (
-        (item.status === 'ready-for-specification' || item.status === 'ready-for-implementation')
-        && isSameWorkspace(item)
-      ))
+    let run = await this.findWorkspaceRun(conversation, ['ready-for-specification', 'ready-for-implementation'], input.runId)
     if (!run) {
       run = await this.importWorkspaceModelingRun(conversation)
     }
@@ -357,7 +333,7 @@ export class RequirementEngineeringService {
     }
     const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
-    const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation')
+    const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation', input.runId)
     if (!run) throw new Error('当前工作区没有通过 /spec 的最终实施规格，请先完成 /spec。')
     if (run.dslStatus === 'generating') throw new Error('当前工作区的 DSL 正在生成，请等待本轮完成。')
     const finalSpec = [...run.documents].reverse().find((document) => document.stage === 'specification' && document.dimension === 'implementation-ready')
@@ -465,7 +441,7 @@ export class RequirementEngineeringService {
     }
     const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
-    const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation')
+    const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation', input.runId)
     if (!run?.dslOutputPath || run.dslStatus !== 'ready') {
       throw new Error('No completed DSL package is available in this workspace. Run /dsl before /coding.')
     }
@@ -525,7 +501,7 @@ export class RequirementEngineeringService {
         'coding',
         'codegen-manifest',
         'Deterministic code generation manifest',
-        `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', status: 'running' }, null, 2)}\n`,
+        `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', generationCoverage: { generated: ['aggregates', 'fields'], preservedInSemanticPackage: ['commands', 'events', 'states', 'rules'], requiresTargetAdapterFor: ['commands', 'events', 'states', 'rules'] }, status: 'running' }, null, 2)}\n`,
       )
       generatedDocuments.push(manifest)
       await this.persist(run)
@@ -551,23 +527,22 @@ export class RequirementEngineeringService {
       onProgress?.({ conversationId: run.conversationId, runId: run.id, stage: 'coding', message: 'Semantic DSL package created', document: semanticDocument, phase: 'completed' })
 
       this.throwIfAborted(signal)
-      const pipelineRoot = path.join(workspaceRoot, 'code-production-pipeline')
-      const python = process.platform === 'win32' ? 'python.exe' : 'python3'
       const targetModelPath = path.join(intermediateRoot, '02-generation-ir', 'target-model.yaml')
       await this.deterministicCoding.writeImmutableFile(targetModelPath, `${JSON.stringify({
         schema_version: '1.0',
         target_id: `eva-${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}-reference`,
         approval_status: 'approved-for-non-production-reference-output',
         production_output: false,
-        java_package: `com.cmcc.xcerp.generated.${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}`,
+        java_package: `generated.${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}`,
         overwrite_policy: 'refuse-non-empty-output',
       }, null, 2)}\n`)
 
       this.reportProgress(onProgress, run, 'coding', 'Validating semantic DSL and building deterministic generation IR')
-      const validation = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_semantic_dsl.py'), semanticDslPath], workspaceRoot, signal)
       const irPath = path.join(intermediateRoot, '02-generation-ir', 'generation-ir.yaml')
-      const transform = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'transformers', 'dsl_to_generation_ir.py'), semanticDslPath, '--output', irPath], workspaceRoot, signal)
-      const irValidation = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'validators', 'validate_generation_ir.py'), irPath, '--dsl-package', semanticDslPath], workspaceRoot, signal)
+      const validation = this.deterministicCoding.validateSemanticDsl(parsedDsl)
+      await this.deterministicCoding.writeGenerationIr(path.dirname(irPath), parsedDsl, dslHash)
+      const transform = 'built-in TypeScript generation IR'
+      const irValidation = 'built-in generation IR validation completed'
       const irContent = await fs.readFile(irPath, 'utf8')
       const irDocument = await this.addDocument(run, 'coding', 'generation-ir', 'Deterministic generation IR', irContent)
       generatedDocuments.push(irDocument)
@@ -577,8 +552,9 @@ export class RequirementEngineeringService {
       this.throwIfAborted(signal)
       this.reportProgress(onProgress, run, 'coding', 'Generating isolated Java code with the deterministic adapter')
       const generatedCodePath = path.join(outputRoot, '03-generated-code')
-      const adapter = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'generic_semantic_java_adapter.py'), '--ir', irPath, '--target-model', targetModelPath, '--output', generatedCodePath], workspaceRoot, signal)
-      const verification = await this.deterministicCoding.runPipelineCommand(python, [path.join(pipelineRoot, 'adapters', 'verify_generic_semantic_java_output.py'), generatedCodePath], workspaceRoot, signal)
+      await this.deterministicCoding.generateJavaReferencePackage(generatedCodePath, parsedDsl)
+      const adapter = 'built-in Java reference adapter'
+      const verification = await this.deterministicCoding.verifyGeneratedPackage(generatedCodePath)
       const generationResult = await fs.readFile(path.join(generatedCodePath, 'generation-result.yaml'), 'utf8')
       const resultDocument = await this.addDocument(run, 'coding', 'generation-result', 'Generated Java code package', generationResult)
       generatedDocuments.push(resultDocument)
@@ -587,6 +563,8 @@ export class RequirementEngineeringService {
         '',
         'AI involvement after DSL: none',
         `Source DSL SHA-256: \`${dslHash}\``,
+        `Semantic coverage: aggregates=${parsedDsl.aggregates.length}, commands=${parsedDsl.commands.length}, events=${parsedDsl.events.length}, states=${parsedDsl.states.length}, rules=${parsedDsl.rules.length}.`,
+        'The isolated reference adapter generates aggregate/field Java artifacts; commands, events, states, and rule definitions remain preserved in the semantic package and require a target-specific adapter for executable behavior.',
         '',
         '## Commands',
         '',
@@ -599,7 +577,7 @@ export class RequirementEngineeringService {
       const verificationDocument = await this.addDocument(run, 'coding', 'verification', 'Code generation verification', verificationContent)
       generatedDocuments.push(verificationDocument)
 
-      manifest.content = `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', adapter: 'generic-semantic-java', status: 'completed' }, null, 2)}\n`
+      manifest.content = `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', adapter: 'builtin-java-reference', generationCoverage: { generated: ['aggregates', 'fields'], preservedInSemanticPackage: ['commands', 'events', 'states', 'rules'], requiresTargetAdapterFor: ['commands', 'events', 'states', 'rules'] }, status: 'completed' }, null, 2)}\n`
       await fs.writeFile(manifest.path, manifest.content, 'utf8')
       if (manifest.workspacePath) await fs.writeFile(manifest.workspacePath, manifest.content, 'utf8')
       run.codingStatus = 'ready'
@@ -607,7 +585,7 @@ export class RequirementEngineeringService {
       await this.persistDocuments(conversation.id, generatedDocuments, 'Coding')
       await this.storage.conversations.addMessage(conversation.id, {
         id: randomUUID(), role: 'assistant', agentName: 'Coding',
-        content: `## Deterministic code generation completed\n\nNo model was called after DSL. The isolated generated Java package, IR, manifest, and verification report are in \`${outputRoot}\`.`,
+        content: `## Deterministic code generation completed\n\nNo model was called after DSL. The isolated aggregate/field Java reference package, semantic IR, manifest, and verification report are in \`${outputRoot}\`. Commands, events, states, and rule definitions are preserved in the semantic package; executable behavior for those constructs requires a target-specific adapter.`,
         timestamp: Date.now(),
       })
       this.reportProgress(onProgress, run, 'complete', 'Deterministic code generation and verification completed')
@@ -629,7 +607,7 @@ export class RequirementEngineeringService {
     }
   }
 
-  private async findWorkspaceRun(conversation: Conversation, status: RequirementRun['status']): Promise<RequirementRun | undefined> {
+  private async findWorkspaceRun(conversation: Conversation, status: RequirementRun['status'] | RequirementRun['status'][], runId?: string): Promise<RequirementRun | undefined> {
     const allConversations = await this.storage.conversations.listConversations()
     const conversationsById = new Map(allConversations.map((item) => [item.id, item]))
     const normalize = (value?: string): string | undefined => {
@@ -641,8 +619,9 @@ export class RequirementEngineeringService {
       normalize(conversation.gitRepositoryPath),
       normalize(conversation.gitWorktreePath),
     ].filter((value): value is string => Boolean(value)))
-    return (await this.list()).find((run) => {
-      if (run.status !== status) return false
+    const statuses = new Set(Array.isArray(status) ? status : [status])
+    const candidates = (await this.list()).filter((run) => {
+      if (!statuses.has(run.status)) return false
       const owner = conversationsById.get(run.conversationId)
       if (!owner) return false
       if (conversation.workspaceId && owner.workspaceId && conversation.workspaceId === owner.workspaceId) return true
@@ -650,6 +629,15 @@ export class RequirementEngineeringService {
         .map(normalize)
         .some((value) => Boolean(value && targetPaths.has(value)))
     })
+    if (runId) {
+      const explicit = candidates.find((run) => run.id === runId)
+      if (!explicit) throw new Error('指定的需求运行不存在、未完成或不属于当前工作区。请刷新需求记录后重试。')
+      return explicit
+    }
+    const conversationCandidates = candidates.filter((run) => run.conversationId === conversation.id)
+    if (conversationCandidates.length > 0) return conversationCandidates[0]
+    if (candidates.length > 1) throw new Error('当前工作区存在多个可继续的需求运行，请从原需求对话中执行此阶段，或指定 runId。')
+    return candidates[0]
   }
 
   private async resolveWorkspaceSpecificationPath(conversation: Conversation): Promise<string | undefined> {
@@ -1067,15 +1055,25 @@ export class RequirementEngineeringService {
       await this.initializeRmsdPackage(run)
     }
     await fs.mkdir(this.runDirectory(run.id), { recursive: true })
-    this.reportProgress(onProgress, run, 'source', '正在读取需求输入和附件')
-    const attachmentContext = await buildDocumentAttachmentContext(input.attachments)
-    const attachmentIssue = this.attachmentReadinessError(attachmentContext)
-    if (attachmentIssue) throw new Error(attachmentIssue)
-    const source = [input.content?.trim(), attachmentContext].filter(Boolean).join('\n\n').slice(0, MAX_CONTEXT_CHARS)
-    await this.addDocument(run, 'source', 'input', '原始需求输入', `# 原始需求输入\n\n${source || '（附件未能解析为文本，请在对话中补充文字说明。）'}\n`)
     await this.persist(run)
-    await this.persistCommand(conversation.id, input, `/requirement${input.content?.trim() ? ` ${input.content.trim()}` : ''}`)
-    return this.analyze(run, conversation, source, onProgress, signal)
+    this.reportProgress(onProgress, run, 'source', '正在读取需求输入和附件')
+    try {
+      const attachmentContext = await buildDocumentAttachmentContext(input.attachments)
+      const attachmentIssue = this.attachmentReadinessError(attachmentContext)
+      if (attachmentIssue) throw new Error(attachmentIssue)
+      const source = [input.content?.trim(), attachmentContext].filter(Boolean).join('\n\n').slice(0, MAX_CONTEXT_CHARS)
+      await this.addDocument(run, 'source', 'input', '原始需求输入', `# 原始需求输入\n\n${source || '（附件未能解析为文本，请在对话中补充文字说明。）'}\n`)
+      await this.persist(run)
+      await this.persistCommand(conversation.id, input, `/requirement${input.content?.trim() ? ` ${input.content.trim()}` : ''}`)
+      return this.analyze(run, conversation, source, onProgress, signal)
+    } catch (error) {
+      run.status = signal?.aborted ? 'cancelled' : 'failed'
+      run.error = error instanceof Error ? error.message : String(error)
+      await this.persist(run)
+      await this.persistSummary(conversation.id, run)
+      this.reportProgress(onProgress, run, 'failed', signal?.aborted ? '需求输入读取已停止' : '需求输入或附件读取失败')
+      throw error
+    }
   }
 
   private async advance(run: RequirementRun, conversation: Conversation, answer: string, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
@@ -1472,15 +1470,64 @@ export class RequirementEngineeringService {
   }
 
   private async codeEvidence(conversation: Conversation, source: string): Promise<string> {
-    if (!conversation.workspaceId || !this.projectIndex) return '未关联项目工作区，无法进行现有代码结构分析。'
-    const status = await this.projectIndex.getStatus(conversation.workspaceId)
     const query = source.replace(/[^\p{L}\p{N}_-]+/gu, ' ').split(/\s+/).filter((token) => token.length > 2).slice(0, 8).join(' ')
+    if (!conversation.workspaceId || !this.projectIndex) return this.directCodeEvidence(conversation, query)
+    const status = await this.projectIndex.getStatus(conversation.workspaceId)
     const matches = query ? await this.projectIndex.search(conversation.workspaceId, query, 12) : []
+    if (matches.length > 0) {
+      return [
+        `项目索引：${status.indexedFiles} 个文件，${status.indexedSymbols} 个符号，${status.indexedApiEndpoints} 个接口，${status.indexedDataEntities} 个数据实体。`,
+        `主要语言：${status.languages.map((item) => `${item.language} (${item.files})`).join('，') || '未知'}。`,
+        `相关索引：${matches.map((item) => `${item.relativePath} [${item.matchedScopes.join(', ')}]`).join('；')}`,
+      ].join('\n')
+    }
+    const fallback = await this.directCodeEvidence(conversation, query)
     return [
       `项目索引：${status.indexedFiles} 个文件，${status.indexedSymbols} 个符号，${status.indexedApiEndpoints} 个接口，${status.indexedDataEntities} 个数据实体。`,
       `主要语言：${status.languages.map((item) => `${item.language} (${item.files})`).join('，') || '未知'}。`,
-      matches.length ? `相关索引：${matches.map((item) => `${item.relativePath} [${item.matchedScopes.join(', ')}]`).join('；')}` : '未从关键词中找到明确关联文件。',
+      fallback || '索引和本地源码扫描均未找到明确关联文件；实现前必须重新核对代码范围。',
     ].join('\n')
+  }
+
+  private async directCodeEvidence(conversation: Conversation, query: string): Promise<string> {
+    const root = conversation.gitWorktreePath || conversation.workspacePath
+    if (!root) return '未关联项目工作区，无法进行现有代码结构分析。'
+    const workspaceRoot = path.resolve(root)
+    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+    const allowed = /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|java|go|rs|cs|c|h|cpp|cc|hpp|html|css|scss|json|yaml|yml|xml|sql)$/iu
+    const ignored = new Set(['.git', 'node_modules', 'out', 'dist', 'build', 'coverage', '.eva'])
+    const evidence: string[] = []
+    let visited = 0
+    const visit = async (directory: string, depth: number): Promise<void> => {
+      if (depth > 5 || visited >= 500 || evidence.length >= 16) return
+      let entries
+      try { entries = await fs.readdir(directory, { withFileTypes: true }) } catch { return }
+      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+        if (visited >= 500 || evidence.length >= 16) return
+        if (entry.isDirectory()) {
+          if (!ignored.has(entry.name)) await visit(path.join(directory, entry.name), depth + 1)
+          continue
+        }
+        if (!entry.isFile() || !allowed.test(entry.name)) continue
+        visited += 1
+        const filePath = path.join(directory, entry.name)
+        try {
+          const stat = await fs.stat(filePath)
+          if (stat.size > 200_000) continue
+          const content = await fs.readFile(filePath, 'utf8')
+          const normalized = content.toLowerCase()
+          if (terms.length === 0 || terms.some((term) => entry.name.toLowerCase().includes(term) || normalized.includes(term))) {
+            const relative = path.relative(workspaceRoot, filePath).replace(/\\/g, '/')
+            const snippets = content.split(/\r?\n/).filter((line) => terms.some((term) => line.toLowerCase().includes(term))).slice(0, 3)
+            evidence.push(`${relative}${snippets.length ? `: ${snippets.join(' ').trim().slice(0, 280)}` : ''}`)
+          }
+        } catch {
+          // Ignore files that disappear or cannot be decoded during fallback scanning.
+        }
+      }
+    }
+    await visit(workspaceRoot, 0)
+    return evidence.length ? `本地源码回退扫描（索引未命中）：${evidence.join('；')}` : ''
   }
 
   private analysisPrompt(title: string, source: string, codeEvidence: string): string {

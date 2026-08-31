@@ -59,10 +59,6 @@ export class TeamOrchestrator {
     'write_terminal',
     'execute_command',
     'close_terminal',
-    'blender_run_script',
-    'blender_model_from_reference',
-    'blender_render_review',
-    'blender_open_gui',
   ])
 
   constructor(config: TeamOrchestratorConfig) {

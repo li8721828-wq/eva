@@ -1,16 +1,11 @@
 import { app, BrowserWindow, Menu, shell } from 'electron'
 import path from 'path'
 import { is } from '@electron-toolkit/utils'
-import { hasActiveDesktopControlSession } from './tools/desktop-observation-store'
-import { disposeDesktopControlOverlay } from './services/desktop-control-overlay'
 import { isSafeExternalUrl } from './services/external-url-policy'
 
 let isQuitting = false
 
-app.on('before-quit', () => {
-  isQuitting = true
-  disposeDesktopControlOverlay()
-})
+app.on('before-quit', () => { isQuitting = true })
 
 export function createApplicationMenu(): void {
   Menu.setApplicationMenu(null)
@@ -37,16 +32,6 @@ export function createMainWindow(): BrowserWindow {
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
-  })
-
-  // A desktop-control session may deliberately move focus away from Eva. If
-  // the user closes the main window mid-session, keep the process (and its
-  // click-through status overlay) alive until the session is stopped.
-  mainWindow.on('close', (event) => {
-    if (!isQuitting && hasActiveDesktopControlSession()) {
-      event.preventDefault()
-      mainWindow.hide()
-    }
   })
 
   // The renderer document title replaces the BrowserWindow title after it loads.

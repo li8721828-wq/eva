@@ -112,14 +112,20 @@ export interface SubmitRequirementModelingInput {
 
 export interface SubmitSpecificationInput {
   conversationId: string
+  /** Explicit requirement run to continue; omitted only for legacy recovery. */
+  runId?: string
 }
 
 export interface SubmitDslInput {
   conversationId: string
+  /** Explicit requirement run to continue; omitted only for legacy recovery. */
+  runId?: string
 }
 
 export interface SubmitCodingInput {
   conversationId: string
+  /** Explicit requirement run to continue; omitted only for legacy recovery. */
+  runId?: string
 }
 
 export interface SubmitSpecificationResolutionInput {

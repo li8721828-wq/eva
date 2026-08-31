@@ -21,6 +21,11 @@ export interface InputBarProps {
 
 const COMMAND_INPUT_SEPARATOR = ' '
 
+async function latestRequirementRunId(conversationId: string, statuses: string[]): Promise<string | undefined> {
+  const runs = await window.eva.requirements.listRuns(conversationId)
+  return runs.find((run) => statuses.includes(run.status))?.id
+}
+
 function getConnectionDisplayName(provider: ProviderConfigEntry): string {
   const defaultNames: Record<ProviderConfigEntry['type'], string> = {
     openai: 'OpenAI',
@@ -195,10 +200,14 @@ export function InputBar({ className }: InputBarProps) {
   }, [activeProviderId, activeModel, settingsOpen])
 
   const handleSend = useCallback(async () => {
-    if ((!inputText.trim() && referenceImages.length === 0) || isStreaming || isTaskRunning || isSymposiumRunning || isRequirementSubmitting) return
+    if ((!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0) || isStreaming || isTaskRunning || isSymposiumRunning || isRequirementSubmitting) return
     if (currentConversation?.symposium) {
       if (referenceImages.length > 0) {
         setError('Reference images are not supported inside Agent Symposium yet.')
+        return
+      }
+      if (documentAttachments.length > 0) {
+        setError('文件附件暂不支持在 Agent Symposium 中发送，请切换到普通对话。')
         return
       }
       try {
@@ -226,7 +235,8 @@ export function InputBar({ className }: InputBarProps) {
         setQuotedMessage(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, 'Preparing deterministic code generation from the persisted DSL')
-        await window.eva.requirements.coding({ conversationId: conversation.id })
+        const runId = await latestRequirementRunId(conversation.id, ['ready-for-implementation'])
+        await window.eva.requirements.coding({ conversationId: conversation.id, runId })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'Deterministic code generation failed.')
@@ -251,7 +261,8 @@ export function InputBar({ className }: InputBarProps) {
         setQuotedMessage(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取已完成的最终实施规格')
-        await window.eva.requirements.dsl({ conversationId: conversation.id })
+        const runId = await latestRequirementRunId(conversation.id, ['ready-for-implementation'])
+        await window.eva.requirements.dsl({ conversationId: conversation.id, runId })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'DSL generation failed.')
@@ -276,7 +287,8 @@ export function InputBar({ className }: InputBarProps) {
         setQuotedMessage(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取需求建模成果并核对代码证据')
-        await window.eva.requirements.spec({ conversationId: conversation.id })
+        const runId = await latestRequirementRunId(conversation.id, ['ready-for-specification', 'ready-for-implementation'])
+        await window.eva.requirements.spec({ conversationId: conversation.id, runId })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : '规格构建执行失败。')

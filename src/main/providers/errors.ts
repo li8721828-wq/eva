@@ -114,6 +114,18 @@ export function classifyError(err: unknown, providerId: string): ProviderError {
         providerId
       )
     }
+    if (lowerMsg.includes('err_connection_closed') || lowerMsg.includes('connection closed')) {
+      return new NetworkError(
+        `The provider closed the connection before returning a response. This usually means the gateway, proxy, or model route rejected the request; verify the endpoint, model ID, and tool/reasoning compatibility. ${causeMessage || message}`,
+        providerId
+      )
+    }
+    if (lowerMsg.includes('econnrefused')) {
+      return new NetworkError(
+        `The provider endpoint refused the connection. Check that the base URL is reachable and that the configured proxy is running. ${causeMessage || message}`,
+        providerId
+      )
+    }
     return new NetworkError(causeMessage || message, providerId)
   }
 

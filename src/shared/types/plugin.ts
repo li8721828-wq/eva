@@ -5,7 +5,6 @@ export type PluginPermission =
   | 'filesystem-write'
   | 'terminal'
   | 'network'
-  | 'blender'
 
 export type PluginSettingValue = string | number | boolean
 
@@ -88,5 +87,4 @@ export const PLUGIN_PERMISSIONS: Record<PluginPermission, string> = {
   'filesystem-write': 'Write files',
   terminal: 'Run commands',
   network: 'Internet access',
-  blender: 'Blender control',
 }

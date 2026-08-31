@@ -1,44 +1,9 @@
 import type { MarketplacePlugin, PluginCategory, PluginManifest, PluginPermission } from './types/plugin'
 
 const CATEGORIES: PluginCategory[] = ['integration', 'automation', 'research', 'developer-tools']
-const PERMISSIONS: PluginPermission[] = ['filesystem-read', 'filesystem-write', 'terminal', 'network', 'blender']
+const PERMISSIONS: PluginPermission[] = ['filesystem-read', 'filesystem-write', 'terminal', 'network']
 
 export const MARKETPLACE_PLUGINS: MarketplacePlugin[] = [
-  {
-    id: 'blender-connector',
-    name: 'Blender Connector',
-    version: '0.1.0',
-    description: 'Prepare Eva to inspect Blender projects, generate bpy scripts, and run approved Blender tasks.',
-    author: 'Eva Labs',
-    category: 'integration',
-    permissions: ['filesystem-read', 'filesystem-write', 'terminal', 'blender'],
-    verified: true,
-    requirements: 'Requires Blender and the Eva Blender Connector add-on.',
-    configuration: [
-      {
-        key: 'blenderExecutablePath',
-        label: 'Blender executable',
-        description: 'Path to blender.exe. Eva runs background jobs through this executable.',
-        type: 'path-file',
-        required: true,
-        placeholder: 'C:\\Program Files\\Blender Foundation\\Blender\\blender.exe',
-      },
-      {
-        key: 'scriptDirectory',
-        label: 'Script directory',
-        description: 'Where temporary bpy scripts are stored. Keep this inside the project workspace when possible.',
-        type: 'path-directory',
-        placeholder: '.eva\\blender',
-      },
-      {
-        key: 'timeoutMs',
-        label: 'Job timeout (milliseconds)',
-        description: 'Maximum time a Blender background task may run before Eva stops it.',
-        type: 'number',
-        placeholder: '300000',
-      },
-    ],
-  },
   {
     id: 'brave-search',
     name: 'Brave Search',

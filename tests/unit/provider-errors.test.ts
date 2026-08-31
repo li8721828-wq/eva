@@ -6,5 +6,6 @@ describe('provider error classification', () => {
     const error = classifyError(new Error('net::ERR_CONNECTION_CLOSED'), 'gateway')
 
     expect(error).toMatchObject({ code: 'network', retryable: true })
+    expect(error.message).toContain('closed the connection')
   })
 })

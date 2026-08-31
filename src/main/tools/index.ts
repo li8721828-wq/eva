@@ -6,14 +6,8 @@ import { createFileTools } from './file-tools'
 import { createTerminalTools } from './terminal-tools'
 import { createSearchTools } from './search-tools'
 import { createWebTools } from './web-tools'
-import { createBlenderTools } from './blender-tools'
-import { createMouseTools } from './mouse-tools'
-import { createDesktopMcpTools } from './desktop-mcp-tools'
-import { createDesktopSessionTools } from './desktop-session-tools'
-import { createKeyboardTools } from './keyboard-tools'
 import { createProjectIndexTools } from './project-index-tools'
 import { createBrowserControlTools } from './browser-control-tools'
-import { createFormFillWorkflowTools } from './form-fill-workflow'
 import { createModelPoolTools } from './model-pool-tools'
 import { createRuntimeInspectionTools } from './runtime-inspection-tools'
 import { createRuntimeDiagnosticTools } from './runtime-diagnostic-tools'
@@ -161,13 +155,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createTerminalTools()) registry.register(tool)
   for (const tool of createSearchTools()) registry.register(tool)
   for (const tool of createWebTools()) registry.register(tool)
-  for (const tool of createBlenderTools()) registry.register(tool)
-  for (const tool of createMouseTools()) registry.register(tool)
-  for (const tool of createDesktopMcpTools()) registry.register(tool)
-  for (const tool of createDesktopSessionTools()) registry.register(tool)
-  for (const tool of createKeyboardTools()) registry.register(tool)
   for (const tool of createBrowserControlTools()) registry.register(tool)
-  for (const tool of createFormFillWorkflowTools()) registry.register(tool)
   if (providerRegistry) {
     for (const tool of createModelPoolTools(providerRegistry)) registry.register(tool)
   }

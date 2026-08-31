@@ -33,19 +33,9 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'write_terminal', label: 'Type in controlled terminal', description: 'Type text in the current conversation\'s built-in terminal, optionally pressing Enter to run it.', category: 'Execution', risk: 'system' },
   { id: 'execute_command', label: 'Run command', description: 'Execute a command in the current conversation\'s controlled terminal.', category: 'Execution', risk: 'system' },
   { id: 'close_terminal', label: 'Close controlled terminal', description: 'Close the current conversation\'s built-in terminal.', category: 'Execution', risk: 'system' },
-  { id: 'mouse_control', label: 'Mouse control', description: 'Move, click, double-click, or scroll only on a recent visible-desktop observation. Semantic targets use Windows hit-tested click points when available, all visible taskbars are supported, and movement adapts for fast, balanced, or precise actions. Eva can minimize itself, while closing Eva requires explicit user authorization. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
-  { id: 'desktop_observe', label: 'Desktop observer', description: 'Capture the complete visible Windows virtual desktop across all displays as a point-in-time screenshot, plus structured controls for the foreground window and taskbars. It is not continuous monitoring and never reads password values. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
-  { id: 'keyboard_control', label: 'Keyboard control', description: 'Type into a focused visible control, paste a TSV block into a selected desktop grid, or press navigation keys after a recent desktop observation. TSV pastes include a verification screenshot; the foreground window is revalidated. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
-  { id: 'desktop_session', label: 'Desktop control session', description: 'Bound a multi-step visible-desktop workflow to one conversation with an objective, action budget, pause/resume, timeout, and step record. Requires Full filesystem access.', category: 'Execution', risk: 'system' },
   { id: 'browser_control', label: 'Browser control', description: 'Open and interact with an isolated visible browser using DOM selectors, accessibility nodes, and page-supported APIs. Canvas coordinates and screenshots are a fallback only when the page exposes no semantic interface. Login, CAPTCHA, passwords, and final submission remain user-controlled.', category: 'Execution', risk: 'system' },
-  { id: 'form_fill_workflow', label: 'Form/table fill workflow', description: 'Analyze and fill explicit fields in a browser session. It never submits the final form and requires a review before confirmation.', category: 'Automation', risk: 'system' },
-  { id: 'blender_inspect_scene', label: 'Inspect Blender scene', description: 'Read a compact summary of a configured Blender project.', category: 'Integrations', risk: 'read' },
-  { id: 'blender_run_script', label: 'Run Blender script', description: 'Run an approved bpy script through the configured Blender Connector.', category: 'Integrations', risk: 'system' },
-  { id: 'blender_model_from_reference', label: 'Model from reference images', description: 'Create a new editable .blend model from attached visual references.', category: 'Integrations', risk: 'system' },
-  { id: 'blender_render_review', label: 'Render Blender review', description: 'Render front, side, and three-quarter previews for visual model review.', category: 'Integrations', risk: 'system' },
-  { id: 'blender_open_gui', label: 'Open Blender interface', description: 'Launch Blender and open an authorized .blend file for interactive viewing or editing.', category: 'Integrations', risk: 'system' },
 ]
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 29
+export const TOOL_CATALOG_VERSION = 31

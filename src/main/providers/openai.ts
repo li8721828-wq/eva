@@ -115,14 +115,18 @@ function attributeValue(attributes: string, name: string): string | undefined {
 
 function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): LegacyTextToolCall[] {
   if (!tools?.length) return []
+  // Some gateways insert arbitrary spaces around DSML marker characters and
+  // the closing slash, such as `< / | DSML | parameter>`. Canonicalize only
+  // those markers before parsing so the envelope is never shown as prose.
+  const normalizedContent = content.replace(/<\s*(\/?)\s*(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}/giu, (_match, slash: string) => `<${slash}|DSML|`)
   // DeepSeek can emit either `<｜DSML｜...>` or the double-pipe variant
   // `<| | DSML | | ...>` when a tool call is serialized as text.
   const marker = '(?:[|｜]\\s*){1,2}DSML(?:\\s*[|｜]){1,2}'
   const openEnvelope = new RegExp(`<\\s*${marker}\\s*tool_calls\\s*>`, 'i')
   const closeEnvelope = new RegExp(`<\\s*[\\/／]\\s*${marker}\\s*tool_calls\\s*>`, 'i')
-  const openMatch = openEnvelope.exec(content)
+  const openMatch = openEnvelope.exec(normalizedContent)
   if (!openMatch) return []
-  const remainder = content.slice(openMatch.index + openMatch[0].length)
+  const remainder = normalizedContent.slice(openMatch.index + openMatch[0].length)
   const closeMatch = closeEnvelope.exec(remainder)
   if (!closeMatch) return []
   const block = remainder.slice(0, closeMatch.index)

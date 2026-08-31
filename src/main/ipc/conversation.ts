@@ -196,7 +196,7 @@ function extractProgressUpdates(content: string): Array<{ kind: ProgressUpdateKi
 function executionActionTitle(toolNames: string[]): string {
   const names = new Set(toolNames)
   if (names.has('manage_goal') || names.has('run_goal') || names.has('run_task')) return '正在推进任务计划并核对完成状态'
-  if (names.has('write_file') || names.has('edit_file') || names.has('blender_run_script')) return '正在落地方案并更新项目产物'
+  if (names.has('write_file') || names.has('edit_file')) return '正在落地方案并更新项目产物'
   if (names.has('open_terminal') || names.has('read_terminal') || names.has('write_terminal') || names.has('close_terminal')) return '正在控制此对话的终端'
   if (names.has('execute_command')) return '正在执行验证并确认实际结果'
   if (names.has('web_search') || names.has('read_web_page')) return '正在补充外部资料并核对依据'
@@ -215,7 +215,7 @@ function executionActionOutcome(toolNames: string[], results: Array<{ name: stri
     const progress = goalResult.match(/Progress:\s*([^\n.]+)/i)?.[1]
     return progress ? `任务计划已推进，当前进度 ${progress.trim()}。` : '任务计划已推进，正在根据完成情况安排后续工作。'
   }
-  if (names.has('write_file') || names.has('edit_file') || names.has('blender_run_script')) return `已完成 ${completed.length} 项项目更新，接下来会核对产物是否满足目标。`
+  if (names.has('write_file') || names.has('edit_file')) return `已完成 ${completed.length} 项项目更新，接下来会核对产物是否满足目标。`
   if (names.has('open_terminal') || names.has('read_terminal') || names.has('write_terminal') || names.has('close_terminal')) return '已完成此对话终端的受控操作。'
   if (names.has('execute_command')) return '已获得实际验证结果，正在判断是否需要修正方案。'
   if (names.has('web_search') || names.has('read_web_page')) return '已补充外部资料，正在结合项目约束判断其适用性。'
