@@ -225,6 +225,7 @@ export class AgentRunner {
       const allToolDefs: ToolDefinition[] = [
         ...toolRegistry.getDefinitionsByNames([...agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool' && name !== 'mcp:*'), ...mcpToolNames]),
         ...(toolRegistry.has('manage_personal_preferences') && !agentConfig.tools.includes('manage_personal_preferences') ? toolRegistry.getDefinitionsByNames(['manage_personal_preferences']) : []),
+        ...(toolRegistry.has('spreadsheet') && !agentConfig.tools.includes('spreadsheet') ? toolRegistry.getDefinitionsByNames(['spreadsheet']) : []),
         ...(poolTool ? [poolTool] : []),
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
         ...(this.config.runTask ? [TASK_TOOL] : []),
@@ -1047,7 +1048,8 @@ export class AgentRunner {
 
     const mcpAllowed = toolCall.name.startsWith('mcp__') && this.config.agentConfig.tools.includes('mcp:*')
     const isPersonalPreferenceTool = toolCall.name === 'manage_personal_preferences'
-    if (!this.config.agentConfig.tools.includes(toolCall.name) && !mcpAllowed && !isPersonalPreferenceTool) {
+    const isSpreadsheetTool = toolCall.name === 'spreadsheet'
+    if (!this.config.agentConfig.tools.includes(toolCall.name) && !mcpAllowed && !isPersonalPreferenceTool && !isSpreadsheetTool) {
       return {
         result: `Error: Tool '${toolCall.name}' is not permitted for this agent.`,
         isError: true,

@@ -84,6 +84,13 @@ function isBinaryBuffer(buffer: Buffer): boolean {
 }
 
 export class FileServiceImpl implements FileService {
+  async readBuffer(filePath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<Buffer> {
+    const resolved = await normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
+    const stat = await fs.promises.stat(resolved)
+    if (stat.size > 32 * 1024 * 1024) throw new Error(`File too large: ${stat.size} bytes (max 33554432 bytes)`)
+    return fs.promises.readFile(resolved)
+  }
+
   async readFile(filePath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<string> {
     const resolved = await normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
 
@@ -108,6 +115,14 @@ export class FileServiceImpl implements FileService {
     // reparse point cannot redirect the final write outside an authorized root.
     resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
     await fs.promises.writeFile(resolved, content, 'utf-8')
+  }
+
+  async writeBuffer(filePath: string, content: Buffer, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<void> {
+    if (content.length > 32 * 1024 * 1024) throw new Error('Generated workbook exceeds the 32 MB file limit.')
+    let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
+    await fs.promises.mkdir(path.dirname(resolved), { recursive: true })
+    resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
+    await fs.promises.writeFile(resolved, content)
   }
 
   async listDirectory(dirPath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<FileEntry[]> {

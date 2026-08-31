@@ -19,6 +19,7 @@ import { createRuntimeInspectionTools } from './runtime-inspection-tools'
 import { createRuntimeDiagnosticTools } from './runtime-diagnostic-tools'
 import { createRuntimeProposalTools } from './runtime-proposal-tools'
 import { createPersonalPreferenceTools } from './personal-preference-tools'
+import { createSpreadsheetTools } from './spreadsheet-tools'
 import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
 import type { ProjectIndexService } from '../services/project-index-service'
 import type { ProviderRegistry } from '../providers'
@@ -76,7 +77,9 @@ export interface ToolExecutor {
 
 export interface FileService {
   readFile(filePath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<string>
+  readBuffer?(filePath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<Buffer>
   writeFile(filePath: string, content: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<void>
+  writeBuffer?(filePath: string, content: Buffer, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<void>
   listDirectory(dirPath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<FileEntry[]>
   searchFiles(pattern: string, workspacePath: string, grants?: FileAccessGrant[], searchPath?: string, fullFilesystemAccess?: boolean): Promise<string[]>
   fileExists(filePath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<boolean>
@@ -174,6 +177,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createRuntimeInspectionTools(registry)) registry.register(tool)
   for (const tool of createRuntimeDiagnosticTools(registry)) registry.register(tool)
   for (const tool of createRuntimeProposalTools(registry)) registry.register(tool)
+  for (const tool of createSpreadsheetTools()) registry.register(tool)
   if (personalPreferenceStore) {
     for (const tool of createPersonalPreferenceTools(personalPreferenceStore)) registry.register(tool)
   }
