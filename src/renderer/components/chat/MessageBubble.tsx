@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2 } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -56,6 +56,46 @@ function formatTokenCount(value: number): string {
 
 function formatCny(value: number): string {
   return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
+}
+
+function formatAttachmentSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return ''
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function MessageAttachments({ attachments }: { attachments: NonNullable<ChatMessage['attachments']> }) {
+  if (attachments.length === 0) return null
+  return (
+    <div className="chat-message-attachments mt-3 flex min-w-0 flex-wrap gap-2" aria-label="消息中的文件">
+      {attachments.map((attachment) => {
+        const isSpreadsheet = /\.(xlsx|xls|ods)$/iu.test(attachment.name)
+        const Icon = attachment.kind === 'folder' ? FolderOpen : isSpreadsheet ? FileSpreadsheet : FileText
+        const size = formatAttachmentSize(attachment.size)
+        return (
+          <div
+            key={attachment.path}
+            className="chat-message-attachment inline-flex min-w-0 max-w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left"
+            title={attachment.path}
+          >
+            <span className="chat-message-attachment__icon flex h-7 w-7 shrink-0 items-center justify-center rounded-md" aria-hidden="true">
+              <Icon className="h-3.5 w-3.5" />
+            </span>
+            <span className="min-w-0 max-w-[min(20rem,calc(100vw-11rem))]">
+              <span className="block truncate text-xs font-medium">{attachment.name}</span>
+              <span className="mt-0.5 flex items-center gap-1 text-[11px]">
+                {size ? <span>{size}</span> : null}
+                {size ? <span aria-hidden="true">·</span> : null}
+                <span>已加入消息</span>
+              </span>
+            </span>
+            <CheckCircle2 className="chat-message-attachment__status h-3.5 w-3.5 shrink-0" aria-label="文件已加入消息" />
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function formatSupplierCost(value: number, currency?: string): string {
@@ -403,6 +443,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             >
               {message.content}
             </div>
+            {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
             {message.quotedMessage ? (
               <div className="mt-3 flex max-w-full items-start gap-2 border-l-2 border-[#cdddf1] bg-white/45 px-3 py-2 text-left text-xs leading-5 text-[#59718f]">
                 <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#8da7cc]" aria-hidden="true" />
