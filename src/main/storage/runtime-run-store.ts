@@ -72,7 +72,8 @@ export class RuntimeRunStore {
       if (!fs.existsSync(this.filePath)) return { runs: {} }
       const value = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as Partial<RuntimeRunIndex>
       return { runs: value.runs && typeof value.runs === 'object' ? value.runs : {} }
-    } catch {
+    } catch (error) {
+      this.backupCorruptFile(error)
       return { runs: {} }
     }
   }
@@ -84,6 +85,15 @@ export class RuntimeRunStore {
     index.runs = Object.fromEntries(runs.map((run) => [run.id, run]))
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
     fs.writeFileSync(this.filePath, JSON.stringify(index, null, 2), 'utf-8')
+  }
+
+  private backupCorruptFile(error: unknown): void {
+    console.error(`Could not read Agent OS runtime run state at ${this.filePath}:`, error)
+    try {
+      if (fs.existsSync(this.filePath)) fs.copyFileSync(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
+    } catch (backupError) {
+      console.error(`Could not back up the corrupt runtime run state at ${this.filePath}:`, backupError)
+    }
   }
 
   private enqueue<T>(work: () => T): Promise<T> {

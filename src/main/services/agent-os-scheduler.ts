@@ -18,6 +18,7 @@ export interface AgentOsTaskInput {
   summary: string
   maxAttempts?: number
   recoveryPayload?: RuntimeRunPayload
+  idempotencyKey?: string
   run: (attempt: number) => Promise<TaskQueueResult>
   onUpdate?: (update: TaskQueueUpdate) => void | Promise<void>
 }
@@ -48,7 +49,10 @@ export class AgentOsScheduler {
   private readonly taskQueue: TaskExecutionQueue
   private readonly interactiveRuns = activeRunRegistry.forKind<InteractiveRun>('scheduler-interactive')
   private readonly taskProcesses = activeRunRegistry.forKind<{ processId: string; kind: Extract<RuntimeProcessKind, 'goal' | 'team'> }>('scheduler-task')
+  private readonly childResources = new Map<string, string>()
   private readonly recoveryHandlers = new Map<RuntimeProcessKind, RecoveryHandler>()
+  private readonly recoveringRuns = new Set<string>()
+  private readonly activeIdempotencyKeys = new Set<string>()
 
   constructor(
     private readonly runtimeKernel: RuntimeKernelStore,
@@ -59,11 +63,14 @@ export class AgentOsScheduler {
   }
 
   hasTask(conversationId: string, kind: TaskKind): boolean {
-    return this.taskQueue.has(conversationId, kind)
+    // Goal and Team runs share one conversation execution context.
+    return this.taskQueue.hasConversation(conversationId)
   }
 
   async scheduleTask(input: AgentOsTaskInput): Promise<boolean> {
-    if (this.taskQueue.has(input.conversationId, input.kind)) return false
+    if (this.taskQueue.hasConversation(input.conversationId)) return false
+    const idempotencyKey = input.idempotencyKey?.trim()
+    if (idempotencyKey && this.activeIdempotencyKeys.has(idempotencyKey)) return false
 
     const process = await this.runtimeKernel.start({
       conversationId: input.conversationId,
@@ -76,7 +83,13 @@ export class AgentOsScheduler {
     })
     this.taskProcesses.set(input.conversationId, { processId: process.id, kind: input.runtimeKind })
     activeRunRegistry.transition('scheduler-task', input.conversationId, 'queued')
-    await this.persistRun(process, 'queued', 'auto-queued', input.recoveryPayload)
+    try {
+      await this.persistRun(process, 'queued', 'auto-queued', input.recoveryPayload)
+    } catch (error) {
+      this.taskProcesses.delete(input.conversationId)
+      await this.transitionStores(process.id, 'failed', `Could not persist the queued Agent OS run: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
+    }
 
     const accepted = this.taskQueue.enqueue({
       conversationId: input.conversationId,
@@ -87,18 +100,19 @@ export class AgentOsScheduler {
       onUpdate: async (update) => {
         activeRunRegistry.transition('scheduler-task', input.conversationId, this.toRegistryStatus(update.state), this.detailForUpdate(update))
         await input.onUpdate?.(update)
-        await this.runtimeKernel.transition(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update))
-        await this.runtimeRuns?.transition(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update))
+        await this.transitionStores(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update))
         if (this.isTerminal(update.state) && this.taskProcesses.get(input.conversationId)?.processId === process.id) {
           this.taskProcesses.delete(input.conversationId)
+          if (idempotencyKey) this.activeIdempotencyKeys.delete(idempotencyKey)
         }
       },
     })
 
     if (!accepted) {
       this.taskProcesses.delete(input.conversationId)
-      await this.runtimeKernel.transition(process.id, 'cancelled', 'A task is already scheduled for this conversation.')
-      await this.runtimeRuns?.transition(process.id, 'cancelled', 'A task is already scheduled for this conversation.')
+      await this.transitionStores(process.id, 'cancelled', 'A task is already scheduled for this conversation.')
+    } else if (idempotencyKey) {
+      this.activeIdempotencyKeys.add(idempotencyKey)
     }
     return accepted
   }
@@ -114,7 +128,13 @@ export class AgentOsScheduler {
       summary: input.summary,
     })
     this.interactiveRuns.set(input.conversationId, { processId: process.id })
-    await this.persistRun(process, 'running', 'checkpointed-manual', input.recoveryPayload)
+    try {
+      await this.persistRun(process, 'running', 'checkpointed-manual', input.recoveryPayload)
+    } catch (error) {
+      this.interactiveRuns.delete(input.conversationId)
+      await this.transitionStores(process.id, 'failed', `Could not persist the Agent OS chat run: ${error instanceof Error ? error.message : String(error)}`)
+      throw error
+    }
     return process
   }
 
@@ -124,8 +144,7 @@ export class AgentOsScheduler {
   }
 
   async finishInteractive(processId: string, status: Extract<RuntimeProcessStatus, 'completed' | 'failed' | 'cancelled'>, detail?: string): Promise<void> {
-    await this.runtimeKernel.transition(processId, status, detail)
-    await this.runtimeRuns?.transition(processId, status, detail)
+    await this.transitionStores(processId, status, detail)
     this.interactiveRuns.forEach((run, conversationId) => {
       if (run.processId === processId) activeRunRegistry.transition('scheduler-interactive', conversationId, status, detail)
     })
@@ -140,8 +159,7 @@ export class AgentOsScheduler {
     run.abort?.()
     activeRunRegistry.transition('scheduler-interactive', conversationId, 'cancelling', detail)
     this.interactiveRuns.delete(conversationId)
-    await this.runtimeKernel.transition(run.processId, 'cancelled', detail)
-    await this.runtimeRuns?.transition(run.processId, 'cancelled', detail)
+    await this.transitionStores(run.processId, 'cancelled', detail)
     return true
   }
 
@@ -149,12 +167,13 @@ export class AgentOsScheduler {
     const cancelled = this.taskQueue.cancel(conversationId, kind)
     activeRunRegistry.transition('scheduler-task', conversationId, 'cancelling', detail)
     const process = this.taskProcesses.get(conversationId)
-    if (process) {
-      await this.runtimeKernel.transition(process.processId, 'cancelled', detail)
-      await this.runtimeRuns?.transition(process.processId, 'cancelled', detail)
+    const runtimeKind = kind === 'expert' ? 'team' : kind === 'goal' ? 'goal' : undefined
+    const processMatches = Boolean(process && (!runtimeKind || process.kind === runtimeKind))
+    if (processMatches && process) {
+      await this.transitionStores(process.processId, 'cancelled', detail)
       this.taskProcesses.delete(conversationId)
     }
-    return cancelled || Boolean(process)
+    return cancelled || processMatches
   }
 
   async transitionTask(
@@ -165,30 +184,41 @@ export class AgentOsScheduler {
   ): Promise<void> {
     const process = this.taskProcesses.get(conversationId)
     if (process && process.kind === kind) {
-      await this.runtimeKernel.transition(process.processId, status, detail)
-      await this.runtimeRuns?.transition(process.processId, status, detail)
+      await this.transitionStores(process.processId, status, detail)
       if (!['queued', 'running', 'paused'].includes(status)) this.taskProcesses.delete(conversationId)
       return
     }
-    await this.runtimeKernel.transitionConversation(conversationId, kind, status, detail)
+    const transitioned = await this.runtimeKernel.transitionConversation(conversationId, kind, status, detail)
+    if (transitioned) await this.transitionStores(transitioned.id, status, detail)
   }
 
-  async startChild(input: Omit<AgentOsInteractiveInput, 'resourceKey'> & { kind: Extract<RuntimeProcessKind, 'goal' | 'team'> }): Promise<RuntimeKernelProcess> {
-    const process = await this.runtimeKernel.start({
-      conversationId: input.conversationId,
-      kind: input.kind,
-      agentId: input.agentId,
-      workspaceId: input.workspaceId,
-      summary: input.summary,
-      supersede: false,
-    })
-    await this.persistRun(process, 'running', 'checkpointed-manual')
-    return process
+  async startChild(input: AgentOsInteractiveInput & { kind: Extract<RuntimeProcessKind, 'goal' | 'team'> }): Promise<RuntimeKernelProcess> {
+    const resourceKey = input.resourceKey?.trim()
+    if (resourceKey && !this.taskQueue.reserveResource(resourceKey)) {
+      throw new Error(`Resource ${resourceKey} is already in use by another Agent OS run.`)
+    }
+    try {
+      const process = await this.runtimeKernel.start({
+        conversationId: input.conversationId,
+        kind: input.kind,
+        agentId: input.agentId,
+        workspaceId: input.workspaceId,
+        resourceKeys: resourceKey ? [resourceKey] : undefined,
+        summary: input.summary,
+        supersede: false,
+      })
+      if (resourceKey) this.childResources.set(process.id, resourceKey)
+      await this.persistRun(process, 'running', 'checkpointed-manual')
+      return process
+    } catch (error) {
+      if (resourceKey) this.taskQueue.releaseResource(resourceKey)
+      throw error
+    }
   }
 
   async finishProcess(processId: string, status: Extract<RuntimeProcessStatus, 'completed' | 'failed' | 'cancelled'>, detail?: string): Promise<void> {
-    await this.runtimeKernel.transition(processId, status, detail)
-    await this.runtimeRuns?.transition(processId, status, detail)
+    await this.transitionStores(processId, status, detail)
+    this.releaseChildResource(processId)
   }
 
   async transitionConversation(
@@ -197,7 +227,28 @@ export class AgentOsScheduler {
     status: RuntimeProcessStatus,
     detail?: string,
   ): Promise<void> {
-    await this.runtimeKernel.transitionConversation(conversationId, kind, status, detail)
+    const process = await this.runtimeKernel.transitionConversation(conversationId, kind, status, detail)
+    if (process) {
+      await this.transitionStores(process.id, status, detail)
+      if (this.isTerminal(status)) this.releaseChildResource(process.id)
+    }
+  }
+
+  private releaseChildResource(processId: string): void {
+    const resourceKey = this.childResources.get(processId)
+    if (!resourceKey) return
+    this.childResources.delete(processId)
+    this.taskQueue.releaseResource(resourceKey)
+  }
+
+  private async transitionStores(processId: string, status: RuntimeProcessStatus, detail?: string): Promise<void> {
+    const results = await Promise.allSettled([
+      this.runtimeKernel.transition(processId, status, detail),
+      this.runtimeRuns?.transition(processId, status, detail),
+    ])
+    for (const result of results) {
+      if (result.status === 'rejected') console.error(`Agent OS state transition failed for ${processId}:`, result.reason)
+    }
   }
 
   registerRecoveryHandler(kind: RuntimeProcessKind, handler: RecoveryHandler): void {
@@ -208,9 +259,23 @@ export class AgentOsScheduler {
     if (!this.runtimeRuns) return []
     const recovered: string[] = []
     for (const run of await this.runtimeRuns.listRecoverable()) {
+      if (this.recoveringRuns.has(run.id)) continue
       const handler = this.recoveryHandlers.get(run.kind)
       if (!handler) continue
-      const accepted = await handler(run, context)
+      let accepted = false
+      this.recoveringRuns.add(run.id)
+      try {
+        accepted = await handler(run, context)
+      } catch (error) {
+        await this.runtimeRuns.save({
+          ...run,
+          status: 'failed',
+          detail: `Recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+        })
+        this.recoveringRuns.delete(run.id)
+        continue
+      }
+      this.recoveringRuns.delete(run.id)
       if (!accepted) continue
       await this.runtimeRuns.save({
         ...run,
@@ -239,7 +304,7 @@ export class AgentOsScheduler {
       resourceKeys: process.resourceKeys || [],
       payload,
       recoveryMode,
-      idempotencyKey: process.id,
+      idempotencyKey: payload?.idempotencyKey || process.id,
       createdAt: process.startedAt,
       updatedAt: process.updatedAt,
       recoveryCount: 0,
@@ -268,7 +333,7 @@ export class AgentOsScheduler {
     return undefined
   }
 
-  private isTerminal(state: TaskQueueUpdate['state']): boolean {
+  private isTerminal(state: TaskQueueUpdate['state'] | RuntimeProcessStatus): boolean {
     return state === 'completed' || state === 'failed' || state === 'cancelled'
   }
 }

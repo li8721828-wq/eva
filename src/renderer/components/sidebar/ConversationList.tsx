@@ -249,17 +249,29 @@ export function ConversationList({ className }: ConversationListProps) {
         })}
 
 
-        {unassigned.length > 0 && (
-          <div>
+        <div>
+          <div className="flex h-9 items-center gap-1">
             <button
               type="button"
               onClick={() => setGlobalTasksOpen((open) => !open)}
-              className="w-full rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
+              className="flex h-9 min-w-0 flex-1 items-center rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
               aria-expanded={globalTasksOpen}
             >
-              Global tasks
+              <span>Global tasks</span>
+              <span className="ml-auto text-xs normal-case tracking-normal text-zinc-400">{unassigned.length}</span>
             </button>
-            {globalTasksOpen && <div className="space-y-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0"
+              onClick={() => createConversation(undefined, 'normal', null)}
+              title="New global task"
+              aria-label="New global task"
+            >
+              <Plus className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          {globalTasksOpen && <div className="mt-2 space-y-1">
               {unassigned.map((conversation) => (
                 <ConversationRow
                   key={conversation.id}
@@ -272,8 +284,7 @@ export function ConversationList({ className }: ConversationListProps) {
                 />
               ))}
             </div>}
-          </div>
-        )}
+        </div>
 
         {archivedConversations.length > 0 && (
           <div>

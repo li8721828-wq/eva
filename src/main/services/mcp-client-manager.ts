@@ -5,6 +5,7 @@ import type { McpServerConfig, McpServerState } from '../../shared/types/mcp'
 import type { ToolDefinition } from '../../shared/types/provider'
 import type { ToolExecutor, ToolRegistry } from '../tools'
 import type { McpServerStore } from '../storage/mcp-server-store'
+import { APP_VERSION } from '../../shared/constants'
 
 interface ActiveConnection {
   config: McpServerConfig
@@ -75,7 +76,7 @@ export class McpClientManager {
     this.states.set(config.id, { ...config, status: 'connecting', toolCount: 0, tools: [] })
     try {
       const transport = this.createTransport(config)
-      const client = new Client({ name: 'Eva', version: '0.1.134' })
+      const client = new Client({ name: 'Eva', version: APP_VERSION })
       await client.connect(transport)
       const listed = await client.listTools()
       const allowed = config.toolAllowlist?.length ? new Set(config.toolAllowlist) : undefined

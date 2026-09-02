@@ -171,7 +171,8 @@ export class RuntimeKernelStore {
         processes: stored.processes && typeof stored.processes === 'object' ? stored.processes : {},
         audit: Array.isArray(stored.audit) ? stored.audit : [],
       }
-    } catch {
+    } catch (error) {
+      this.backupCorruptFile(error)
       return { revision: 0, processes: {}, audit: [] }
     }
   }
@@ -184,6 +185,15 @@ export class RuntimeKernelStore {
     state.processes = Object.fromEntries(processes.map((process) => [process.id, process]))
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
     fs.writeFileSync(this.filePath, JSON.stringify(state, null, 2), 'utf-8')
+  }
+
+  private backupCorruptFile(error: unknown): void {
+    console.error(`Could not read Agent OS runtime kernel state at ${this.filePath}:`, error)
+    try {
+      if (fs.existsSync(this.filePath)) fs.copyFileSync(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
+    } catch (backupError) {
+      console.error(`Could not back up the corrupt runtime kernel state at ${this.filePath}:`, backupError)
+    }
   }
 
   private enqueue<T>(work: () => T): Promise<T> {

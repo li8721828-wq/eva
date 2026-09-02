@@ -29,6 +29,8 @@ function toSteps(input: ActivePlanTaskState): ActivePlanStep[] {
     title: step.title,
     detail: step.description,
     status: step.status === 'in_progress' ? 'in_progress' : step.status,
+    assignedAgentId: step.assignedAgentId,
+    assignedAgentName: step.assignedAgentName,
   }))
   if (input.progress?.steps.length) return input.progress.steps.map((step) => ({
     id: step.id,

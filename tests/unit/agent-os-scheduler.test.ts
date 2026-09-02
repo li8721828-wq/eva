@@ -75,4 +75,51 @@ describe('AgentOsScheduler', () => {
       await fs.rm(dataDir, { recursive: true, force: true })
     }
   })
+
+  it('holds a child resource lease until the child finishes', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-agent-os-scheduler-'))
+    try {
+      const scheduler = new AgentOsScheduler(new RuntimeKernelStore(dataDir), 1)
+      const child = await scheduler.startChild({
+        conversationId: 'child', kind: 'team', workspaceId: 'workspace-1', resourceKey: 'workspace:workspace-1', summary: 'child',
+      })
+      const started: string[] = []
+      await scheduler.scheduleTask({
+        conversationId: 'queued', kind: 'goal', runtimeKind: 'goal', resourceKey: 'workspace:workspace-1', summary: 'queued',
+        run: async () => { started.push('queued'); return { status: 'completed' } },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      expect(started).toEqual([])
+      await scheduler.finishProcess(child.id, 'completed', 'child finished')
+      await vi.waitFor(() => expect(started).toEqual(['queued']))
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  it('continues recovery after one handler fails', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-agent-os-scheduler-'))
+    try {
+      const runtimeRuns = new RuntimeRunStore(dataDir)
+      const now = Date.now()
+      for (const id of ['first', 'second']) {
+        await runtimeRuns.save({
+          id, conversationId: id, kind: 'goal', status: 'queued', resourceKeys: [], recoveryMode: 'auto-queued',
+          payload: { goal: id, agentId: 'agent' }, idempotencyKey: id, createdAt: now, updatedAt: now, recoveryCount: 0,
+        })
+      }
+      const scheduler = new AgentOsScheduler(new RuntimeKernelStore(dataDir), 1, runtimeRuns)
+      const recovered: string[] = []
+      scheduler.registerRecoveryHandler('goal', async (run) => {
+        if (run.id === 'first') throw new Error('provider unavailable')
+        recovered.push(run.id)
+        return true
+      })
+      expect(await scheduler.recoverQueued({})).toEqual(['second'])
+      expect(recovered).toEqual(['second'])
+      expect((await runtimeRuns.listRecoverable()).map((run) => run.id)).toEqual([])
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
+  })
 })

@@ -95,6 +95,7 @@ const ROLLING_TOOL_EVIDENCE_END = '--- End earlier completed tool evidence ---'
 // A provider may impose a lower, hidden per-request output cap. Continue only
 // when it explicitly reports `length`; a natural `stop` must end the turn.
 const MAX_PROVIDER_CONTINUATIONS = 3
+const MAX_EMPTY_RESPONSE_RETRIES = 1
 const MAX_NORMAL_TOOL_CYCLES = 12
 const MAX_AGENT_RESPONSE_TOKENS = 2_048
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
@@ -174,6 +175,8 @@ export class AgentRunner {
   private config: AgentRunnerConfig
   private abortController: AbortController | null = null
   private isRunning = false
+  /** Prevent a model feedback-loop from restarting the whole team in one chat turn. */
+  private teamDelegationUsed = false
 
   constructor(config: AgentRunnerConfig) {
     this.config = config
@@ -191,6 +194,7 @@ export class AgentRunner {
     }
 
     this.isRunning = true
+    this.teamDelegationUsed = false
     this.abortController = new AbortController()
 
     try {
@@ -287,6 +291,7 @@ export class AgentRunner {
       let accumulatedUsage: ChatUsage | undefined
       let completedResponse = ''
       let providerContinuationCount = 0
+      let emptyResponseRetries = 0
       let protocolRepairAttempts = 0
       let latestProtocolResults: NonNullable<CompletedToolResult['protocol']>[] = []
       let rollingToolEvidence = ''
@@ -348,6 +353,25 @@ export class AgentRunner {
 
         // No tool calls → the model is done reasoning
         if (!hasToolCalls) {
+          if (response.protocolTextDetected && !response.toolCallParseFailure && activeToolDefs.length > 0 && protocolRepairAttempts < 1) {
+            protocolRepairAttempts += 1
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            completedResponse = ''
+            messages.push({
+              role: 'user',
+              content: 'Your previous response returned tool-call protocol markup without an executable structured call. Retry using the provided structured tool-calling interface only. Do not emit DSML, XML, or tool-call markup as ordinary response text.',
+            })
+            yield { type: 'thinking', content: '检测到未执行的工具协议文本，正在按标准工具协议重试一次。' }
+            continue
+          }
+          if (response.protocolTextDetected && !response.toolCallParseFailure) {
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            yield {
+              type: 'error',
+              error: '模型在最终回复中返回了未执行的工具协议文本；本轮未执行该工具。请重试，或更换兼容工具调用协议的模型。',
+            }
+            return
+          }
           if (response.toolCallParseFailure && activeToolDefs.length > 0 && protocolRepairAttempts < 1) {
             protocolRepairAttempts += 1
             // The provider streamed an unparseable tool envelope as prose.
@@ -362,13 +386,40 @@ export class AgentRunner {
             yield { type: 'thinking', content: '检测到未执行的工具调用格式，正在按标准工具协议重试一次。' }
             continue
           }
+          if (response.toolCallParseFailure) {
+            // A second malformed/unsupported text envelope is not a valid
+            // answer. The provider may have streamed DSML/XML as provisional
+            // text; clear it before surfacing a concise execution error so
+            // protocol markup never becomes part of the user-visible reply.
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            yield {
+              type: 'error',
+              error: '模型返回了无法执行的工具协议文本；本轮未执行该工具。请确认 Agent 已启用所需工具，或让当前 Agent 直接完成该步骤。',
+            }
+            return
+          }
+          if (!response.content.trim() && emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+            emptyResponseRetries += 1
+            messages.push({
+              role: 'user',
+              content: 'The previous request did not include a final answer. Reply with the concise user-facing answer now. Do not return reasoning-only content, an empty message, or tool-call markup.',
+            })
+            yield {
+              type: 'thinking',
+              content: '供应商未返回最终答案，正在自动重试一次。',
+            }
+            continue
+          }
           if (!response.content.trim()) {
             const imageHint = hasImageInput
               ? ` The conversation includes image input; select a vision-capable model before retrying.`
               : ''
+            const reasoningHint = response.reasoningContent?.trim()
+              ? ' The provider returned reasoning content but no final answer; its reasoning/response mode may be incompatible with this gateway.'
+              : ''
             yield {
               type: 'error',
-              error: `Model ${agentConfig.model} returned an empty response.${imageHint}`,
+              error: `Model ${agentConfig.model} returned an empty response.${reasoningHint}${imageHint}`,
             }
             return
           }
@@ -402,8 +453,16 @@ export class AgentRunner {
 
         // A normal pre-tool reply is meaningful user-facing process and is
         // promoted to the accumulated progress view by the conversation
-        // handler. Only protocol text such as a DSML envelope is discarded.
-        if (response.content) yield { type: 'text_reset', discardProvisionalText: Boolean(response.textToolCallEnvelope) }
+        // handler. Gateways can nevertheless mix native tool_calls with a
+        // serialized DSML/XML envelope in the same response; discard any such
+        // protocol-looking provisional text even when native calls exist.
+        const containsToolProtocolMarkup = /<\s*(?:[|｜]\s*){1,2}DSML\b|<\s*tool_call\b|<\s*function=/i.test(response.content)
+        if (response.content) {
+          yield {
+            type: 'text_reset',
+            discardProvisionalText: Boolean(response.textToolCallEnvelope || response.toolCallParseFailure || containsToolProtocolMarkup),
+          }
+        }
         completedResponse = ''
 
         // A model may request several independent reads in one turn. Execute
@@ -596,19 +655,19 @@ export class AgentRunner {
           }
         }
 
-        if (!adaptiveToolBudget) {
-          const batchSignature = response.toolCalls
-            .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`)
-            .sort()
-            .join('|')
-          // A repeated search can be deliberately rejected so the model reads
-          // a source first. Let that corrective instruction reach the next
-          // turn instead of treating it as an ordinary no-progress loop.
-          const deferredForPageRead = mustReadWebPageBeforeMoreSearch
-            && response.toolCalls.some((toolCall) => toolCall.name === 'web_search')
-          if (previousNormalToolBatches.has(batchSignature) && !deferredForPageRead) break
-          previousNormalToolBatches.add(batchSignature)
-        }
+        const batchSignature = response.toolCalls
+          .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`)
+          .sort()
+          .join('|')
+        // Providers sometimes replay the same read batch after a long tool
+        // result (especially in hidden Goal-step conversations). Do not emit
+        // or execute it repeatedly: the prior result is already in `messages`,
+        // so move directly to synthesis. A deferred search is intentionally
+        // allowed once so the read_web_page guard can take effect.
+        const deferredForPageRead = mustReadWebPageBeforeMoreSearch
+          && response.toolCalls.some((toolCall) => toolCall.name === 'web_search')
+        if (previousNormalToolBatches.has(batchSignature) && !deferredForPageRead) break
+        previousNormalToolBatches.add(batchSignature)
 
         // Goal steps should not blindly consume their maximum tool budget. At
         // each checkpoint the model first decides whether the evidence is
@@ -645,8 +704,9 @@ export class AgentRunner {
 
       // Tool calls can legitimately take several passes in a Goal, but normal
       // chat intentionally stops after its first tool batch. In both cases,
-      // give the model one final, tool-free synthesis turn so no new action can
-      // restart the loop.
+      // give the model a final synthesis turn. Some gateways ignore the
+      // tool-free instruction and return one last DSML/native call; allow one
+      // bounded recovery batch instead of reporting that the task failed.
       const finalVerificationNotice = pendingWriteVerifications.size > 0
         ? ` The following file writes remain unverified: ${this.formatPaths(pendingWriteVerifications)}. Do not call them correct, complete, or successfully verified; state that verification is still required.`
         : ''
@@ -658,10 +718,71 @@ export class AgentRunner {
         content: `Tool execution is complete for this response. Using only the evidence already available in this conversation, provide the best concise final answer now. If evidence is incomplete, state the specific unverified limitation plainly and, where useful, the smallest user-facing next step. Do not mention internal tool limits, tool cycles, implementation details, or instructions.${finalVerificationNotice}`,
       })
       yield { type: 'thinking', content: 'Synthesizing the available results...' }
-      const finalResponse = yield* this.executeLLMCall(messages, [])
+      let finalResponse = yield* this.executeLLMCall(messages, [])
       accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
+      // The model may legitimately discover one or two missing pieces of
+      // evidence while synthesizing. Recover those calls in a small bounded
+      // loop; do not turn an otherwise executable Agent into a hard failure.
+      for (let recoveryAttempt = 0; recoveryAttempt < 2 && activeToolDefs.length > 0; recoveryAttempt += 1) {
+        if ((finalResponse.protocolTextDetected || finalResponse.toolCallParseFailure) && finalResponse.toolCalls.length === 0) {
+          yield { type: 'thinking', content: '检测到最终阶段仍需要工具，正在执行补充操作...' }
+          finalResponse = yield* this.executeLLMCall(messages, activeToolDefs)
+          accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
+        }
+        if (finalResponse.toolCalls.length === 0) break
+
+        const recoveryCalls = finalResponse.toolCalls.filter((toolCall, index, calls) => {
+          const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
+          return calls.findIndex((candidate) => `${candidate.name}:${JSON.stringify(candidate.arguments)}` === signature) === index
+        })
+        const recoveryResults = new Map<string, CompletedToolResult>()
+        for (const toolCall of recoveryCalls) {
+          yield { type: 'tool_call', toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments } }
+          const toolContext: ToolContext = {
+            conversationId: this.config.conversationId,
+            workspacePath,
+            fileAccessGrants,
+            fullFilesystemAccess,
+            supportsVisionInput: this.supportsVisionInput(),
+            fileService: this.config.fileService,
+            terminalService: this.config.terminalService,
+            allowedModelPoolIds: agentConfig.modelPoolIds,
+            visualAttachments: dedupeToolImages(recentVisualAttachments),
+            agentContext: this.buildModelPoolContext(messages, recoveryResults),
+          }
+          const result = this.normalizeToolResult(await this.executeTool(toolCall, toolContext))
+          recoveryResults.set(toolCall.id, result)
+          yield {
+            type: 'tool_result',
+            toolResult: {
+              toolCallId: toolCall.id,
+              name: toolCall.name,
+              result: result.result,
+              isError: result.isError,
+              protocol: result.protocol,
+            },
+          }
+        }
+        messages = this.appendToolMessages(messages, recoveryCalls, recoveryResults)
+        messages.push({
+          role: 'user',
+          content: 'The additional tool result is now available. Provide the concise final answer using the evidence already collected. Do not call another tool and do not emit DSML or XML tool-call markup.',
+        })
+        finalResponse = yield* this.executeLLMCall(messages, [])
+        accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
+      }
+      if (finalResponse.protocolTextDetected || finalResponse.toolCallParseFailure) {
+        if (finalResponse.content) yield { type: 'text_reset', discardProvisionalText: true }
+        yield {
+          type: 'error',
+          error: '模型在最终回复中返回了未执行的工具协议文本；本轮未执行该工具。请重试，或更换兼容工具调用协议的模型。',
+        }
+        yield { type: 'done', content: '' }
+        return
+      }
       if (finalResponse.content.trim()) {
-        yield { type: 'done', content: finalResponse.content, usage: accumulatedUsage }
+        const finalContent = finalResponse.content.replace(/^FINAL\s*:\s*/i, '').trim()
+        yield { type: 'done', content: finalContent || finalResponse.content.trim(), usage: accumulatedUsage }
         return
       }
 
@@ -710,7 +831,7 @@ export class AgentRunner {
   private async *executeLLMCall(
     messages: ChatMessageInput[],
     tools: ToolDefinition[]
-  ): AsyncGenerator<AgentEvent, { content: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage; toolCallParseFailure?: string; textToolCallEnvelope?: boolean }> {
+  ): AsyncGenerator<AgentEvent, { content: string; reasoningContent?: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage; toolCallParseFailure?: string; textToolCallEnvelope?: boolean; protocolTextDetected?: boolean }> {
     const { agentConfig, provider } = this.config
     const signal = this.abortController?.signal
     // Tool output can grow on every ReAct cycle. Refit immediately before the
@@ -743,11 +864,17 @@ export class AgentRunner {
     )
 
     let content = ''
+    let reasoningContent = ''
     let receivedReasoning = false
     let finishReason = ''
     let usage: ChatUsage | undefined
     let toolCallParseFailure: string | undefined
     let textToolCallEnvelope = false
+    // Do not stream provider protocol markup as user-facing prose. Gateways
+    // may split `< | DSML | ...>` across many chunks, so keep a small pending
+    // buffer until the stream proves that it is ordinary text.
+    let pendingProtocolText = ''
+    let protocolTextDetected = false
 
     // Tool call accumulation state (keyed by chunk index)
     const tcAccumulator: Map<number, { id: string; name: string; argsStr: string }> = new Map()
@@ -765,13 +892,26 @@ export class AgentRunner {
 
         if (agentConfig.showThinking && chunk.reasoningContent) {
           receivedReasoning = true
+          reasoningContent += chunk.reasoningContent
           yield { type: 'reasoning', content: chunk.reasoningContent }
         }
 
         // ── Text content ──────────────────────────────────────────────────────
         if (chunk.content) {
           content += chunk.content
-          yield { type: 'text', content: chunk.content }
+          pendingProtocolText += chunk.content
+          const protocolIndex = pendingProtocolText.search(/<\s*(?:(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls|invoke|parameter)|tool_call\b|function=)/i)
+          if (protocolIndex >= 0) {
+            const visiblePrefix = pendingProtocolText.slice(0, protocolIndex)
+            if (visiblePrefix) yield { type: 'text', content: visiblePrefix }
+            pendingProtocolText = pendingProtocolText.slice(protocolIndex)
+            protocolTextDetected = true
+          } else if (pendingProtocolText.length > 96) {
+            // Retain enough suffix for a marker split at a chunk boundary.
+            const safeLength = pendingProtocolText.length - 48
+            yield { type: 'text', content: pendingProtocolText.slice(0, safeLength) }
+            pendingProtocolText = pendingProtocolText.slice(safeLength)
+          }
         }
 
         // ── Tool call fragments ───────────────────────────────────────────────
@@ -818,14 +958,27 @@ export class AgentRunner {
       })
     }
 
+    // Flush ordinary text only after the provider has finished and we know it
+    // was not a tool protocol envelope. This prevents the UI from briefly
+    // rendering raw DSML while a tool call is still being assembled.
+    // Native structured calls alone do not make the streamed prose invalid;
+    // only discard text when a serialized envelope (or parser failure) was
+    // actually observed.
+    const protocolWasReturned = protocolTextDetected || toolCallParseFailure || textToolCallEnvelope
+    if (pendingProtocolText && !protocolWasReturned) {
+      yield { type: 'text', content: pendingProtocolText }
+    }
+
     const contextDiagnostics = this.config.contextManager.getLastDiagnostics()
     return {
       content,
+      ...(reasoningContent ? { reasoningContent } : {}),
       toolCalls,
       finishReason,
       usage: usage ? { ...usage, ...(contextDiagnostics ? { contextDiagnostics } : {}) } : usage,
       toolCallParseFailure,
       textToolCallEnvelope,
+      protocolTextDetected,
     }
   }
 
@@ -948,8 +1101,15 @@ export class AgentRunner {
     toolContext: ToolContext
   ): Promise<CompletedToolResult> {
     if (toolCall.name === TEAM_DELEGATION_TOOL.name && this.config.delegateToTeam) {
+      if (this.teamDelegationUsed) {
+        return {
+          result: 'Error: delegate_to_team was already executed in this chat turn. Do not start the team again; continue from the existing team result or finish the response.',
+          isError: true,
+        }
+      }
       const goal = typeof toolCall.arguments.goal === 'string' ? toolCall.arguments.goal.trim() : ''
       if (!goal) return { result: 'Error: delegate_to_team requires a non-empty goal.', isError: true }
+      this.teamDelegationUsed = true
       try {
         return { result: await this.config.delegateToTeam(goal), isError: false }
       } catch (error: any) {

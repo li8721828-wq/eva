@@ -24,7 +24,27 @@ const readFileTool: ToolExecutor = {
     const startLine = params.startLine as number | undefined
     const endLine = params.endLine as number | undefined
 
-    const content = await context.fileService.readFile(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    let content: string
+    try {
+      content = await context.fileService.readFile(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    } catch (error: any) {
+      const message = error?.message ?? String(error)
+      if (/ENOENT|no such file|cannot find the path/i.test(message) && filePath) {
+        const candidates = await context.fileService.searchFiles(
+          path.basename(filePath),
+          context.workspacePath,
+          context.fileAccessGrants,
+          '.',
+          context.fullFilesystemAccess,
+        ).catch(() => [])
+        const uniqueCandidates = [...new Set(candidates)].slice(0, 8)
+        const hint = uniqueCandidates.length
+          ? ` Candidate paths returned by the workspace search:\n${uniqueCandidates.join('\n')}`
+          : ' No candidate with the same filename was found in the authorized workspace.'
+        throw new Error(`File not found: ${filePath}. Do not retry the same path; use search_files results and read the exact returned path.${hint}`)
+      }
+      throw error
+    }
 
     if (startLine !== undefined || endLine !== undefined) {
       const lines = content.split('\n')

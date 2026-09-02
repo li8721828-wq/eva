@@ -36,6 +36,7 @@ export interface ExpertTaskStartInput {
   goal: string
   resume?: boolean
   recoveryReason?: 'user-continue' | 'app-restart'
+  idempotencyKey?: string
 }
 
 export interface GoalTaskStartInput {
@@ -45,6 +46,7 @@ export interface GoalTaskStartInput {
   agentId: string
   resume?: boolean
   recoveryReason?: 'user-continue' | 'app-restart'
+  idempotencyKey?: string
 }
 
 // Execution controls are keyed by conversation so separate chats can run in
@@ -54,8 +56,8 @@ const activeGoalPlanners = activeRunRegistry.forKind<GoalPlanner>('task-goal')
 let taskServices: TaskServices | null = null
 let taskLifecycle: TaskRunLifecycleService | null = null
 type TaskIpcEvent = IpcMainEvent | IpcMainInvokeEvent
-let startExpertTask: ((event: TaskIpcEvent, payload: ExpertTaskStartInput) => Promise<void>) | undefined
-let startGoalTask: ((event: TaskIpcEvent, payload: GoalTaskStartInput) => Promise<void>) | undefined
+let startExpertTask: ((event: TaskIpcEvent, payload: ExpertTaskStartInput) => Promise<boolean>) | undefined
+let startGoalTask: ((event: TaskIpcEvent, payload: GoalTaskStartInput) => Promise<boolean>) | undefined
 
 /** Temporary compatibility seam while handlers are migrated off the legacy singleton. */
 function taskStorage(): StorageManager {
@@ -67,15 +69,15 @@ function taskRunLifecycle(): TaskRunLifecycleService {
 }
 
 /** Internal entry point for recovery and runtime actions; IPC only adapts into it. */
-export async function startExpertTaskRun(event: TaskIpcEvent, payload: ExpertTaskStartInput): Promise<void> {
+export async function startExpertTaskRun(event: TaskIpcEvent, payload: ExpertTaskStartInput): Promise<boolean> {
   if (!startExpertTask) throw new Error('Task handlers are not initialized.')
-  await startExpertTask(event, payload)
+  return startExpertTask(event, payload)
 }
 
 /** Internal entry point for recovery and runtime actions; IPC only adapts into it. */
-export async function startGoalTaskRun(event: TaskIpcEvent, payload: GoalTaskStartInput): Promise<void> {
+export async function startGoalTaskRun(event: TaskIpcEvent, payload: GoalTaskStartInput): Promise<boolean> {
   if (!startGoalTask) throw new Error('Task handlers are not initialized.')
-  await startGoalTask(event, payload)
+  return startGoalTask(event, payload)
 }
 
 function notifyConversationChanged(event: TaskIpcEvent, conversationId: string): void {
@@ -405,38 +407,38 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const window = context as BrowserWindow
     const goal = run.payload?.goal
     if (!goal || !window || window.isDestroyed()) return false
-    await startExpertTaskRun({ sender: window.webContents } as IpcMainEvent, {
+    return startExpertTaskRun({ sender: window.webContents } as IpcMainEvent, {
       conversationId: run.conversationId,
       goal,
       resume: run.payload?.resume ?? false,
       recoveryReason: 'app-restart',
+      idempotencyKey: run.idempotencyKey,
     })
-    return true
   })
   scheduler.registerRecoveryHandler('goal', async (run, context) => {
     const window = context as BrowserWindow
     const goal = run.payload?.goal
     const agentId = run.payload?.agentId
     if (!goal || !agentId || !window || window.isDestroyed()) return false
-    await startGoalTaskRun({ sender: window.webContents } as IpcMainEvent, {
+    return startGoalTaskRun({ sender: window.webContents } as IpcMainEvent, {
       conversationId: run.conversationId,
       goal,
       agentId,
       resume: run.payload?.resume ?? false,
       recoveryReason: 'app-restart',
       config: run.payload?.config,
+      idempotencyKey: run.idempotencyKey,
     })
-    return true
   })
 
   // ─── Expert Mode ────────────────────────────────────────────────────────────
 
   // Expert mode - start task (fire-and-forget; events streamed via TASK_STREAM)
-  startExpertTask = async (event: TaskIpcEvent, payload: ExpertTaskStartInput): Promise<void> => {
+  startExpertTask = async (event: TaskIpcEvent, payload: ExpertTaskStartInput): Promise<boolean> => {
       const { conversationId, goal } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return
-      if (getAgentOsScheduler().hasTask(conversationId, 'expert')) return
+      if (!win) return false
+      if (getAgentOsScheduler().hasTask(conversationId, 'expert')) return false
       const runtimeScope = await resolveTaskRuntimeScope(conversationId)
       const previousSnapshot = payload.resume ? await getStorage().taskRuns.get(conversationId) : null
       const recovery = payload.resume
@@ -456,15 +458,16 @@ export function registerTaskHandlers(services?: TaskServices): void {
       await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 
-      await getAgentOsScheduler().scheduleTask({
+      const accepted = await getAgentOsScheduler().scheduleTask({
         conversationId,
         kind: 'expert',
         runtimeKind: 'team',
         workspaceId: runtimeScope.workspaceId,
         maxAttempts: 2,
         resourceKey: runtimeScope.resourceKey,
+        idempotencyKey: payload.idempotencyKey,
         summary: payload.resume ? 'Replaying Expert Team task from its saved checkpoint.' : 'Expert Team task queued.',
-        recoveryPayload: { goal, resume: Boolean(previousSnapshot?.plan?.subtasks.length), recoveryReason: 'app-restart' },
+        recoveryPayload: { goal, resume: Boolean(previousSnapshot?.plan?.subtasks.length), recoveryReason: 'app-restart', idempotencyKey: payload.idempotencyKey },
         onUpdate: async (update) => {
           await persistQueueUpdate(update)
           if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
@@ -756,6 +759,15 @@ export function registerTaskHandlers(services?: TaskServices): void {
           }
         }
       })
+      if (!accepted) {
+        const snapshot = await getStorage().taskRuns.get(conversationId)
+        if (snapshot?.kind === 'expert') {
+          await getStorage().taskRuns.save({ ...snapshot, status: 'cancelled', error: 'The Team task was not admitted because another task is already running in this conversation.' })
+          await syncActivePlan(conversationId)
+        }
+        return false
+      }
+      return true
   }
   ipcMain.on(IPC.TASK_START, (event, payload: ExpertTaskStartInput) => {
     void startExpertTaskRun(event, payload)
@@ -860,10 +872,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
   // ─── Goal Mode ──────────────────────────────────────────────────────────────
 
   // Goal mode - start (fire-and-forget; events streamed via TASK_GOAL_STREAM)
-  startGoalTask = async (event: TaskIpcEvent, payload: GoalTaskStartInput): Promise<void> => {
+  startGoalTask = async (event: TaskIpcEvent, payload: GoalTaskStartInput): Promise<boolean> => {
       const win = BrowserWindow.fromWebContents(event.sender)
-      if (!win) return
-      if (getAgentOsScheduler().hasTask(payload.conversationId, 'goal')) return
+      if (!win) return false
+      if (getAgentOsScheduler().hasTask(payload.conversationId, 'goal')) return false
       const runtimeScope = await resolveTaskRuntimeScope(payload.conversationId)
       const previousSnapshot = payload.resume ? await getStorage().taskRuns.get(payload.conversationId) : null
       const recovery = payload.resume
@@ -884,7 +896,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
       await getStorage().conversations.updateConversation(payload.conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
 
-      await getAgentOsScheduler().scheduleTask({
+      const accepted = await getAgentOsScheduler().scheduleTask({
         conversationId: payload.conversationId,
         kind: 'goal',
         runtimeKind: 'goal',
@@ -892,6 +904,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         workspaceId: runtimeScope.workspaceId,
         maxAttempts: 2,
         resourceKey: runtimeScope.resourceKey,
+        idempotencyKey: payload.idempotencyKey,
         summary: payload.resume ? 'Replaying Goal task from its saved checkpoint.' : 'Goal task queued.',
         recoveryPayload: {
           goal: payload.goal,
@@ -899,6 +912,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           resume: Boolean(previousSnapshot?.progress?.steps.length),
           recoveryReason: 'app-restart',
           config: payload.config,
+          idempotencyKey: payload.idempotencyKey,
         },
         onUpdate: async (update) => {
           await persistQueueUpdate(update)
@@ -1104,6 +1118,15 @@ export function registerTaskHandlers(services?: TaskServices): void {
           }
         }
       })
+      if (!accepted) {
+        const snapshot = await getStorage().taskRuns.get(payload.conversationId)
+        if (snapshot?.kind === 'goal') {
+          await getStorage().taskRuns.save({ ...snapshot, status: 'cancelled', error: 'The Goal task was not admitted because another task is already running in this conversation.' })
+          await syncActivePlan(payload.conversationId)
+        }
+        return false
+      }
+      return true
   }
   ipcMain.on(IPC.TASK_GOAL_START, (event, payload: GoalTaskStartInput) => {
     void startGoalTaskRun(event, payload)

@@ -170,15 +170,6 @@ export function Sidebar({ className, style }: SidebarProps) {
           variant="ghost"
           size="sm"
           className="h-9 w-full justify-start gap-2.5 px-3"
-          onClick={() => createConversation(undefined, 'normal', null)}
-        >
-          <Plus className="h-4 w-4" />
-          <span>New global task</span>
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-9 w-full justify-start gap-2.5 px-3"
           onClick={() => setCurrentView('symposium')}
         >
           <UsersRound className="h-4 w-4" />

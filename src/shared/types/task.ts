@@ -38,11 +38,22 @@ export interface SubTask {
   /** References a task-scoped member from TaskPlan.dynamicAgents. */
   assignedAgentProfileId?: string
   isDynamicAgent?: boolean
+  /** Tools the leader determined this task needs before execution. */
+  requiredTools?: string[]
+  /** Effective task-scoped tools after the leader configures the worker. */
+  configuredTools?: string[]
+  /** Required tools that are unavailable anywhere in the authorized team. */
+  configurationWarnings?: string[]
   /** Separate persisted context for this agent's work on the subtask. */
   agentConversationId?: string
   /** One-based execution attempt number. Failed tasks are retried once. */
   attempt?: number
   dependencies: string[]
+  /** Logical files, datasets, or services touched by this task. Overlapping
+   * resource keys are serialized; disjoint keys may run concurrently. */
+  resourceKeys?: string[]
+  /** Explicit opt-out for tasks that must remain isolated. */
+  parallelizable?: boolean
   result?: string
   /** Tool activity retained for project-level task artifacts. */
   toolCalls?: ToolCall[]

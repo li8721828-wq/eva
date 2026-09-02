@@ -59,6 +59,7 @@ export class TeamOrchestrator {
     'write_terminal',
     'execute_command',
     'close_terminal',
+    'spreadsheet',
   ])
 
   constructor(config: TeamOrchestratorConfig) {
@@ -69,8 +70,8 @@ export class TeamOrchestrator {
    * Execute expert team mode:
    * 1. Leader creates task plan
    * 2. Assign workers to subtasks
-   * 3. Execute independent read-only subtasks concurrently. Any worker that can
-   *    write files or execute commands stays serialized to protect the workspace.
+   * 3. Execute dependency-safe subtasks concurrently when their declared
+   *    resource scopes do not overlap. Conflicting work is serialized.
    * 4. Leader summarizes results
    */
   async *run(params: TeamRunParams): AsyncGenerator<TeamEvent> {
@@ -104,6 +105,12 @@ export class TeamOrchestrator {
       yield { type: 'plan_created', plan }
       this.registerDynamicWorkers(plan.dynamicAgents || [])
 
+      // A persisted plan may claim that a subtask completed even though its
+      // output artifact was never written (for example after a model stopped
+      // at a prose-only summary). Revalidate those outputs before allowing
+      // dependent work to proceed.
+      await this.invalidateMissingCompletedArtifacts(plan)
+
       // Step 2: Assign workers & execute
       const completedResults = new Map(
         plan.subtasks
@@ -129,18 +136,20 @@ export class TeamOrchestrator {
         // actually execute each subtask before exposing the assignment.
         const assigned = [] as Array<{ subtask: SubTask; worker: AgentConfig }>
         for (const subtask of batch) {
-          const worker = this.selectExecutionAgent(this.assignWorker(subtask), subtask)
+          const baseWorker = this.selectExecutionAgent(this.assignWorker(subtask), subtask)
+          subtask.requiredTools = this.inferRequiredTools(subtask)
+          const configured = this.configureWorkerForTask(baseWorker, subtask)
+          const worker = configured.worker
           subtask.assignedAgentId = worker.id
           subtask.assignedAgentName = worker.name
           subtask.assignedProviderId = worker.providerId
           subtask.assignedModel = worker.model
           subtask.isDynamicAgent = Boolean(worker.taskScoped)
-          if (this.config.createWorkerConversation && !subtask.agentConversationId) {
-            subtask.agentConversationId = await this.config.createWorkerConversation(subtask, worker)
-          }
+          subtask.configuredTools = [...worker.tools]
+          subtask.configurationWarnings = configured.missing.length
+            ? [`Unavailable required tools: ${configured.missing.join(', ')}`]
+            : undefined
           subtask.status = 'pending'
-          assigned.push({ subtask, worker })
-
           yield {
             type: 'task_assigned',
             subtaskId: subtask.id,
@@ -148,28 +157,35 @@ export class TeamOrchestrator {
             agentId: worker.id,
             agentName: worker.name,
           }
+          if (configured.missing.length) {
+            subtask.status = 'failed'
+            subtask.result = `This task cannot start because the team has not authorized: ${configured.missing.join(', ')}.`
+            subtask.completedAt = Date.now()
+            yield {
+              type: 'task_failed',
+              subtaskId: subtask.id,
+              subtask: { ...subtask },
+              agentId: worker.id,
+              agentName: worker.name,
+              error: subtask.result,
+            }
+            continue
+          }
+          if (this.config.createWorkerConversation && !subtask.agentConversationId) {
+            subtask.agentConversationId = await this.config.createWorkerConversation(subtask, worker)
+          }
+          assigned.push({ subtask, worker })
         }
 
-        const readOnly = assigned.filter(({ worker }) => this.isReadOnlyWorker(worker))
-        const mutating = assigned.filter(({ worker }) => !this.isReadOnlyWorker(worker))
-
-        // A batch is already dependency-safe. Merge read-only worker events so
-        // research/review work can progress at the same time.
-        if (readOnly.length > 1) {
-          for await (const event of this.executeConcurrentBatch(readOnly, plan, completedResults)) {
-            yield event
-          }
-        } else if (readOnly.length === 1) {
-          for await (const event of this.executeWithRetry(readOnly[0].subtask, readOnly[0].worker, plan, completedResults)) {
-            yield event
-          }
-        }
-
-        // Mutating workers intentionally run one at a time to prevent races.
-        for (const { subtask, worker } of mutating) {
+        // A dependency-safe batch may contain several independent resource
+        // groups. Run each group concurrently; overlapping writes remain
+        // serialized for deterministic results.
+        for (const group of this.partitionByResourceConflicts(assigned)) {
           if (signal.aborted) break
-          for await (const event of this.executeWithRetry(subtask, worker, plan, completedResults)) {
-            yield event
+          if (group.length > 1) {
+            for await (const event of this.executeConcurrentBatch(group, plan, completedResults)) yield event
+          } else {
+            for await (const event of this.executeWithRetry(group[0].subtask, group[0].worker, plan, completedResults)) yield event
           }
         }
       }
@@ -253,6 +269,82 @@ export class TeamOrchestrator {
     return !worker.tools.some((tool) => TeamOrchestrator.MUTATING_TOOLS.has(tool))
   }
 
+  private resourceKeysFor(subtask: SubTask, worker: AgentConfig): Set<string> {
+    const declared = (subtask.resourceKeys || []).map((key) => key.trim().toLowerCase()).filter(Boolean)
+    if (declared.length) return new Set(declared)
+    // Legacy plans did not carry resource scopes. Keep their mutating work
+    // safe by treating the whole workspace as one implicit resource, while
+    // allowing legacy read-only work to run concurrently.
+    return this.isReadOnlyWorker(worker) ? new Set() : new Set(['workspace'])
+  }
+
+  /**
+   * Configure a task-scoped worker without changing the saved Agent profile.
+   * The leader may grant only tools already authorized for another member of
+   * this team and registered in the runtime; unknown or globally unavailable
+   * tools stay blocked and produce a truthful assignment failure.
+   */
+  private configureWorkerForTask(worker: AgentConfig, subtask: SubTask): { worker: AgentConfig; missing: string[] } {
+    const authorizedTeamTools = new Set(
+      [this.config.leader, ...this.config.workers]
+        .flatMap((agent) => agent.tools)
+        .filter((tool) => this.config.toolRegistry.has(tool)),
+    )
+    const required = [...new Set(this.inferRequiredTools(subtask).map((tool) => tool.trim()).filter(Boolean))]
+    const missing = required.filter((tool) => !authorizedTeamTools.has(tool))
+    const granted = required.filter((tool) => authorizedTeamTools.has(tool))
+    return {
+      // Output-producing subtasks need room for the final write and
+      // verification pass after research/tool calls. Keep the saved profile
+      // unchanged while granting a larger task-scoped budget.
+      worker: {
+        ...worker,
+        tools: [...new Set([...worker.tools, ...granted])],
+        maxIterations: required.includes('write_file')
+          ? Math.max(worker.maxIterations || 0, 24)
+          : worker.maxIterations,
+      },
+      missing,
+    }
+  }
+
+  private inferRequiredTools(subtask: SubTask): string[] {
+    const text = `${subtask.title} ${subtask.description}`.toLowerCase()
+    const inferred: string[] = [...(subtask.requiredTools || [])]
+    if (/(xlsx|xls|ods|spreadsheet|表格|工作簿)/i.test(text)) inferred.push('spreadsheet')
+    if (/(write|create|generate|save|modify|edit|update|export|落盘|写入|生成|创建|修改|编辑|保存|导出|交付文件)/i.test(text)) inferred.push('write_file')
+    // Fact-checking is a two-step capability: a search snippet is not source
+    // evidence. Always grant page reading alongside search so reviewers can
+    // verify the cited source instead of repeatedly requesting an unavailable
+    // read_web_page call at the end of the task.
+    if (/(网页|网站|url|web|在线资料|新闻|市场调研|外部资料|事实核查|事实标注|来源|引用|证据|真实性)/i.test(text)) {
+      inferred.push('web_search', 'read_web_page')
+    }
+    if (inferred.includes('web_search')) inferred.push('read_web_page')
+    return [...new Set(inferred.map((tool) => tool.trim()).filter(Boolean))]
+  }
+
+  private partitionByResourceConflicts(
+    assignments: Array<{ subtask: SubTask; worker: AgentConfig }>,
+  ): Array<Array<{ subtask: SubTask; worker: AgentConfig }>> {
+    const groups: Array<Array<{ subtask: SubTask; worker: AgentConfig }>> = []
+    for (const assignment of assignments) {
+      if (assignment.subtask.parallelizable === false) {
+        groups.push([assignment])
+        continue
+      }
+      const keys = this.resourceKeysFor(assignment.subtask, assignment.worker)
+      const group = groups.find((candidate) => candidate.every((item) => {
+        if (item.subtask.parallelizable === false) return false
+        const otherKeys = this.resourceKeysFor(item.subtask, item.worker)
+        return keys.size === 0 || otherKeys.size === 0 || ![...keys].some((key) => otherKeys.has(key))
+      }))
+      if (group) group.push(assignment)
+      else groups.push([assignment])
+    }
+    return groups
+  }
+
   private selectExecutionAgent(worker: AgentConfig, subtask?: SubTask): AgentConfig {
     const candidates = [
       ...(worker.modelCandidates || []),
@@ -330,7 +422,7 @@ export class TeamOrchestrator {
         return
       }
 
-      if (attempt < maxAttempts) {
+      if (attempt < maxAttempts && this.isRetryableSubtaskFailure(failure)) {
         yield {
           type: 'task_progress',
           subtaskId: subtask.id,
@@ -343,6 +435,10 @@ export class TeamOrchestrator {
     }
 
     plan.subtasks = plan.subtasks.map((item) => item.id === subtask.id ? { ...subtask } : item)
+  }
+
+  private isRetryableSubtaskFailure(message: string): boolean {
+    return /(timeout|timed out|rate.?limit|too many requests|network|fetch failed|econn|connection (?:closed|reset|aborted)|temporarily unavailable|\b5(?:02|03|04)\b|required task artifact was not created|artifact.*missing)/i.test(message)
   }
 
   private async *executeConcurrentBatch(
@@ -438,6 +534,9 @@ Create a JSON plan with the following structure:
       "title": "Brief title",
       "description": "Detailed description of what needs to be done",
       "dependencies": [],
+      "resourceKeys": ["logical-file-or-dataset"],
+      "parallelizable": true,
+      "requiredTools": ["only tools genuinely needed by this task"],
       "assignedRole": "researcher|coder|reviewer|tester",
       "assignedAgentProfileId": "optional-custom-agent-id"
     }
@@ -458,6 +557,10 @@ Rules:
 - Break the goal into 2-8 concrete subtasks
 - Each subtask should be independently executable
 - Set dependencies correctly (e.g., review depends on implementation)
+- Mark independent work with parallelizable=true. Use resourceKeys for every file, dataset, service, or shared output that a task may modify or depend on. Tasks with different resourceKeys can run at the same time; overlapping keys are serialized.
+- If a task has no safe resource boundary, set parallelizable=false or use resourceKeys=["workspace"].
+- When one role owns several independent slices, create separate subtasks with the same assignedRole and distinct resourceKeys. Eva creates one isolated child conversation per subtask, so those slices can run in parallel and report back independently.
+- Declare requiredTools for every operation the subtask must perform (for example write_file, spreadsheet, read_file, web_search). The leader will configure the assigned worker from the team's already authorized tool set before creating its child conversation.
 - Assign appropriate roles (researcher, coder, reviewer, tester)
 - Only assign a role that exists in the available team directory; otherwise use the closest available role
 - If none of the existing members fits a specialized responsibility, define a task-scoped agent in agentProfiles and reference its id from assignedAgentProfileId. Do not create one merely to rename an existing role.
@@ -485,6 +588,9 @@ Rules:
       title: string
       description: string
       dependencies: string[]
+      resourceKeys?: string[]
+      parallelizable?: boolean
+      requiredTools?: string[]
       assignedRole: string
       assignedAgentProfileId?: string
     }> = []
@@ -547,6 +653,13 @@ Rules:
       description: st.description || '',
       status: 'pending' as TaskStatus,
       dependencies: Array.isArray(st.dependencies) ? st.dependencies : [],
+      resourceKeys: Array.isArray(st.resourceKeys)
+        ? st.resourceKeys.filter((key): key is string => typeof key === 'string' && key.trim().length > 0).map((key) => key.trim())
+        : undefined,
+      parallelizable: typeof st.parallelizable === 'boolean' ? st.parallelizable : undefined,
+      requiredTools: Array.isArray(st.requiredTools)
+        ? st.requiredTools.filter((tool): tool is string => typeof tool === 'string' && tool.trim().length > 0).map((tool) => tool.trim())
+        : undefined,
       assignedRole: validRoles.has(st.assignedRole)
         ? st.assignedRole as SubTask['assignedRole']
         : undefined,
@@ -715,7 +828,12 @@ ${dependencyContext ? `**Dependency Results:**\n${dependencyContext}` : ''}
 
 ${this.feedback.length > 0 ? `**User guidance received after the plan was created:**\n${this.feedback.map((item) => `- ${item.content}`).join('\n')}\nApply it where it affects your assigned work.` : ''}
 
-Please complete this task. Use the available tools as needed. When done, provide a clear summary of what was accomplished.
+Please complete this task. Use the available tools as needed. If this task has
+an output file, perform the required write_file/edit_file operation before
+doing a final summary, then verify that the file exists. Even when sources are
+unavailable, write the requested artifact with an explicit "未能核实"/
+"unverified" limitations section; do not stop at a prose explanation. Do not
+claim the task is complete when the required artifact has not been written.
 
 **Important:** Focus only on this task. Do not modify files that are not related to this task.`
 
@@ -757,13 +875,21 @@ Please complete this task. Use the available tools as needed. When done, provide
         }
       }
 
-      // Use the last text content if no 'done' content
-      if (!result && lastTextContent) {
+      // Use the last text content only when the runner completed normally.
+      // A malformed DSML/tool-protocol response may have streamed provisional
+      // markup before emitting an error; treating that text as a successful
+      // handoff leaks protocol syntax into the task result.
+      if (!result && lastTextContent && !runnerError) {
         result = lastTextContent
       }
 
       if (runnerError) {
         throw new Error(runnerError)
+      }
+
+      const missingArtifacts = await this.findMissingArtifacts(subtask)
+      if (missingArtifacts.length) {
+        throw new Error(`Required task artifact was not created: ${missingArtifacts.join(', ')}. Execute write_file and verify the exact path before reporting completion.`)
       }
 
       subtask.status = 'completed'
@@ -789,6 +915,48 @@ Please complete this task. Use the available tools as needed. When done, provide
       }
     } finally {
       this.currentRunners.delete(subtask.id)
+    }
+  }
+
+  private artifactPathsFor(subtask: SubTask): string[] {
+    const required = this.inferRequiredTools(subtask)
+    if (!required.includes('write_file') && !required.includes('edit_file')) return []
+    // Resource keys are the planner's authoritative artifact declarations.
+    // Ignore directory-like scopes while retaining common document/data files.
+    const fromResources = (subtask.resourceKeys || []).filter((key) =>
+      /\.(?:md|txt|json|ya?ml|csv|tsv|xlsx?|ods|pdf|docx?)$/i.test(key.trim()),
+    )
+    // Prefer planner-declared resource keys. Description text often embeds a
+    // filename after prose such as "UTF-8中文Markdown文件", which must not be
+    // treated as part of the path.
+    if (fromResources.length) return [...new Set(fromResources.map((path) => path.trim()).filter(Boolean))]
+    const fromDescription = Array.from(`${subtask.title} ${subtask.description}`.matchAll(/(?<![\p{L}\p{N}_-])((?:[A-Za-z]:[\\/]|\.?[\\/]|(?:research|report|output)[\\/])?[\p{L}\p{N}_().-]+\.(?:md|txt|json|ya?ml|csv|tsv|xlsx?|ods|pdf|docx?))/giu))
+      .map((match) => match[1])
+    return [...new Set([...fromResources, ...fromDescription].map((path) => path.trim()).filter(Boolean))]
+  }
+
+  private async findMissingArtifacts(subtask: SubTask): Promise<string[]> {
+    const missing: string[] = []
+    for (const path of this.artifactPathsFor(subtask)) {
+      const exists = await this.config.fileService.fileExists(
+        path,
+        this.config.workspacePath,
+        this.config.fileAccessGrants,
+        this.config.fullFilesystemAccess,
+      )
+      if (!exists) missing.push(path)
+    }
+    return missing
+  }
+
+  private async invalidateMissingCompletedArtifacts(plan: TaskPlan): Promise<void> {
+    for (const subtask of plan.subtasks) {
+      if (subtask.status !== 'completed') continue
+      const missing = await this.findMissingArtifacts(subtask)
+      if (!missing.length) continue
+      subtask.status = 'pending'
+      subtask.result = `Previous completion was invalidated because the required artifact is missing: ${missing.join(', ')}.`
+      subtask.completedAt = undefined
     }
   }
 

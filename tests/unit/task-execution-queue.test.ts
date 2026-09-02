@@ -87,4 +87,39 @@ describe('TaskExecutionQueue', () => {
     await vi.waitFor(() => expect(updates).toContain('cancelled'))
     expect(updates).not.toContain('completed')
   })
+
+  it('keeps draining when a status callback throws', async () => {
+    const queue = new TaskExecutionQueue(1)
+    const started: string[] = []
+    queue.enqueue({
+      conversationId: 'callback-error',
+      kind: 'goal',
+      run: async () => { started.push('callback-error'); return { status: 'completed' } },
+      onUpdate: () => { throw new Error('persistence unavailable') },
+    })
+    queue.enqueue({
+      conversationId: 'after-callback-error',
+      kind: 'goal',
+      run: async () => { started.push('after-callback-error'); return { status: 'completed' } },
+    })
+
+    await vi.waitFor(() => expect(started).toEqual(['callback-error', 'after-callback-error']))
+    expect(queue.activeCount).toBe(0)
+    expect(queue.hasConversation('callback-error')).toBe(false)
+  })
+
+  it('does not cancel a task when the requested kind does not match', async () => {
+    const queue = new TaskExecutionQueue(1)
+    const updates: string[] = []
+    queue.enqueue({
+      conversationId: 'kind-filter',
+      kind: 'goal',
+      run: async () => ({ status: 'completed' }),
+      onUpdate: (update) => { updates.push(update.state) },
+    })
+
+    expect(queue.cancel('kind-filter', 'expert')).toBe(false)
+    await vi.waitFor(() => expect(updates).toContain('completed'))
+    expect(updates).not.toContain('cancelled')
+  })
 })

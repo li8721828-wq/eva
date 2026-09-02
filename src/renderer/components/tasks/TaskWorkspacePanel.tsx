@@ -18,7 +18,7 @@ import {
   Square,
   Target,
 } from 'lucide-react'
-import type { GoalStepAttempt, TaskArtifactItem, TaskRunSnapshot, TaskRunStatus, TaskStatus } from '../../../shared/types/task'
+import type { GoalStepAttempt, TaskArtifactItem, TaskRunSnapshot, TaskRunStatus, TaskStatus, TeamEvent } from '../../../shared/types/task'
 import type { ToolCall } from '../../../shared/types/conversation'
 import type { ActivePlan } from '../../../shared/types/active-plan'
 import { getModelInputBudgetTokens } from '../../../shared/constants'
@@ -42,6 +42,7 @@ type StepItem = {
   attempt?: number
   maxAttempts?: number
   attempts?: GoalStepAttempt[]
+  assignedAgentName?: string
 }
 
 const activeStatuses: TaskRunStatus[] = ['queued', 'running', 'paused']
@@ -82,6 +83,7 @@ function snapshotSteps(snapshot: TaskRunSnapshot | null): StepItem[] {
       result: task.result,
       toolCalls: task.toolCalls,
       agentConversationId: task.agentConversationId,
+      assignedAgentName: task.assignedAgentName,
     }))
   }
   return (snapshot.progress?.steps || []).map((step) => ({
@@ -179,17 +181,18 @@ export function TaskWorkspacePanel() {
   const liveGoalProgress = liveGoalTask.progress?.conversationId === currentConversationId ? liveGoalTask.progress : null
   const steps = useMemo<StepItem[]>(() => {
     if (liveExpertTask.currentPlan?.subtasks.length) {
-      return liveExpertTask.currentPlan.subtasks.map((task) => ({ id: task.id, title: task.title, detail: task.description, status: task.status }))
+      return liveExpertTask.currentPlan.subtasks.map((task) => ({ id: task.id, title: task.title, detail: task.description, status: task.status, assignedAgentName: task.assignedAgentName }))
     }
     if (liveGoalProgress?.steps.length) {
       return liveGoalProgress.steps.map((step) => ({ id: step.id, title: step.description, detail: step.result, status: step.status, result: step.result, toolCalls: step.toolCalls, agentConversationId: step.agentConversationId, attempt: step.attempt, maxAttempts: step.maxAttempts, attempts: step.attempts }))
     }
+    if (activePlan?.steps.length) return activePlan.steps.map((step) => ({ id: step.id, title: step.title, detail: step.detail, status: step.status, assignedAgentName: step.assignedAgentName }))
     return snapshotSteps(snapshot)
-  }, [liveExpertTask.currentPlan, liveGoalProgress, snapshot])
+  }, [activePlan, liveExpertTask.currentPlan, liveGoalProgress, snapshot])
   const completedSteps = steps.filter((step) => step.status === 'completed').length
   const visibleSteps = showAllSteps ? steps : steps.slice(0, 5)
   const visibleArtifacts = showAllArtifacts ? artifacts : artifacts.slice(0, 3)
-  const taskGoal = liveExpertTask.currentPlan?.goal || liveGoalProgress?.goal || snapshot?.goal
+  const taskGoal = liveExpertTask.currentPlan?.goal || liveGoalProgress?.goal || snapshot?.goal || activePlan?.objective
   const taskWasCancelled = snapshot?.status === 'cancelled'
   const taskIsPaused = !taskWasCancelled && (liveGoalTask.isPaused || snapshot?.status === 'paused' || snapshot?.status === 'interrupted')
   const taskStatus = taskWasCancelled
@@ -198,8 +201,8 @@ export function TaskWorkspacePanel() {
     ? (snapshot?.status === 'interrupted' ? 'interrupted' : 'paused')
     : liveExpertTask.isRunning || liveGoalTask.isRunning
       ? 'running'
-      : snapshot?.status || liveExpertTask.recoveryStatus || liveGoalTask.recoveryStatus
-  const hasTaskRun = !taskWasCancelled && Boolean(snapshot || liveExpertTask.currentPlan || liveGoalProgress || liveExpertTask.isRunning || liveGoalTask.isRunning)
+      : snapshot?.status || liveExpertTask.recoveryStatus || liveGoalTask.recoveryStatus || (activePlan?.status === 'completed' ? 'completed' : activePlan?.status === 'failed' ? 'failed' : activePlan?.status === 'paused' ? 'paused' : activePlan?.status === 'active' ? 'running' : undefined)
+  const hasTaskRun = !taskWasCancelled && Boolean(snapshot || activePlan || liveExpertTask.currentPlan || liveGoalProgress || liveExpertTask.isRunning || liveGoalTask.isRunning)
   const taskIsRunning = !taskIsPaused && (liveExpertTask.isRunning || liveGoalTask.isRunning || snapshot?.status === 'running' || snapshot?.status === 'queued')
   const taskCanResume = Boolean(snapshot && (taskIsPaused || taskStatus === 'failed'))
   const taskCanCancel = Boolean(snapshot && !taskWasCancelled && !['completed', 'cancelled'].includes(taskStatus || ''))
@@ -258,6 +261,14 @@ export function TaskWorkspacePanel() {
     if (rightPanelTab !== 'requirements') return
     void refresh()
   }, [messages.length, refresh, rightPanelTab])
+
+  // Chat-triggered team runs persist their snapshot as task events arrive.
+  // Refresh on the event itself so the panel can discover a run that started
+  // after its initial load, before the active-run polling condition is known.
+  useEffect(() => window.eva.task.onStream((_event, data) => {
+    const teamEvent = data as unknown as TeamEvent & { conversationId?: string }
+    if (teamEvent.conversationId === currentConversationId) void refresh()
+  }), [currentConversationId, refresh])
 
   useEffect(() => window.eva.requirements.onProgress((_event, progress) => {
     if (progress.conversationId === currentConversationId) void refresh()
@@ -561,31 +572,6 @@ export function TaskWorkspacePanel() {
             </div>
           </div>
 
-          {activePlan && (
-            <section className="border-b border-indigo-100/80 py-4" aria-label="Active plan">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Target className="h-4 w-4 shrink-0 text-violet-500" />
-                  <h2 className="truncate text-sm font-semibold text-zinc-800">Current plan</h2>
-                </div>
-                <span className={cn('eva-status', activePlan.status === 'active' ? 'eva-status--active' : activePlan.status === 'completed' ? 'eva-status--success' : activePlan.status === 'failed' ? 'eva-status--error' : 'eva-status--neutral')}>
-                  {activePlan.status === 'active' ? 'In progress' : activePlan.status === 'paused' ? 'Paused' : activePlan.status === 'completed' ? 'Complete' : activePlan.status === 'failed' ? 'Needs attention' : 'Stopped'}
-                </span>
-              </div>
-              <p className="mt-2 line-clamp-2 text-xs leading-5 text-zinc-600" title={activePlan.objective}>{activePlan.objective}</p>
-              <ol className="mt-3 space-y-1.5" aria-label="Plan steps">
-                {activePlan.steps.slice(0, 4).map((step, index) => (
-                  <li key={step.id} className="flex min-w-0 items-start gap-2">
-                    <StepStatusIcon status={step.status} paused={activePlan.status === 'paused'} />
-                    <span className="mt-0.5 text-xs tabular-nums text-zinc-400">{index + 1}</span>
-                    <span className={cn('min-w-0 flex-1 truncate text-xs leading-5', step.status === 'completed' ? 'text-zinc-400' : step.status === 'in_progress' ? 'font-medium text-zinc-800' : 'text-zinc-600')} title={step.title}>{step.title}</span>
-                  </li>
-                ))}
-              </ol>
-              {activePlan.steps.length > 4 && <p className="mt-2 text-xs text-zinc-400">{activePlan.steps.length - 4} more steps</p>}
-            </section>
-          )}
-
           {!hasTaskRun ? (
             currentConversation?.parentConversationId ? (
               <div className="border-b border-indigo-100/80 py-4">
@@ -629,6 +615,7 @@ export function TaskWorkspacePanel() {
                               <div className="flex items-start gap-2">
                                 <span className="mt-0.5 text-xs tabular-nums text-zinc-400">{index + 1}</span>
                                 <p className={cn('min-w-0 flex-1 truncate text-sm leading-5', step.status === 'completed' ? 'text-zinc-500' : 'font-medium text-zinc-700')} title={step.title}>{step.title}</p>
+                                {step.assignedAgentName && <span className="max-w-28 shrink-0 truncate rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700" title={`Assigned to ${step.assignedAgentName}`}>{step.assignedAgentName}</span>}
                                 {step.maxAttempts && step.maxAttempts > 1 && <span className={cn('mt-0.5 shrink-0 text-[11px] tabular-nums', step.status === 'in_progress' ? 'text-violet-600' : step.status === 'failed' ? 'text-rose-600' : 'text-zinc-400')}>尝试 {step.attempt || 1}/{step.maxAttempts}</span>}
                                 {step.agentConversationId && <button type="button" onClick={(event) => { event.stopPropagation(); void openStepConversation(step.agentConversationId) }} className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-violet-500 hover:bg-violet-100 hover:text-violet-800" title="Open this step conversation" aria-label="Open this step conversation"><ExternalLink className="h-3.5 w-3.5" /></button>}
                                 {isExpanded ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" /> : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" />}

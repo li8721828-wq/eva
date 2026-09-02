@@ -21,7 +21,7 @@ import { SpecService } from '../services/spec-service'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
-import type { GoalProgress } from '../../shared/types/task'
+import type { GoalProgress, TaskCheckpoint, TaskPlan, TaskRunSnapshot, TeamEvent } from '../../shared/types/task'
 import { prepareGoalStepConversation, persistGoalStepEvent } from '../services/goal-step-conversation'
 import { resolveEffectiveAgentConfig } from '../services/effective-agent-config'
 import type { SymposiumContinueInput, SymposiumStartInput } from '../../shared/types/symposium'
@@ -36,6 +36,7 @@ import { ConversationLifecycleService, type CreateConversationInput, type Update
 import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
 import { activeRunRegistry } from '../services/run-registry'
 import { SymposiumExecutionService } from '../services/symposium-execution-service'
+import { TaskRunLifecycleService } from '../services/task-run-lifecycle-service'
 
 export interface ChatServices {
   storage: StorageManager
@@ -388,8 +389,86 @@ async function runInternalTeamDelegation(
     kind: 'team',
     agentId: leader.id,
     workspaceId: conversation.workspaceId,
+    resourceKey: conversation.workspaceId ? `workspace:${conversation.workspaceId}` : `conversation:${conversation.id}`,
     summary: 'A chat agent delegated work to the specialist team.',
   })
+  const taskLifecycle = new TaskRunLifecycleService(getStorage())
+  let currentPlan: TaskPlan | undefined
+  let checkpoints: TaskCheckpoint[] = []
+  let finalSummary: string | undefined
+  let executionFailed = false
+  let wasCancelled = false
+
+  // Chat-triggered team work must have the same durable execution record as
+  // explicit Expert tasks. Otherwise the right task workspace remains Ready
+  // even while the orchestrator is running.
+  const persistTeamSnapshot = async (status: TaskRunSnapshot['status']): Promise<void> => {
+    await getStorage().taskRuns.save({
+      conversationId: conversation.id,
+      kind: 'expert',
+      status,
+      goal,
+      plan: currentPlan,
+      summary: finalSummary,
+      error: executionFailed ? 'Team orchestration failed.' : undefined,
+      checkpoints,
+    })
+    await getStorage().conversations.updateConversation(conversation.id, {
+      executionStatus: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'cancelled' ? 'cancelled' : 'running',
+      executionUpdatedAt: Date.now(),
+    })
+    await taskLifecycle.syncActivePlan(conversation.id)
+  }
+
+  const applyTeamEvent = (event: TeamEvent): void => {
+    if (event.type === 'plan_created' && event.plan) {
+      currentPlan = event.plan
+      checkpoints = [{
+        id: 'plan-created',
+        title: 'Execution plan created',
+        description: `${event.plan.subtasks.length} tasks ready for execution.`,
+        status: 'recorded',
+        createdAt: Date.now(),
+        feedback: [],
+      }]
+      return
+    }
+    if (!currentPlan || !event.subtaskId) return
+    const status = event.type === 'task_assigned' ? 'pending'
+      : event.type === 'task_progress' ? 'in_progress'
+        : event.type === 'task_completed' ? 'completed'
+          : event.type === 'task_failed' ? 'failed' : undefined
+    if (!status) return
+    currentPlan = {
+      ...currentPlan,
+      subtasks: currentPlan.subtasks.map((subtask) => subtask.id === event.subtaskId
+        ? {
+            ...subtask,
+            ...(event.subtask || {}),
+            assignedAgentId: event.agentId || event.subtask?.assignedAgentId || subtask.assignedAgentId,
+            assignedAgentName: event.agentName || event.subtask?.assignedAgentName || subtask.assignedAgentName,
+            status,
+            result: event.progress || event.result || event.error || subtask.result,
+            completedAt: status === 'completed' || status === 'failed' ? Date.now() : subtask.completedAt,
+          }
+        : subtask),
+    }
+    if (event.type === 'task_completed' || event.type === 'task_failed') {
+      const existing = checkpoints.find((checkpoint) => checkpoint.id === `team-${event.subtaskId}`)
+      const checkpoint = {
+        id: `team-${event.subtaskId}`,
+        title: event.subtask?.title || currentPlan.subtasks.find((subtask) => subtask.id === event.subtaskId)?.title || event.subtaskId,
+        description: event.type === 'task_completed' ? 'Task completed.' : 'Task needs attention.',
+        status: event.type === 'task_completed' ? 'completed' as const : 'needs_attention' as const,
+        createdAt: existing?.createdAt || Date.now(),
+        stepId: event.subtaskId,
+        feedback: existing?.feedback || [],
+      }
+      checkpoints = existing ? checkpoints.map((item) => item.id === checkpoint.id ? checkpoint : item) : [...checkpoints, checkpoint]
+    }
+  }
+
+  await persistTeamSnapshot('running')
   const access = await getConversationAccess(conversation)
   const durableMemory = await getStorage().runtimeMemory.buildContext(conversation.id, conversation.workspaceId)
   const workerContexts = new Map<string, string>()
@@ -463,16 +542,26 @@ async function runInternalTeamDelegation(
   activeDelegatedTeamOrchestrators.set(conversation.id, orchestrator)
 
   try {
-    let summary = ''
     for await (const event of orchestrator.run({ goal, messages: historyMessages })) {
+      applyTeamEvent(event)
+      if (event.type === 'summary') finalSummary = event.summary || ''
+      if (event.type === 'done' && event.cancelled) wasCancelled = true
+      if (event.type === 'error') executionFailed = true
+      if (event.type === 'done' && currentPlan) {
+        currentPlan = { ...currentPlan, status: wasCancelled ? 'cancelled' : executionFailed ? 'failed' : 'completed' }
+      }
+      await persistTeamSnapshot(event.type === 'error' ? 'failed' : event.type === 'done' ? (event.cancelled ? 'cancelled' : 'completed') : 'running')
       if (!win.isDestroyed()) win.webContents.send(IPC.TASK_STREAM, { ...event, conversationId: conversation.id })
-      if (event.type === 'summary') summary = event.summary || ''
       if (event.type === 'error') throw new Error(event.error || 'Team orchestration failed.')
     }
-    const result = summary || 'The specialist team completed the delegated work without a separate summary.'
-    await getAgentOsScheduler().finishProcess(runtimeProcess.id, 'completed', result)
+    const result = wasCancelled
+      ? 'The specialist team run was cancelled before completion.'
+      : finalSummary || 'The specialist team completed the delegated work without a separate summary.'
+    await getAgentOsScheduler().finishProcess(runtimeProcess.id, wasCancelled ? 'cancelled' : 'completed', result)
     return result
   } catch (error: any) {
+    executionFailed = true
+    await persistTeamSnapshot(wasCancelled ? 'cancelled' : 'failed')
     await getAgentOsScheduler().finishProcess(runtimeProcess.id, 'failed', error?.message ?? String(error))
     throw error
   } finally {
@@ -912,6 +1001,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 kind: 'goal',
                 agentId: effectiveAgentConfig.id,
                 workspaceId: conversation.workspaceId,
+                resourceKey: conversation.workspaceId ? `workspace:${conversation.workspaceId}` : `conversation:${conversationId}`,
                 summary: 'A chat agent started a background Goal.',
               })
 

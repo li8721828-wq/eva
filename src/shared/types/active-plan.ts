@@ -8,6 +8,8 @@ export interface ActivePlanStep {
   title: string
   detail?: string
   status: ActivePlanStepStatus
+  assignedAgentId?: string
+  assignedAgentName?: string
 }
 
 export interface ActivePlan {

@@ -8,7 +8,6 @@ import { Badge } from '@/components/ui/Badge'
 import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { TeamCollaborationPanel } from './TeamCollaborationPanel'
-import { ExecutionMonitor } from './ExecutionMonitor'
 import { Bot, AlertCircle, ShieldAlert, Terminal, X, UsersRound, Square, GitBranch, ShieldCheck, Pin } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
@@ -294,8 +293,6 @@ export function ChatPanel({ className }: ChatPanelProps) {
 
       {/* Messages */}
       <MessageList className="flex-1" />
-
-      <ExecutionMonitor />
 
       {/* Input */}
       <InputBar />

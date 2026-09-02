@@ -15,6 +15,7 @@ export interface RuntimeRunPayload {
     autoAdjust?: boolean
   }
   messageId?: string
+  idempotencyKey?: string
 }
 
 /**

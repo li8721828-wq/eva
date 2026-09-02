@@ -74,6 +74,12 @@ export class StorageManager {
 
     // Initialize built-in agents on first launch
     await this.agents.initializeBuiltInAgents()
+    // Repair stale built-in bindings (for example OpenAI/gpt-4o after the
+    // user switched to an enabled OpenAI-compatible connection). This keeps
+    // diagnostics and non-chat entry points aligned with the real route while
+    // leaving custom Agent overrides untouched.
+    const enabledProviderIds = new Set(this.config.getProviders().filter((provider) => provider.isEnabled && provider.apiKey).map((provider) => provider.id))
+    await this.agents.alignBuiltInConnections(this.config.get('activeProviderId'), this.config.getActiveModel(), enabledProviderIds)
     await this.taskRuns.markRunningAsInterrupted()
     await this.runtimeKernel.markActiveAsInterrupted()
     await this.runtimeRuns.markActiveAsInterrupted()

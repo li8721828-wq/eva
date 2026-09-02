@@ -526,6 +526,78 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.find((event) => event.type === 'done')?.content).toBe('The inspection is complete.')
   })
 
+  it('never streams mixed DSML markup as visible assistant text', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect a fact.', parameters: {} },
+      execute: async () => 'inspection complete',
+    })
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: () => chunks({
+        content: '< | DSML | tool_calls>< | DSML | invoke name="inspect">< | DSML | invoke>< / | DSML | tool_calls>',
+        toolCalls: [{ index: 0, id: 'inspect-1', name: 'inspect', arguments: '{}' }],
+        finishReason: 'tool_calls',
+      }),
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 1 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Inspect the workspace.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(0)
+    expect(events.some((event) => event.type === 'tool_call')).toBe(true)
+  })
+
+  it('rejects DSML returned by the final tool-free synthesis call', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect a fact.', parameters: {} },
+      execute: async () => 'inspection complete',
+    })
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => params.tools?.length
+        ? chunks({ content: '', toolCalls: [{ index: 0, id: 'inspect-1', name: 'inspect', arguments: '{}' }], finishReason: 'tool_calls' })
+        : chunks({ content: '< | DSML | tool_calls>< | DSML | invoke name="web_search">< / | DSML | invoke>< / | DSML | tool_calls>', finishReason: 'stop' }),
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 1 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Inspect the workspace.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(events.some((event) => event.type === 'error' && event.error?.includes('工具协议文本'))).toBe(true)
+    expect(events.filter((event) => event.type === 'text')).toHaveLength(0)
+  })
+
   it('keeps the failed tool available for a follow-up regardless of wording', async () => {
     const registry = new ToolRegistry()
     registry.register({
@@ -663,5 +735,40 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.some((event) => event.type === 'thinking' && event.content?.includes('不支持慢思考'))).toBe(true)
     expect(events.some((event) => event.type === 'error')).toBe(false)
     expect(events.find((event) => event.type === 'done')?.content).toBe('Normal response.')
+  })
+
+  it('retries once when a provider returns reasoning without a final answer', async () => {
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => true,
+      chat: () => {
+        request += 1
+        return request === 1
+          ? chunks({ content: '', reasoningContent: 'internal plan', finishReason: 'stop' })
+          : chunks({ content: 'Recovered final answer.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, showThinking: true, tools: [] },
+      provider: provider as never,
+      toolRegistry: new ToolRegistry(),
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Answer this.', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(request).toBe(2)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Recovered final answer.')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
   })
 })

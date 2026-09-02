@@ -1,11 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ActivityCategory, ActivityLogEntry } from '../../../shared/types/activity'
 import type { AgentConfig } from '../../../shared/types/agent'
 import type { ModelPool } from '../../../shared/types/model-pool'
 import type { InstalledPlugin } from '../../../shared/types/plugin'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import type { RuntimeEvolutionProposal } from '../../../shared/types/runtime-evolution'
-import { AlertTriangle, Bot, Boxes, CheckCircle2, CircleDotDashed, Cpu, Puzzle, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react'
+import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../../../shared/types/runtime-kernel'
+import { Activity, AlertTriangle, Bot, Boxes, CheckCircle2, CircleDotDashed, Cpu, Puzzle, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { cn } from '@/lib/utils'
 import { summarizeRuntimeActivity } from '@/lib/runtime-introspection'
@@ -17,9 +18,11 @@ type RuntimeData = {
   pools: ModelPool[]
   activity: ActivityLogEntry[]
   proposals: RuntimeEvolutionProposal[]
+  kernel: RuntimeKernelSnapshot | null
+  audit: RuntimeKernelAuditRecord[]
 }
 
-const emptyRuntime: RuntimeData = { agents: [], plugins: [], providers: [], pools: [], activity: [], proposals: [] }
+const emptyRuntime: RuntimeData = { agents: [], plugins: [], providers: [], pools: [], activity: [], proposals: [], kernel: null, audit: [] }
 
 const categoryLabels: Record<ActivityCategory, string> = {
   agent: '智能体', tool: '工具', file: '文件', terminal: '终端', permission: '权限', conversation: '对话', system: '系统',
@@ -46,17 +49,25 @@ export function RuntimeIntrospectionPanel() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [decidingId, setDecidingId] = useState<string | null>(null)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
+  const refreshInFlight = useRef(false)
 
   const refresh = useCallback(async () => {
+    if (refreshInFlight.current) return
+    refreshInFlight.current = true
     setLoading(true)
+    setRefreshError(null)
     try {
-      const [agents, plugins, providers, pools, activity, proposals] = await Promise.all([
-        window.eva.agent.list(), window.eva.plugins.list(), window.eva.provider.list(), window.eva.modelPool.list(), window.eva.activity.list({ limit: 100 }), window.eva.runtimeProposal.list(),
+      const [agents, plugins, providers, pools, activity, proposals, kernel, audit] = await Promise.all([
+        window.eva.agent.list(), window.eva.plugins.list(), window.eva.provider.list(), window.eva.modelPool.list(), window.eva.activity.list({ limit: 100 }), window.eva.runtimeProposal.list(), window.eva.runtimeKernel.snapshot(), window.eva.runtimeKernel.listAudit(40),
       ])
-      setData({ agents, plugins, providers, pools, activity, proposals })
+      setData({ agents, plugins, providers, pools, activity, proposals, kernel, audit })
       setLastUpdated(Date.now())
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : String(error))
     } finally {
       setLoading(false)
+      refreshInFlight.current = false
     }
   }, [])
 
@@ -66,6 +77,11 @@ export function RuntimeIntrospectionPanel() {
       setData((current) => ({ ...current, activity: [entry, ...current.activity.filter((item) => item.id !== entry.id)].slice(0, 100) }))
       if (entry.action.startsWith('runtime_proposal.')) void refresh()
     })
+  }, [refresh])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => void refresh(), 3000)
+    return () => window.clearInterval(timer)
   }, [refresh])
 
   const decideProposal = useCallback(async (id: string, status: 'approved' | 'rejected') => {
@@ -97,14 +113,30 @@ export function RuntimeIntrospectionPanel() {
         <div className="flex items-center gap-3"><span className="text-xs text-zinc-400">{lastUpdated ? `更新于 ${new Date(lastUpdated).toLocaleTimeString()}` : '正在加载'}</span><Button variant="outline" size="sm" className="gap-1.5" onClick={() => void refresh()} disabled={loading}><RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />刷新</Button></div>
       </header>
 
+      {refreshError && <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">读取运行时状态失败：{refreshError}<Button variant="outline" size="sm" className="ml-3" onClick={() => void refresh()}>重试</Button></div>}
+
       <section aria-label="Runtime health">
         <div className="mb-3 flex items-center gap-2"><CircleDotDashed className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">运行概览</h3></div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
           <Metric label="智能体" value={data.agents.length} detail={`${data.agents.filter((agent) => agent.isBuiltIn).length} 个内置`} />
           <Metric label="已启用插件" value={summary.enabledPlugins.length} detail={`共 ${data.plugins.length} 个插件`} tone={data.plugins.length && !summary.enabledPlugins.length ? 'warning' : 'success'} />
           <Metric label="模型连接" value={summary.enabledProviders.length} detail={`共 ${data.providers.length} 个连接`} tone={summary.enabledProviders.length ? 'success' : 'warning'} />
           <Metric label="可用模型路由" value={summary.enabledRoutes.length} detail={`分布在 ${data.pools.length} 个模型池`} tone={summary.enabledRoutes.length ? 'success' : 'warning'} />
           <Metric label="近期异常" value={summary.recentErrors} detail="最近 100 条运行事件" tone={summary.recentErrors ? 'error' : 'success'} />
+          <Metric label="Agent OS 活动" value={data.kernel?.activeProcessCount || 0} detail={`${data.kernel?.queuedProcessCount || 0} 个排队`} tone={data.kernel?.activeProcessCount ? 'success' : 'neutral'} />
+          <Metric label="资源锁" value={data.kernel?.resourceLocks.length || 0} detail="当前工作区执行锁" tone={data.kernel?.resourceLocks.length ? 'warning' : 'neutral'} />
+        </div>
+      </section>
+
+      <section aria-label="Agent OS runtime kernel">
+        <div className="mb-3 flex items-center gap-2"><Activity className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">Agent OS 执行内核</h3><span className="text-xs text-zinc-400">只读状态</span></div>
+        <div className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+          <div className="overflow-hidden rounded-md border border-[var(--ui-border)] bg-white divide-y divide-zinc-100">
+            {data.kernel?.processes.length ? data.kernel.processes.slice(0, 12).map((process) => <div key={process.id} className="flex items-start gap-3 px-4 py-3"><span className={cn('mt-0.5 h-2 w-2 shrink-0 rounded-full', process.status === 'failed' ? 'bg-red-500' : process.status === 'running' ? 'bg-violet-500' : process.status === 'queued' ? 'bg-amber-500' : 'bg-zinc-300')} /><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><strong className="text-sm text-zinc-800">{process.summary || 'Agent OS process'}</strong><span className="eva-status eva-status--neutral">{process.kind}</span><span className="eva-status eva-status--neutral">{process.status}</span></div><p className="mt-1 truncate text-xs text-zinc-500">{process.conversationId} · {new Date(process.updatedAt).toLocaleString()}</p>{process.error && <p className="mt-1 text-xs leading-5 text-red-600">{process.error}</p>}</div></div>) : <p className="px-4 py-6 text-sm text-zinc-500">当前没有 Agent OS 进程。</p>}
+          </div>
+          <div className="overflow-hidden rounded-md border border-[var(--ui-border)] bg-white divide-y divide-zinc-100">
+            {data.audit.length ? data.audit.slice(0, 8).map((entry) => <div key={entry.id} className="px-4 py-3"><div className="flex items-center justify-between gap-3 text-xs"><span className="font-mono text-zinc-500">{entry.kind}</span><span className="text-zinc-400">{new Date(entry.timestamp).toLocaleTimeString()}</span></div><p className="mt-1 text-sm text-zinc-700">{entry.from ? `${entry.from} → ` : ''}{entry.to}</p><p className="mt-1 truncate text-xs text-zinc-500">{entry.detail || '状态已更新'}</p></div>) : <p className="px-4 py-6 text-sm text-zinc-500">尚无 Agent OS 审计记录。</p>}
+          </div>
         </div>
       </section>
 

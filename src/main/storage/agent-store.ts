@@ -134,6 +134,26 @@ export class AgentStore {
     await this.writeAgents(newAgents)
   }
 
+  /**
+   * Keep persisted built-in Agent bindings usable for diagnostics and entry
+   * points that do not carry an active-conversation fallback. Custom Agents
+   * retain their explicit provider/model selection.
+   */
+  async alignBuiltInConnections(providerId: string, model: string, enabledProviderIds: Set<string>): Promise<void> {
+    if (!providerId || !model || !enabledProviderIds.has(providerId)) return
+    const agents = this.readAgents()
+    const now = Date.now()
+    let changed = false
+    for (const agent of agents) {
+      if (!agent.isBuiltIn || enabledProviderIds.has(agent.providerId)) continue
+      agent.providerId = providerId
+      agent.model = model
+      agent.updatedAt = now
+      changed = true
+    }
+    if (changed) await this.writeAgents(agents)
+  }
+
   // ─── Query ─────────────────────────────────────────────────────────────────
 
   async getAgentsByRole(role: string): Promise<AgentConfig[]> {
