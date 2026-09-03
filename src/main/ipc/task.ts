@@ -557,6 +557,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         const workerContexts = new Map<string, string>()
+        const workerTurnMessages = new Map<string, string>()
         const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
           const child = await getStorage().conversations.createConversation({
             title: `${worker.name}: ${subtask.title}`,
@@ -591,37 +592,75 @@ export function registerTaskHandlers(services?: TaskServices): void {
           const childId = subtask.agentConversationId || workerContexts.get(subtask.id)
           if (!childId) return
 
-          let content = ''
-          let role: ChatMessage['role'] = 'assistant'
+          const messageMeta = { agentId: worker.id, agentName: worker.name, providerId: worker.providerId, providerName: getStorage().config.getProvider(worker.providerId)?.name || worker.providerId, model: worker.model }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
             subtask.toolCalls = [...(subtask.toolCalls || []), { ...agentEvent.toolCall }]
-            content = `Calling tool: ${agentEvent.toolCall.name}`
+            const toolCall = { ...agentEvent.toolCall }
+            const timelineEntry = { id: uuidv4(), kind: 'tool' as const, timestamp: Date.now(), toolCall }
+            const currentMessageId = workerTurnMessages.get(childId)
+            const currentMessages = currentMessageId ? await getStorage().conversations.getMessages(childId) : []
+            const currentMessage = currentMessageId ? currentMessages.find((message) => message.id === currentMessageId) : undefined
+            if (currentMessage && currentMessage.role === 'assistant') {
+              await getStorage().conversations.updateMessage(childId, currentMessage.id, {
+                toolCalls: [...(currentMessage.toolCalls || []), toolCall],
+                executionTimeline: [...(currentMessage.executionTimeline || []), timelineEntry],
+              })
+            } else {
+              const messageId = uuidv4()
+              workerTurnMessages.set(childId, messageId)
+              await getStorage().conversations.addMessage(childId, {
+                id: messageId, conversationId: childId, role: 'assistant', content: '', ...messageMeta,
+                toolCalls: [toolCall],
+                executionTimeline: [timelineEntry],
+                timestamp: Date.now(),
+              })
+            }
+            return
           }
           if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
-            role = 'tool'
-            subtask.toolCalls = (subtask.toolCalls || []).map((toolCall) => toolCall.id === agentEvent.toolResult?.toolCallId
-              ? { ...toolCall, result: agentEvent.toolResult.result, isError: agentEvent.toolResult.isError }
+            const toolResult = agentEvent.toolResult
+            subtask.toolCalls = (subtask.toolCalls || []).map((toolCall) => toolCall.id === toolResult.toolCallId
+              ? { ...toolCall, result: toolResult.result, isError: toolResult.isError }
               : toolCall)
-            const result = agentEvent.toolResult.result
-            content = `${agentEvent.toolResult.name}: ${result.length > 8000 ? `${result.slice(0, 8000)}\n\n[Output truncated in worker history]` : result}`
+            const messageId = workerTurnMessages.get(childId)
+            const existing = messageId ? (await getStorage().conversations.getMessages(childId)).find((message) => message.id === messageId) : undefined
+            if (existing) {
+              const result = toolResult.result.length > 8000 ? `${toolResult.result.slice(0, 8000)}\n\n[Output truncated in worker history]` : toolResult.result
+              await getStorage().conversations.updateMessage(childId, messageId!, {
+                toolCalls: (existing.toolCalls || []).map((toolCall) => toolCall.id === toolResult.toolCallId ? { ...toolCall, result, isError: toolResult.isError, protocol: toolResult.protocol } : toolCall),
+                executionTimeline: (existing.executionTimeline || []).map((entry) => {
+                  if (!entry.toolCall || entry.toolCall.id !== toolResult.toolCallId) return entry
+                  return { ...entry, toolCall: { id: entry.toolCall.id, name: entry.toolCall.name, arguments: entry.toolCall.arguments, result, isError: toolResult.isError, protocol: toolResult.protocol } }
+                }),
+              })
+              return
+            }
           }
-          if (agentEvent.type === 'done' && agentEvent.content) content = agentEvent.content
-          if (agentEvent.type === 'error' && agentEvent.error) content = `Error: ${agentEvent.error}`
-          if (!content) return
+          let content: string | undefined
+          if (agentEvent.type === 'done') content = agentEvent.content || ''
+          if (agentEvent.type === 'error') content = agentEvent.error ? `Error: ${agentEvent.error}` : 'Error: The worker response failed.'
+          if (content === undefined) return
 
-          await getStorage().conversations.addMessage(childId, {
-            id: uuidv4(),
-            conversationId: childId,
-            role,
-            content,
-            agentId: worker.id,
-            agentName: worker.name,
-            providerId: worker.providerId,
-            providerName: getStorage().config.getProvider(worker.providerId)?.name || worker.providerId,
-            model: worker.model,
-            usage: agentEvent.type === 'done' ? agentEvent.usage : undefined,
-            timestamp: Date.now(),
-          })
+          const currentMessageId = workerTurnMessages.get(childId)
+          const currentMessages = currentMessageId ? await getStorage().conversations.getMessages(childId) : []
+          const currentMessage = currentMessageId ? currentMessages.find((message) => message.id === currentMessageId) : undefined
+          if (currentMessage && currentMessage.role === 'assistant') {
+            await getStorage().conversations.updateMessage(childId, currentMessage.id, {
+              content,
+              usage: agentEvent.type === 'done' ? agentEvent.usage : undefined,
+            })
+          } else {
+            await getStorage().conversations.addMessage(childId, {
+              id: uuidv4(),
+              conversationId: childId,
+              role: 'assistant',
+              content,
+              ...messageMeta,
+              usage: agentEvent.type === 'done' ? agentEvent.usage : undefined,
+              timestamp: Date.now(),
+            })
+          }
+          workerTurnMessages.delete(childId)
           if (agentEvent.type === 'done' || agentEvent.type === 'error') {
             win.webContents.send(IPC.CONVERSATION_CHANGED, childId)
           }
@@ -668,7 +707,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           if (teamEvent.type === 'plan_created') currentPlan = teamEvent.plan
           if (teamEvent.type === 'summary') finalSummary = teamEvent.summary
           if (teamEvent.type === 'done' && teamEvent.cancelled) wasCancelled = true
-          if (teamEvent.type === 'error') executionFailed = true
+          if (teamEvent.type === 'error' || teamEvent.type === 'task_failed') executionFailed = true
           const checkpoint = checkpointForTeamEvent(teamEvent)
           if (checkpoint) checkpoints = upsertCheckpoint(checkpoints, checkpoint)
           if (teamEvent.type === 'plan_created') {

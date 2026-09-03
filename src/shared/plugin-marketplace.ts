@@ -68,6 +68,17 @@ export const MARKETPLACE_PLUGINS: MarketplacePlugin[] = [
     ],
   },
   {
+    id: 'bing-rss-search',
+    name: 'Bing RSS Search',
+    version: '1.0.0',
+    description: 'Keyless Bing RSS search connector for basic web result discovery when quota-based providers are unavailable.',
+    author: 'Eva Labs',
+    category: 'research',
+    permissions: ['network'],
+    verified: true,
+    requirements: 'Uses Bing\'s public RSS endpoint. No API key or account quota is required; availability depends on network access and Bing policy.',
+  },
+  {
     id: 'git-workspace-tools',
     name: 'Git Workspace Tools',
     version: '1.0.0',

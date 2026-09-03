@@ -102,6 +102,13 @@ export class PluginStore {
       updatedAt: now,
     }
 
+    if (next.enabled && isSearchProviderPluginId(next.id)) {
+      for (let otherIndex = 0; otherIndex < plugins.length; otherIndex += 1) {
+        if (otherIndex !== index && isSearchProviderPluginId(plugins[otherIndex].id) && plugins[otherIndex].enabled) {
+          plugins[otherIndex] = { ...plugins[otherIndex], enabled: false, updatedAt: now }
+        }
+      }
+    }
     if (index >= 0) plugins[index] = next
     else plugins.push(next)
     this.store.set('plugins', plugins)

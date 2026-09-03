@@ -472,6 +472,7 @@ async function runInternalTeamDelegation(
   const access = await getConversationAccess(conversation)
   const durableMemory = await getStorage().runtimeMemory.buildContext(conversation.id, conversation.workspaceId)
   const workerContexts = new Map<string, string>()
+  const workerTurnMessages = new Map<string, string>()
   const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
     const child = await getStorage().conversations.createConversation({
       title: `${worker.name}: ${subtask.title}`,
@@ -502,20 +503,70 @@ async function runInternalTeamDelegation(
     if (agentEvent.type === 'text' || agentEvent.type === 'thinking') return
     const childId = subtask.agentConversationId || workerContexts.get(subtask.id)
     if (!childId) return
-    let content = ''
-    let role: ChatMessage['role'] = 'assistant'
-    if (agentEvent.type === 'tool_call' && agentEvent.toolCall) content = `Calling tool: ${agentEvent.toolCall.name}`
-    if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
-      role = 'tool'
-      const result = agentEvent.toolResult.result
-      content = `${agentEvent.toolResult.name}: ${result.length > 8000 ? `${result.slice(0, 8000)}\n\n[Output truncated in worker history]` : result}`
+    const messageMeta = { agentId: worker.id, agentName: worker.name, providerId: worker.providerId, providerName: getStorage().config.getProvider(worker.providerId)?.name || worker.providerId, model: worker.model }
+    if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
+      const toolCall = { ...agentEvent.toolCall }
+      subtask.toolCalls = [...(subtask.toolCalls || []), toolCall]
+      const timelineEntry = { id: uuidv4(), kind: 'tool' as const, timestamp: Date.now(), toolCall }
+      const currentMessageId = workerTurnMessages.get(childId)
+      const currentMessages = currentMessageId ? await getStorage().conversations.getMessages(childId) : []
+      const currentMessage = currentMessageId ? currentMessages.find((message) => message.id === currentMessageId) : undefined
+      if (currentMessage && currentMessage.role === 'assistant') {
+        await getStorage().conversations.updateMessage(childId, currentMessage.id, {
+          toolCalls: [...(currentMessage.toolCalls || []), toolCall],
+          executionTimeline: [...(currentMessage.executionTimeline || []), timelineEntry],
+        })
+      } else {
+        const messageId = uuidv4()
+        workerTurnMessages.set(childId, messageId)
+        await getStorage().conversations.addMessage(childId, {
+          id: messageId, conversationId: childId, role: 'assistant', content: '', ...messageMeta,
+          toolCalls: [toolCall],
+          executionTimeline: [timelineEntry],
+          timestamp: Date.now(),
+        })
+      }
+      return
     }
-    if (agentEvent.type === 'done' && agentEvent.content) content = agentEvent.content
-    if (agentEvent.type === 'error' && agentEvent.error) content = `Error: ${agentEvent.error}`
-    if (!content) return
-    await getStorage().conversations.addMessage(childId, {
-      id: uuidv4(), conversationId: childId, role, content, agentId: worker.id, agentName: worker.name, timestamp: Date.now(),
-    })
+    if (agentEvent.type === 'tool_result' && agentEvent.toolResult) {
+      const toolResult = agentEvent.toolResult
+      subtask.toolCalls = (subtask.toolCalls || []).map((toolCall) => toolCall.id === toolResult.toolCallId
+        ? { ...toolCall, result: toolResult.result, isError: toolResult.isError, protocol: toolResult.protocol }
+        : toolCall)
+      const messageId = workerTurnMessages.get(childId)
+      const existing = messageId ? (await getStorage().conversations.getMessages(childId)).find((message) => message.id === messageId) : undefined
+      if (existing) {
+        const result = compactToolResult(toolResult.result)
+        await getStorage().conversations.updateMessage(childId, messageId!, {
+          toolCalls: (existing.toolCalls || []).map((toolCall) => toolCall.id === toolResult.toolCallId ? { ...toolCall, result, isError: toolResult.isError, protocol: toolResult.protocol } : toolCall),
+          executionTimeline: (existing.executionTimeline || []).map((entry) => {
+            if (!entry.toolCall || entry.toolCall.id !== toolResult.toolCallId) return entry
+            return { ...entry, toolCall: { id: entry.toolCall.id, name: entry.toolCall.name, arguments: entry.toolCall.arguments, result, isError: toolResult.isError, protocol: toolResult.protocol } }
+          }),
+        })
+        return
+      }
+    }
+    let content: string | undefined
+    if (agentEvent.type === 'done') content = agentEvent.content || ''
+    if (agentEvent.type === 'error') content = agentEvent.error ? `Error: ${agentEvent.error}` : 'Error: The worker response failed.'
+    if (content === undefined) return
+    const currentMessageId = workerTurnMessages.get(childId)
+    const currentMessages = currentMessageId ? await getStorage().conversations.getMessages(childId) : []
+    const currentMessage = currentMessageId ? currentMessages.find((message) => message.id === currentMessageId) : undefined
+    if (currentMessage && currentMessage.role === 'assistant') {
+      await getStorage().conversations.updateMessage(childId, currentMessage.id, {
+        content,
+        usage: agentEvent.type === 'done' ? agentEvent.usage : undefined,
+      })
+    } else {
+      await getStorage().conversations.addMessage(childId, {
+        id: uuidv4(), conversationId: childId, role: 'assistant', content, ...messageMeta,
+        usage: agentEvent.type === 'done' ? agentEvent.usage : undefined,
+        timestamp: Date.now(),
+      })
+    }
+    workerTurnMessages.delete(childId)
     if ((agentEvent.type === 'done' || agentEvent.type === 'error') && !win.isDestroyed()) {
       win.webContents.send(IPC.CONVERSATION_CHANGED, childId)
     }
@@ -546,7 +597,7 @@ async function runInternalTeamDelegation(
       applyTeamEvent(event)
       if (event.type === 'summary') finalSummary = event.summary || ''
       if (event.type === 'done' && event.cancelled) wasCancelled = true
-      if (event.type === 'error') executionFailed = true
+      if (event.type === 'error' || event.type === 'task_failed') executionFailed = true
       if (event.type === 'done' && currentPlan) {
         currentPlan = { ...currentPlan, status: wasCancelled ? 'cancelled' : executionFailed ? 'failed' : 'completed' }
       }

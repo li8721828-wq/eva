@@ -157,6 +157,26 @@ export class TeamOrchestrator {
             agentId: worker.id,
             agentName: worker.name,
           }
+          const blockedDependencies = subtask.dependencies
+            .map((dependencyId) => plan.subtasks.find((candidate) => candidate.id === dependencyId))
+            .filter((dependency) => !dependency || dependency.status !== 'completed')
+          if (blockedDependencies.length) {
+            const dependencyLabel = blockedDependencies
+              .map((dependency) => dependency ? `${dependency.title} (${dependency.status})` : 'unknown dependency')
+              .join(', ')
+            subtask.status = 'failed'
+            subtask.result = `This task cannot start because its dependencies are not completed: ${dependencyLabel}.`
+            subtask.completedAt = Date.now()
+            yield {
+              type: 'task_failed',
+              subtaskId: subtask.id,
+              subtask: { ...subtask },
+              agentId: worker.id,
+              agentName: worker.name,
+              error: subtask.result,
+            }
+            continue
+          }
           if (configured.missing.length) {
             subtask.status = 'failed'
             subtask.result = `This task cannot start because the team has not authorized: ${configured.missing.join(', ')}.`

@@ -4,6 +4,7 @@ import type { ChatParams, ChatChunk, ToolDefinition } from '../../shared/types/p
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
 import { withRetry, classifyError } from './errors'
+import { parseTextToolCallProtocols } from './text-tool-call-protocol'
 
 const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {
   // Some OpenAI-compatible gateways return this historical name inside a
@@ -125,13 +126,21 @@ function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): Lega
   const openEnvelope = new RegExp(`<\\s*${marker}\\s*tool_calls\\s*>`, 'i')
   const closeEnvelope = new RegExp(`<\\s*[\\/／]\\s*${marker}\\s*tool_calls\\s*>`, 'i')
   const openMatch = openEnvelope.exec(normalizedContent)
-  if (!openMatch) return []
-  const remainder = normalizedContent.slice(openMatch.index + openMatch[0].length)
-  const closeMatch = closeEnvelope.exec(remainder)
-  if (!closeMatch) return []
-  const block = remainder.slice(0, closeMatch.index)
-  const after = remainder.slice(closeMatch.index + closeMatch[0].length)
-  if (/<\s*[|｜]\s*DSML\s*[|｜]/i.test(after)) return []
+  let block = normalizedContent
+  let after = ''
+  if (openMatch) {
+    const remainder = normalizedContent.slice(openMatch.index + openMatch[0].length)
+    const closeMatch = closeEnvelope.exec(remainder)
+    if (closeMatch) {
+      block = remainder.slice(0, closeMatch.index)
+      after = remainder.slice(closeMatch.index + closeMatch[0].length)
+      if (/<\s*[|｜]\s*DSML\s*[|｜]/i.test(after)) return []
+    } else {
+      // Tolerate gateways that omit only the outer closing tag while keeping
+      // complete invoke/parameter blocks executable.
+      block = remainder
+    }
+  }
 
   const openInvoke = new RegExp(`<\\s*${marker}\\s*invoke\\b([^>]*)>`, 'gi')
   const closeInvoke = new RegExp(`<\\s*[\\/／]\\s*${marker}\\s*invoke\\s*>`, 'i')
@@ -139,7 +148,7 @@ function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): Lega
   let cursor = 0
   for (const match of block.matchAll(openInvoke)) {
     const textBefore = block.slice(cursor, match.index).trim()
-    if (textBefore) return []
+    if (textBefore && !openEnvelope.test(textBefore)) return []
     const callName = attributeValue(match[1], 'name')
     if (!callName) return []
     const bodyStart = (match.index || 0) + match[0].length
@@ -164,11 +173,14 @@ function parseDsmlTextToolCalls(content: string, tools?: ToolDefinition[]): Lega
     closeInvoke.lastIndex = 0
     if (parameterBlocks.length === 0 && body.trim()) return []
   }
-  return calls.length && block.slice(cursor).trim() === '' ? calls : []
+  const trailing = block.slice(cursor).trim()
+  if (trailing && !closeEnvelope.test(trailing)) return []
+  if (after.trim()) return []
+  return calls
 }
 
 function hasSuspectedTextToolCall(content: string, tools?: ToolDefinition[]): boolean {
-  if (/<\s*(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls|invoke|parameter)\b/i.test(content)) return true
+  if (/<\s*(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls?|toolcalls|invoke|parameter)\b/i.test(content)) return true
   if (/<tool_call\b|<function=/i.test(content)) return true
   return Boolean(tools?.some((tool) => new RegExp(`<\\s*${tool.name}\\b`, 'i').test(content)))
 }
@@ -418,24 +430,24 @@ export class OpenAIProvider implements LLMProvider {
         })),
       }
     } else if (toolCallsAccumulator.size === 0) {
-      const legacyToolCalls = parseTextToolCalls(textContent, params.tools)
-      if (legacyToolCalls.length > 0) {
+      const parsedTextToolCalls = parseTextToolCallProtocols(textContent, params.tools)
+      if (parsedTextToolCalls.calls.length > 0) {
         yield {
           content: '',
           finishReason: 'tool_calls',
           textToolCallEnvelope: true,
-          toolCalls: legacyToolCalls.map((toolCall, index) => ({
+          toolCalls: parsedTextToolCalls.calls.map((toolCall, index) => ({
             index,
             id: toolCall.id,
             name: toolCall.name,
             arguments: JSON.stringify(toolCall.arguments),
           })),
         }
-      } else if (hasSuspectedTextToolCall(textContent, params.tools)) {
+      } else if (parsedTextToolCalls.detected || hasSuspectedTextToolCall(textContent, params.tools)) {
         yield {
           content: '',
           finishReason: 'stop',
-          toolCallParseFailure: 'The gateway returned tool-call-like text that did not match a supported schema.',
+          toolCallParseFailure: `The gateway returned ${parsedTextToolCalls.protocolId || 'tool-call-like'} text that did not match a supported schema.`,
         }
       }
     }
@@ -483,7 +495,7 @@ export class OpenAIProvider implements LLMProvider {
     const message = choice.message as typeof choice.message & { reasoning_content?: string }
     const legacyToolCalls = toolCalls?.length
       ? []
-      : parseTextToolCalls(message.content || '', params.tools)
+      : parseTextToolCallProtocols(message.content || '', params.tools).calls
     return {
       content: legacyToolCalls.length > 0 ? '' : (message.content || message.reasoning_content || ''),
       toolCalls: toolCalls?.length ? toolCalls : legacyToolCalls,

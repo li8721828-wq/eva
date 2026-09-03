@@ -27,6 +27,7 @@ type SearchProvider =
   | { id: 'brave-search'; apiKey: string }
   | { id: 'tavily-search'; apiKey: string }
   | { id: 'searxng-search'; endpoint: string }
+  | { id: 'bing-rss-search' }
 
 const searchCache = new Map<string, { results: SearchResult[]; expiresAt: number }>()
 const inFlightSearches = new Map<string, Promise<SearchResult[]>>()
@@ -133,13 +134,15 @@ async function fetchSearchResults(query: string, language?: string): Promise<Sea
 
 function getConfiguredSearchProvider(): SearchProvider {
   const plugin = getStorage().plugins.list().find((entry) => entry.enabled && isSearchProviderPluginId(entry.id))
-  if (!plugin) throw new Error('Web search is allowed, but no search service is active. Enable and configure Brave Search, Tavily Search, or SearXNG Search in Settings > Plugins.')
+  if (!plugin) throw new Error('Web search is allowed, but no search service is active. Install and enable Bing RSS Search, Brave Search, Tavily Search, or SearXNG Search in Settings > Plugins.')
 
   if (plugin.id === 'brave-search' || plugin.id === 'tavily-search') {
     const apiKey = String(plugin.settings.apiKey || '').trim()
     if (!apiKey) throw new Error(`${plugin.name} is enabled but its API key is missing. Configure the plugin in Settings > Plugins.`)
     return { id: plugin.id, apiKey }
   }
+
+  if (plugin.id === 'bing-rss-search') return { id: 'bing-rss-search' }
 
   const endpoint = String(plugin.settings.endpoint || '').trim().replace(/\/$/, '')
   if (!endpoint) throw new Error('SearXNG Search is enabled but its endpoint is missing. Configure the plugin in Settings > Plugins.')
@@ -155,7 +158,41 @@ function getConfiguredSearchProvider(): SearchProvider {
 async function fetchSearchProvider(query: string, provider: SearchProvider, language?: string): Promise<SearchResult[]> {
   if (provider.id === 'brave-search') return fetchBraveSearch(query, provider.apiKey)
   if (provider.id === 'tavily-search') return fetchTavilySearch(query, provider.apiKey)
+  if (provider.id === 'bing-rss-search') return fetchBingRssSearch(query, language)
   return fetchSearxngSearch(query, provider.endpoint, language)
+}
+
+async function fetchBingRssSearch(query: string, language?: string): Promise<SearchResult[]> {
+  const url = new URL('https://www.bing.com/search')
+  url.searchParams.set('format', 'rss')
+  url.searchParams.set('q', query)
+  if (language) url.searchParams.set('setlang', language.split('-')[0])
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), WEB_REQUEST_TIMEOUT_MS)
+  try {
+    const response = await net.fetch(url.toString(), {
+      headers: { Accept: 'application/rss+xml, application/xml, text/xml', 'User-Agent': USER_AGENT },
+      signal: controller.signal,
+    })
+    if (!response.ok) throw new Error(`Bing RSS search request failed (${response.status}).`)
+    const results = parseBingRssResults(await response.text())
+    if (!results.length) throw new Error('Bing RSS returned no parseable results.')
+    return results.slice(0, MAX_RESULTS)
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`Bing RSS search timed out after ${WEB_REQUEST_TIMEOUT_MS / 1000} seconds.`)
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export function parseBingRssResults(xml: string): SearchResult[] {
+  const $ = load(xml, { xmlMode: true })
+  return $('item').map((_index, element) => ({
+    title: $(element).find('title').first().text().replace(/\s+/g, ' ').trim(),
+    url: $(element).find('link').first().text().trim(),
+    snippet: $(element).find('description').first().text().replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim(),
+  })).get().filter((result) => result.title && /^https?:\/\//i.test(result.url))
 }
 
 async function fetchBraveSearch(query: string, apiKey: string): Promise<SearchResult[]> {

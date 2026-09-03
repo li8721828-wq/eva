@@ -487,6 +487,52 @@ describe('OpenAIProvider streaming tool calls', () => {
     })
   })
 
+  it('parses complete DSML invokes when a gateway omits only the outer closing tag', async () => {
+    async function* dsmlToolCallStream() {
+      yield {
+        choices: [{
+          delta: {
+            content: '< | DSML | tool_calls>< | DSML | invoke name="web_search">< | DSML | parameter name="query" string="true">OpenRouter pricing< / | DSML | parameter>< / | DSML | invoke>',
+          },
+          finish_reason: 'stop',
+        }],
+      }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = { chat: { completions: { create: vi.fn().mockResolvedValue(dsmlToolCallStream()) } } }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'test-model',
+      messages: [],
+      tools: [{ name: 'web_search', description: 'Search the web.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)).toMatchObject({
+      finishReason: 'tool_calls',
+      textToolCallEnvelope: true,
+      toolCalls: [{ name: 'web_search', arguments: '{"query":"OpenRouter pricing"}' }],
+    })
+  })
+
+  it('accepts relay aliases and XML-escaped DSML arguments', async () => {
+    async function* responseStream() {
+      yield { choices: [{ delta: { content: 'I will inspect the file. < | DSML | toolcalls>< | DSML | invoke name="read_file">< | DSML | parameter name="path" string="true">reports/a&amp;b.xlsx< / | DSML | parameter>< / | DSML | invoke>' }, finish_reason: 'stop' }] }
+    }
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'test-key' })
+    ;(provider as any).client = { chat: { completions: { create: vi.fn().mockResolvedValue(responseStream()) } } }
+
+    const chunks = []
+    for await (const chunk of provider.chat({
+      model: 'deepseek-v4-flash',
+      messages: [],
+      tools: [{ name: 'read_file', description: 'read', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }],
+    })) chunks.push(chunk)
+
+    expect(chunks.at(-1)?.toolCalls?.[0]).toMatchObject({ name: 'read_file', arguments: JSON.stringify({ path: 'reports/a&b.xlsx' }) })
+  })
+
   it('marks malformed DSML as a retryable parse failure instead of a final answer', async () => {
     async function* malformedDsmlStream() {
       yield {

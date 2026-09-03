@@ -68,7 +68,7 @@ export interface SearchProviderConnectivity {
 }
 
 /** Plugins that implement the backend used by the web_search tool. */
-export const SEARCH_PROVIDER_PLUGIN_IDS = ['brave-search', 'tavily-search', 'searxng-search'] as const
+export const SEARCH_PROVIDER_PLUGIN_IDS = ['brave-search', 'tavily-search', 'searxng-search', 'bing-rss-search'] as const
 export type SearchProviderPluginId = (typeof SEARCH_PROVIDER_PLUGIN_IDS)[number]
 
 export function isSearchProviderPluginId(id: string): id is SearchProviderPluginId {

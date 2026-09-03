@@ -773,9 +773,12 @@ export class AgentRunner {
       }
       if (finalResponse.protocolTextDetected || finalResponse.toolCallParseFailure) {
         if (finalResponse.content) yield { type: 'text_reset', discardProvisionalText: true }
+        const protocolHint = finalResponse.toolCallParseFailure
+          ? `（${finalResponse.toolCallParseFailure}）`
+          : '（检测到 DSML/XML 工具协议标记，但最终汇总轮未返回可执行调用）'
         yield {
           type: 'error',
-          error: '模型在最终回复中返回了未执行的工具协议文本；本轮未执行该工具。请重试，或更换兼容工具调用协议的模型。',
+          error: `模型在最终汇总阶段返回了未执行的工具协议文本${protocolHint}；之前已执行的工具结果不会被自动标记为最终成功。请重试，或更换兼容工具调用协议的模型。`,
         }
         yield { type: 'done', content: '' }
         return
@@ -900,7 +903,7 @@ export class AgentRunner {
         if (chunk.content) {
           content += chunk.content
           pendingProtocolText += chunk.content
-          const protocolIndex = pendingProtocolText.search(/<\s*(?:(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls|invoke|parameter)|tool_call\b|function=)/i)
+          const protocolIndex = pendingProtocolText.search(/<\s*(?:(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls?|toolcalls|invoke|parameter)|tool_call\b|function=)/i)
           if (protocolIndex >= 0) {
             const visiblePrefix = pendingProtocolText.slice(0, protocolIndex)
             if (visiblePrefix) yield { type: 'text', content: visiblePrefix }

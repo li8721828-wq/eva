@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { buildSearxngSearchUrl, filterSearchResultsForRelevance, type SearchResult } from '../../src/main/tools/web-tools'
+import { buildSearxngSearchUrl, filterSearchResultsForRelevance, parseBingRssResults, type SearchResult } from '../../src/main/tools/web-tools'
 
 const result = (title: string, snippet = '', url = 'https://example.com/article'): SearchResult => ({ title, snippet, url })
 
 describe('web search quality guard', () => {
+  it('parses keyless Bing RSS fallback results', () => {
+    const parsed = parseBingRssResults('<rss><channel><item><title>Eva docs</title><link>https://example.com/eva</link><description><![CDATA[<b>Useful</b> result]]></description></item></channel></rss>')
+    expect(parsed).toEqual([{ title: 'Eva docs', url: 'https://example.com/eva', snippet: 'Useful result' }])
+  })
   it('uses the configured SearXNG language default unless the call explicitly selects one', () => {
     const url = buildSearxngSearchUrl('http://localhost:8080', 'arbitrary query')
     expect(url.searchParams.get('format')).toBe('json')
