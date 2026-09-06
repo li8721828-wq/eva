@@ -4,6 +4,7 @@ import type { AgentConfig } from '../../../shared/types/agent'
 import type { ModelPool } from '../../../shared/types/model-pool'
 import type { InstalledPlugin } from '../../../shared/types/plugin'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
+import { inferModelCapabilities } from '../../../shared/model-capabilities'
 import type { RuntimeEvolutionProposal } from '../../../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../../../shared/types/runtime-kernel'
 import { Activity, AlertTriangle, Bot, Boxes, CheckCircle2, CircleDotDashed, Cpu, Puzzle, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react'
@@ -100,7 +101,8 @@ export function RuntimeIntrospectionPanel() {
     const routes = data.pools.flatMap((pool) => pool.entries)
     const enabledRoutes = routes.filter((route) => route.enabled)
     const activity = summarizeRuntimeActivity(data.activity)
-    return { enabledPlugins, enabledProviders, routes, enabledRoutes, recentErrors: activity.errors, byCategory: activity.byCategory }
+    const modelProfiles = data.providers.flatMap((provider) => (provider.models || []).map((model) => ({ provider, model, profile: model.capabilities || inferModelCapabilities(provider.type, model.id) })))
+    return { enabledPlugins, enabledProviders, routes, enabledRoutes, modelProfiles, recentErrors: activity.errors, byCategory: activity.byCategory }
   }, [data])
 
   return (
@@ -151,6 +153,7 @@ export function RuntimeIntrospectionPanel() {
         <section aria-label="Plugin and model routes" className="space-y-6">
           <div><div className="mb-3 flex items-center gap-2"><Puzzle className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">插件与权限</h3></div><div className="overflow-hidden rounded-md border border-[var(--ui-border)] bg-white divide-y divide-zinc-100">{data.plugins.length ? data.plugins.map((plugin) => <div key={plugin.id} className="px-4 py-3"><div className="flex items-center justify-between gap-2"><strong className="truncate text-sm text-zinc-800">{plugin.name}</strong><span className={cn('eva-status', plugin.enabled ? 'eva-status--success' : 'eva-status--neutral')}>{plugin.enabled ? '已启用' : '已停用'}</span></div><p className="mt-1 text-xs text-zinc-500">{plugin.permissions.join(' · ') || '无额外权限'}</p></div>) : <p className="px-4 py-5 text-sm text-zinc-500">尚未安装插件。</p>}</div></div>
           <div><div className="mb-3 flex items-center gap-2"><Cpu className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">模型路由</h3></div><div className="overflow-hidden rounded-md border border-[var(--ui-border)] bg-white divide-y divide-zinc-100">{summary.routes.length ? summary.routes.map((route) => <div key={route.id} className="flex items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium text-zinc-800">{route.name}</p><p className="mt-1 truncate text-xs text-zinc-500">{route.providerId} / {route.model} · {route.capabilities.join(', ')}</p></div><span className={cn('eva-status shrink-0', route.enabled ? 'eva-status--success' : 'eva-status--neutral')}>{route.enabled ? `P${route.priority}` : '停用'}</span></div>) : <p className="px-4 py-5 text-sm text-zinc-500">尚未配置模型池路由。</p>}</div></div>
+          <div><div className="mb-3 flex items-center gap-2"><Cpu className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">模型能力检测</h3></div><div className="overflow-hidden rounded-md border border-[var(--ui-border)] bg-white divide-y divide-zinc-100">{summary.modelProfiles.length ? summary.modelProfiles.slice(0, 16).map(({ provider, model, profile }) => <div key={`${provider.id}:${model.id}`} className="px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="truncate text-sm font-medium text-zinc-800">{model.name || model.id}</p><span className="eva-status eva-status--neutral">{profile.protocol}</span></div><p className="mt-1 text-xs text-zinc-500">{provider.name} · 工具 {profile.supportsTools === undefined ? '未确认' : profile.supportsTools ? '支持' : '不支持'} · 流式 {profile.supportsStreaming ? '支持' : '不支持'} · 视觉 {profile.supportsVision ? '支持' : '不支持'} · 上下文 {Math.round(profile.contextWindowTokens / 1000)}K</p></div>) : <p className="px-4 py-5 text-sm text-zinc-500">尚未获取模型列表，刷新连接的模型后会显示能力检测结果。</p>}</div></div>
         </section>
       </div>
 

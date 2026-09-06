@@ -1,10 +1,21 @@
 export type TaskQueueState = 'queued' | 'running' | 'retrying' | 'completed' | 'failed' | 'cancelled'
 
+export interface TaskExecutionMetrics {
+  durationMs?: number
+  modelCalls?: number
+  promptTokens?: number
+  completionTokens?: number
+  toolCalls?: number
+  cost?: number
+  currency?: string
+}
+
 export interface TaskQueueResult {
   status: 'completed' | 'failed' | 'cancelled'
   error?: string
   /** Defaults to true for failed runs. Set false for configuration errors. */
   retryable?: boolean
+  metrics?: TaskExecutionMetrics
 }
 
 export interface TaskQueueUpdate {
@@ -18,6 +29,7 @@ export interface TaskQueueUpdate {
   nextRetryAt?: number
   error?: string
   resourceKey?: string
+  metrics?: TaskExecutionMetrics
 }
 
 export interface TaskQueueJob {
@@ -25,6 +37,8 @@ export interface TaskQueueJob {
   kind: 'expert' | 'goal'
   run: (attempt: number) => Promise<TaskQueueResult>
   maxAttempts?: number
+  /** Higher priority jobs are admitted before lower priority jobs. */
+  priority?: number
   /** Jobs sharing a resource key never execute concurrently. */
   resourceKey?: string
   onUpdate?: (update: TaskQueueUpdate) => void | Promise<void>
@@ -63,7 +77,9 @@ export class TaskExecutionQueue {
       attempt: 0,
       queuedAt: Date.now(),
     }
-    this.pending.push(pending)
+    const insertion = this.pending.findIndex((item) => (item.priority || 0) < (pending.priority || 0))
+    if (insertion < 0) this.pending.push(pending)
+    else this.pending.splice(insertion, 0, pending)
     this.drain()
     return true
   }
@@ -144,6 +160,7 @@ export class TaskExecutionQueue {
     if (job.resourceKey) this.activeResources.add(job.resourceKey)
     job.attempt += 1
     let result: TaskQueueResult
+    const startedAt = Date.now()
     try {
       await this.notify(job, 'running')
       result = await job.run(job.attempt)
@@ -153,6 +170,7 @@ export class TaskExecutionQueue {
       this.running.delete(job.id)
       if (job.resourceKey) this.activeResources.delete(job.resourceKey)
     }
+    result.metrics = { durationMs: Date.now() - startedAt, ...result.metrics }
 
     if (this.cancellationRequested.delete(job.id)) {
       result = { status: 'cancelled' }
@@ -168,12 +186,12 @@ export class TaskExecutionQueue {
       }, delay)
       this.retryTimers.set(job.id, { timer, job })
     } else {
-      await this.notify(job, result.status, { error: result.error })
+      await this.notify(job, result.status, { error: result.error, metrics: result.metrics })
     }
     this.drain()
   }
 
-  private async notify(job: PendingTaskJob, state: TaskQueueState, extra: Pick<TaskQueueUpdate, 'nextRetryAt' | 'error'> = {}): Promise<void> {
+  private async notify(job: PendingTaskJob, state: TaskQueueState, extra: Pick<TaskQueueUpdate, 'nextRetryAt' | 'error' | 'metrics'> = {}): Promise<void> {
     try {
       await job.onUpdate?.({
         conversationId: job.conversationId,
@@ -197,7 +215,9 @@ export class TaskExecutionQueue {
 
   private async requeue(job: PendingTaskJob): Promise<void> {
     await this.notify(job, 'queued')
-    this.pending.push(job)
+    const insertion = this.pending.findIndex((item) => (item.priority || 0) < (job.priority || 0))
+    if (insertion < 0) this.pending.push(job)
+    else this.pending.splice(insertion, 0, job)
     this.drain()
   }
 }

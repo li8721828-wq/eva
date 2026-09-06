@@ -147,6 +147,40 @@ describe('OpenAIProvider streaming tool calls', () => {
     expect(provider.supportsReasoning('deepseek-chat')).toBe(false)
   })
 
+  it('should expose persisted model capability profiles without re-inferring them', () => {
+    const checkedAt = Date.now() - 1000
+    const registry = new ProviderRegistry()
+    registry.register({
+      id: 'profiled',
+      name: 'Profiled',
+      type: 'custom',
+      apiKey: 'test-key',
+      defaultModel: 'gateway-model',
+      isEnabled: true,
+      models: [{
+        id: 'gateway-model',
+        name: 'Gateway model',
+        maxTokens: 32000,
+        supportsTools: true,
+        supportsStreaming: true,
+        capabilities: {
+          providerType: 'custom',
+          modelId: 'gateway-model',
+          protocol: 'openai-tools',
+          supportsTools: true,
+          supportsStreaming: true,
+          supportsReasoning: false,
+          supportsVision: true,
+          contextWindowTokens: 32000,
+          source: 'probed',
+          probeStatus: 'supported',
+          checkedAt,
+        },
+      }],
+    })
+    expect(registry.getModelCapabilities('profiled', 'gateway-model')).toMatchObject({ source: 'probed', probeStatus: 'supported', supportsVision: true, checkedAt })
+  })
+
   it('recognizes DeepSeek V4 models behind an OpenAI-compatible gateway', () => {
     const provider = new OpenAIProvider('gateway', 'Volcano Coding Plan', 'custom', { apiKey: 'test-key' })
     expect(provider.supportsReasoning('deepseek-v4-flash-ga-260731')).toBe(true)

@@ -3,7 +3,8 @@ import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { SpecTemplate } from '../../shared/types/spec'
 import type { ProviderConfigEntry } from '../storage/config-store'
-import type { ProviderModelsResult, ProviderTestConfig } from '../../shared/types/provider'
+import { inferModelCapabilities } from '../../shared/model-capabilities'
+import type { ModelCapabilityProbeRequest, ModelCapabilityProbeResult, ProviderModelsResult, ProviderTestConfig } from '../../shared/types/provider'
 import type { ModelPool, ModelPoolEntry, ModelRouteRequest, ModelRouteResult } from '../../shared/types/model-pool'
 import type { FileService, TerminalService } from '../tools'
 import type { FileEntry } from '../tools'
@@ -16,6 +17,7 @@ import { recordActivity } from '../services/activity-log'
 import { ModelRouter } from '../services/model-router'
 import { applyNetworkConfig, normalizeNetworkConfig, testNetworkConnection } from '../services/network-settings-service'
 import type { NetworkConfig } from '../../shared/types/network'
+import { getModelContextWindowTokens } from '../../shared/constants'
 
 const terminalWorkspaces = new Map<string, string>()
 const terminalOutputUnsubscribers = new Map<string, () => void>()
@@ -310,7 +312,17 @@ export function registerSystemHandlers(
     if (provider.apiKey) {
       providerRegistry.register({
         ...provider,
-        models: [],
+        models: (provider.models || []).map((model) => ({
+          id: model.id,
+          name: model.name,
+          maxTokens: model.capabilities?.contextWindowTokens || getModelContextWindowTokens(model.id),
+          supportsTools: model.capabilities?.supportsTools !== false,
+          supportsStreaming: model.capabilities?.supportsStreaming !== false,
+          ...(model.capabilities?.supportsReasoning !== undefined ? { supportsReasoning: model.capabilities.supportsReasoning } : {}),
+          ...(model.capabilities?.supportsVision !== undefined ? { supportsVision: model.capabilities.supportsVision } : {}),
+          ...(model.capabilities?.protocol ? { protocol: model.capabilities.protocol } : {}),
+          ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+        })),
         defaultModel: provider.defaultModel || getStorage().config.getActiveModel(),
         // isEnabled is chat-picker visibility, not connection availability.
         isEnabled: true,
@@ -363,7 +375,10 @@ export function registerSystemHandlers(
 
       try {
         const provider = createProvider({ ...config, models: [], isEnabled: true })
-        const models = await provider.listModels()
+        const models = (await provider.listModels()).map((model) => ({
+          ...model,
+          capabilities: inferModelCapabilities(config.type, model.id),
+        }))
         if (models.length === 0) {
           return { success: false, models: [], message: 'No models were returned by this provider.' }
         }
@@ -373,6 +388,69 @@ export function registerSystemHandlers(
         return { success: false, models: [], message }
       }
     }
+  )
+
+  ipcMain.handle(
+    IPC.PROVIDER_PROBE_CAPABILITIES,
+    async (_event, request: ModelCapabilityProbeRequest): Promise<ModelCapabilityProbeResult> => {
+      const config = request?.provider
+      const model = typeof request?.model === 'string' ? request.model.trim() : ''
+      if (!config?.apiKey?.trim() || !model) throw new Error('An API key and model are required for capability detection.')
+      if (config.type === 'custom' && !config.baseUrl?.trim()) throw new Error('Enter a base URL for a custom provider.')
+
+      const inferred = inferModelCapabilities(config.type, model)
+      const probeTool = {
+        name: 'eva_capability_probe',
+        description: 'Capability probe. Call this tool exactly once with ok=true. Do not answer with text first.',
+        parameters: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] },
+      }
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 20_000)
+      try {
+        const provider = createProvider({ ...config, models: [], defaultModel: model, isEnabled: true })
+        let hasStructuredCall = false
+        let sawTextEnvelope = false
+        let sawParseFailure = false
+        for await (const chunk of provider.chat({
+          model,
+          messages: [{ role: 'user', content: 'Call the eva_capability_probe tool exactly once with {"ok":true}. Do not provide a prose answer.' }],
+          tools: [probeTool],
+          stream: false,
+          maxTokens: 64,
+          temperature: 0,
+        }, controller.signal)) {
+          if (chunk.toolCalls?.some((call) => call.name === probeTool.name)) hasStructuredCall = true
+          if (chunk.textToolCallEnvelope) sawTextEnvelope = true
+          if (chunk.toolCallParseFailure) sawParseFailure = true
+        }
+        const profile = {
+          ...inferred,
+          supportsTools: hasStructuredCall ? true : undefined,
+          source: 'probed' as const,
+          probeStatus: hasStructuredCall ? 'supported' as const : 'inconclusive' as const,
+          checkedAt: Date.now(),
+          ...(hasStructuredCall ? {} : { lastError: sawParseFailure || sawTextEnvelope ? 'The model returned a text tool envelope instead of a native structured tool call.' : 'The model returned no structured capability probe call.' }),
+        }
+        return {
+          success: hasStructuredCall,
+          model,
+          profile,
+          message: hasStructuredCall
+            ? `Tool calling verified for ${model} (${profile.protocol}).`
+            : `The model did not return a structured tool call. Tool compatibility could not be confirmed for ${model}.`,
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Capability detection failed.'
+        return {
+          success: false,
+          model,
+          profile: { ...inferred, source: 'probed', probeStatus: 'unsupported', checkedAt: Date.now(), lastError: message, supportsTools: false },
+          message: `Tool calling probe failed for ${model}: ${message}`,
+        }
+      } finally {
+        clearTimeout(timeout)
+      }
+    },
   )
 
   // Spec handlers

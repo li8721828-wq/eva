@@ -3,6 +3,7 @@ import path from 'path'
 import mammoth from 'mammoth'
 import * as XLSX from 'xlsx'
 import pdf from 'pdf-parse/lib/pdf-parse.js'
+import JSZip from 'jszip'
 import type { ChatDocumentAttachment } from '../../shared/types/conversation'
 
 const MAX_FILES = 40
@@ -11,6 +12,7 @@ const MAX_FILES = 40
 // Extracted text is still bounded by MAX_TOTAL_CHARS before it reaches a model.
 const MAX_FILE_BYTES = 32 * 1024 * 1024
 const MAX_TOTAL_CHARS = 80_000
+const MAX_FILE_CHARS = 24_000
 const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.mdx', '.csv', '.tsv', '.json', '.yaml', '.yml', '.xml', '.html', '.htm', '.css', '.scss', '.less', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.py', '.java', '.c', '.cc', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs', '.php', '.rb', '.swift', '.kt', '.kts', '.sql', '.sh', '.ps1', '.bat', '.cmd', '.vue', '.svelte', '.ini', '.toml', '.env', '.log'])
 
 interface ParsedAttachment {
@@ -54,6 +56,20 @@ async function parseFile(filePath: string): Promise<ParsedAttachment> {
       const result = await mammoth.extractRawText({ path: filePath })
       return { path: filePath, name, text: result.value }
     }
+    if (extension === '.pptx') {
+      const zip = await JSZip.loadAsync(await fs.readFile(filePath))
+      const slideNames = Object.keys(zip.files)
+        .filter((entry) => /^ppt\/slides\/slide\d+\.xml$/i.test(entry))
+        .sort((left, right) => Number(left.match(/slide(\d+)/i)?.[1] || 0) - Number(right.match(/slide(\d+)/i)?.[1] || 0))
+      const slides = await Promise.all(slideNames.map(async (slide, index) => {
+        const xml = await zip.files[slide].async('text')
+        const text = [...xml.matchAll(/<a:t[^>]*>([\s\S]*?)<\/a:t>/gi)]
+          .map((match) => match[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>'))
+          .join(' ')
+        return `--- Slide ${index + 1} ---\n${text}`
+      }))
+      return { path: filePath, name, text: slides.join('\n\n') }
+    }
     if (extension === '.xlsx' || extension === '.xls' || extension === '.ods') {
       const workbook = XLSX.readFile(filePath, { cellText: true })
       const sheets = workbook.SheetNames.map((sheetName) => `--- ${sheetName} ---\n${XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName])}`)
@@ -80,9 +96,13 @@ export async function buildDocumentAttachmentContext(attachments: ChatDocumentAt
   let remainingChars = MAX_TOTAL_CHARS
   const sections = parsed.map((item) => {
     if (item.text !== undefined) {
-      const text = item.text.slice(0, remainingChars)
+      const allowed = Math.min(MAX_FILE_CHARS, remainingChars)
+      const text = item.text.slice(0, allowed)
       remainingChars -= text.length
-      return `--- Attached file: ${item.name}\nPath: ${item.path}\n${text}\n--- End attached file ---`
+      const truncated = text.length < item.text.length
+        ? `\n[Attachment excerpt truncated at ${allowed} characters. For XLSX/CSV, continue with the spreadsheet tool using pagination, column selection, or aggregation.]`
+        : ''
+      return `--- Attached file: ${item.name}\nPath: ${item.path}\n${text}${truncated}\n--- End attached file ---`
     }
     return `--- Attached file requires conversion: ${item.name}\nPath: ${item.path}\nDirect extraction was unavailable: ${item.issue}\nFirst inspect the file and use an available local conversion or extraction method. Do not claim its contents until conversion succeeds.\n--- End attachment notice ---`
   })

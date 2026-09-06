@@ -16,6 +16,19 @@ describe('TaskExecutionQueue', () => {
     await vi.waitFor(() => expect(started).toEqual(['one', 'two']))
   })
 
+  it('starts higher-priority queued work first', async () => {
+    let release: (() => void) | undefined
+    const hold = new Promise<void>((resolve) => { release = resolve })
+    const started: string[] = []
+    const queue = new TaskExecutionQueue(1)
+    queue.enqueue({ conversationId: 'first', kind: 'goal', run: async () => { started.push('first'); await hold; return { status: 'completed' } } })
+    queue.enqueue({ conversationId: 'low', kind: 'expert', priority: 1, run: async () => { started.push('low'); return { status: 'completed' } } })
+    queue.enqueue({ conversationId: 'high', kind: 'goal', priority: 10, run: async () => { started.push('high'); return { status: 'completed' } } })
+    await vi.waitFor(() => expect(started).toEqual(['first']))
+    release?.()
+    await vi.waitFor(() => expect(started).toEqual(['first', 'high', 'low']))
+  })
+
   it('retries a failed task once before marking it failed', async () => {
     const updates: string[] = []
     const queue = new TaskExecutionQueue(1, () => 0)

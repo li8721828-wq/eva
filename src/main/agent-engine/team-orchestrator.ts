@@ -10,6 +10,38 @@ import { v4 as uuidv4 } from 'uuid'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPool } from '../../shared/types/model-pool'
 import type { ProviderRegistry } from '../providers'
+import { inferModelCapabilities } from '../../shared/model-capabilities'
+import XLSX from 'xlsx'
+
+export function validateTextArtifact(filePath: string, content: string, needsSources = false): string[] {
+  const failures: string[] = []
+  const extension = filePath.split('.').pop()?.toLowerCase() || ''
+  if (/<\|\s*DSML\s*\||<\|\s*tool_calls\s*\|>|(?:^|\s)invoke\s+name\s*=/.test(content)) {
+    failures.push(`${filePath}: contains unparsed tool-protocol markup`)
+  }
+  // Small valid data/config files are legitimate (for example `{}`); apply
+  // the readability threshold to prose and source artifacts only.
+  if (content.trim().length < 20 && !['json', 'yaml', 'yml'].includes(extension)) {
+    failures.push(`${filePath}: content is too short to be a usable artifact`)
+  }
+  if (['md', 'markdown'].includes(extension) && !/^\s*#{1,6}\s+\S+/m.test(content)) {
+    failures.push(`${filePath}: Markdown has no heading`)
+  }
+  if (extension === 'json') {
+    try { JSON.parse(content) } catch { failures.push(`${filePath}: invalid JSON`) }
+  }
+  const codeExtensions = ['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'go', 'rs', 'c', 'cpp', 'h', 'cs', 'rb', 'php', 'swift']
+  if (codeExtensions.includes(extension) && !/(?:\b(?:function|class|const|let|var|import|export|def|return|package|public|private|func)\b|[{}();])/m.test(content)) {
+    failures.push(`${filePath}: code has no recognizable executable structure`)
+  }
+  if (['yaml', 'yml'].includes(extension) && !/(?:^|\n)\s*(?:[^:#\n]+:\s*\S|[-*]\s+\S)/m.test(content)) {
+    failures.push(`${filePath}: YAML has no mapping or list entry`)
+  }
+  if (needsSources && ['md', 'markdown', 'txt'].includes(extension) && !/(https?:\/\/|来源|引用|source|reference)/i.test(content)) {
+    failures.push(`${filePath}: research artifact has no source or reference section`)
+  }
+  return failures
+}
 
 export interface TeamOrchestratorConfig {
   conversationId?: string
@@ -32,6 +64,10 @@ export interface TeamOrchestratorConfig {
   createWorkerConversation?: (subtask: SubTask, worker: AgentConfig) => Promise<string>
   /** Receives worker events for persistence without exposing the worker's context to other agents. */
   onWorkerEvent?: (subtask: SubTask, worker: AgentConfig, event: import('../../shared/types/agent').AgentEvent) => Promise<void>
+  /** Upper bound for concurrently running subtasks in one dependency layer. */
+  maxParallelSubtasks?: number
+  /** Maximum concurrent subtasks assigned to the same agent conversation. */
+  maxParallelPerAgent?: number
   maxSubtasks?: number
 }
 
@@ -40,6 +76,10 @@ export interface TeamRunParams {
   messages?: ChatMessage[]
   /** Reuse the persisted plan so completed subtasks are never run again. */
   plan?: TaskPlan
+}
+
+export function evaluateTaskPlanStatus(subtasks: SubTask[]): 'completed' | 'failed' {
+  return subtasks.length > 0 && subtasks.every((subtask) => subtask.status === 'completed') ? 'completed' : 'failed'
 }
 
 export class TeamOrchestrator {
@@ -197,17 +237,10 @@ export class TeamOrchestrator {
           assigned.push({ subtask, worker })
         }
 
-        // A dependency-safe batch may contain several independent resource
-        // groups. Run each group concurrently; overlapping writes remain
-        // serialized for deterministic results.
-        for (const group of this.partitionByResourceConflicts(assigned)) {
-          if (signal.aborted) break
-          if (group.length > 1) {
-            for await (const event of this.executeConcurrentBatch(group, plan, completedResults)) yield event
-          } else {
-            for await (const event of this.executeWithRetry(group[0].subtask, group[0].worker, plan, completedResults)) yield event
-          }
-        }
+        // Run the whole dependency-safe layer through one resource-aware
+        // scheduler. It fills available slots dynamically; overlapping
+        // resource keys wait, while disjoint tasks execute concurrently.
+        for await (const event of this.executeConcurrentBatch(assigned, plan, completedResults)) yield event
       }
 
       if (signal.aborted) {
@@ -218,6 +251,18 @@ export class TeamOrchestrator {
       await this.waitForResume(signal)
       if (signal.aborted) {
         yield { type: 'done', cancelled: true }
+        return
+      }
+
+      // A plan is complete only when every subtask has a verified completed
+      // result. A failed, blocked, or still-pending subtask must keep the plan
+      // failed so the UI and resumable task state cannot claim success.
+      const incomplete = plan.subtasks.filter((subtask) => subtask.status !== 'completed')
+      if (evaluateTaskPlanStatus(plan.subtasks) !== 'completed') {
+        plan.status = 'failed'
+        const detail = incomplete.map((subtask) => `${subtask.title} (${subtask.status})`).join(', ')
+        yield { type: 'error', error: `Team plan did not complete because ${incomplete.length} subtask(s) remain unresolved: ${detail}.` }
+        yield { type: 'done' }
         return
       }
 
@@ -375,16 +420,26 @@ export class TeamOrchestrator {
       && all.findIndex((item) => item.providerId === candidate.providerId && item.model === candidate.model) === index
     )
 
-    const available = candidates.filter((candidate) =>
-      this.config.providerForAgent({ ...worker, providerId: candidate.providerId, model: candidate.model })
-    )
+    const available = candidates.map((candidate) => ({
+      candidate,
+      provider: this.config.providerForAgent({ ...worker, providerId: candidate.providerId, model: candidate.model }),
+    })).filter((item): item is { candidate: typeof candidates[number]; provider: LLMProvider } => Boolean(item.provider))
     if (!available.length) return worker
+
+    // A task with tools must never be routed to a known embedding/rerank/
+    // transcription endpoint just because it happens to be configured as a
+    // candidate. Keep unknown custom gateways eligible; AgentRunner will issue
+    // the final protocol-aware diagnostic if the provider rejects the call.
+    const toolCapable = worker.tools.length > 0
+      ? available.filter((item) => inferModelCapabilities(item.provider.type, item.candidate.model).supportsTools !== false)
+      : available
+    const routable = toolCapable.length > 0 ? toolCapable : available
 
     const role = subtask?.assignedRole || worker.role
     const preference = worker.modelPreference
     const taskText = `${subtask?.title || ''} ${subtask?.description || ''}`.toLowerCase()
-    const score = (candidate: typeof available[number]): number => {
-      const model = candidate.model.toLowerCase()
+    const score = (item: typeof routable[number]): number => {
+      const model = item.candidate.model.toLowerCase()
       let value = 0
       if (role === 'coder' && /(coder|code|dev|qwen)/.test(model)) value += 6
       if (role === 'researcher' && /(search|research|chat|sonnet|gpt|gemini)/.test(model)) value += 4
@@ -398,8 +453,8 @@ export class TeamOrchestrator {
       return value
     }
 
-    const selected = available.reduce((best, candidate) => score(candidate) > score(best) ? candidate : best)
-    return { ...worker, providerId: selected.providerId, model: selected.model }
+    const selected = routable.reduce((best, candidate) => score(candidate) > score(best) ? candidate : best)
+    return { ...worker, providerId: selected.candidate.providerId, model: selected.candidate.model }
   }
 
   private async *executeWithRetry(
@@ -411,7 +466,8 @@ export class TeamOrchestrator {
     const maxAttempts = 2
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       if (this.abortController?.signal.aborted) return
-      const executionAgent = this.selectExecutionAgent(worker, subtask)
+      const candidateWorker = attempt > 1 ? this.selectReplacementWorker(worker) : worker
+      const executionAgent = this.selectExecutionAgent(candidateWorker, subtask)
 
       subtask.status = 'in_progress'
       subtask.startedAt = subtask.startedAt || Date.now()
@@ -457,8 +513,13 @@ export class TeamOrchestrator {
     plan.subtasks = plan.subtasks.map((item) => item.id === subtask.id ? { ...subtask } : item)
   }
 
+  private selectReplacementWorker(current: AgentConfig): AgentConfig {
+    const sameRole = this.config.workers.find((candidate) => candidate.id !== current.id && candidate.role === current.role)
+    return sameRole || this.config.workers.find((candidate) => candidate.id !== current.id) || current
+  }
+
   private isRetryableSubtaskFailure(message: string): boolean {
-    return /(timeout|timed out|rate.?limit|too many requests|network|fetch failed|econn|connection (?:closed|reset|aborted)|temporarily unavailable|\b5(?:02|03|04)\b|required task artifact was not created|artifact.*missing)/i.test(message)
+    return /(timeout|timed out|rate.?limit|too many requests|network|fetch failed|econn|connection (?:closed|reset|aborted)|temporarily unavailable|\b5(?:02|03|04)\b|required task artifact was not created|artifact.*missing|task artifact validation failed)/i.test(message)
   }
 
   private async *executeConcurrentBatch(
@@ -467,7 +528,11 @@ export class TeamOrchestrator {
     completedResults: Map<string, string>
   ): AsyncGenerator<TeamEvent> {
     const queued: TeamEvent[] = []
-    let remaining = assignments.length
+    let completed = 0
+    let active = 0
+    const pending = [...assignments]
+    const totalAssignments = assignments.length
+    const activeAssignments: Array<{ subtask: SubTask; worker: AgentConfig; keys: Set<string>; exclusive: boolean }> = []
     let notify: (() => void) | undefined
 
     const push = (event: TeamEvent): void => {
@@ -476,24 +541,51 @@ export class TeamOrchestrator {
       notify = undefined
     }
 
-    const runners = assignments.map(async ({ subtask, worker }) => {
-      try {
-        for await (const event of this.executeWithRetry(subtask, worker, plan, completedResults)) {
-          push(event)
-        }
-      } finally {
-        remaining -= 1
-        notify?.()
-        notify = undefined
-      }
-    })
+    const maxConcurrency = Math.max(1, Math.min(assignments.length || 1, this.config.maxParallelSubtasks ?? 4))
+    const canStart = (assignment: { subtask: SubTask; worker: AgentConfig }): boolean => {
+      if (activeAssignments.some((item) => item.exclusive)) return false
+      const agentLimit = Math.max(1, this.config.maxParallelPerAgent ?? 2)
+      if (activeAssignments.filter((item) => item.worker.id === assignment.worker.id).length >= agentLimit) return false
+      if (assignment.subtask.parallelizable === false) return active === 0
+      const keys = this.resourceKeysFor(assignment.subtask, assignment.worker)
+      return activeAssignments.every((item) => item.keys.size === 0 || keys.size === 0 || ![...keys].some((key) => item.keys.has(key)))
+    }
 
-    while (remaining > 0 || queued.length > 0) {
+    const runners: Promise<void>[] = []
+    const launch = (): void => {
+      while (active < maxConcurrency && pending.length > 0) {
+        const candidateIndex = pending.findIndex((item) => canStart(item))
+        if (candidateIndex < 0) return
+        const candidate = pending.splice(candidateIndex, 1)[0]
+        active += 1
+        const slot = { subtask: candidate.subtask, worker: candidate.worker, keys: this.resourceKeysFor(candidate.subtask, candidate.worker), exclusive: candidate.subtask.parallelizable === false }
+        activeAssignments.push(slot)
+        const runner = (async () => {
+          try {
+            for await (const event of this.executeWithRetry(candidate.subtask, candidate.worker, plan, completedResults)) push(event)
+          } finally {
+            active -= 1
+            completed += 1
+            const index = activeAssignments.indexOf(slot)
+            if (index >= 0) activeAssignments.splice(index, 1)
+            launch()
+            notify?.()
+            notify = undefined
+          }
+        })()
+        runners.push(runner)
+      }
+    }
+
+    launch()
+
+    while (completed < totalAssignments || queued.length > 0) {
       const event = queued.shift()
       if (event) {
         yield event
         continue
       }
+      if (active === 0 && pending.length > 0) launch()
       await new Promise<void>((resolve) => { notify = resolve })
     }
 
@@ -610,6 +702,7 @@ Rules:
       dependencies: string[]
       resourceKeys?: string[]
       parallelizable?: boolean
+      priority?: number
       requiredTools?: string[]
       assignedRole: string
       assignedAgentProfileId?: string
@@ -677,6 +770,7 @@ Rules:
         ? st.resourceKeys.filter((key): key is string => typeof key === 'string' && key.trim().length > 0).map((key) => key.trim())
         : undefined,
       parallelizable: typeof st.parallelizable === 'boolean' ? st.parallelizable : undefined,
+      priority: typeof st.priority === 'number' && Number.isFinite(st.priority) ? Math.max(-100, Math.min(100, Math.trunc(st.priority))) : undefined,
       requiredTools: Array.isArray(st.requiredTools)
         ? st.requiredTools.filter((tool): tool is string => typeof tool === 'string' && tool.trim().length > 0).map((tool) => tool.trim())
         : undefined,
@@ -911,6 +1005,10 @@ claim the task is complete when the required artifact has not been written.
       if (missingArtifacts.length) {
         throw new Error(`Required task artifact was not created: ${missingArtifacts.join(', ')}. Execute write_file and verify the exact path before reporting completion.`)
       }
+      const invalidArtifacts = await this.validateArtifacts(subtask)
+      if (invalidArtifacts.length) {
+        throw new Error(`Task artifact validation failed: ${invalidArtifacts.join(' | ')}`)
+      }
 
       subtask.status = 'completed'
       subtask.result = result || 'Task completed successfully.'
@@ -940,7 +1038,7 @@ claim the task is complete when the required artifact has not been written.
 
   private artifactPathsFor(subtask: SubTask): string[] {
     const required = this.inferRequiredTools(subtask)
-    if (!required.includes('write_file') && !required.includes('edit_file')) return []
+    if (!required.includes('write_file') && !required.includes('edit_file') && !required.includes('spreadsheet')) return []
     // Resource keys are the planner's authoritative artifact declarations.
     // Ignore directory-like scopes while retaining common document/data files.
     const fromResources = (subtask.resourceKeys || []).filter((key) =>
@@ -969,13 +1067,53 @@ claim the task is complete when the required artifact has not been written.
     return missing
   }
 
+  private async validateArtifacts(subtask: SubTask): Promise<string[]> {
+    const failures: string[] = []
+    const needsSources = /(research|investigat|market|调研|研究|来源|引用|证据|报告)/i.test(`${subtask.title} ${subtask.description}`)
+    for (const filePath of this.artifactPathsFor(subtask)) {
+      const extension = filePath.split('.').pop()?.toLowerCase() || ''
+      try {
+        const info = await this.config.fileService.getFileInfo(filePath, this.config.workspacePath, this.config.fileAccessGrants, this.config.fullFilesystemAccess)
+        if (info.isDirectory) {
+          failures.push(`${filePath}: path is a directory, not a file`)
+          continue
+        }
+        if (info.size === 0) {
+          failures.push(`${filePath}: file is empty`)
+          continue
+        }
+        if (['xlsx', 'xls', 'ods'].includes(extension)) {
+          if (!this.config.fileService.readBuffer) continue
+          const workbook = XLSX.read(await this.config.fileService.readBuffer(filePath, this.config.workspacePath, this.config.fileAccessGrants, this.config.fullFilesystemAccess), { type: 'buffer' })
+          if (!workbook.SheetNames.length) failures.push(`${filePath}: workbook has no sheets`)
+          continue
+        }
+        // PDF/DOCX are binary formats. Their non-zero size is verified here;
+        // parsing their internal text belongs to the document toolchain.
+        if (['pdf', 'doc', 'docx'].includes(extension)) continue
+        const content = await this.config.fileService.readFile(filePath, this.config.workspacePath, this.config.fileAccessGrants, this.config.fullFilesystemAccess)
+        if (content.startsWith('[Binary file:')) {
+          failures.push(`${filePath}: binary content cannot be structurally inspected`)
+          continue
+        }
+        failures.push(...validateTextArtifact(filePath, content, needsSources))
+      } catch (error) {
+        failures.push(`${filePath}: validation could not read the artifact (${error instanceof Error ? error.message : String(error)})`)
+      }
+    }
+    return failures
+  }
+
   private async invalidateMissingCompletedArtifacts(plan: TaskPlan): Promise<void> {
     for (const subtask of plan.subtasks) {
       if (subtask.status !== 'completed') continue
       const missing = await this.findMissingArtifacts(subtask)
-      if (!missing.length) continue
+      const invalid = missing.length ? [] : await this.validateArtifacts(subtask)
+      if (!missing.length && !invalid.length) continue
       subtask.status = 'pending'
-      subtask.result = `Previous completion was invalidated because the required artifact is missing: ${missing.join(', ')}.`
+      subtask.result = missing.length
+        ? `Previous completion was invalidated because the required artifact is missing: ${missing.join(', ')}.`
+        : `Previous completion was invalidated because the artifact failed validation: ${invalid.join(' | ')}.`
       subtask.completedAt = undefined
     }
   }
@@ -1025,8 +1163,13 @@ Provide a concise but comprehensive summary of what was accomplished, any issues
       )
       return response.content
     } catch {
-      // Fallback summary if LLM call fails
-      return `Team plan completed.\n\nGoal: ${plan.goal}\n\n${plan.subtasks.length} subtasks processed:\n- ${plan.subtasks.filter((s) => s.status === 'completed').length} completed\n- ${plan.subtasks.filter((s) => s.status === 'failed').length} failed`
+      // Fallback summary if LLM call fails. Preserve the actual plan state;
+      // a failed subtask must never be described as a completed plan.
+      const completed = plan.subtasks.filter((s) => s.status === 'completed').length
+      const failed = plan.subtasks.filter((s) => s.status === 'failed').length
+      const unresolved = plan.subtasks.filter((s) => !['completed', 'failed'].includes(s.status)).length
+      const status = failed || unresolved ? 'needs attention' : 'completed'
+      return `Team plan ${status}.\n\nGoal: ${plan.goal}\n\n${plan.subtasks.length} subtasks processed:\n- ${completed} completed\n- ${failed} failed\n- ${unresolved} unresolved`
     }
   }
 
@@ -1041,7 +1184,7 @@ Provide a concise but comprehensive summary of what was accomplished, any issues
     while (subtasks.some((subtask) => !visited.has(subtask.id))) {
       const batch: SubTask[] = []
 
-      for (const subtask of subtasks) {
+      for (const subtask of [...subtasks].sort((left, right) => (right.priority || 0) - (left.priority || 0))) {
         if (visited.has(subtask.id)) continue
 
         // Check if all dependencies are visited

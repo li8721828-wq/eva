@@ -4,7 +4,7 @@ import type { ChatParams, ChatChunk, ToolDefinition } from '../../shared/types/p
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
 import { withRetry, classifyError } from './errors'
-import { parseTextToolCallProtocols } from './text-tool-call-protocol'
+import { getProtocolAdapter } from './protocol-adapters'
 
 const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {
   // Some OpenAI-compatible gateways return this historical name inside a
@@ -293,6 +293,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    const protocolAdapter = getProtocolAdapter(this.type, params.model)
     const toolCallsAccumulator: Map<
       number,
       { id?: string; name?: string; arguments: string }
@@ -429,8 +430,8 @@ export class OpenAIProvider implements LLMProvider {
           arguments: acc.arguments,
         })),
       }
-    } else if (toolCallsAccumulator.size === 0) {
-      const parsedTextToolCalls = parseTextToolCallProtocols(textContent, params.tools)
+    } else if (toolCallsAccumulator.size === 0 && protocolAdapter.textToolCalls) {
+      const parsedTextToolCalls = protocolAdapter.parseTextToolCalls(textContent, params.tools)
       if (parsedTextToolCalls.calls.length > 0) {
         yield {
           content: '',
@@ -443,7 +444,7 @@ export class OpenAIProvider implements LLMProvider {
             arguments: JSON.stringify(toolCall.arguments),
           })),
         }
-      } else if (parsedTextToolCalls.detected || hasSuspectedTextToolCall(textContent, params.tools)) {
+      } else if (parsedTextToolCalls.detected || protocolAdapter.hasSuspectedTextToolCall(textContent, params.tools)) {
         yield {
           content: '',
           finishReason: 'stop',
@@ -486,6 +487,7 @@ export class OpenAIProvider implements LLMProvider {
       throw classifyError(new Error('No response from model'), this.id)
     }
 
+    const protocolAdapter = getProtocolAdapter(this.type, params.model)
     const toolCalls = choice.message.tool_calls?.map((tc) => ({
       id: tc.id,
       name: tc.function.name,
@@ -493,9 +495,9 @@ export class OpenAIProvider implements LLMProvider {
     }))
 
     const message = choice.message as typeof choice.message & { reasoning_content?: string }
-    const legacyToolCalls = toolCalls?.length
+    const legacyToolCalls = toolCalls?.length || !protocolAdapter.textToolCalls
       ? []
-      : parseTextToolCallProtocols(message.content || '', params.tools).calls
+      : protocolAdapter.parseTextToolCalls(message.content || '', params.tools).calls
     return {
       content: legacyToolCalls.length > 0 ? '' : (message.content || message.reasoning_content || ''),
       toolCalls: toolCalls?.length ? toolCalls : legacyToolCalls,

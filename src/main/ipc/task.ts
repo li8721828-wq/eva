@@ -410,7 +410,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
     return startExpertTaskRun({ sender: window.webContents } as IpcMainEvent, {
       conversationId: run.conversationId,
       goal,
-      resume: run.payload?.resume ?? false,
+      resume: run.status === 'interrupted' || Boolean(run.payload?.resume),
       recoveryReason: 'app-restart',
       idempotencyKey: run.idempotencyKey,
     })
@@ -424,7 +424,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
       conversationId: run.conversationId,
       goal,
       agentId,
-      resume: run.payload?.resume ?? false,
+      resume: run.status === 'interrupted' || Boolean(run.payload?.resume),
       recoveryReason: 'app-restart',
       config: run.payload?.config,
       idempotencyKey: run.idempotencyKey,
@@ -1214,10 +1214,9 @@ export function registerTaskHandlers(services?: TaskServices): void {
 }
 
 /**
- * Requeues work that was waiting to start when Eva closed. Work that had
- * already started is marked interrupted at shutdown and deliberately waits for
- * an explicit Continue action in Task Center, so file-writing work never
- * resumes without the user seeing it.
+ * Requeues auto-queued work after Eva restarts. Runs interrupted after
+ * admission are replayed from their durable checkpoint; manually checkpointed
+ * runs still wait for an explicit Continue action in Task Center.
  */
 export async function recoverQueuedTasks(window: BrowserWindow): Promise<void> {
   const recoveredConversationIds = new Set(await getAgentOsScheduler().recoverQueued(window))

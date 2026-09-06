@@ -3,6 +3,16 @@ import type { RuntimeProcessKind, RuntimeProcessStatus } from './runtime-kernel'
 export type RuntimeRunRecoveryMode = 'auto-queued' | 'checkpointed-manual' | 'none'
 export type RuntimeRunStatus = RuntimeProcessStatus | 'replayed'
 
+export interface RuntimeRunMetrics {
+  durationMs?: number
+  modelCalls?: number
+  promptTokens?: number
+  completionTokens?: number
+  toolCalls?: number
+  cost?: number
+  currency?: string
+}
+
 export interface RuntimeRunPayload {
   /** Reconstructible request data only; never model reasoning or raw tool output. */
   goal?: string
@@ -39,4 +49,5 @@ export interface RuntimeRunDescriptor {
   recoveryCount: number
   lastRecoveryAt?: number
   detail?: string
+  metrics?: RuntimeRunMetrics
 }

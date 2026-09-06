@@ -1,6 +1,6 @@
 import Store from 'electron-store'
 import { randomUUID } from 'crypto'
-import type { PersonalPreference, PersonalPreferenceCategory, PersonalPreferenceDurability, PersonalPreferencePolarity, PersonalPreferenceSettings } from '../../shared/types/personal-preferences'
+import type { PersonalPreference, PersonalPreferenceCategory, PersonalPreferenceDurability, PersonalPreferenceImportOptions, PersonalPreferenceImportResult, PersonalPreferencePolarity, PersonalPreferenceProfile, PersonalPreferenceSettings } from '../../shared/types/personal-preferences'
 import { DEFAULT_PERSONAL_PREFERENCE_SETTINGS } from '../../shared/types/personal-preferences'
 import type { LLMProvider } from '../providers/base-provider'
 import { truncateUnicode } from '../utils/unicode'
@@ -18,7 +18,7 @@ function compact(value: string): string {
 }
 
 function normalizeStatement(value: string): string {
-  return compact(value.replace(/[，,。；;：:]+$/u, ''))
+  return compact(compact(value).replace(/[，,。；;：:]+$/u, ''))
 }
 
 export interface PreferenceObservation {
@@ -84,6 +84,58 @@ export class PersonalPreferenceStore {
 
   clear(): void {
     this.store.set('preferences', [])
+  }
+
+  exportProfile(): PersonalPreferenceProfile {
+    return {
+      format: 'eva.personal-preferences',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      // Do not export system switches, identifiers, timestamps, evidence summaries, or conversation-derived text.
+      preferences: this.list().map((preference) => ({
+        category: preference.category,
+        polarity: preference.polarity,
+        statement: preference.statement,
+        confidence: preference.confidence,
+        durability: preference.durability,
+      })),
+    }
+  }
+
+  importProfile(value: unknown, options: PersonalPreferenceImportOptions): PersonalPreferenceImportResult {
+    const profile = parsePersonalPreferenceProfile(value)
+    const existing = options.mode === 'replace' ? [] : this.store.get('preferences')
+    const seen = new Set(existing.filter((preference) => preference.active).map(preferenceKey))
+    const imported: PersonalPreference[] = []
+    let skipped = 0
+    const now = Date.now()
+
+    for (const record of profile.preferences) {
+      const key = preferenceKey(record)
+      if (seen.has(key) || existing.length + imported.length >= MAX_PREFERENCES) {
+        skipped += 1
+        continue
+      }
+      seen.add(key)
+      imported.push({
+        id: randomUUID(),
+        category: record.category,
+        polarity: record.polarity,
+        statement: record.statement,
+        confidence: record.confidence,
+        evidenceCount: 1,
+        durability: record.durability,
+        evidenceSummary: '从导入的偏好配置中添加。',
+        source: 'imported',
+        createdAt: now,
+        updatedAt: now,
+        lastConfirmedAt: now,
+        active: true,
+      })
+    }
+
+    this.store.set('preferences', [...imported, ...existing].slice(0, MAX_PREFERENCES))
+    return { imported: imported.length, skipped, total: existing.length + imported.length }
   }
 
   async distillTurn(observation: PreferenceObservation, provider: LLMProvider, model: string): Promise<PersonalPreference[]> {
@@ -159,6 +211,47 @@ export class PersonalPreferenceStore {
     this.store.set('preferences', [next, ...preferences].slice(0, MAX_PREFERENCES))
     return next
   }
+}
+
+function preferenceKey(preference: Pick<PersonalPreference, 'category' | 'polarity' | 'statement'>): string {
+  return `${preference.category}:${preference.polarity}:${normalizeStatement(preference.statement).toLocaleLowerCase()}`
+}
+
+export function parsePersonalPreferenceProfile(value: unknown): PersonalPreferenceProfile {
+  if (!value || typeof value !== 'object') throw new Error('偏好配置必须是 JSON 对象。')
+  const profile = value as Record<string, unknown>
+  if (profile.format !== 'eva.personal-preferences' || profile.version !== 1) {
+    throw new Error('该偏好配置格式或版本不受支持。')
+  }
+  if (!Array.isArray(profile.preferences) || profile.preferences.length > MAX_PREFERENCES) {
+    throw new Error(`偏好配置必须包含不超过 ${MAX_PREFERENCES} 条偏好。`)
+  }
+
+  const preferences = profile.preferences.map((value, index) => {
+    if (!value || typeof value !== 'object') throw new Error(`第 ${index + 1} 条偏好格式无效。`)
+    const item = value as Record<string, unknown>
+    const category = item.category
+    const polarity = item.polarity
+    const statement = typeof item.statement === 'string' ? normalizeStatement(item.statement) : ''
+    if (!isCategory(category) || !isPolarity(polarity) || !statement) throw new Error(`第 ${index + 1} 条偏好缺少有效的类别、倾向或内容。`)
+    const confidence = typeof item.confidence === 'number' && Number.isFinite(item.confidence) ? Math.max(0.5, Math.min(0.99, item.confidence)) : 0.72
+    const durability = item.durability === 'established' ? 'established' as const : 'emerging' as const
+    return { category, polarity, statement, confidence, durability }
+  })
+  return {
+    format: 'eva.personal-preferences',
+    version: 1,
+    exportedAt: typeof profile.exportedAt === 'string' ? profile.exportedAt : new Date(0).toISOString(),
+    preferences,
+  }
+}
+
+function isCategory(value: unknown): value is PersonalPreferenceCategory {
+  return value === 'aesthetic' || value === 'communication' || value === 'coding' || value === 'tooling' || value === 'workflow' || value === 'other'
+}
+
+function isPolarity(value: unknown): value is PersonalPreferencePolarity {
+  return value === 'prefer' || value === 'avoid'
 }
 
 function parseDistilledRecords(content: string): PreferenceRecordInput[] {

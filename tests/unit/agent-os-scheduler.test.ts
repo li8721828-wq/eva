@@ -122,4 +122,24 @@ describe('AgentOsScheduler', () => {
       await fs.rm(dataDir, { recursive: true, force: true })
     }
   })
+
+  it('recovers an auto-queued run interrupted during application shutdown', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-agent-os-interrupted-'))
+    try {
+      const runtimeRuns = new RuntimeRunStore(dataDir)
+      const now = Date.now()
+      await runtimeRuns.save({
+        id: 'interrupted-run', conversationId: 'conversation-interrupted', kind: 'goal', status: 'interrupted',
+        resourceKeys: [], recoveryMode: 'auto-queued', idempotencyKey: 'interrupted-run', createdAt: now, updatedAt: now,
+        recoveryCount: 0, payload: { goal: 'Resume this goal', agentId: 'agent-1' },
+      })
+      const scheduler = new AgentOsScheduler(new RuntimeKernelStore(dataDir), 1, runtimeRuns)
+      scheduler.registerRecoveryHandler('goal', async (run) => run.payload?.goal === 'Resume this goal')
+
+      await expect(scheduler.recoverQueued({})).resolves.toEqual(['conversation-interrupted'])
+      await expect(runtimeRuns.listRecoverable()).resolves.toEqual([])
+    } finally {
+      await fs.rm(dataDir, { recursive: true, force: true })
+    }
+  })
 })

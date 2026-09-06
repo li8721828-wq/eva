@@ -214,3 +214,10 @@ export function parseTextToolCallProtocols(content: string, tools?: ToolDefiniti
   }
   return { calls: [], detected: false }
 }
+
+/** Detect protocol-looking text even when the payload is malformed. */
+export function hasSuspectedTextToolCall(content: string, tools?: ToolDefinition[]): boolean {
+  if (/<\s*(?:[|｜]\s*){1,2}DSML(?:\s*[|｜]){1,2}\s*(?:tool_calls?|toolcalls|invoke|parameter)\b/i.test(content)) return true
+  if (/<tool_call\b|<function=/i.test(content)) return true
+  return Boolean(tools?.some((tool) => new RegExp(`<\\s*${tool.name}\\b`, 'i').test(content)))
+}

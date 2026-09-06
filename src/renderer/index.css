@@ -2287,6 +2287,64 @@ a.tool-call-source__title:hover {
   accent-color: #7c3aed;
 }
 
+.settings-dialog__model-capability {
+  flex: 0 0 auto;
+  border-radius: 4px;
+  background: #f4f4f5;
+  padding: 2px 6px;
+  color: #71717a;
+  font-size: 0.6875rem;
+  line-height: 1.25;
+}
+
+.settings-dialog__model-capability.is-success {
+  background: #ecfdf5;
+  color: #047857;
+}
+
+.settings-dialog__model-capability.is-error {
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.settings-dialog__model-context {
+  flex: 0 0 auto;
+  min-height: 24px;
+  max-width: 72px;
+  border: 1px solid #e4e4e7;
+  border-radius: 4px;
+  background: #fff;
+  padding: 2px 4px;
+  color: #52525b;
+  font-size: 0.6875rem;
+  line-height: 1.25;
+}
+
+.settings-dialog__model-context:focus-visible {
+  outline: 2px solid #a78bfa;
+  outline-offset: 1px;
+}
+
+.settings-dialog__model-probe {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  padding: 3px 0 3px 4px;
+  color: #6d28d9;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.settings-dialog__model-probe:hover:not(:disabled) {
+  color: #5b21b6;
+  text-decoration: underline;
+}
+
+.settings-dialog__model-probe:disabled {
+  color: #a1a1aa;
+  cursor: not-allowed;
+}
+
 .settings-dialog__model-no-results {
   padding: 14px 10px;
   color: #71717a;

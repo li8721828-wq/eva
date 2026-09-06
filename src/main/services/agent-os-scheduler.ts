@@ -100,7 +100,7 @@ export class AgentOsScheduler {
       onUpdate: async (update) => {
         activeRunRegistry.transition('scheduler-task', input.conversationId, this.toRegistryStatus(update.state), this.detailForUpdate(update))
         await input.onUpdate?.(update)
-        await this.transitionStores(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update))
+        await this.transitionStores(process.id, this.toRuntimeStatus(update.state), this.detailForUpdate(update), update.metrics)
         if (this.isTerminal(update.state) && this.taskProcesses.get(input.conversationId)?.processId === process.id) {
           this.taskProcesses.delete(input.conversationId)
           if (idempotencyKey) this.activeIdempotencyKeys.delete(idempotencyKey)
@@ -241,10 +241,10 @@ export class AgentOsScheduler {
     this.taskQueue.releaseResource(resourceKey)
   }
 
-  private async transitionStores(processId: string, status: RuntimeProcessStatus, detail?: string): Promise<void> {
+  private async transitionStores(processId: string, status: RuntimeProcessStatus, detail?: string, metrics?: import('./task-execution-queue').TaskExecutionMetrics): Promise<void> {
     const results = await Promise.allSettled([
       this.runtimeKernel.transition(processId, status, detail),
-      this.runtimeRuns?.transition(processId, status, detail),
+      this.runtimeRuns?.transition(processId, status, detail, metrics),
     ])
     for (const result of results) {
       if (result.status === 'rejected') console.error(`Agent OS state transition failed for ${processId}:`, result.reason)

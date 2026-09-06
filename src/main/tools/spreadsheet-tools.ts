@@ -32,14 +32,17 @@ async function readWorkbook(context: ToolContext, filePath: string): Promise<XLS
   return XLSX.read(await context.fileService.readBuffer(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess), { cellFormula: true, cellNF: true, cellText: true })
 }
 
-function inspectSheet(workbook: XLSX.WorkBook, sheetName: string, maxRows: number, maxCols: number) {
+function inspectSheet(workbook: XLSX.WorkBook, sheetName: string, maxRows: number, maxCols: number, offsetRow = 0, columns?: number[]) {
   const sheet = workbook.Sheets[sheetName]
   if (!sheet) throw new Error(`Sheet not found: ${sheetName}`)
   const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1:A1')
   const rows: unknown[][] = []
-  for (let row = range.s.r; row <= Math.min(range.e.r, range.s.r + maxRows - 1); row += 1) {
+  const startRow = Math.min(range.e.r, range.s.r + Math.max(0, offsetRow))
+  const selectedColumns = columns?.length ? columns.filter((column) => column >= range.s.c && column <= range.e.c).slice(0, maxCols) : undefined
+  for (let row = startRow; row <= Math.min(range.e.r, startRow + maxRows - 1); row += 1) {
     const values: unknown[] = []
-    for (let col = range.s.c; col <= Math.min(range.e.c, range.s.c + maxCols - 1); col += 1) {
+    const columnIndexes = selectedColumns || Array.from({ length: Math.min(maxCols, range.e.c - range.s.c + 1) }, (_, index) => range.s.c + index)
+    for (const col of columnIndexes) {
       const cell = sheet[XLSX.utils.encode_cell({ r: row, c: col })] as XLSX.CellObject | undefined
       values.push(cell?.f ? `=${cell.f}` : cell?.v ?? null)
     }
@@ -64,6 +67,34 @@ function extendSheetRange(sheet: XLSX.WorkSheet, address: string): void {
   sheet['!ref'] = XLSX.utils.encode_range(range)
 }
 
+function workbookQuality(workbook: XLSX.WorkBook): { valid: boolean; warnings: string[] } {
+  const warnings: string[] = []
+  let populatedSheets = 0
+  for (const name of workbook.SheetNames) {
+    const sheet = workbook.Sheets[name]
+    const range = XLSX.utils.decode_range(sheet?.['!ref'] || 'A1:A1')
+    const headers = new Set<string>()
+    let populated = 0
+    for (let col = range.s.c; col <= range.e.c; col += 1) {
+      const value = sheet?.[XLSX.utils.encode_cell({ r: range.s.r, c: col })]?.v
+      if (value !== undefined && value !== null && String(value).trim()) {
+        const header = String(value).trim().toLowerCase()
+        if (headers.has(header)) warnings.push(`${name}: duplicate header "${String(value).trim()}"`)
+        headers.add(header)
+      }
+    }
+    for (const key of Object.keys(sheet || {})) {
+      if (key.startsWith('!')) continue
+      const cell = sheet[key] as XLSX.CellObject
+      if (cell.v !== undefined && cell.v !== null && String(cell.v).trim()) populated += 1
+      if (typeof cell.v === 'string' && /^#(?:ref!|div\/0!|value!|name\?|null!)/i.test(cell.v)) warnings.push(`${name}!${key}: formula error ${cell.v}`)
+    }
+    if (populated > 0) populatedSheets += 1
+  }
+  if (populatedSheets === 0) warnings.push('workbook has no populated cells')
+  return { valid: populatedSheets > 0 && !warnings.some((warning) => /formula error/i.test(warning)), warnings }
+}
+
 export function createSpreadsheetTools(): ToolExecutor[] {
   return [{
     definition: {
@@ -79,6 +110,8 @@ export function createSpreadsheetTools(): ToolExecutor[] {
           sheet: { type: 'string', description: 'Sheet name for inspect or update.' },
           maxRows: { type: 'number', description: 'Maximum rows returned by inspect (max 200).' },
           maxCols: { type: 'number', description: 'Maximum columns returned by inspect (max 50).' },
+          offsetRow: { type: 'number', description: 'Rows to skip from the start of the selected sheet for pagination.' },
+          columns: { type: 'array', description: 'Optional zero-based column indexes to inspect.' },
           sheets: { type: 'array', description: 'For create: [{ name, rows }], where rows are arrays of cell values.' },
           operations: { type: 'array', description: 'For update: [{ sheet, cell, value }]. Cell uses A1 notation; string values beginning with = are formulas.' },
         },
@@ -90,7 +123,9 @@ export function createSpreadsheetTools(): ToolExecutor[] {
         const inputPath = requiredText(params.path, 'path')
         const workbook = await readWorkbook(context, inputPath)
         const selected = typeof params.sheet === 'string' && params.sheet.trim() ? [params.sheet.trim()] : workbook.SheetNames.slice(0, MAX_SHEETS)
-        return JSON.stringify({ path: inputPath, sheets: workbook.SheetNames, data: selected.map((name) => inspectSheet(workbook, name, Math.max(1, Math.min(MAX_ROWS, Number(params.maxRows) || 50)), Math.max(1, Math.min(MAX_COLS, Number(params.maxCols) || 20)))) }, null, 2)
+        const offsetRow = Math.max(0, Math.floor(Number(params.offsetRow) || 0))
+        const columns = Array.isArray(params.columns) ? params.columns.filter((value): value is number => typeof value === 'number' && Number.isInteger(value) && value >= 0) : undefined
+        return JSON.stringify({ path: inputPath, sheets: workbook.SheetNames, quality: workbookQuality(workbook), offsetRow, data: selected.map((name) => inspectSheet(workbook, name, Math.max(1, Math.min(MAX_ROWS, Number(params.maxRows) || 50)), Math.max(1, Math.min(MAX_COLS, Number(params.maxCols) || 20)), offsetRow, columns)) }, null, 2)
       }
       if (action === 'create') {
         if (!context.fileService.writeBuffer) throw new Error('Spreadsheet binary writing is unavailable in this runtime.')
@@ -105,7 +140,7 @@ export function createSpreadsheetTools(): ToolExecutor[] {
         }
         const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }) as Buffer
         await context.fileService.writeBuffer(outputPath, buffer, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
-        return JSON.stringify({ action, status: 'created', path: outputPath, sheets: workbook.SheetNames, bytes: buffer.length }, null, 2)
+        return JSON.stringify({ action, status: 'created', path: outputPath, sheets: workbook.SheetNames, quality: workbookQuality(workbook), bytes: buffer.length }, null, 2)
       }
       if (action === 'update') {
         if (!context.fileService.writeBuffer) throw new Error('Spreadsheet binary writing is unavailable in this runtime.')
@@ -131,7 +166,7 @@ export function createSpreadsheetTools(): ToolExecutor[] {
         }
         const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }) as Buffer
         await context.fileService.writeBuffer(outputPath, buffer, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
-        return JSON.stringify({ action, status: 'updated', inputPath, path: outputPath, operations: (params.operations as unknown[]).length, bytes: buffer.length }, null, 2)
+        return JSON.stringify({ action, status: 'updated', inputPath, path: outputPath, operations: (params.operations as unknown[]).length, quality: workbookQuality(workbook), bytes: buffer.length }, null, 2)
       }
       throw new Error('action must be inspect, create, or update.')
     },

@@ -1,6 +1,6 @@
 {
   "name": "eva",
-  "version": "0.1.166",
+  "version": "0.1.181",
   "description": "Eva - AI Coding Agent Desktop Client",
   "main": "./out/main/index.js",
   "scripts": {
@@ -28,6 +28,7 @@
     "clsx": "^2.1.1",
     "electron-store": "^8.2.0",
     "highlight.js": "^11.10.0",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.454.0",
     "mammoth": "^1.12.1",
     "monaco-editor": "^0.52.0",

@@ -17,6 +17,7 @@ import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../servi
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
 import { classifyError } from '../providers/errors'
+import { describeModelCapabilityProfile, inferModelCapabilities } from '../../shared/model-capabilities'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -99,6 +100,7 @@ const MAX_EMPTY_RESPONSE_RETRIES = 1
 const MAX_NORMAL_TOOL_CYCLES = 12
 const MAX_AGENT_RESPONSE_TOKENS = 2_048
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
+const SEARCH_UNAVAILABLE_MARKER = '[SEARCH_UNAVAILABLE]'
 // Tool-generated screenshots need an independent bound from user attachments.
 const MAX_TOOL_REVIEW_IMAGE_BYTES = 32 * 1024 * 1024
 const TEAM_DELEGATION_TOOL: ToolDefinition = {
@@ -211,6 +213,15 @@ export class AgentRunner {
       // safety ceiling, while exact repeated tool batches terminate early to
       // prevent a failed lookup from turning into an open-ended loop.
       const toolCycleLimit = adaptiveToolBudget ? maxIter : Math.min(maxIter, MAX_NORMAL_TOOL_CYCLES)
+      const modelCapabilities = this.config.providerRegistry?.getModelCapabilities(this.config.provider.id, agentConfig.model)
+        || inferModelCapabilities(this.config.provider.type, agentConfig.model)
+      if (agentConfig.tools.length > 0 && modelCapabilities.supportsTools === false) {
+        yield {
+          type: 'error',
+          error: `模型 ${agentConfig.model} 不支持工具调用（${describeModelCapabilityProfile(modelCapabilities)}）。请为该智能体配置支持工具的聊天模型；本轮未发送请求。`,
+        }
+        return
+      }
       let nextBudgetCheck = adaptiveToolBudget
         ? Math.max(1, Math.min(toolCycleLimit, adaptiveToolBudget.initialIterations))
         : toolCycleLimit
@@ -296,6 +307,7 @@ export class AgentRunner {
       let latestProtocolResults: NonNullable<CompletedToolResult['protocol']>[] = []
       let rollingToolEvidence = ''
       const previousNormalToolBatches = new Set<string>()
+      let consecutiveSearchFailures = 0
 
       // Progressive tool disclosure is intentionally disabled. The active
       // agent's configured capabilities are all visible to the model, so an
@@ -304,22 +316,23 @@ export class AgentRunner {
       const spreadsheetPolicy = hasSpreadsheetAttachment
         ? '\n\n--- Spreadsheet attachment policy ---\nA spreadsheet attachment is present. Use the structured `spreadsheet` tool first. Make one `inspect` call without a `sheet` argument to get the workbook and sheet overview; inspect an individual sheet only when the first result shows it is necessary. Use `create` or `update` only when the user explicitly requests a file change. Do not write Python, PowerShell, Node, or other scripts for spreadsheet work unless the spreadsheet tool returns an error or explicitly reports that the requested operation is unsupported. If fallback is needed, report the spreadsheet tool failure before using `execute_command`. Do not repeat an identical spreadsheet call.\n'
         : ''
+      const modelCapabilityPolicy = this.buildModelCapabilityPolicy(modelCapabilities, activeToolDefs.length > 0)
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
         activeToolDefs,
-      ) + spreadsheetPolicy
+      ) + spreadsheetPolicy + modelCapabilityPolicy
       let messages: ChatMessageInput[] = contextManager.buildContext({
         agentConfig,
         messages: safeAllHistory,
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
-        maxContextTokens: getModelInputBudgetTokens(agentConfig.model),
+        maxContextTokens: getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens),
         tools: activeToolDefs,
-        systemPromptSuffix: spreadsheetPolicy,
+        systemPromptSuffix: spreadsheetPolicy + modelCapabilityPolicy,
       })
 
       // ── Tool execution loop ─────────────────────────────────────────────────
@@ -509,6 +522,11 @@ export class AgentRunner {
           }))
           for (const { toolCall, result } of completedBatch) {
             toolResults.set(toolCall.id, result)
+            if (toolCall.name === 'web_search') {
+              consecutiveSearchFailures = result.result.includes(SEARCH_UNAVAILABLE_MARKER)
+                ? consecutiveSearchFailures + 1
+                : 0
+            }
             if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
             yield {
               type: 'tool_result',
@@ -533,6 +551,15 @@ export class AgentRunner {
             },
           }
 
+          if (toolCall.name === 'web_search' && consecutiveSearchFailures >= 3) {
+            const deferredResult: CompletedToolResult = {
+              result: `${SEARCH_UNAVAILABLE_MARKER} Search has returned no usable results three times in this run. Stop searching and continue with known URLs or an explicitly marked unverified limitation; if this task requires an output file, write and verify it now.`,
+              isError: false,
+            }
+            toolResults.set(toolCall.id, deferredResult)
+            yield { type: 'tool_result', toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: deferredResult.result, isError: false } }
+            continue
+          }
           if (toolCall.name === 'web_search' && mustReadWebPageBeforeMoreSearch) {
             const deferredResult: CompletedToolResult = {
               result: 'Search results already returned readable source URLs. Read a relevant result with read_web_page before issuing another web_search.',
@@ -571,6 +598,11 @@ export class AgentRunner {
           const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
           const rawResult = cached || await this.executeTool(toolCall, toolContext)
           result = this.normalizeToolResult(rawResult)
+          if (toolCall.name === 'web_search') {
+            consecutiveSearchFailures = result.result.includes(SEARCH_UNAVAILABLE_MARKER)
+              ? consecutiveSearchFailures + 1
+              : 0
+          }
           if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
           toolResults.set(toolCall.id, result)
@@ -614,7 +646,7 @@ export class AgentRunner {
           fileAccessGrants,
           fullFilesystemAccess,
           activeToolDefs,
-        ) + spreadsheetPolicy
+        ) + spreadsheetPolicy + modelCapabilityPolicy
         const currentSystemMessage = messages[0]
         const preservedSystemSuffix = currentSystemMessage?.role === 'system' && currentSystemMessage.content.startsWith(activeSystemPrompt)
           ? currentSystemMessage.content.slice(activeSystemPrompt.length)
@@ -772,7 +804,23 @@ export class AgentRunner {
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
       }
       if (finalResponse.protocolTextDetected || finalResponse.toolCallParseFailure) {
+        // Some DeepSeek-compatible gateways keep emitting DSML during the
+        // tool-free synthesis turn even after all spreadsheet/file tools have
+        // completed. Give the model one final plain-text-only retry before
+        // surfacing an error; never execute a guessed call from this phase.
         if (finalResponse.content) yield { type: 'text_reset', discardProvisionalText: true }
+        messages.push({
+          role: 'user',
+          content: 'The previous synthesis was invalid because it contained tool-call markup. All requested tool work is already complete. Reply with the concise final answer in ordinary plain text or Markdown only. Do not call tools and do not emit DSML, XML, JSON tool envelopes, or protocol tags.',
+        })
+        yield { type: 'thinking', content: '最终汇总格式异常，正在重试纯文本回复。' }
+        const plainTextRetry = yield* this.executeLLMCall(messages, [])
+        accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, plainTextRetry.usage)
+        if (!plainTextRetry.protocolTextDetected && !plainTextRetry.toolCallParseFailure && plainTextRetry.content.trim()) {
+          const finalContent = plainTextRetry.content.replace(/^FINAL\s*:\s*/i, '').trim()
+          yield { type: 'done', content: finalContent || plainTextRetry.content.trim(), usage: accumulatedUsage }
+          return
+        }
         const protocolHint = finalResponse.toolCallParseFailure
           ? `（${finalResponse.toolCallParseFailure}）`
           : '（检测到 DSML/XML 工具协议标记，但最终汇总轮未返回可执行调用）'
@@ -840,7 +888,9 @@ export class AgentRunner {
     // Tool output can grow on every ReAct cycle. Refit immediately before the
     // provider call, including the serialized tool definitions that providers
     // count as input tokens.
-    const modelInputBudget = getModelInputBudgetTokens(agentConfig.model)
+    const modelCapabilities = this.config.providerRegistry?.getModelCapabilities(this.config.provider.id, agentConfig.model)
+      || inferModelCapabilities(this.config.provider.type, agentConfig.model)
+    const modelInputBudget = getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens)
     const inputBudget = getToolFollowUpInputBudget(
       modelInputBudget,
       messages.some((message) => message.role === 'tool'),
@@ -983,6 +1033,20 @@ export class AgentRunner {
       textToolCallEnvelope,
       protocolTextDetected,
     }
+  }
+
+  private buildModelCapabilityPolicy(profile: ReturnType<typeof inferModelCapabilities>, hasTools: boolean): string {
+    if (!hasTools) return ''
+    const lines = ['\n\n--- Model capability profile ---', `Detected ${describeModelCapabilityProfile(profile)}.`]
+    if (profile.protocol === 'deepseek-dsml') {
+      lines.push('This is a DeepSeek-compatible route. Prefer the native structured tool_calls interface supplied by Eva. Never emit DSML/XML/tool-call markup as ordinary text; Eva only executes strictly validated parsed envelopes.')
+    } else if (profile.protocol === 'unknown') {
+      lines.push('The model protocol is unknown. Use only the structured tools supplied by Eva and do not claim a tool ran unless a tool result is returned.')
+    }
+    if (profile.supportsTools === undefined) {
+      lines.push('Tool support is not confirmed for this custom connection. Attempt the supplied structured interface once; if the provider rejects it, report the provider limitation instead of retrying the same call or using protocol text.')
+    }
+    return lines.join('\n')
   }
 
   private toChatUsage(usage?: ChatChunk['usage']): ChatUsage | undefined {

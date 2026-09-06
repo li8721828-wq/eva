@@ -2,7 +2,7 @@ import type { AgentConfig, AgentRole } from './types/agent'
 import type { ModelInfo } from './types/provider'
 
 export const APP_NAME = 'Eva'
-export const APP_VERSION = '0.1.166'
+export const APP_VERSION = '0.1.181'
 
 export const DEFAULT_MAX_ITERATIONS = 100
 export const DEFAULT_TEMPERATURE = 0.7
@@ -10,6 +10,7 @@ export const DEFAULT_MAX_TOKENS = 4096
 export const CONTEXT_WINDOW_TOKENS = 128000
 export const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS = 1_000_000
 export const CONTEXT_SAFETY_RESERVE_TOKENS = 8192
+export const MODEL_CONTEXT_WINDOW_OPTIONS = [32_000, 64_000, 128_000, 200_000, 256_000, 512_000, 1_000_000] as const
 
 /**
  * Returns the advertised total context window for models Eva can identify
@@ -28,11 +29,20 @@ export function getModelContextWindowTokens(modelId: string): number {
  * Keep room for the configured generation and a small protocol margin so an
  * input request cannot consume the provider's entire context window.
  */
-export function getModelInputBudgetTokens(modelId: string): number {
+export function getModelInputBudgetTokens(modelId: string, contextWindowTokens?: number): number {
   return Math.max(
     DEFAULT_MAX_TOKENS,
-    getModelContextWindowTokens(modelId) - DEFAULT_MAX_TOKENS - CONTEXT_SAFETY_RESERVE_TOKENS
+    (contextWindowTokens ?? getModelContextWindowTokens(modelId)) - DEFAULT_MAX_TOKENS - CONTEXT_SAFETY_RESERVE_TOKENS
   )
+}
+
+/** Return selectable context windows while retaining an explicitly detected value. */
+export function getModelContextWindowOptions(modelId: string, current?: number): number[] {
+  return Array.from(new Set([
+    getModelContextWindowTokens(modelId),
+    ...(current ? [current] : []),
+    ...MODEL_CONTEXT_WINDOW_OPTIONS,
+  ])).sort((a, b) => a - b)
 }
 
 export const AGENT_ROLES: Record<AgentRole, { label: string; description: string }> = {

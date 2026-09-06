@@ -5,7 +5,7 @@ import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMes
 import type { GitRepositoryStatus } from '../shared/types/git'
 import type { SymposiumContinueInput, SymposiumStartInput, SymposiumStreamEvent } from '../shared/types/symposium'
 import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback, TaskRunSnapshot } from '../shared/types/task'
-import type { ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
+import type { ModelCapabilityProbeRequest, ModelCapabilityProbeResult, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { ModelPool, ModelRouteRequest, ModelRouteResult } from '../shared/types/model-pool'
 import type { CostUsageReport, ModelRateCard, SupplierRateRefreshResult } from '../shared/types/cost'
 import type { SpecTemplate } from '../shared/types/spec'
@@ -21,7 +21,7 @@ import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
 import type { McpServerConfig, McpServerState } from '../shared/types/mcp'
-import type { PersonalPreference, PersonalPreferenceSettings } from '../shared/types/personal-preferences'
+import type { PersonalPreference, PersonalPreferenceImportOptions, PersonalPreferenceImportResult, PersonalPreferenceSettings } from '../shared/types/personal-preferences'
 import type { ContractArgs, ContractChannel, ContractResult } from '../shared/ipc-contract'
 
 // GoalEvent type - defined locally to avoid importing from main process
@@ -191,6 +191,7 @@ export interface EvaAPI {
     delete(id: string): Promise<void>
     test(config: ProviderTestConfig): Promise<{ success: boolean; message: string }>
     listModels(config: ProviderTestConfig): Promise<ProviderModelsResult>
+    probeCapabilities(request: ModelCapabilityProbeRequest): Promise<ModelCapabilityProbeResult>
   }
 
   runtimeProposal: {
@@ -263,6 +264,8 @@ export interface EvaAPI {
     saveSettings(settings: Partial<PersonalPreferenceSettings>): Promise<PersonalPreferenceSettings>
     remove(id: string): Promise<void>
     clear(): Promise<void>
+    exportProfile(): Promise<string | null>
+    importProfile(options: PersonalPreferenceImportOptions): Promise<PersonalPreferenceImportResult | null>
   }
 
   requirements: {
@@ -470,6 +473,7 @@ const evaAPI: EvaAPI = {
     delete: (id) => ipcRenderer.invoke(IPC.PROVIDER_DELETE, id),
     test: (config) => ipcRenderer.invoke(IPC.PROVIDER_TEST, config),
     listModels: (config) => ipcRenderer.invoke(IPC.PROVIDER_MODELS, config),
+    probeCapabilities: (request) => ipcRenderer.invoke(IPC.PROVIDER_PROBE_CAPABILITIES, request),
   },
 
   runtimeProposal: {
@@ -542,6 +546,8 @@ const evaAPI: EvaAPI = {
     saveSettings: (settings) => ipcRenderer.invoke(IPC.PREFERENCE_SETTINGS_SAVE, settings),
     remove: (id) => ipcRenderer.invoke(IPC.PREFERENCE_DELETE, id),
     clear: () => ipcRenderer.invoke(IPC.PREFERENCE_CLEAR),
+    exportProfile: () => ipcRenderer.invoke(IPC.PREFERENCE_EXPORT),
+    importProfile: (options) => ipcRenderer.invoke(IPC.PREFERENCE_IMPORT, options),
   },
 
   requirements: {

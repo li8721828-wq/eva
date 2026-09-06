@@ -52,6 +52,10 @@ const activeRunners = activeRunRegistry.forKind<AgentRunner>('chat')
 // `run_task` creates a nested runner under the active chat runner. Keep its
 // handle separately so cancellation and replacement cannot leave it orphaned.
 const activeTaskRunners = activeRunRegistry.forKind<AgentRunner>('chat-task')
+// A cancelled/replaced IPC handler can still finish its async setup after a
+// newer message has started. The token prevents stale events and responses
+// from being delivered to or persisted for the newer request.
+const activeChatRunTokens = new Map<string, string>()
 let legacyTitleRefreshTimer: ReturnType<typeof setTimeout> | undefined
 
 function scheduleLegacyTitleRefresh(services: ChatServices): void {
@@ -793,13 +797,20 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
+      const runToken = uuidv4()
+      activeChatRunTokens.set(conversationId, runToken)
+      const isCurrentRun = (): boolean => activeChatRunTokens.get(conversationId) === runToken
+      // Stop an older request before loading history for this one. This keeps
+      // the new request from inheriting a late response from the prior turn.
+      activeRunners.get(conversationId)?.abort()
+      activeTaskRunners.get(conversationId)?.abort()
       resolvePendingGoalConfirmation(conversationId, false)
       let runner: AgentRunner | null = null
       let runtimeProcessId: string | null = null
       let activeAgentIdentity: Pick<ChatStreamEvent, 'agentId' | 'agentName'> = {}
 
       const sendStreamEvent = (streamEvent: ChatStreamEvent): void => {
-        if (!win.isDestroyed()) {
+        if (isCurrentRun() && !win.isDestroyed()) {
           win.webContents.send(IPC.CHAT_STREAM, { ...streamEvent, conversationId, ...activeAgentIdentity })
         }
       }
@@ -1404,9 +1415,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
             continue
           }
           if (agentEvent.type === 'text_reset') {
-            if (!agentEvent.discardProvisionalText && provisionalAssistantContent.trim()) {
-              await publishProgress('thinking', provisionalAssistantContent)
-            }
+            // Text emitted before a tool call is provisional model narration
+            // (for example, "I will inspect..."), not a user-facing result.
+            // Persisting it on every ReAct cycle makes one run look stuck and
+            // produces repeated progress paragraphs. Explicit <eva-progress>
+            // tags are published as they arrive; the execution trace carries
+            // the tool status for untagged narration.
             clearPendingProgressMarkup()
             provisionalAssistantContent = ''
             assistantContent = ''
@@ -1532,6 +1546,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
           send(agentEvent)
         }
 
+        // The request may have been replaced while the runner was awaiting a
+        // provider response. Do not let stale output reach storage or update
+        // the conversation status after a newer request took ownership.
+        if (!isCurrentRun()) return
+
         // 7. Save assistant response to storage
         const assistantMessageId = uuidv4()
         const toolCallsForMessage: ToolCall[] | undefined =
@@ -1639,6 +1658,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           })
         }
       } catch (err: any) {
+        if (!isCurrentRun()) return
         if (runtimeProcessId) {
           await getAgentOsScheduler().finishInteractive(runtimeProcessId, 'failed', err?.message ?? String(err))
         }
@@ -1665,6 +1685,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         if (runner && activeRunners.get(conversationId) === runner) {
           activeRunners.delete(conversationId)
         }
+        if (isCurrentRun()) activeChatRunTokens.delete(conversationId)
       }
     }
   )
@@ -1673,6 +1694,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(IPC.CHAT_ABORT, (event, conversationId?: string) => {
     if (conversationId) {
+      activeChatRunTokens.delete(conversationId)
       resolvePendingGoalConfirmation(conversationId, false)
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()

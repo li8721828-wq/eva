@@ -5,6 +5,7 @@ import { TerminalServiceImpl } from './terminal-service'
 import { createToolRegistry, type FileService, type TerminalService, type ToolRegistry } from '../tools'
 import type { StorageManager } from '../storage'
 import { McpClientManager } from './mcp-client-manager'
+import { getModelContextWindowTokens } from '../../shared/constants'
 
 /**
  * The composition-root dependency set shared by renderer-facing handlers.
@@ -36,7 +37,17 @@ export function createApplicationServices(storage: StorageManager, providerRegis
       type: config.type,
       apiKey: config.apiKey,
       baseUrl: config.baseUrl,
-      models: [],
+      models: (config.models || []).map((model) => ({
+        id: model.id,
+        name: model.name,
+        maxTokens: model.capabilities?.contextWindowTokens || getModelContextWindowTokens(model.id),
+        supportsTools: model.capabilities?.supportsTools !== false,
+        supportsStreaming: model.capabilities?.supportsStreaming !== false,
+        ...(model.capabilities?.supportsReasoning !== undefined ? { supportsReasoning: model.capabilities.supportsReasoning } : {}),
+        ...(model.capabilities?.supportsVision !== undefined ? { supportsVision: model.capabilities.supportsVision } : {}),
+        ...(model.capabilities?.protocol ? { protocol: model.capabilities.protocol } : {}),
+        ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+      })),
       defaultModel: config.defaultModel || '',
       isEnabled: true,
     })

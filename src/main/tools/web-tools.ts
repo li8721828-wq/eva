@@ -61,7 +61,7 @@ const webSearchTool: ToolExecutor = {
     const language = typeof params.language === 'string' ? params.language.trim() : undefined
     const results = await fetchSearchResults(query, language)
 
-    if (results.length === 0) return 'No public web results were found. Try a more specific query.'
+    if (results.length === 0) return '[SEARCH_UNAVAILABLE] The configured search provider returned no usable results. Do not keep issuing broader or repeated searches in this run. Use known URLs with read_web_page, or continue with an explicitly marked unverified limitation.'
     const resultList = results.slice(0, maxResults).map((result, index) => `${index + 1}. ${result.title}\n${result.url}${result.snippet ? `\n${result.snippet}` : ''}`).join('\n\n')
     return `Search results are titles, URLs, and snippets only; they are not webpage evidence. For research or current claims, read the most relevant returned URL with read_web_page before issuing another web_search.\n\n${resultList}`
   },

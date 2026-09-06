@@ -65,6 +65,8 @@ export const IPC = {
   PREFERENCE_SETTINGS_SAVE: 'preference:settings-save',
   PREFERENCE_DELETE: 'preference:delete',
   PREFERENCE_CLEAR: 'preference:clear',
+  PREFERENCE_EXPORT: 'preference:export',
+  PREFERENCE_IMPORT: 'preference:import',
 
   // Requirement engineering workflow
   REQUIREMENT_RUN_LIST: 'requirement:run-list',
@@ -157,6 +159,7 @@ export const IPC = {
   PROVIDER_DELETE: 'provider:delete',
   PROVIDER_TEST: 'provider:test',
   PROVIDER_MODELS: 'provider:models',
+  PROVIDER_PROBE_CAPABILITIES: 'provider:probe-capabilities',
   MODEL_POOL_LIST: 'model-pool:list',
   MODEL_POOL_SAVE: 'model-pool:save',
   MODEL_POOL_ROUTE: 'model-pool:route',

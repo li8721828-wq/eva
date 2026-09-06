@@ -2,6 +2,8 @@ import type { LLMProviderConfig } from '../../shared/types/provider'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { OpenAIProvider } from './openai'
 import { AnthropicProvider } from './anthropic'
+import { inferModelCapabilities } from '../../shared/model-capabilities'
+import type { ModelCapabilityProfile } from '../../shared/types/provider'
 
 /**
  * Default base URLs for various providers.
@@ -103,6 +105,15 @@ export class ProviderRegistry {
    */
   getDefaultModel(providerId: string): string | undefined {
     return this.configs.get(providerId)?.defaultModel
+  }
+
+  /** Return the persisted profile when available, otherwise a conservative inference. */
+  getModelCapabilities(providerId: string, modelId: string): ModelCapabilityProfile | undefined {
+    const config = this.configs.get(providerId)
+    if (!config) return undefined
+    const declared = config.models.find((model) => model.id === modelId)
+    if (declared?.capabilities) return declared.capabilities
+    return inferModelCapabilities(config.type, modelId, declared)
   }
 }
 

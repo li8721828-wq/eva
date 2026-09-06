@@ -23,6 +23,38 @@ export interface ProviderTestConfig {
 export interface ProviderModelOption {
   id: string
   name: string
+  /** Best-effort capability metadata detected from the provider/model id. */
+  capabilities?: ModelCapabilityProfile
+}
+
+export type ModelProtocol = 'openai-tools' | 'anthropic-tools' | 'deepseek-dsml' | 'unknown'
+
+export interface ModelCapabilityProfile {
+  providerType: ProviderConfigEntry['type']
+  modelId: string
+  protocol: ModelProtocol
+  /** Undefined means the connection has not confirmed this capability. */
+  supportsTools?: boolean
+  supportsStreaming?: boolean
+  supportsReasoning?: boolean
+  supportsVision?: boolean
+  contextWindowTokens: number
+  source: 'inferred' | 'declared' | 'probed'
+  checkedAt: number
+  probeStatus?: 'supported' | 'unsupported' | 'inconclusive'
+  lastError?: string
+}
+
+export interface ModelCapabilityProbeRequest {
+  provider: ProviderTestConfig
+  model: string
+}
+
+export interface ModelCapabilityProbeResult {
+  success: boolean
+  model: string
+  profile: ModelCapabilityProfile
+  message: string
 }
 
 export interface ProviderModelsResult {
@@ -48,6 +80,11 @@ export interface ModelInfo {
   maxTokens: number
   supportsTools: boolean
   supportsStreaming: boolean
+  supportsReasoning?: boolean
+  supportsVision?: boolean
+  protocol?: ModelProtocol
+  contextWindowTokens?: number
+  capabilities?: ModelCapabilityProfile
 }
 
 export interface ChatParams {

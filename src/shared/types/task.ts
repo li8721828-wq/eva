@@ -54,6 +54,8 @@ export interface SubTask {
   resourceKeys?: string[]
   /** Explicit opt-out for tasks that must remain isolated. */
   parallelizable?: boolean
+  /** Higher-priority tasks are scheduled first within a ready dependency layer. */
+  priority?: number
   result?: string
   /** Tool activity retained for project-level task artifacts. */
   toolCalls?: ToolCall[]

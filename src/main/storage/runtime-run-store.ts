@@ -34,12 +34,12 @@ export class RuntimeRunStore {
     })
   }
 
-  async transition(id: string, status: RuntimeRunStatus, detail?: string): Promise<RuntimeRunDescriptor | null> {
+  async transition(id: string, status: RuntimeRunStatus, detail?: string, metrics?: RuntimeRunDescriptor['metrics']): Promise<RuntimeRunDescriptor | null> {
     return this.enqueue(() => {
       const index = this.read()
       const existing = index.runs[id]
       if (!existing) return null
-      const next: RuntimeRunDescriptor = { ...existing, status, updatedAt: Date.now(), detail: detail || existing.detail }
+      const next: RuntimeRunDescriptor = { ...existing, status, updatedAt: Date.now(), detail: detail || existing.detail, ...(metrics ? { metrics: { ...existing.metrics, ...metrics } } : {}) }
       index.runs[id] = next
       this.write(index)
       return next
@@ -48,7 +48,7 @@ export class RuntimeRunStore {
 
   async listRecoverable(): Promise<RuntimeRunDescriptor[]> {
     return this.enqueue(() => Object.values(this.read().runs)
-      .filter((run) => run.status === 'queued' && run.recoveryMode === 'auto-queued')
+      .filter((run) => (run.status === 'queued' || run.status === 'interrupted') && run.recoveryMode === 'auto-queued')
       .sort((left, right) => left.createdAt - right.createdAt))
   }
 

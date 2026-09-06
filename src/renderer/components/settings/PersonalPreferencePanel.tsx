@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { Brain, Check, Pause, Trash2 } from 'lucide-react'
+import { Brain, Check, Download, Pause, Trash2, Upload } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
+import { Select } from '@/components/ui/Select'
 import type { PersonalPreference, PersonalPreferenceSettings } from '../../../shared/types/personal-preferences'
 
 const categoryLabels: Record<PersonalPreference['category'], string> = {
@@ -17,11 +18,14 @@ export function PersonalPreferencePanel() {
   const [preferences, setPreferences] = useState<PersonalPreference[]>([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
+  const [messageKind, setMessageKind] = useState<'success' | 'error'>('success')
+  const [busyAction, setBusyAction] = useState<'export' | 'import' | null>(null)
+  const [importMode, setImportMode] = useState<'merge' | 'replace'>('merge')
 
   useEffect(() => {
     Promise.all([window.eva.personalPreferences.getSettings(), window.eva.personalPreferences.list()])
       .then(([nextSettings, nextPreferences]) => { setSettings(nextSettings); setPreferences(nextPreferences) })
-      .catch((error) => setMessage(error instanceof Error ? error.message : String(error)))
+      .catch((error) => { setMessageKind('error'); setMessage(error instanceof Error ? error.message : String(error)) })
       .finally(() => setLoading(false))
   }, [])
 
@@ -35,6 +39,40 @@ export function PersonalPreferencePanel() {
     setPreferences((current) => current.filter((preference) => preference.id !== id))
   }
 
+  const exportProfile = async () => {
+    setBusyAction('export')
+    setMessage('')
+    try {
+      const path = await window.eva.personalPreferences.exportProfile()
+      if (path) { setMessageKind('success'); setMessage('偏好配置已导出。') }
+    } catch (error) {
+      setMessageKind('error')
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const importProfile = async () => {
+    if (importMode === 'replace' && !window.confirm('替换会清除当前所有偏好，再写入导入文件中的偏好。确定继续吗？')) return
+    setBusyAction('import')
+    setMessage('')
+    try {
+      const result = await window.eva.personalPreferences.importProfile({ mode: importMode })
+      if (!result) return
+      const [nextSettings, nextPreferences] = await Promise.all([window.eva.personalPreferences.getSettings(), window.eva.personalPreferences.list()])
+      setSettings(nextSettings)
+      setPreferences(nextPreferences)
+      setMessageKind('success')
+      setMessage(`已导入 ${result.imported} 条偏好${result.skipped ? `，跳过 ${result.skipped} 条重复或超限偏好` : '。'}`)
+    } catch (error) {
+      setMessageKind('error')
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
   if (loading) return <div className="mx-auto w-full max-w-4xl text-sm text-zinc-500">正在加载偏好...</div>
 
   return (
@@ -42,6 +80,17 @@ export function PersonalPreferencePanel() {
       <div>
         <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Brain className="h-4 w-4 text-violet-500" />个人偏好</h2>
         <p className="mt-1 text-sm leading-6 text-zinc-500">Eva 使用模型分析交互证据，逐步提炼长期偏好，不保存对话流水账。</p>
+      </div>
+
+      <div className="rounded-lg border border-violet-100 bg-violet-50/40 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h3 className="text-sm font-semibold text-zinc-900">迁移偏好配置</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500">导出文件只包含偏好项；不包含对话、证据摘要、系统开关、API Key、工作区或执行记录。</p></div>
+          <Button variant="outline" size="sm" disabled={busyAction !== null} onClick={() => void exportProfile()}><Download className="mr-1.5 h-3.5 w-3.5" />{busyAction === 'export' ? '正在导出...' : '导出偏好'}</Button>
+        </div>
+        <div className="mt-4 flex flex-wrap items-end gap-x-5 gap-y-3 border-t border-violet-100 pt-3">
+          <label className="w-56 text-xs font-medium text-zinc-700"><span className="mb-1.5 block">导入方式</span><Select value={importMode} onChange={(event) => setImportMode(event.target.value as 'merge' | 'replace')} disabled={busyAction !== null} options={[{ value: 'merge', label: '合并（保留当前偏好）' }, { value: 'replace', label: '替换当前偏好' }]} /></label>
+          <Button size="sm" disabled={busyAction !== null} onClick={() => void importProfile()}><Upload className="mr-1.5 h-3.5 w-3.5" />{busyAction === 'import' ? '正在导入...' : '导入偏好'}</Button>
+        </div>
       </div>
 
       <div className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 bg-white">
@@ -56,7 +105,7 @@ export function PersonalPreferencePanel() {
           <Button variant="ghost" size="icon" title="删除偏好" aria-label="删除偏好" onClick={() => void remove(preference.id)}><Trash2 className="h-4 w-4 text-zinc-400" /></Button>
         </article>
       ))}</div>}
-      {message && <p className="text-sm text-rose-600">{message}</p>}
+      {message && <p className={`text-sm ${messageKind === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>{message}</p>}
     </section>
   )
 }

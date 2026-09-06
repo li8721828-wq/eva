@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PersonalPreferenceStore } from '../../src/main/storage/personal-preference-store'
+import { parsePersonalPreferenceProfile, PersonalPreferenceStore } from '../../src/main/storage/personal-preference-store'
 import type { LLMProvider } from '../../src/main/providers/base-provider'
 
 function providerWith(content: string): LLMProvider {
@@ -33,4 +33,22 @@ describe('personal preference distillation', () => {
     expect(records).toEqual([])
   })
 
+})
+
+describe('personal preference profile validation', () => {
+  it('normalizes a portable profile without carrying external record metadata', () => {
+    const profile = parsePersonalPreferenceProfile({
+      format: 'eva.personal-preferences',
+      version: 1,
+      exportedAt: '2026-09-04T00:00:00.000Z',
+      preferences: [{ category: 'aesthetic', polarity: 'avoid', statement: '  不要过度霓虹。  ', confidence: 2, durability: 'established', id: 'external-id', evidenceSummary: 'should be ignored' }],
+    })
+
+    expect(profile.preferences).toEqual([{ category: 'aesthetic', polarity: 'avoid', statement: '不要过度霓虹', confidence: 0.99, durability: 'established' }])
+  })
+
+  it('rejects unknown formats and malformed preferences', () => {
+    expect(() => parsePersonalPreferenceProfile({ format: 'other', version: 1, preferences: [] })).toThrow('不受支持')
+    expect(() => parsePersonalPreferenceProfile({ format: 'eva.personal-preferences', version: 1, preferences: [{ category: 'unknown', polarity: 'prefer', statement: 'x' }] })).toThrow('第 1 条偏好')
+  })
 })

@@ -7,7 +7,7 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { Separator } from '@/components/ui/Separator'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
-import { APP_VERSION } from '../../../shared/constants'
+import { APP_VERSION, getModelContextWindowOptions } from '../../../shared/constants'
 import {
   AlertCircle,
   ArrowLeft,
@@ -39,6 +39,7 @@ import type { AutomationConfig, HiddenCapabilityId } from '../../../shared/types
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import type { NetworkConfig, NetworkTestResult } from '../../../shared/types/network'
 import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
+import { inferModelCapabilities } from '../../../shared/model-capabilities'
 import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { McpPanel } from './McpPanel'
@@ -111,6 +112,7 @@ export function SettingsDialog() {
   const [availableModels, setAvailableModels] = useState<ProviderModelOption[]>([])
   const [modelSearch, setModelSearch] = useState('')
   const [loadingModels, setLoadingModels] = useState(false)
+  const [probingModelId, setProbingModelId] = useState<string | null>(null)
   const [modelsMessage, setModelsMessage] = useState<string | null>(null)
   const [qqConfig, setQqConfig] = useState<QqRemoteConfig>(EMPTY_QQ_CONFIG)
   const [qqSecret, setQqSecret] = useState('')
@@ -485,6 +487,43 @@ export function SettingsDialog() {
         ? []
         : availableModels.map((model) => model.id)
     )
+  }
+
+  const handleProbeModel = async (modelId: string) => {
+    const config = getProviderTestConfig()
+    if (!config.apiKey || (config.type === 'custom' && !config.baseUrl)) {
+      setModelsMessage('Enter an API key and base URL before probing a model.')
+      return
+    }
+    setProbingModelId(modelId)
+    setModelsMessage(null)
+    try {
+      const result = await window.eva.provider.probeCapabilities({ provider: config, model: modelId })
+      setAvailableModels((current) => current.map((model) => model.id === modelId ? { ...model, capabilities: result.profile } : model))
+      setModelsMessage(result.message)
+    } catch (error) {
+      setModelsMessage(error instanceof Error ? error.message : 'Capability detection failed.')
+    } finally {
+      setProbingModelId(null)
+    }
+  }
+
+  const handleContextWindowChange = (modelId: string, value: string) => {
+    const contextWindowTokens = Number(value)
+    if (!Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) return
+    setAvailableModels((current) => current.map((model) => {
+      if (model.id !== modelId) return model
+      const profile = model.capabilities || inferModelCapabilities(providerType, model.id)
+      return {
+        ...model,
+        capabilities: {
+          ...profile,
+          contextWindowTokens,
+          source: 'declared',
+          checkedAt: Date.now(),
+        },
+      }
+    }))
   }
 
   const filteredModels = availableModels.filter((model) => {
@@ -924,7 +963,19 @@ export function SettingsDialog() {
                             checked={selectedModelIds.includes(model.id)}
                             onChange={() => toggleModelSelection(model.id)}
                           />
-                          <span>{model.name}</span>
+                          <span className="min-w-0 flex-1 truncate">{model.name}</span>
+                          {model.capabilities && <span className={`settings-dialog__model-capability ${model.capabilities.supportsTools === false ? 'is-error' : model.capabilities.probeStatus === 'supported' ? 'is-success' : ''}`}>{model.capabilities.probeStatus === 'supported' ? '工具已验证' : model.capabilities.supportsTools === false ? '不支持工具' : '未探测'}</span>}
+                          <select
+                            className="settings-dialog__model-context"
+                            aria-label={`Context window for ${model.name || model.id}`}
+                            value={model.capabilities?.contextWindowTokens || inferModelCapabilities(providerType, model.id).contextWindowTokens}
+                            onChange={(event) => handleContextWindowChange(model.id, event.target.value)}
+                          >
+                            {getModelContextWindowOptions(model.id, model.capabilities?.contextWindowTokens).map((tokens) => (
+                              <option key={tokens} value={tokens}>{tokens >= 1_000_000 ? `${tokens / 1_000_000}M` : `${Math.round(tokens / 1000)}K`}</option>
+                            ))}
+                          </select>
+                          <button type="button" className="settings-dialog__model-probe" onClick={(event) => { event.preventDefault(); void handleProbeModel(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>{probingModelId === model.id ? '探测中…' : '探测能力'}</button>
                         </label>
                       )) : (
                         <div className="settings-dialog__model-no-results">No matching models.</div>
