@@ -23,9 +23,13 @@ export interface ProviderTestConfig {
 export interface ProviderModelOption {
   id: string
   name: string
+  /** Optional upstream API family for gateways that expose more than one protocol. */
+  transport?: ModelTransport
   /** Best-effort capability metadata detected from the provider/model id. */
   capabilities?: ModelCapabilityProfile
 }
+
+export type ModelTransport = 'chat-completions' | 'responses' | 'anthropic-messages'
 
 export type ModelProtocol = 'openai-tools' | 'anthropic-tools' | 'deepseek-dsml' | 'unknown'
 
@@ -85,6 +89,7 @@ export interface ModelInfo {
   protocol?: ModelProtocol
   contextWindowTokens?: number
   capabilities?: ModelCapabilityProfile
+  transport?: ModelTransport
 }
 
 export interface ChatParams {
@@ -103,6 +108,8 @@ export interface ChatParams {
 export interface ChatMessageInput {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** Provider-supplied reasoning that must be replayed for DeepSeek tool turns. */
+  reasoningContent?: string
   images?: Array<{
     mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
     dataUrl?: string

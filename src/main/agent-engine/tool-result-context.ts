@@ -1,12 +1,5 @@
 import type { ChatMessageInput } from '../../shared/types/provider'
 
-/**
- * A generous ceiling for follow-up calls after tools have produced evidence.
- * It is independent from a model's advertised context window because gateway
- * proxies can enforce a much smaller request-body limit.
- */
-export const TOOL_FOLLOW_UP_INPUT_BUDGET_TOKENS = 48_000
-
 const TOOL_RESULT_CONTEXT_LIMITS: Record<string, number> = {
   web_search: 2_500,
   read_web_page: 4_000,
@@ -19,12 +12,6 @@ const COMPACTED_TRANSACTION_MAX_CHARS = 1_200
 export interface ToolHistoryCompaction {
   messages: ChatMessageInput[]
   evidence: string[]
-}
-
-export function getToolFollowUpInputBudget(modelInputBudget: number, hasToolHistory: boolean): number {
-  return hasToolHistory
-    ? Math.min(modelInputBudget, TOOL_FOLLOW_UP_INPUT_BUDGET_TOKENS)
-    : modelInputBudget
 }
 
 /**

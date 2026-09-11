@@ -91,15 +91,15 @@ describe('ContextManager', () => {
       }
     })
 
-    it('should truncate system message if it alone exceeds budget', () => {
+    it('keeps the current request when the system message alone exceeds the budget', () => {
       const msgs: ChatMessageInput[] = [
         { role: 'system', content: 'x'.repeat(1000) },
         { role: 'user', content: 'hi' },
       ]
       const result = cm.trimMessages(msgs, 10)
-      expect(result.length).toBe(1)
       expect(result[0].role).toBe('system')
       expect(cm.estimateTokens(result[0].content)).toBeLessThanOrEqual(10)
+      expect(result.at(-1)?.content).toBe('hi')
     })
 
     it('keeps a multi-tool exchange as a complete transaction when compacting', () => {
@@ -152,6 +152,31 @@ describe('ContextManager', () => {
       ], 100, [{ name: 'read_file', description: 'Read a file', parameters: { type: 'object' } }])
       expect(cm.getLastDiagnostics()).toMatchObject({ budgetTokens: 100, retainedMessages: 1, estimator: 'heuristic-v2' })
     })
+
+    it('keeps the newest request when tool definitions leave no room for the system prompt', () => {
+      const result = cm.fitMessages([
+        { role: 'system', content: 'x'.repeat(4_000) },
+        { role: 'user', content: 'Current request: fix the payment timeout.' },
+      ], 200, [])
+
+      expect(result).toHaveLength(2)
+      expect(result[0].role).toBe('system')
+      expect(cm.estimateTokens(result[0].content)).toBeLessThanOrEqual(100)
+      expect(result[1].content).toContain('Current request')
+    })
+
+    it('refuses a request whose tool definitions already exhaust the input budget', () => {
+      const tools = [{
+        name: 'read_file',
+        description: 'Read a file from the workspace and return its full contents.',
+        parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+      }]
+
+      expect(() => cm.fitMessages([
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'Read the file.' },
+      ], 4, tools)).toThrow(/Tool definitions require/)
+    })
   })
 
   describe('buildSystemPrompt', () => {
@@ -178,8 +203,33 @@ describe('ContextManager', () => {
       expect(prompt).toContain('Never invent a source')
       expect(prompt).toContain('current information could not be verified')
       expect(prompt).toContain('checked with read_file')
-      expect(prompt).toContain('never for labels or isolated keywords')
-      expect(prompt).toContain('render file names, table names, field names, and ordinary identifiers as normal text')
+      expect(prompt).toContain('Use inline code for file paths, function names, field names')
+      expect(prompt).toContain('lead with actionable findings ordered by severity')
+      expect(prompt).toContain('Keep unverified concerns separate from confirmed findings')
+      expect(prompt).toContain('Do not modify reviewed code unless requested')
+    })
+
+    it('prioritizes the active request over historical context and durable memory', () => {
+      const agent: AgentConfig = {
+        id: 'priority-agent', name: 'Priority Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const result = new ContextManager({ durableMemory: 'Old project: rust-web' }).buildContext({
+        agentConfig: agent,
+        workspacePath: 'C:\\workspace',
+        tools: [],
+        messages: [
+          { id: 'old', conversationId: 'conversation', role: 'assistant', content: 'Continue the old project.', timestamp: 1 },
+          { id: 'current', conversationId: 'conversation', role: 'user', content: '你好', timestamp: 2 },
+        ],
+      })
+
+      expect(result[0].content).toContain('The final user message in this request is the active request and has the highest priority.')
+      expect(result[0].content).toContain('Older conversation is historical context')
+      expect(result[0].content).toContain('Durable Memory (lower priority than the active request)')
+      expect(result.at(-1)?.content).toBe('你好')
     })
 
     it('does not inject legacy output-format rules into the system prompt', () => {
@@ -250,6 +300,29 @@ describe('ContextManager', () => {
       expect(result).toHaveLength(21)
       expect(result[1].content).toBe('turn 0')
     })
+
+    it('keeps a bounded active working window even when the provider advertises 1M tokens', () => {
+      const messages = Array.from({ length: 500 }, (_, index) => ({
+        id: `large-message-${index}`,
+        conversationId: 'conversation',
+        role: index % 2 === 0 ? 'user' as const : 'assistant' as const,
+        content: `turn-${index} ${'evidence '.repeat(500)}`,
+        timestamp: index,
+      }))
+
+      const result = cm.buildContext({
+        agentConfig: agent,
+        messages,
+        workspacePath: 'C:\\workspace',
+        tools: [],
+        maxContextTokens: 900_000,
+      })
+
+      expect(result.length).toBeLessThan(501)
+      expect(result[0].content).toContain('--- Compressed prior conversation ---')
+      expect(result.at(-1)?.content).toContain('turn-499')
+      expect(cm.getLastDiagnostics()?.estimatedTokens).toBeLessThan(540_000)
+    })
   })
 
   describe('quoted message context', () => {
@@ -291,6 +364,30 @@ describe('ContextManager', () => {
         }],
       })
       expect(result[1].content).toContain('FINAL CONCLUSION: retain this.')
+    })
+  })
+
+  describe('attachment context', () => {
+    it('keeps the current attachment in full but compacts older attachment extracts', () => {
+      const agent: AgentConfig = {
+        id: 'attachment-agent', name: 'Attachment Agent', description: 'Test agent', role: 'custom', systemPrompt: '',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+      const previousAttachment = `Path: C:\\files\\old.xlsx\n${'old cell value '.repeat(1_000)}`
+      const currentAttachment = `Path: C:\\files\\current.xlsx\n${'current cell value '.repeat(300)}`
+      const result = cm.buildContext({
+        agentConfig: agent, workspacePath: 'C:\\workspace', tools: [],
+        messages: [
+          { id: 'old', conversationId: 'conversation', role: 'user', content: 'Analyze the first file.', attachmentContext: previousAttachment, timestamp: 1 },
+          { id: 'current', conversationId: 'conversation', role: 'user', content: 'Now compare the new file.', attachmentContext: currentAttachment, timestamp: 2 },
+        ],
+      })
+
+      expect(result[1].content).toContain('Prior attachment text is compacted')
+      expect(result[1].content).toContain('C:\\files\\old.xlsx')
+      expect(result[1].content.length).toBeLessThan(3_000)
+      expect(result[2].content).toContain(currentAttachment)
     })
   })
 })

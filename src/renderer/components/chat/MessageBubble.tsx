@@ -3,13 +3,13 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'streamdown/styles.css'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ProgressUpdate } from '../../../shared/types'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ProgressUpdate, ResponseTiming } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
-import { ToolCallGroupView } from './ToolCallView'
+import { ToolCallGroupView, ToolCallView, getToolLabel } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2 } from 'lucide-react'
-import { useState, type ReactNode } from 'react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info } from 'lucide-react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
@@ -46,6 +46,8 @@ export interface MessageBubbleProps {
   message: ChatMessage
   className?: string
   isStreaming?: boolean
+  /** True while the stream is actually executing tools; gates the running indicator. */
+  executingTools?: boolean
   /** Shown only on the newest usage-bearing reply to avoid repeating totals. */
   conversationUsage?: ChatUsage
 }
@@ -56,6 +58,11 @@ function formatTokenCount(value: number): string {
 
 function formatCny(value: number): string {
   return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
+}
+
+function formatDuration(value: number): string {
+  if (value < 1_000) return `${Math.max(0, Math.round(value))} ms`
+  return `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)} s`
 }
 
 function formatAttachmentSize(size: number): string {
@@ -84,7 +91,7 @@ function MessageAttachments({ attachments }: { attachments: NonNullable<ChatMess
             </span>
             <span className="min-w-0 max-w-[min(20rem,calc(100vw-11rem))]">
               <span className="block truncate text-xs font-medium">{attachment.name}</span>
-              <span className="mt-0.5 flex items-center gap-1 text-[11px]">
+              <span className="mt-0.5 flex items-center gap-1 text-xs">
                 {size ? <span>{size}</span> : null}
                 {size ? <span aria-hidden="true">·</span> : null}
                 <span>已加入消息</span>
@@ -117,7 +124,7 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
 
   return (
     <div className="mt-4 pt-2.5">
-      <div className="chat-usage-summary flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] font-medium tabular-nums text-zinc-400">
+      <div className="chat-usage-summary flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs tabular-nums text-zinc-400">
         <span>
           {usage.modelCalls && usage.modelCalls > 1 ? `${usage.modelCalls} 次调用 · ` : ''}
           本次 {formatTokenCount(totalTokens)} tokens
@@ -147,13 +154,33 @@ function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversa
   )
 }
 
+function TimingSummary({ timing }: { timing: ResponseTiming }) {
+  const detail = [
+    `总耗时 ${formatDuration(timing.totalMs)}`,
+    timing.localPreparationMs !== undefined ? `本地准备 ${formatDuration(timing.localPreparationMs)}` : '',
+    timing.contextBuildMs !== undefined ? `上下文 ${formatDuration(timing.contextBuildMs)}` : '',
+    timing.timeToFirstResponseMs !== undefined ? `首响应 ${formatDuration(timing.timeToFirstResponseMs)}` : '',
+    `模型 ${formatDuration(timing.modelDurationMs)}`,
+    timing.toolCalls.length > 0 ? `工具 ${formatDuration(timing.toolExecutionMs)} (${timing.toolCalls.length})` : '',
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums text-zinc-400" title={detail}>
+      <span>总耗时 {formatDuration(timing.totalMs)}</span>
+      {timing.timeToFirstResponseMs !== undefined ? <span>首响应 {formatDuration(timing.timeToFirstResponseMs)}</span> : null}
+      <span>模型 {formatDuration(timing.modelDurationMs)}</span>
+      {timing.toolCalls.length > 0 ? <span>工具 {formatDuration(timing.toolExecutionMs)} · {timing.toolCalls.length} 次</span> : null}
+    </div>
+  )
+}
+
 function ReasoningPanel({ content, streaming = false }: { content: string; streaming?: boolean }) {
   const [open, setOpen] = useState(streaming)
   if (!content) return null
 
   return (
     <details open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)} className="mb-3 border-y border-violet-100 bg-violet-50/45">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-medium text-violet-700 hover:bg-violet-50/80">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium text-violet-600 hover:bg-violet-50/80">
         <BrainCircuit className="h-3.5 w-3.5" />
         <span className="flex-1">模型慢思考{streaming ? '中' : ''}</span>
         <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
@@ -163,35 +190,123 @@ function ReasoningPanel({ content, streaming = false }: { content: string; strea
   )
 }
 
-function ExecutionTimelineView({ entries, streaming = false, showReasoning = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean; showReasoning?: boolean }) {
-  if (!entries.length) return null
-  const toolCalls = entries.flatMap((entry) => entry.kind === 'tool' && entry.toolCall ? [entry.toolCall] : [])
-  const reasoningEntries = showReasoning ? entries.filter((entry) => entry.kind === 'reasoning') : []
-  const toolsAreComplete = toolCalls.length > 0 && toolCalls.every((toolCall) => Boolean(toolCall.result) || toolCall.isError)
+interface TimelineEntryGroup {
+  kind: ExecutionTimelineEntry['kind']
+  entries: ExecutionTimelineEntry[]
+}
+
+function groupTimelineEntries(entries: ExecutionTimelineEntry[]): TimelineEntryGroup[] {
+  const groups: TimelineEntryGroup[] = []
+  for (const entry of entries) {
+    const last = groups[groups.length - 1]
+    if (last?.kind === entry.kind) last.entries.push(entry)
+    else groups.push({ kind: entry.kind, entries: [entry] })
+  }
+  return groups
+}
+
+function TimelineToolGroup({ entries }: { entries: ExecutionTimelineEntry[] }) {
+  const [open, setOpen] = useState(false)
+  const toolCalls = entries.flatMap((entry) => entry.toolCall ? [entry.toolCall] : [])
+  if (toolCalls.length === 0) return null
+  const isRunning = toolCalls.some((toolCall) => !toolCall.result && !toolCall.isError)
+  const hasError = toolCalls.some((toolCall) => toolCall.isError)
+  const singleLabel = toolCalls.length === 1 ? getToolLabel(toolCalls[0]) : undefined
 
   return (
-    <section className="mb-2" aria-label="工具调用">
-      {toolCalls.length > 0 ? <ToolCallGroupView toolCalls={toolCalls} /> : null}
-      {streaming && toolsAreComplete ? <ExecutionStatusIndicator /> : null}
-      {reasoningEntries.length > 0 ? (
-        <div className="mt-1.5 border-y border-violet-100 bg-violet-50/45 px-3 py-2">
-          <div className="flex items-center gap-1 text-xs font-medium text-violet-700">
-            <BrainCircuit className="h-3 w-3" />
-            <span>慢思考{streaming ? '中' : ''}</span>
-          </div>
-          <div className="mt-1.5 space-y-1.5 whitespace-pre-wrap text-xs leading-5 text-zinc-500">
-            {reasoningEntries.map((entry) => <div key={entry.id} className="whitespace-pre-wrap text-xs leading-5 text-zinc-500">{entry.content}</div>)}
-          </div>
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-zinc-700 transition-colors hover:bg-violet-50/70"
+      >
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform', open && 'rotate-180')} />
+        <Wrench className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+        <span className="truncate">{singleLabel ? singleLabel.title : `执行工具 ${toolCalls.length} 次`}</span>
+        {singleLabel?.detail && <span className="min-w-0 truncate text-xs font-normal text-zinc-500">{singleLabel.detail}</span>}
+        <span className="ml-auto shrink-0">
+          {isRunning
+            ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
+            : hasError
+              ? <XCircle className="h-3.5 w-3.5 text-red-500" />
+              : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />}
+        </span>
+      </button>
+      {open && (
+        <div className="ml-4 mt-0.5 space-y-0.5 border-l border-zinc-100 pl-2">
+          {toolCalls.map((toolCall) => <ToolCallView key={toolCall.id} toolCall={toolCall} />)}
         </div>
-      ) : null}
+      )}
+    </div>
+  )
+}
+
+function TimelineReasoningGroup({ entries, streaming }: { entries: ExecutionTimelineEntry[]; streaming: boolean }) {
+  const [open, setOpen] = useState(streaming)
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-violet-600 transition-colors hover:bg-violet-50/70"
+      >
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-violet-400 transition-transform', open && 'rotate-180')} />
+        <BrainCircuit className="h-3.5 w-3.5 shrink-0" />
+        <span className="truncate">{streaming ? '思考中' : entries.length > 1 ? `思考过程 · ${entries.length} 段` : '思考过程'}</span>
+        <span className="ml-auto shrink-0">
+          {streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" /> : null}
+        </span>
+      </button>
+      {open && (
+        <div className="ml-4 mt-1 space-y-1.5 border-l-2 border-violet-100 pl-3">
+          {entries.map((entry) => <div key={entry.id} className="whitespace-pre-wrap text-xs leading-5 text-zinc-500">{entry.content}</div>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TimelineNoteRow({ content }: { content: string }) {
+  return (
+    <div className="flex items-center gap-2 px-2 py-1 text-xs text-zinc-500">
+      <Info className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
+      <span className="min-w-0">{content}</span>
+    </div>
+  )
+}
+
+function ExecutionTimelineView({ entries, streaming = false, showReasoning = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean; showReasoning?: boolean }) {
+  const groups = groupTimelineEntries(entries).filter((group) => group.kind === 'tool' || group.kind === 'note' || showReasoning)
+  if (!groups.length) return null
+
+  return (
+    <section className="mb-3 space-y-0.5" aria-label="执行过程">
+      {groups.map((group) => group.kind === 'tool'
+        ? <TimelineToolGroup key={group.entries[0].id} entries={group.entries} />
+        : group.kind === 'note'
+          ? <TimelineNoteRow key={group.entries[0].id} content={group.entries[0].content || ''} />
+          : <TimelineReasoningGroup key={group.entries[0].id} entries={group.entries} streaming={Boolean(streaming)} />)}
     </section>
   )
 }
 
+const WAITING_MESSAGES = ['正在执行...', '请稍等片刻...', '正在处理中...', '还在继续，请稍候...', '正在准备回复...']
+
 function ExecutionStatusIndicator() {
+  const [messageIndex, setMessageIndex] = useState(0)
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setMessageIndex((previous) => (previous + 1 + Math.floor(Math.random() * (WAITING_MESSAGES.length - 1))) % WAITING_MESSAGES.length)
+    }, 4000)
+    return () => window.clearInterval(timer)
+  }, [])
   return (
-    <div className="tool-execution-status mt-3 mb-2" role="status" aria-live="polite">
-      <span className="tool-execution-status__text">正在执行 . . .</span>
+    <div className="tool-execution-status mt-3 mb-2" role="status">
+      <span className="sr-only">正在处理，请稍候</span>
+      <span className="tool-execution-status__text" aria-hidden="true">{WAITING_MESSAGES[messageIndex]}</span>
     </div>
   )
 }
@@ -285,16 +400,25 @@ function safeStreamdownUrl(url: string): string {
 
 export function MarkdownMessageContent({ content, className, isStreaming = false, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced' }: { content: string; className?: string; isStreaming?: boolean; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer }) {
   const markdownContent = normalizeChatMarkdown(content)
-  const markdownClassName = cn('chat-message-markdown prose prose-sm max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, className)
+  const markdownClassName = cn('chat-message-markdown max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, isStreaming && 'chat-message-markdown--streaming', className)
 
-  if (markdownRenderer === 'streamdown') {
+  // Streamdown is used for every live reply because it can animate only the
+  // newly appended characters. Once complete, the user's chosen renderer
+  // takes over for the stable, fully formatted document.
+  if (isStreaming || markdownRenderer === 'streamdown') {
     return (
-      <div className={markdownClassName}>
+      <div className={markdownClassName} aria-busy={isStreaming || undefined}>
         <React.Suspense fallback={<div className="whitespace-pre-wrap">{markdownContent}</div>}>
           <StreamdownRenderer
             mode={isStreaming ? "streaming" : "static"}
             isAnimating={isStreaming}
-            animated={false}
+            animated={isStreaming ? {
+              animation: 'inkReveal',
+              duration: 210,
+              easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
+              sep: 'char',
+              stagger: 0,
+            } : false}
             parseIncompleteMarkdown
             skipHtml
             urlTransform={safeStreamdownUrl}
@@ -310,7 +434,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
   }
 
   return (
-    <div className={markdownClassName}>
+    <div className={markdownClassName} aria-busy={isStreaming || undefined}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={isStreaming ? [] : [rehypeHighlight]}
@@ -353,7 +477,6 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
 export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
-  const timelineReasoning = message.executionTimeline?.filter((entry) => entry.kind === 'reasoning') || []
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
@@ -495,29 +618,32 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
           {message.agentName && (
             <div className="chat-agent-label mb-3 flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
-              <Badge variant="primary" className="px-1.5 py-0 text-[11px] leading-5">
+              <Badge variant="primary" className="px-1.5 py-0">
                 {message.agentName}
               </Badge>
             </div>
           )}
-          {isStreaming && processOutput !== 'off' && message.progressUpdates?.length ? (
+          {processOutput !== 'off' && message.progressUpdates?.length ? (
             <ProgressUpdatesView
               updates={message.progressUpdates}
               streaming={isStreaming}
               markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
             />
           ) : null}
-          {!isStreaming && shouldShowReasoning && timelineReasoning.length > 0
-            ? <ExecutionTimelineView entries={timelineReasoning} showReasoning />
-            : !message.executionTimeline?.length && shouldShowReasoning
-              ? <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />
-              : null}
+          {!message.executionTimeline?.length && shouldShowReasoning ? (
+            <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />
+          ) : null}
+          {isStreaming && !message.content.trim() ? <ExecutionStatusIndicator key={message.id} /> : null}
           <MarkdownMessageContent content={message.content} isStreaming={isStreaming} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
-          {isStreaming && !message.executionTimeline?.length ? <ExecutionStatusIndicator /> : null}
-          {isStreaming && message.executionTimeline?.length
-            ? <ExecutionTimelineView entries={message.executionTimeline} streaming showReasoning={shouldShowReasoning} />
-            : null}
+          {message.executionTimeline?.length ? (
+            <ExecutionTimelineView
+              entries={message.executionTimeline}
+              streaming={isStreaming}
+              showReasoning={shouldShowReasoning}
+            />
+          ) : null}
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
+          {message.timing ? <TimingSummary timing={message.timing} /> : null}
         </div>
 
         {!isStreaming && !isTool && (

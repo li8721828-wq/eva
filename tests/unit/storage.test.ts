@@ -102,6 +102,33 @@ describe('ConversationStore', () => {
     expect((await store.getConversation(conversation.id))?.executionStatusAcknowledgedAt).toBeUndefined()
   })
 
+  it('marks conversations left running by a previous session as failed on startup', async () => {
+    const stale = await store.createConversation({
+      title: 'Stale run',
+      agentId: 'agent-1',
+      mode: 'normal',
+      workspacePath: '/workspace',
+    })
+    const finished = await store.createConversation({
+      title: 'Finished before restart',
+      agentId: 'agent-1',
+      mode: 'normal',
+      workspacePath: '/workspace',
+    })
+    await store.updateConversation(stale.id, { executionStatus: 'running' })
+    await store.updateConversation(finished.id, { executionStatus: 'completed' })
+    await store.updateConversation(finished.id, { executionStatusAcknowledgedAt: 123 })
+
+    await store.markRunningAsInterrupted()
+
+    const recovered = await store.getConversation(stale.id)
+    expect(recovered?.executionStatus).toBe('failed')
+    expect(recovered?.executionStatusAcknowledgedAt).toBeUndefined()
+    const untouched = await store.getConversation(finished.id)
+    expect(untouched?.executionStatus).toBe('completed')
+    expect(untouched?.executionStatusAcknowledgedAt).toBe(123)
+  })
+
   it('should get a conversation by ID', async () => {
     const conv = await store.createConversation({
       title: 'Get Test',
@@ -215,6 +242,89 @@ describe('ConversationStore', () => {
     expect(page.length).toBe(2)
     expect(page[0].content).toBe('Message 1')
     expect(page[1].content).toBe('Message 2')
+  })
+
+  it('writes new messages in bounded pages and lazily migrates legacy transcripts', async () => {
+    const conv = await store.createConversation({
+      title: 'Paged messages', agentId: '', mode: 'normal', workspacePath: '',
+    })
+
+    for (let i = 0; i < 101; i++) {
+      await store.addMessage(conv.id, {
+        id: `paged-${i}`, role: 'user', content: `Message ${i}`, timestamp: i,
+      })
+    }
+    const pagesRoot = path.join(tmpDir, conv.id)
+    const pageIndex = JSON.parse(fs.readFileSync(path.join(pagesRoot, 'message-pages.json'), 'utf8'))
+    expect(pageIndex.pages.map((page: { count: number }) => page.count)).toEqual([100, 1])
+    expect((await store.getMessages(conv.id, { offset: 99, limit: 2 })).map((message) => message.id)).toEqual(['paged-99', 'paged-100'])
+    expect((await store.getRecentMessages(conv.id, 2)).map((message) => message.id)).toEqual(['paged-99', 'paged-100'])
+
+    const legacy = await store.createConversation({
+      title: 'Legacy messages', agentId: '', mode: 'normal', workspacePath: '',
+    })
+    const legacyRoot = path.join(tmpDir, legacy.id)
+    fs.rmSync(path.join(legacyRoot, 'message-pages.json'))
+    fs.writeFileSync(path.join(legacyRoot, 'messages.json'), JSON.stringify([
+      { id: 'legacy-1', conversationId: legacy.id, role: 'user', content: 'Retained legacy content', timestamp: 1 },
+    ]))
+    expect((await store.getMessages(legacy.id))[0]?.content).toBe('Retained legacy content')
+    expect(fs.existsSync(path.join(legacyRoot, 'message-pages', 'page-000001.json'))).toBe(true)
+  })
+
+  it('recovers the page index from disk pages instead of a stale legacy transcript', async () => {
+    const conv = await store.createConversation({
+      title: 'Index recovery', agentId: '', mode: 'normal', workspacePath: '',
+    })
+    for (let i = 0; i < 150; i++) {
+      await store.addMessage(conv.id, {
+        id: `recover-${i}`, role: 'user', content: `Message ${i}`, timestamp: i,
+      })
+    }
+
+    const convRoot = path.join(tmpDir, conv.id)
+    // A pre-existing legacy file must not win over the newer page files.
+    fs.writeFileSync(path.join(convRoot, 'messages.json'), JSON.stringify([
+      { id: 'stale-legacy', conversationId: conv.id, role: 'user', content: 'Stale legacy content', timestamp: 0 },
+    ]))
+    fs.writeFileSync(path.join(convRoot, 'message-pages.json'), '{ truncated', 'utf-8')
+
+    const recovered = await store.getMessages(conv.id)
+    expect(recovered.length).toBe(150)
+    expect(recovered[149].id).toBe('recover-149')
+    expect(recovered.some((message) => message.id === 'stale-legacy')).toBe(false)
+
+    await store.addMessage(conv.id, { id: 'recover-150', role: 'user', content: 'Message 150', timestamp: 150 })
+    const messages = await store.getMessages(conv.id)
+    expect(messages.length).toBe(151)
+    expect(messages[150].id).toBe('recover-150')
+    const firstPage = JSON.parse(fs.readFileSync(path.join(convRoot, 'message-pages', 'page-000001.json'), 'utf8'))
+    expect(firstPage.length).toBe(100)
+  })
+
+  it('never reuses a page id whose file still exists on disk', async () => {
+    const conv = await store.createConversation({
+      title: 'Page id reuse', agentId: '', mode: 'normal', workspacePath: '',
+    })
+    for (let i = 0; i < 100; i++) {
+      await store.addMessage(conv.id, {
+        id: `page-id-${i}`, role: 'user', content: `Message ${i}`, timestamp: i,
+      })
+    }
+
+    // Simulate a crash between writing a new page file and updating the index:
+    // the orphan file exists while the index still points at page one only.
+    const orphanPath = path.join(tmpDir, conv.id, 'message-pages', 'page-000002.json')
+    fs.writeFileSync(orphanPath, JSON.stringify([
+      { id: 'orphan-1', conversationId: conv.id, role: 'user', content: 'Orphaned message', timestamp: 999 },
+    ]))
+    await store.addMessage(conv.id, { id: 'page-id-100', role: 'user', content: 'Message 100', timestamp: 100 })
+
+    expect(JSON.parse(fs.readFileSync(orphanPath, 'utf8'))[0].id).toBe('orphan-1')
+    const pageIndex = JSON.parse(fs.readFileSync(path.join(tmpDir, conv.id, 'message-pages.json'), 'utf8'))
+    expect(pageIndex.pages.at(-1).id).toBe('page-000003')
+    const messages = await store.getMessages(conv.id)
+    expect(messages.at(-1)?.id).toBe('page-id-100')
   })
 
   it('should update a message', async () => {
@@ -352,6 +462,25 @@ describe('AgentStore', () => {
     const updated = await store.getAgent(codingAssistant.id)
     const shippedPrompt = BUILT_IN_AGENTS.find((agent) => agent.name === 'Coding Assistant')!.systemPrompt
     expect(updated?.systemPrompt).toBe(shippedPrompt)
+  })
+
+  it('serializes concurrent agent updates so no change is lost', async () => {
+    const created = await store.createAgent({
+      name: 'Racy', description: '', role: 'custom', systemPrompt: '',
+      model: 'gpt-4o', providerId: 'openai', tools: [], maxIterations: 10,
+      temperature: 0.7, isBuiltIn: false,
+    })
+
+    await Promise.all([
+      store.updateAgent(created.id, { name: 'Renamed' }),
+      store.updateAgent(created.id, { description: 'Described' }),
+    ])
+
+    const final = await store.getAgent(created.id)
+    expect(final?.name).toBe('Renamed')
+    expect(final?.description).toBe('Described')
+    const onDisk = JSON.parse(fs.readFileSync(path.join(tmpDir, 'agents.json'), 'utf8'))
+    expect(onDisk).toHaveLength(1)
   })
 
   it('persists the selected Markdown renderer and defaults older agents to enhanced', async () => {

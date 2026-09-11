@@ -39,16 +39,16 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
           <Circle className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-violet-700">{mode === 'specification' ? '规格构建，阻塞处置' : `需求工程，第 ${run.round} 轮`}</p>
-          <h2 id={`clarification-${run.id}`} className="mt-1 text-base font-semibold text-zinc-900">{mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径` : `需要你确认 ${activeQuestions.length} 个澄清点`}</h2>
-          <p className="mt-1 text-sm leading-6 text-zinc-600">{mode === 'specification' ? '每个阻塞项均已标注归因和检测建议。你的选择会被持久化，明确下一步应回到需求、建模、代码证据或规格修订。' : '已由代码和材料可以确定的内容会由 AI 自动采用。以下选择会成为下一轮分析与评测的依据。'}</p>
+          <p className="text-xs font-medium text-violet-600">{mode === 'specification' ? '规格构建，阻塞处置' : `需求工程，第 ${run.round} 轮`}</p>
+          <h2 id={`clarification-${run.id}`} className="mt-1 text-sm font-semibold text-zinc-700">{mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径` : `需要你确认 ${activeQuestions.length} 个澄清点`}</h2>
+          <p className="mt-1 text-sm leading-6 text-zinc-700">{mode === 'specification' ? '每个阻塞项均已标注归因和检测建议。你的选择会被持久化，明确下一步应回到需求、建模、代码证据或规格修订。' : '已由代码和材料可以确定的内容会由 AI 自动采用。以下选择会成为下一轮分析与评测的依据。'}</p>
         </div>
       </div>
 
       <div className="mt-5 space-y-6">
         {activeQuestions.map((question, questionIndex) => (
           <fieldset key={question.id} className="border-t border-zinc-200 pt-5 first:border-t-0 first:pt-0">
-            <legend className="text-sm font-medium leading-6 text-zinc-900">{questionIndex + 1}. {question.question}</legend>
+            <legend className="text-sm font-medium leading-6 text-zinc-700">{questionIndex + 1}. {question.question}</legend>
             {question.rationale && <p className="mt-1 text-xs leading-5 text-zinc-500">{question.rationale}</p>}
             <div className="mt-3 space-y-2" role="radiogroup" aria-label={question.question}>
               {question.options.map((option, optionIndex) => {
@@ -65,7 +65,7 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
                   >
                     {selected ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" /> : <Circle className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />}
                     <span className="min-w-0 flex-1 leading-5">{option}</span>
-                    {recommended && <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700">推荐</span>}
+                    {recommended && <span className="shrink-0 rounded bg-violet-100 px-1.5 py-0.5 text-xs font-medium text-violet-600">推荐</span>}
                   </button>
                 )
               })}
@@ -87,7 +87,7 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
           </button>
         )}
       </div>
-      {isSubmitting && <div className="mt-3 flex items-center gap-2 text-sm text-violet-700"><Loader2 className="h-4 w-4 animate-spin" /> 正在保存选择并整理后续路径</div>}
+      {isSubmitting && <div className="mt-3 flex items-center gap-2 text-sm text-violet-600"><Loader2 className="h-4 w-4 animate-spin" /> 正在保存选择并整理后续路径</div>}
     </section>
   )
 }

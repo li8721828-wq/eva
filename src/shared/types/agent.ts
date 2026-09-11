@@ -1,4 +1,4 @@
-import type { ChatUsage } from './conversation'
+import type { ChatUsage, ResponseTiming } from './conversation'
 import type { ExecutionEnvelope } from './execution-protocol'
 
 export type AgentRole = 'leader' | 'researcher' | 'coder' | 'reviewer' | 'tester' | 'custom'
@@ -81,6 +81,8 @@ export interface AgentEvent {
   content?: string
   /** Drop provisional streamed text instead of retaining it as a progress update. */
   discardProvisionalText?: boolean
+  /** Why provisional text was reset before it can be shown as an answer. */
+  reason?: 'protocol-repair' | 'provider-error'
   toolCall?: {
     id: string
     name: string
@@ -97,6 +99,7 @@ export interface AgentEvent {
   /** Provider termination reason. `length` means the response hit a provider limit. */
   finishReason?: string
   usage?: ChatUsage
+  timing?: ResponseTiming
 }
 
 export type WorkMode = 'normal' | 'expert' | 'goal'

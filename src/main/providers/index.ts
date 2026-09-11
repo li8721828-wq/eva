@@ -2,6 +2,7 @@ import type { LLMProviderConfig } from '../../shared/types/provider'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { OpenAIProvider } from './openai'
 import { AnthropicProvider } from './anthropic'
+import { OpenCodeProvider } from './opencode'
 import { inferModelCapabilities } from '../../shared/model-capabilities'
 import type { ModelCapabilityProfile } from '../../shared/types/provider'
 
@@ -22,6 +23,7 @@ export function createProvider(config: LLMProviderConfig): LLMProvider {
     apiKey: config.apiKey,
     baseUrl: config.baseUrl,
     defaultModel: config.defaultModel,
+    models: config.models,
   }
 
   switch (config.type) {
@@ -44,7 +46,11 @@ export function createProvider(config: LLMProviderConfig): LLMProvider {
       })
 
     case 'custom':
-      // Custom providers use OpenAI-compatible API format
+      // OpenCode Go exposes multiple upstream API families behind one base URL.
+      // Keep ordinary custom gateways on the existing OpenAI-compatible path.
+      if (/opencode\.ai/i.test(options.baseUrl || '') || config.models.some((model) => Boolean(model.transport))) {
+        return new OpenCodeProvider(config.id, config.name, options)
+      }
       return new OpenAIProvider(config.id, config.name, 'custom', options)
 
     default:

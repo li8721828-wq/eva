@@ -1,3 +1,6 @@
+import fs from 'fs'
+import path from 'path'
+import { app } from 'electron'
 import Store from 'electron-store'
 import {
   DEFAULT_MAX_ITERATIONS,
@@ -104,12 +107,65 @@ export class ConfigStore {
   private credentials = new CredentialStore()
 
   constructor() {
-    this.store = new Store<AppConfig>({
-      name: 'config',
-      defaults: DEFAULTS,
-    })
+    this.store = this.openStore()
+    this.repairInvalidShape()
     this.migrateProviderCredentials()
     this.migrateModelPools()
+  }
+
+  /**
+   * A corrupt config.json must never prevent the app from starting: keep a copy
+   * of the unreadable file for recovery and continue from defaults.
+   */
+  private openStore(): Store<AppConfig> {
+    try {
+      return new Store<AppConfig>({
+        name: 'config',
+        defaults: DEFAULTS,
+      })
+    } catch (error) {
+      if ((error as { name?: string })?.name !== 'SyntaxError') throw error
+      this.backupCorruptConfig()
+      return new Store<AppConfig>({
+        name: 'config',
+        defaults: DEFAULTS,
+        clearInvalidConfig: true,
+      })
+    }
+  }
+
+  private backupCorruptConfig(): void {
+    try {
+      const configPath = path.join(app.getPath('userData'), 'config.json')
+      fs.copyFileSync(configPath, `${configPath}.corrupt-${Date.now()}.bak`)
+    } catch {
+      // Best effort only; starting the app matters more than keeping the copy.
+    }
+  }
+
+  /** Reset top-level keys whose persisted value has an unusable shape. */
+  private repairInvalidShape(): void {
+    const isRecord = (value: unknown): boolean => value !== null && typeof value === 'object' && !Array.isArray(value)
+    const isProviderList = (value: unknown): boolean =>
+      Array.isArray(value) && value.every((entry) => isRecord(entry) && typeof (entry as { id?: unknown }).id === 'string')
+    const checks: Array<[keyof AppConfig, (value: unknown) => boolean]> = [
+      ['providers', isProviderList],
+      ['fileAccessGrants', Array.isArray],
+      ['modelPools', Array.isArray],
+      ['costRateCards', Array.isArray],
+      ['workspacePath', (value) => typeof value === 'string'],
+      ['activeProviderId', (value) => typeof value === 'string'],
+      ['activeModel', (value) => typeof value === 'string'],
+      ['automation', isRecord],
+      ['network', isRecord],
+      ['environmentRules', isRecord],
+    ]
+
+    const stored = this.store.store as Partial<Record<keyof AppConfig, unknown>>
+    for (const [key, isValid] of checks) {
+      if (isValid(stored[key])) continue
+      this.store.set(key, DEFAULTS[key])
+    }
   }
 
   get<K extends keyof AppConfig>(key: K): AppConfig[K] {

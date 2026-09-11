@@ -534,7 +534,7 @@ export function InputBar({ className }: InputBarProps) {
             <div className="flex min-w-0 items-start gap-2.5 rounded-t-[7px] border-b border-violet-100 bg-violet-50/55 px-4 py-2.5">
               <Quote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500" />
               <div className="min-w-0 flex-1">
-                <div className="text-[11px] font-semibold text-violet-700">
+                <div className="text-xs font-medium text-violet-600">
                   {quotedMessage.role === 'user' ? '引用用户消息' : '引用助手消息'}
                   {quotedMessage.authorName ? ` · ${quotedMessage.authorName}` : ''}
                 </div>
@@ -635,7 +635,7 @@ export function InputBar({ className }: InputBarProps) {
 
           {filteredSlashCommands.length > 0 && !isSymposiumRunning && (
             <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(440px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
-              <div className="flex items-center gap-2 px-3 py-2 text-[11px] font-medium text-zinc-500">
+              <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-zinc-500">
                 <ClipboardList className="h-3.5 w-3.5 text-violet-500" />
                 对话命令
               </div>
@@ -652,16 +652,16 @@ export function InputBar({ className }: InputBarProps) {
                 >
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700"><ClipboardList className="h-3.5 w-3.5" /></span>
                   <span className="min-w-0 flex-1"><span className="block font-mono text-sm font-medium">{item.label}</span><span className="block truncate text-xs text-zinc-500">{item.description}</span></span>
-                  <span className="shrink-0 text-[11px] text-zinc-400">Enter</span>
+                  <span className="shrink-0 text-xs text-zinc-400">Enter</span>
                 </button>
               ))}
-              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">方向键选择，Enter 或 Tab 填入命令。</div>
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-xs text-zinc-400">方向键选择，Enter 或 Tab 填入命令。</div>
             </div>
           )}
 
           {symposiumMention && !isSymposiumRunning && filteredSymposiumMentionOptions.length > 0 && (
             <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(360px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
-              <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Mention a discussion member</div>
+              <div className="px-3 py-2 text-xs font-medium uppercase tracking-wide text-zinc-400">Mention a discussion member</div>
               {filteredSymposiumMentionOptions.map((participant, index) => {
                 const handle = participant.handle || participant.modelName || participant.model || participant.providerName || participant.id
                 return (
@@ -683,7 +683,7 @@ export function InputBar({ className }: InputBarProps) {
                   </button>
                 )
               })}
-              <div className="border-t border-zinc-100 px-3 py-1.5 text-[11px] text-zinc-400">Arrow keys to navigate. Enter or Tab to mention.</div>
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-xs text-zinc-400">Arrow keys to navigate. Enter or Tab to mention.</div>
             </div>
           )}
 
@@ -733,7 +733,7 @@ export function InputBar({ className }: InputBarProps) {
           <div className="flex min-h-10 items-center justify-between gap-3 rounded-b-[7px] border-t border-zinc-100 bg-zinc-50/70 px-4 py-1.5 text-xs text-zinc-500">
             <div className="flex min-w-0 items-center gap-1.5">
               {isSymposiumConversation ? (
-                <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-700"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
+                <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-600"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
               ) : (
                 <div className="w-[min(290px,34vw)] min-w-[190px]">
                     <Select
@@ -770,7 +770,7 @@ export function InputBar({ className }: InputBarProps) {
                     <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 w-64 rounded-xl border border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 p-3 shadow-[0_18px_38px_-28px_rgba(39,42,58,0.4),0_6px_14px_-10px_rgba(39,42,58,0.1)] backdrop-blur-md">
                       <div className="mb-2.5">
                         <p className="text-xs font-semibold text-zinc-700">Conversation access</p>
-                        <p className="mt-0.5 text-[11px] leading-4 text-zinc-500">Choose what this conversation may access.</p>
+                        <p className="mt-0.5 text-xs leading-4 text-zinc-500">Choose what this conversation may access.</p>
                       </div>
                       <Select
                         value={permissionLevel}

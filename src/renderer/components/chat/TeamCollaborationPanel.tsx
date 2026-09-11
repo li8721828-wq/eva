@@ -64,7 +64,7 @@ export function TeamCollaborationPanel() {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="truncate text-sm font-medium text-zinc-900">{member.name}</span>
+                  <span className="truncate text-sm font-medium text-zinc-700">{member.name}</span>
                   <Badge variant="default" className="shrink-0">{AGENT_ROLES[member.role]?.label || member.role}</Badge>
                   {member.dynamic && (
                     <Badge variant="primary" className="shrink-0 gap-1">
@@ -83,7 +83,7 @@ export function TeamCollaborationPanel() {
                 type="button"
                 disabled={!member.conversationId}
                 onClick={() => member.conversationId && void selectConversation(member.conversationId)}
-                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:text-zinc-400"
+                className="flex shrink-0 items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-violet-600 hover:bg-violet-100 disabled:cursor-not-allowed disabled:text-zinc-400"
                 title={member.conversationId ? `Open ${member.name}'s context` : 'Preparing context'}
               >
                 <MessageSquareText className="h-3.5 w-3.5" />

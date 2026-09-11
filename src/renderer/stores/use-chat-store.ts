@@ -248,7 +248,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       const result = await window.eva.conversation.load(id)
       if (get().currentConversationId !== id) return
-      set({ messages: result.messages })
+      set((state) => {
+        const stream = state.streamingByConversation[id]
+        const assistantIndex = [...result.messages].map((message) => message.role).lastIndexOf('assistant')
+        const persistedReply = assistantIndex >= 0 ? result.messages[assistantIndex] : undefined
+        const hasUserAfterReply = assistantIndex >= 0 && result.messages.slice(assistantIndex + 1).some((message) => message.role === 'user')
+        const streamWasPersisted = Boolean(
+          stream?.isStreaming &&
+          !hasUserAfterReply &&
+          stream.content &&
+          persistedReply?.content &&
+          persistedReply.content.startsWith(stream.content)
+        )
+        return {
+          messages: result.messages,
+          ...(streamWasPersisted
+            ? { streamingByConversation: { ...state.streamingByConversation, [id]: createIdleStream() } }
+            : {}),
+        }
+      })
       const snapshot = await window.eva.task.getSnapshot(id)
       if (get().currentConversationId === id) useTaskStore.getState().hydrateSnapshot(snapshot)
     } catch (err) {
@@ -475,15 +493,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   abortStream: () => {
     const { currentConversationId } = get()
-    if (currentConversationId) {
-      window.eva.chat.abort(currentConversationId)
-    }
-    if (currentConversationId) set((s) => ({
+    if (!currentConversationId) return
+
+    // The main process suppresses every later event from the cancelled run.
+    // End the renderer state immediately as well; otherwise the red Stop
+    // button and "正在执行" indicator remain stuck forever waiting for a
+    // terminal event that is intentionally no longer forwarded.
+    set((s) => ({
       streamingByConversation: {
         ...s.streamingByConversation,
-        [currentConversationId]: { ...(s.streamingByConversation[currentConversationId] || createIdleStream()), status: 'Stopping...', lastActivityAt: Date.now() },
+        [currentConversationId]: {
+          ...(s.streamingByConversation[currentConversationId] || createIdleStream()),
+          isStreaming: false,
+          goalConfirmation: undefined,
+          status: '已停止',
+          lastActivityAt: Date.now(),
+        },
       },
     }))
+    void window.eva.chat.abort(currentConversationId)
   },
 
   decideGoalConfirmation: async (conversationId, confirmationId, approved) => {
@@ -514,14 +542,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
       : {}
     switch (event.type) {
       case 'thinking': {
-        set((s) => ({ streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(s.streamingByConversation[conversationId] || createIdleStream()), ...agentIdentity, isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }))
+        set((s) => {
+          const existingStream = s.streamingByConversation[conversationId]
+          if (existingStream && !existingStream.isStreaming) return s
+          return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(existingStream || createIdleStream()), ...agentIdentity, isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }
+        })
         break
       }
 
       case 'execution_trace': {
         if (event.executionTrace) {
           set((s) => {
-            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existingStream = s.streamingByConversation[conversationId]
+            if (existingStream && !existingStream.isStreaming) return s
+            const stream = existingStream || createIdleStream()
             const latest = event.executionTrace![event.executionTrace!.length - 1]
             return {
               streamingByConversation: {
@@ -543,7 +577,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'execution_timeline': {
         if (event.executionTimeline) {
           set((s) => {
-            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existingStream = s.streamingByConversation[conversationId]
+            if (existingStream && !existingStream.isStreaming) return s
+            const stream = existingStream || createIdleStream()
             const latest = event.executionTimeline![event.executionTimeline!.length - 1]
             return {
               streamingByConversation: {
@@ -573,28 +609,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
           progressKind: event.progressKind,
           timestamp: Date.now(),
         }
-        set((s) => ({
-          streamingByConversation: {
-            ...s.streamingByConversation,
-            [conversationId]: {
-              ...(s.streamingByConversation[conversationId] || createIdleStream()),
-              isStreaming: true,
-              progressUpdates: [
-                ...(s.streamingByConversation[conversationId]?.progressUpdates || []),
-                { id: progressMessage.id, kind: event.progressKind!, content: event.content!, timestamp: progressMessage.timestamp },
-              ],
-              status: event.content!,
-              lastActivityAt: Date.now(),
+        set((s) => {
+          const existingStream = s.streamingByConversation[conversationId]
+          if (existingStream && !existingStream.isStreaming) return s
+          return {
+            streamingByConversation: {
+              ...s.streamingByConversation,
+              [conversationId]: {
+                ...(existingStream || createIdleStream()),
+                isStreaming: true,
+                progressUpdates: [
+                  ...(existingStream?.progressUpdates || []),
+                  { id: progressMessage.id, kind: event.progressKind!, content: event.content!, timestamp: progressMessage.timestamp },
+                ],
+                status: event.content!,
+                lastActivityAt: Date.now(),
+              },
             },
-          },
-        }))
+          }
+        })
         break
       }
 
       case 'goal_confirmation': {
         if (!event.goalConfirmation) break
         set((s) => {
-          const stream = s.streamingByConversation[conversationId] || createIdleStream()
+          const existingStream = s.streamingByConversation[conversationId]
+          if (existingStream && !existingStream.isStreaming) return s
+          const stream = existingStream || createIdleStream()
           return {
             streamingByConversation: {
               ...s.streamingByConversation,
@@ -615,7 +657,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'reasoning_delta': {
         if (event.content) {
           set((s) => {
-            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existingStream = s.streamingByConversation[conversationId]
+            if (existingStream && !existingStream.isStreaming) return s
+            const stream = existingStream || createIdleStream()
             return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningContent: stream.reasoningContent + event.content!, status: '模型正在思考...', lastActivityAt: Date.now() } } }
           })
         }
@@ -625,7 +669,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'text_delta': {
         if (event.content) {
           set((s) => {
-            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existingStream = s.streamingByConversation[conversationId]
+            // A delayed renderer/IPC text event can arrive just after `done`.
+            // The finished stream remains as an idle entry, so do not let that
+            // stale delta reopen it and render a duplicate assistant bubble.
+            if (existingStream && !existingStream.isStreaming) return s
+            const stream = existingStream || createIdleStream()
             return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content!, status: 'Generating response...', lastActivityAt: Date.now() } } }
           })
         }
@@ -634,7 +683,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       case 'text_reset': {
         set((s) => {
-          const stream = s.streamingByConversation[conversationId] || createIdleStream()
+          const existingStream = s.streamingByConversation[conversationId]
+          if (existingStream && !existingStream.isStreaming) return s
+          const stream = existingStream || createIdleStream()
           return {
             streamingByConversation: {
               ...s.streamingByConversation,
@@ -650,7 +701,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (event.toolCall) {
           set((s) => {
             const tc = event.toolCall!
-            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existingStream = s.streamingByConversation[conversationId]
+            if (existingStream && !existingStream.isStreaming) return s
+            const stream = existingStream || createIdleStream()
             const existing = stream.toolCalls.find((t) => t.id === tc.id)
             if (existing) {
               return {
@@ -674,7 +727,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'tool_result': {
         if (event.toolCallId) {
           set((s) => {
-            const stream = s.streamingByConversation[conversationId] || createIdleStream()
+            const existingStream = s.streamingByConversation[conversationId]
+            if (existingStream && !existingStream.isStreaming) return s
+            const stream = existingStream || createIdleStream()
               return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError), protocol: event.protocol } : tc), status: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...', lastActivityAt: Date.now() } } }
           })
         }
@@ -683,10 +738,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       case 'done': {
         const { streamingByConversation } = get()
-        const stream = streamingByConversation[conversationId] || createIdleStream()
+        const existingStream = streamingByConversation[conversationId]
+        // Ignore duplicate terminal events after this response has already
+        // been persisted. They otherwise create a second identical bubble.
+        if (existingStream && !existingStream.isStreaming) break
+        const stream = existingStream || createIdleStream()
 
         // For 'done' event, content may carry the final full content
         const finalContent = event.content || stream.content
+
+        // A conversation refresh can persist this answer while the renderer
+        // is still draining its character-reveal queue. In that race the
+        // queued terminal event must settle the stream, not append the same
+        // assistant message a second time. Only dedupe the latest assistant
+        // turn; an older identical answer followed by a new user message is
+        // a legitimate response and must remain visible.
+        const currentMessages = get().messages
+        const matchingAssistantIndex = finalContent
+          ? [...currentMessages].map((message) => message.role === 'assistant' && message.content === finalContent).lastIndexOf(true)
+          : -1
+        const hasUserAfterMatchingAssistant = matchingAssistantIndex >= 0
+          && currentMessages.slice(matchingAssistantIndex + 1).some((message) => message.role === 'user')
+        if (matchingAssistantIndex >= 0 && !hasUserAfterMatchingAssistant) {
+          set((s) => ({
+            streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
+          }))
+          get().loadConversations()
+          break
+        }
 
         if (finalContent || stream.toolCalls.length > 0) {
           const assistantMessage: ChatMessage = {
@@ -718,20 +797,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       case 'error': {
         const errorMsg = event.error || 'An error occurred'
-        const errorMessage: ChatMessage = {
-          id: generateId(),
-          conversationId,
-          role: 'assistant',
-          content: `⚠️ Error: ${errorMsg}`,
-          executionTrace: get().streamingByConversation[conversationId]?.executionTrace,
-          progressUpdates: get().streamingByConversation[conversationId]?.progressUpdates,
-          timestamp: Date.now(),
-        }
         set((s) => ({
-          messages: s.currentConversationId === conversationId ? [...s.messages, errorMessage] : s.messages,
           streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
           error: s.currentConversationId === conversationId ? errorMsg : s.error,
         }))
+        // The main process persists the canonical failure message and then
+        // emits a conversation refresh. Avoid showing a second, transient
+        // assistant bubble with raw gateway text before that record arrives.
+        void get().refreshConversation(conversationId)
         break
       }
     }

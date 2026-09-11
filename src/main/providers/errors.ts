@@ -1,4 +1,6 @@
 export class ProviderError extends Error {
+  /** HTTP status of the provider response, when the failure produced one. */
+  status?: number
   constructor(
     message: string,
     public readonly code:
@@ -63,16 +65,35 @@ export class InvalidRequestError extends ProviderError {
   }
 }
 
+/** Read the HTTP status from provider SDK errors that expose it under either name. */
+function readHttpStatus(err: unknown): number | undefined {
+  const candidate = (err as { status?: unknown; statusCode?: unknown })?.status
+    ?? (err as { statusCode?: unknown })?.statusCode
+  const parsed = typeof candidate === 'number'
+    ? candidate
+    : typeof candidate === 'string' ? Number.parseInt(candidate, 10) : Number.NaN
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
 /**
  * Classify an unknown error into a ProviderError based on common patterns.
+ * The response status is preserved so request diagnostics can report the exact
+ * provider answer instead of an opaque `status=none`.
  */
 export function classifyError(err: unknown, providerId: string): ProviderError {
   if (err instanceof ProviderError) return err
 
+  const classified = classifyErrorCode(err, providerId)
+  const status = readHttpStatus(err)
+  if (status !== undefined) classified.status = status
+  return classified
+}
+
+function classifyErrorCode(err: unknown, providerId: string): ProviderError {
   const message = err instanceof Error ? err.message : String(err)
   const cause = (err as { cause?: unknown })?.cause
   const causeMessage = cause instanceof Error ? cause.message : cause ? String(cause) : ''
-  const status = (err as any)?.status ?? (err as any)?.statusCode
+  const status = readHttpStatus(err)
   const lowerMsg = `${message} ${causeMessage}`.toLowerCase()
 
   if (status === 401 || status === 403 || lowerMsg.includes('auth') || lowerMsg.includes('api key')) {

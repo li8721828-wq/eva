@@ -9,6 +9,7 @@ import { TOOL_CATALOG_VERSION } from '../../shared/tool-catalog'
 export class AgentStore {
   private dataDir: string
   private filePath: string
+  private writeLock: Promise<void> = Promise.resolve()
 
   constructor(dataDir: string) {
     this.dataDir = dataDir
@@ -21,6 +22,24 @@ export class AgentStore {
     if (!fs.existsSync(this.dataDir)) {
       fs.mkdirSync(this.dataDir, { recursive: true })
     }
+  }
+
+  /**
+   * Serialize full read-modify-write cycles. Without this, two concurrent
+   * saves both read the old snapshot and the later write drops the earlier
+   * update (lost update race).
+   */
+  private enqueue<T>(fn: () => Promise<T> | T): Promise<T> {
+    const run = async (): Promise<T> => {
+      await this.writeLock
+      return fn()
+    }
+    const p = run()
+    this.writeLock = p.then(
+      () => {},
+      () => {}
+    )
+    return p
   }
 
   private readAgents(): AgentConfig[] {
@@ -36,10 +55,15 @@ export class AgentStore {
 
   private async writeAgents(agents: AgentConfig[]): Promise<void> {
     this.ensureDir()
-    const tmpPath = this.filePath + '.tmp'
+    const tmpPath = `${this.filePath}.${uuidv4()}.tmp`
     const data = JSON.stringify(agents, null, 2)
     await fsPromises.writeFile(tmpPath, data, 'utf-8')
-    await fsPromises.rename(tmpPath, this.filePath)
+    try {
+      await fsPromises.rename(tmpPath, this.filePath)
+    } catch (error) {
+      await fsPromises.rm(tmpPath, { force: true }).catch(() => undefined)
+      throw error
+    }
   }
 
   // ─── CRUD ──────────────────────────────────────────────────────────────────
@@ -56,82 +80,90 @@ export class AgentStore {
   async createAgent(
     config: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'>
   ): Promise<AgentConfig> {
-    const agents = this.readAgents()
-    const now = Date.now()
-    const agent: AgentConfig = {
-      ...config,
-      id: uuidv4(),
-      createdAt: now,
-      updatedAt: now,
-    }
-    agents.push(agent)
-    await this.writeAgents(agents)
-    return agent
+    return this.enqueue(async () => {
+      const agents = this.readAgents()
+      const now = Date.now()
+      const agent: AgentConfig = {
+        ...config,
+        id: uuidv4(),
+        createdAt: now,
+        updatedAt: now,
+      }
+      agents.push(agent)
+      await this.writeAgents(agents)
+      return agent
+    })
   }
 
   async updateAgent(
     id: string,
     updates: Partial<Omit<AgentConfig, 'id' | 'createdAt'>>
   ): Promise<AgentConfig> {
-    const agents = this.readAgents()
-    const index = agents.findIndex((a) => a.id === id)
-    if (index < 0) throw new Error(`Agent ${id} not found`)
+    return this.enqueue(async () => {
+      const agents = this.readAgents()
+      const index = agents.findIndex((a) => a.id === id)
+      if (index < 0) throw new Error(`Agent ${id} not found`)
 
-    agents[index] = {
-      ...agents[index],
-      ...updates,
-      updatedAt: Date.now(),
-    }
-    await this.writeAgents(agents)
-    return agents[index]
+      agents[index] = {
+        ...agents[index],
+        ...updates,
+        updatedAt: Date.now(),
+      }
+      await this.writeAgents(agents)
+      return agents[index]
+    })
   }
 
   async deleteAgent(id: string): Promise<void> {
-    const agents = this.readAgents()
-    const target = agents.find((a) => a.id === id)
-    if (!target) return
-    if (target.isBuiltIn) throw new Error('Cannot delete built-in agent')
+    return this.enqueue(async () => {
+      const agents = this.readAgents()
+      const target = agents.find((a) => a.id === id)
+      if (!target) return
+      if (target.isBuiltIn) throw new Error('Cannot delete built-in agent')
 
-    const filtered = agents.filter((a) => a.id !== id)
-    await this.writeAgents(filtered)
+      const filtered = agents.filter((a) => a.id !== id)
+      await this.writeAgents(filtered)
+    })
   }
 
   // ─── Built-in Agents ───────────────────────────────────────────────────────
 
   async initializeBuiltInAgents(): Promise<void> {
-    const existing = this.readAgents()
-    const now = Date.now()
-    const newAgents: AgentConfig[] = [...existing]
+    return this.enqueue(async () => {
+      const existing = this.readAgents()
+      const now = Date.now()
+      const newAgents: AgentConfig[] = [...existing]
 
-    for (const builtIn of BUILT_IN_AGENTS) {
-      const existingBuiltIn = newAgents.find((agent) => agent.isBuiltIn && agent.name === builtIn.name)
-      if (!existingBuiltIn) {
-        newAgents.push({
-          ...builtIn,
-          id: uuidv4(),
-          createdAt: now,
-          updatedAt: now,
-        })
-      } else if (!existingBuiltIn.systemPromptCustomized && existingBuiltIn.systemPrompt !== builtIn.systemPrompt) {
-        // Built-in agents are read-only in the UI, so keep their shipped safety
-        // instructions current for users who already have a persisted config.
-        existingBuiltIn.systemPrompt = builtIn.systemPrompt
-        existingBuiltIn.updatedAt = now
+      for (const builtIn of BUILT_IN_AGENTS) {
+        const existingBuiltIn = newAgents.find((agent) => agent.isBuiltIn && agent.name === builtIn.name)
+        if (!existingBuiltIn) {
+          newAgents.push({
+            ...builtIn,
+            id: uuidv4(),
+            createdAt: now,
+            updatedAt: now,
+          })
+        } else if (!existingBuiltIn.systemPromptCustomized && existingBuiltIn.systemPrompt !== builtIn.systemPrompt) {
+          // Built-in agents are read-only in the UI, so keep their shipped safety
+          // instructions current for users who already have a persisted config.
+          existingBuiltIn.systemPrompt = builtIn.systemPrompt
+          existingBuiltIn.updatedAt = now
+        }
+
+        if (existingBuiltIn && existingBuiltIn.maxIterations !== builtIn.maxIterations) {
+          existingBuiltIn.maxIterations = builtIn.maxIterations
+          existingBuiltIn.updatedAt = now
+        }
+
+        if (existingBuiltIn && existingBuiltIn.toolCatalogVersion !== TOOL_CATALOG_VERSION) {
+          existingBuiltIn.tools = [...new Set([...existingBuiltIn.tools, ...builtIn.tools])]
+          existingBuiltIn.toolCatalogVersion = TOOL_CATALOG_VERSION
+          existingBuiltIn.updatedAt = now
+        }
       }
 
-      if (existingBuiltIn && existingBuiltIn.maxIterations !== builtIn.maxIterations) {
-        existingBuiltIn.maxIterations = builtIn.maxIterations
-        existingBuiltIn.updatedAt = now
-      }
-
-      if (existingBuiltIn && existingBuiltIn.toolCatalogVersion !== TOOL_CATALOG_VERSION) {
-        existingBuiltIn.tools = [...new Set([...existingBuiltIn.tools, ...builtIn.tools])]
-        existingBuiltIn.toolCatalogVersion = TOOL_CATALOG_VERSION
-        existingBuiltIn.updatedAt = now
-      }
-    }
-
-    await this.writeAgents(newAgents)
+      await this.writeAgents(newAgents)
+    })
   }
 
   /**
@@ -141,17 +173,19 @@ export class AgentStore {
    */
   async alignBuiltInConnections(providerId: string, model: string, enabledProviderIds: Set<string>): Promise<void> {
     if (!providerId || !model || !enabledProviderIds.has(providerId)) return
-    const agents = this.readAgents()
-    const now = Date.now()
-    let changed = false
-    for (const agent of agents) {
-      if (!agent.isBuiltIn || enabledProviderIds.has(agent.providerId)) continue
-      agent.providerId = providerId
-      agent.model = model
-      agent.updatedAt = now
-      changed = true
-    }
-    if (changed) await this.writeAgents(agents)
+    return this.enqueue(async () => {
+      const agents = this.readAgents()
+      const now = Date.now()
+      let changed = false
+      for (const agent of agents) {
+        if (!agent.isBuiltIn || enabledProviderIds.has(agent.providerId)) continue
+        agent.providerId = providerId
+        agent.model = model
+        agent.updatedAt = now
+        changed = true
+      }
+      if (changed) await this.writeAgents(agents)
+    })
   }
 
   // ─── Query ─────────────────────────────────────────────────────────────────

@@ -81,6 +81,7 @@ export class StorageManager {
     const enabledProviderIds = new Set(this.config.getProviders().filter((provider) => provider.isEnabled && provider.apiKey).map((provider) => provider.id))
     await this.agents.alignBuiltInConnections(this.config.get('activeProviderId'), this.config.getActiveModel(), enabledProviderIds)
     await this.taskRuns.markRunningAsInterrupted()
+    await this.conversations.markRunningAsInterrupted()
     await this.runtimeKernel.markActiveAsInterrupted()
     await this.runtimeRuns.markActiveAsInterrupted()
 

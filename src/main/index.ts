@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import { createApplicationMenu, createMainWindow } from './window'
 import { registerAllIpcHandlers } from './ipc'
 import { recoverQueuedTasks } from './ipc/task'
@@ -19,7 +19,28 @@ setupGlobalErrorHandlers()
 let mainWindow: BrowserWindow | null = null
 let applicationServices: ApplicationServices | null = null
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
+  void startApplication()
+})
+
+/**
+ * Startup must never fail invisibly: a storage error used to leave the app
+ * running with no window at all. Surface it and exit with a clear reason.
+ */
+async function startApplication(): Promise<void> {
+  try {
+    await initializeApplication()
+  } catch (error) {
+    console.error('Eva failed to start:', error)
+    dialog.showErrorBox(
+      'Eva failed to start',
+      `Eva could not finish starting up.\n\n${error instanceof Error ? error.message : String(error)}`
+    )
+    app.exit(1)
+  }
+}
+
+async function initializeApplication(): Promise<void> {
   // 1. Initialize persistent storage (creates dirs, seeds built-in agents)
   await initializeStorage()
   // Apply the saved policy before initializing model connections so every
@@ -89,7 +110,7 @@ app.whenReady().then(async () => {
       registerTrustedRenderer(mainWindow.webContents)
     }
   })
-})
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

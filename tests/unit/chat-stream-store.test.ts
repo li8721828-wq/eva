@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChatStore } from '../../src/renderer/stores/use-chat-store'
 
 describe('chat stream state', () => {
@@ -9,6 +9,10 @@ describe('chat stream state', () => {
       streamingByConversation: {},
       error: null,
     })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('keeps background conversation stream updates instead of dropping them', () => {
@@ -101,5 +105,110 @@ describe('chat stream state', () => {
     const stream = useChatStore.getState().streamingByConversation.foreground
     expect(stream.content).toBe('这是正在生成的结论。')
     expect(stream.progressUpdates).toHaveLength(2)
+  })
+
+  it('does not reopen a completed stream when a delayed text delta arrives', () => {
+    const store = useChatStore.getState()
+    useChatStore.setState({ streamingByConversation: {
+      foreground: {
+        isStreaming: false,
+        content: '完整回复',
+        reasoningContent: '',
+        toolCalls: [],
+        executionTrace: [],
+        executionTimeline: [],
+        progressUpdates: [],
+        status: '',
+        startedAt: null,
+        lastActivityAt: null,
+      },
+    } })
+    store.appendStreamEvent({ type: 'text_delta', conversationId: 'foreground', content: '迟到的重复内容' })
+
+    expect(useChatStore.getState().streamingByConversation.foreground).toMatchObject({ isStreaming: false, content: '完整回复' })
+  })
+
+  it('ignores a duplicate done event after the response was persisted', () => {
+    useChatStore.setState({ loadConversations: async () => {} })
+    const store = useChatStore.getState()
+    store.appendStreamEvent({ type: 'text_delta', conversationId: 'foreground', content: '同一份内容' })
+    store.appendStreamEvent({ type: 'done', conversationId: 'foreground', content: '同一份内容', messageId: 'answer-1' })
+    store.appendStreamEvent({ type: 'done', conversationId: 'foreground', content: '同一份内容', messageId: 'answer-2' })
+
+    const messages = useChatStore.getState().messages
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ id: 'answer-1', content: '同一份内容' })
+    expect(useChatStore.getState().streamingByConversation.foreground.isStreaming).toBe(false)
+  })
+
+  it('does not append a queued terminal answer already loaded by refresh', () => {
+    useChatStore.setState({
+      loadConversations: async () => {},
+      messages: [{
+        id: 'persisted-answer',
+        conversationId: 'foreground',
+        role: 'assistant',
+        content: '同一份内容',
+        timestamp: Date.now(),
+      }],
+      streamingByConversation: {
+        foreground: {
+          isStreaming: true,
+          content: '同一份内容',
+          reasoningContent: '',
+          toolCalls: [],
+          executionTrace: [],
+          executionTimeline: [],
+          progressUpdates: [],
+          status: 'Generating response...',
+          startedAt: Date.now(),
+          lastActivityAt: Date.now(),
+        },
+      },
+    })
+
+    useChatStore.getState().appendStreamEvent({ type: 'done', conversationId: 'foreground', content: '' })
+
+    expect(useChatStore.getState().messages).toHaveLength(1)
+    expect(useChatStore.getState().streamingByConversation.foreground.isStreaming).toBe(false)
+  })
+
+  it('does not add a transient assistant message for a stream error', () => {
+    const store = useChatStore.getState()
+    const refreshConversation = vi.fn().mockResolvedValue(undefined)
+    useChatStore.setState({ refreshConversation })
+
+    store.appendStreamEvent({ type: 'error', conversationId: 'foreground', error: 'Provider rejected the request.' })
+
+    expect(useChatStore.getState().messages).toEqual([])
+    expect(useChatStore.getState().error).toBe('Provider rejected the request.')
+    expect(refreshConversation).toHaveBeenCalledWith('foreground')
+  })
+
+  it('immediately clears the active renderer stream when the user stops it', () => {
+    const abort = vi.fn()
+    vi.stubGlobal('window', { eva: { chat: { abort } } })
+    useChatStore.setState({ streamingByConversation: {
+      foreground: {
+        isStreaming: true,
+        content: '正在生成的内容',
+        reasoningContent: '',
+        toolCalls: [],
+        executionTrace: [],
+        executionTimeline: [],
+        progressUpdates: [],
+        status: 'Generating response...',
+        startedAt: Date.now(),
+        lastActivityAt: Date.now(),
+      },
+    } })
+
+    useChatStore.getState().abortStream()
+
+    expect(abort).toHaveBeenCalledWith('foreground')
+    expect(useChatStore.getState().streamingByConversation.foreground).toMatchObject({
+      isStreaming: false,
+      status: '已停止',
+    })
   })
 })

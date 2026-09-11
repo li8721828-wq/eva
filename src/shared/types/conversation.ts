@@ -86,6 +86,8 @@ export interface ChatMessage {
   model?: string
   /** Provider-reported usage accumulated for this assistant response. */
   usage?: ChatUsage
+  /** Local and provider timing captured for this completed response. */
+  timing?: ResponseTiming
   /** Provider termination reason, retained to distinguish natural completion from truncation. */
   finishReason?: string
   /** User-curated assistant response, retained in the conversation record. */
@@ -125,6 +127,38 @@ export interface ChatUsage {
   modelCallUsage?: ModelCallUsage[]
   /** Local context accounting recorded immediately before the latest model call. */
   contextDiagnostics?: ContextDiagnostics
+}
+
+/** Timing of one upstream model request in a response. */
+export interface ModelCallTiming {
+  durationMs: number
+  /** Time until the provider sent its first stream event, when one was received. */
+  timeToFirstResponseMs?: number
+}
+
+/** Timing of one local tool operation. */
+export interface ToolCallTiming {
+  name: string
+  durationMs: number
+  isError: boolean
+}
+
+/** End-to-end timing retained without request content or provider credentials. */
+export interface ResponseTiming {
+  /** IPC work before the Agent starts, including history, preferences, and attachments. */
+  localPreparationMs?: number
+  /** Building and fitting the model context for the first upstream request. */
+  contextBuildMs?: number
+  /** Sum of upstream request durations; parallel work is represented by individual calls below. */
+  modelDurationMs: number
+  /** First provider response for the initial model request, when available. */
+  timeToFirstResponseMs?: number
+  /** Sum of local tool execution durations. */
+  toolExecutionMs: number
+  /** Full elapsed time through Agent completion, excluding final message persistence. */
+  totalMs: number
+  modelCalls: ModelCallTiming[]
+  toolCalls: ToolCallTiming[]
 }
 
 /** Usage boundary for one provider request made while producing an assistant reply. */
@@ -201,7 +235,7 @@ export interface ExecutionTraceEntry {
 
 export interface ExecutionTimelineEntry {
   id: string
-  kind: 'reasoning' | 'tool'
+  kind: 'reasoning' | 'tool' | 'note'
   timestamp: number
   content?: string
   toolCall?: ToolCall
@@ -223,6 +257,10 @@ export interface ChatStreamEvent {
   type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'done' | 'error'
   messageId?: string
   content?: string
+  /** True only when provisional text was protocol markup and must be discarded. */
+  discardProvisionalText?: boolean
+  /** Why provisional text was reset; `protocol-repair` marks an automatic protocol-format retry. */
+  reason?: 'protocol-repair' | 'provider-error'
   toolCall?: Partial<ToolCall>
   toolCallId?: string
   toolResult?: string
@@ -235,4 +273,5 @@ export interface ChatStreamEvent {
   error?: string
   finishReason?: string
   usage?: ChatUsage
+  timing?: ResponseTiming
 }

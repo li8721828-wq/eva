@@ -105,6 +105,16 @@ describe('tool dispatch', () => {
     expect(requestedTools).toEqual([['list_directory', 'read_file'], ['list_directory', 'read_file'], undefined])
     expect(executionOrder).toEqual(['list_directory', 'read_file:D:\\GameDev\\project.godot'])
     expect(events.findIndex((event) => event.type === 'tool_call')).toBeLessThan(events.findIndex((event) => event.type === 'tool_result'))
-    expect(events.find((event) => event.type === 'done')?.content).toBe('Found the project.')
+    const done = events.find((event) => event.type === 'done')
+    expect(done?.content).toBe('Found the project.')
+    expect(done?.timing).toMatchObject({
+      contextBuildMs: expect.any(Number),
+      modelDurationMs: expect.any(Number),
+      toolExecutionMs: expect.any(Number),
+      totalMs: expect.any(Number),
+    })
+    expect(done?.timing?.modelCalls).toHaveLength(3)
+    expect(done?.timing?.modelCalls.every((call) => call.timeToFirstResponseMs !== undefined)).toBe(true)
+    expect(done?.timing?.toolCalls.map((call) => call.name)).toEqual(['list_directory', 'read_file'])
   })
 })

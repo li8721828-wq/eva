@@ -63,7 +63,7 @@ function StepRow({ step }: { step: GoalStep }) {
       >
         <span className="mt-0.5 shrink-0">{statusIcon[step.status]}</span>
         <span className="min-w-0 flex-1">
-          <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-500">
+          <span className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             Step {step.index + 1}
             {attemptLabel && <span className={cn('normal-case tracking-normal', step.status === 'in_progress' ? 'text-violet-600' : step.status === 'failed' ? 'text-rose-600' : 'text-zinc-400')}>{attemptLabel}</span>}
           </span>
@@ -123,10 +123,10 @@ export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
     <section className="max-w-3xl py-1">
       <header className="pb-4">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-zinc-800">Goal execution</span>
+          <span className="text-sm font-semibold text-zinc-700">Goal execution</span>
           {isGoalRunning ? (
             <div className="ml-auto flex items-center gap-2">
-              <span className="flex items-center gap-1.5 text-xs text-violet-700">
+              <span className="flex items-center gap-1.5 text-xs text-violet-600">
                 <Loader2 className={cn('h-3.5 w-3.5', SMOOTH_SPIN_CLASS)} /> Running
               </span>
               <button
@@ -143,7 +143,7 @@ export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
               <XCircle className="h-3.5 w-3.5" /> Interrupted
             </span>
           ) : isGoalActive ? (
-            <span className="ml-auto flex items-center gap-1.5 text-xs text-violet-700">
+            <span className="ml-auto flex items-center gap-1.5 text-xs text-violet-600">
               <Loader2 className={cn('h-3.5 w-3.5', SMOOTH_SPIN_CLASS)} /> Running
             </span>
           ) : goalProgress.status === 'completed' ? (
@@ -171,7 +171,7 @@ export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
           )}
         </div>
         <div className="mt-3 max-w-3xl">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-zinc-400">
             {showObjective ? 'Full request' : 'Task brief'}
           </span>
           {!showObjective && <p className="mt-1.5 text-sm leading-6 text-zinc-600">{goalBrief(goalProgress.goal)}</p>}
@@ -179,7 +179,7 @@ export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
             <button
               type="button"
               onClick={() => setShowObjective((visible) => !visible)}
-              className="mt-2 text-xs font-medium text-violet-700 hover:text-violet-900"
+              className="mt-2 text-xs font-medium text-violet-600 hover:text-violet-700"
             >
               {showObjective ? 'Hide full request' : 'View full request'}
             </button>
@@ -211,14 +211,14 @@ export function GoalExecutionCard({ conversationId }: GoalExecutionCardProps) {
 
       {activeStep && goalStreamingContent && (
         <div className="mt-2 max-w-3xl border-l border-violet-200 pl-3">
-          <div className="mb-1.5 text-xs font-medium text-violet-700">Live output for step {activeStep.index + 1}</div>
+          <div className="mb-1.5 text-xs font-medium text-violet-600">Live output for step {activeStep.index + 1}</div>
           <MarkdownMessageContent content={goalStreamingContent} className="max-h-44 overflow-auto text-xs leading-5 text-zinc-700" />
         </div>
       )}
 
       {goalProgress.summary && (
         <div className="mt-5 max-w-3xl border-t border-zinc-100 pt-4">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-zinc-400">Outcome</span>
+          <span className="text-xs font-medium uppercase tracking-[0.08em] text-zinc-400">Outcome</span>
           <MarkdownMessageContent content={normalizeGoalMarkdown(goalProgress.summary)} className="mt-2 text-sm leading-7 text-zinc-700" />
         </div>
       )}

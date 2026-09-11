@@ -102,7 +102,7 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
       <div><h2 className="text-base font-semibold text-zinc-900">Markdown 渲染器</h2><p className="mt-1 text-sm leading-6 text-zinc-500">决定回复在对话中的视觉排版，不改变模型生成的内容。</p></div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2">{markdownRenderers.map((renderer) => <ChoiceRow key={renderer.value} selected={markdownRenderer === renderer.value} icon={renderer.icon} label={renderer.label} description={renderer.description} onClick={() => onMarkdownRendererChange(renderer.value)} />)}</div>
       {markdownRenderer === 'classic' ? <p className="mt-3 text-xs leading-5 text-zinc-500">经典文档保留开放式排版与浅色代码主题；阅读样式、字体、色调和字号仍按此智能体的设置生效。</p> : null}
-      {markdownRenderer === 'streamdown' ? <p className="mt-3 text-xs leading-5 text-zinc-500">仅在模型输出过程中启用流式修复；关闭逐字动画，避免高频闪动。回复完成后自动切为静态渲染。</p> : null}
+      {markdownRenderer === 'streamdown' ? <p className="mt-3 text-xs leading-5 text-zinc-500">所有流式回复都会采用逐字墨迹显现；选择此项可让回复完成后也保留 Streamdown 的文档排版与未闭合 Markdown 修复能力。</p> : null}
     </section>
 
     <section>

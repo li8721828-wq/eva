@@ -14,7 +14,7 @@ function getToolIcon(name: string) {
   return <FileCode className="h-3.5 w-3.5" />
 }
 
-function getToolLabel(toolCall: ToolCall): { title: string; detail?: string; resultCount?: number } {
+export function getToolLabel(toolCall: ToolCall): { title: string; detail?: string; resultCount?: number } {
   if (toolCall.name === 'dispatch_tools') {
     const calls = Array.isArray(toolCall.arguments.calls) ? toolCall.arguments.calls : []
     const names = Array.from(new Set(calls.flatMap((call) => typeof call === 'object' && call && typeof (call as Record<string, unknown>).name === 'string'
@@ -142,7 +142,7 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
           </span>
         )}
         {label.resultCount !== undefined && !isRunning && !toolCall.isError && (
-          <span className="rounded-full bg-zinc-200/70 px-1.5 py-0.5 text-[11px] text-zinc-600">
+          <span className="rounded-full bg-zinc-200/70 px-1.5 py-0.5 text-xs text-zinc-600">
             {label.resultCount} sources
           </span>
         )}

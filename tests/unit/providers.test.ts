@@ -19,6 +19,7 @@ vi.mock('electron', () => ({
 
 import { ProviderRegistry, createProvider } from '../../src/main/providers'
 import { OpenAIProvider } from '../../src/main/providers/openai'
+import { resolveOpenCodeRoute } from '../../src/main/providers/opencode'
 import type { LLMProviderConfig } from '../../src/shared/types/provider'
 
 describe('ProviderRegistry', () => {
@@ -147,6 +148,14 @@ describe('OpenAIProvider streaming tool calls', () => {
     expect(provider.supportsReasoning('deepseek-chat')).toBe(false)
   })
 
+  it('creates the OpenCode multi-transport adapter for an OpenCode URL', () => {
+    const provider = createProvider({
+      id: 'opencode', name: 'OpenCode Go', type: 'custom', apiKey: 'test-api-key',
+      baseUrl: 'https://opencode.ai/zen/go/v1', models: [], defaultModel: 'deepseek-v4-flash', isEnabled: true,
+    })
+    expect(provider.constructor.name).toBe('OpenCodeProvider')
+  })
+
   it('should expose persisted model capability profiles without re-inferring them', () => {
     const checkedAt = Date.now() - 1000
     const registry = new ProviderRegistry()
@@ -209,6 +218,40 @@ describe('OpenAIProvider streaming tool calls', () => {
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ thinking: { type: 'enabled' } }), expect.anything())
     expect(chunks.some((chunk) => chunk.reasoningContent === 'plan')).toBe(true)
+  })
+
+  it('replays assistant reasoning_content for DeepSeek tool turns', async () => {
+    async function* responseStream() {
+      yield { choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }
+    }
+
+    const provider = new OpenAIProvider('deepseek', 'DeepSeek', 'deepseek', { apiKey: 'test-key' })
+    const create = vi.fn().mockResolvedValue(responseStream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+
+    for await (const _chunk of provider.chat({
+      model: 'deepseek-v4-flash',
+      messages: [{
+        role: 'assistant',
+        content: '',
+        reasoningContent: 'I inspected the requested file.',
+        toolCalls: [{ id: 'call_1', name: 'read_file', arguments: { path: 'README.md' } }],
+      }, {
+        role: 'tool',
+        content: 'Observed file contents.',
+        toolCallId: 'call_1',
+      }, {
+        role: 'user',
+        content: 'Summarize it.',
+      }],
+      tools: [],
+    })) { /* exhaust */ }
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      messages: expect.arrayContaining([
+        expect.objectContaining({ reasoning_content: 'I inspected the requested file.' }),
+      ]),
+    }), expect.anything())
   })
 
   it('emits one complete tool call instead of duplicating streamed arguments', async () => {
@@ -641,5 +684,14 @@ describe('OpenAIProvider streaming tool calls', () => {
     const result = await provider.chatComplete({ model: 'test-model', messages: [] })
 
     expect(result).toMatchObject({ content: 'partial document', finishReason: 'length' })
+  })
+})
+
+describe('OpenCode transport routing', () => {
+  it('uses the model-native API family and lets explicit configuration win', () => {
+    expect(resolveOpenCodeRoute('deepseek-v4-flash')).toBe('chat-completions')
+    expect(resolveOpenCodeRoute('minimax-m3')).toBe('anthropic-messages')
+    expect(resolveOpenCodeRoute('gpt-5.2-codex')).toBe('responses')
+    expect(resolveOpenCodeRoute('gpt-5.2-codex', [{ id: 'gpt-5.2-codex', name: 'GPT', transport: 'chat-completions' }])).toBe('chat-completions')
   })
 })

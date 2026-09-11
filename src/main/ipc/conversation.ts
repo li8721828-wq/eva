@@ -164,7 +164,7 @@ function activePlanContext(plan: ActivePlan | null): string {
     `Objective: ${plan.objective}`,
     `Plan status: ${plan.status}`,
     steps || '(The plan is being prepared.)',
-    'When the user says "continue" or "next" without naming another task, continue the current unfinished plan step. Treat unrelated questions as temporary discussion; do not replace this plan unless the user explicitly starts, switches, or cancels a plan.',
+    'The active user message always has priority over this plan. Continue the plan only when the active message explicitly says to continue, resume, proceed, or clearly refers to this plan. For unrelated questions, including greetings and short standalone questions, answer the active message directly and do not apply plan assumptions.',
     '--- End active Agent OS plan ---',
   ].join('\n')
 }
@@ -185,6 +185,38 @@ function summarizeExecutionText(value: unknown, limit = 260): string | undefined
   const normalized = redactExecutionText(value.replace(/\s+/g, ' ').trim())
   if (!normalized) return undefined
   return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
+}
+
+/** Keep provider diagnostics out of the persisted assistant answer. */
+function userFacingRunError(value: string): string {
+  const firstLine = value.split(/\r?\n/, 1)[0]?.trim() || ''
+  if (/[\u4e00-\u9fff]/.test(firstLine)) return `本次回复未完成：${firstLine}`
+  return '本次回复未完成：模型服务返回异常，请检查当前供应商和模型配置后重试。'
+}
+
+/** Keep intermediate narration readable as a sequence of small work units. */
+function splitExecutionSegments(value: string, limit = 220): string[] {
+  const normalized = redactExecutionText(value.replace(/\s+/g, ' ').trim())
+  if (!normalized) return []
+  const sentences = normalized.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [normalized]
+  const segments: string[] = []
+  let current = ''
+  for (const sentence of sentences) {
+    const next = `${current}${sentence}`.trim()
+    if (current && next.length > limit) {
+      segments.push(current)
+      current = sentence.trim()
+    } else {
+      current = next
+    }
+  }
+  if (current) segments.push(current)
+  return segments.flatMap((segment) => {
+    if (segment.length <= limit) return [segment]
+    const chunks: string[] = []
+    for (let index = 0; index < segment.length; index += limit) chunks.push(segment.slice(index, index + limit))
+    return chunks
+  })
 }
 
 function extractProgressUpdates(content: string): Array<{ kind: ProgressUpdateKind; content: string }> {
@@ -631,7 +663,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
     case 'text':
       return { type: 'text_delta', content: event.content }
     case 'text_reset':
-      return { type: 'text_reset' }
+      return { type: 'text_reset', discardProvisionalText: event.discardProvisionalText, reason: event.reason }
     case 'thinking':
       return { type: 'thinking', content: event.content }
     case 'reasoning':
@@ -649,7 +681,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
     case 'error':
       return { type: 'error', error: event.error }
     case 'done':
-      return { type: 'done', content: event.content, finishReason: event.finishReason, usage: event.usage }
+      return { type: 'done', content: event.content, finishReason: event.finishReason, usage: event.usage, timing: event.timing }
   }
 }
 
@@ -797,6 +829,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
+      const requestStartedAt = Date.now()
       const runToken = uuidv4()
       activeChatRunTokens.set(conversationId, runToken)
       const isCurrentRun = (): boolean => activeChatRunTokens.get(conversationId) === runToken
@@ -845,7 +878,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
         ]
           .filter(Boolean)
           .join('\n\n')
-        const historyMessages = sanitizeToolHistory(await convStore.getMessages(conversationId)).map((item) => ({
+        // The full transcript stays available to the UI. Model context starts
+        // from a bounded recent window plus durable per-conversation memory so
+        // a months-long chat does not resend every historical turn.
+        const historyMessages = sanitizeToolHistory(await convStore.getRecentMessages(conversationId, 80)).map((item) => ({
           ...item,
           images: loadReferenceImages(item.images, false),
         }))
@@ -1211,6 +1247,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
           createExecutionPlan,
           applySpecTemplate,
         })
+        // The user can cancel while configuration and history are loading,
+        // before this runner has been registered in `activeRunners`.
+        if (!isCurrentRun()) return
         // A second send in the same chat replaces the prior run; other chats
         // retain their own runners and continue independently.
         activeRunners.get(conversationId)?.abort()
@@ -1225,6 +1264,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
           resourceKey: `conversation:${conversationId}`,
         })
         runtimeProcessId = runtimeProcess.id
+        // `cancelInteractive` may have happened before startInteractive
+        // finished. Do not leave that late-created process running.
+        if (!isCurrentRun()) {
+          runner.abort()
+          await getAgentOsScheduler().cancelInteractive(conversationId)
+          return
+        }
         getAgentOsScheduler().attachInteractiveAbort(conversationId, runtimeProcess.id, () => runner?.abort())
 
         // 6. Execute the ReAct loop and stream events
@@ -1233,6 +1279,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let assistantContent = ''
         let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
+        let assistantTiming: import('../../shared/types/conversation').ResponseTiming | undefined
         let assistantFinishReason: string | undefined
         let runError: string | null = null
         // Keep only a possible partial eva-progress tag between token chunks.
@@ -1316,35 +1363,37 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
         const publishProgress = async (kind: ProgressUpdateKind, content: string): Promise<void> => {
           if (processOutput === 'off') return
-          const summary = summarizeExecutionText(content, progressCharacterLimit)
-          if (!summary || summary === latestProgressContent) return
-          latestProgressContent = summary
-          const progressUpdate: ProgressUpdate = {
-            id: uuidv4(),
-            kind,
-            content: summary,
-            timestamp: Date.now(),
-          }
-          progressUpdates.push(progressUpdate)
-          const progressMessage: ChatMessage = {
-            id: progressUpdate.id,
-            conversationId,
-            role: 'assistant',
-            content: summary,
-            progressKind: kind,
-            agentId: effectiveAgentConfig.id,
-            agentName: effectiveAgentConfig.name,
-            timestamp: progressUpdate.timestamp,
-          }
-          await convStore.addMessage(conversationId, progressMessage)
-          if (!win.isDestroyed()) {
-            win.webContents.send(IPC.CHAT_STREAM, {
+          for (const segment of splitExecutionSegments(content, progressCharacterLimit)) {
+            const summary = summarizeExecutionText(segment, progressCharacterLimit)
+            if (!summary || summary === latestProgressContent) continue
+            latestProgressContent = summary
+            const progressUpdate: ProgressUpdate = {
+              id: uuidv4(),
+              kind,
+              content: summary,
+              timestamp: Date.now(),
+            }
+            progressUpdates.push(progressUpdate)
+            const progressMessage: ChatMessage = {
+              id: progressUpdate.id,
               conversationId,
-              type: 'progress',
-              messageId: progressMessage.id,
+              role: 'assistant',
               content: summary,
               progressKind: kind,
-            } satisfies ChatStreamEvent)
+              agentId: effectiveAgentConfig.id,
+              agentName: effectiveAgentConfig.name,
+              timestamp: progressUpdate.timestamp,
+            }
+            await convStore.addMessage(conversationId, progressMessage)
+            if (!win.isDestroyed()) {
+              win.webContents.send(IPC.CHAT_STREAM, {
+                conversationId,
+                type: 'progress',
+                messageId: progressMessage.id,
+                content: summary,
+                progressKind: kind,
+              } satisfies ChatStreamEvent)
+            }
           }
         }
         const progressOpeningTag = '<eva-progress'
@@ -1415,16 +1464,28 @@ export function registerConversationHandlers(services?: ChatServices): void {
             continue
           }
           if (agentEvent.type === 'text_reset') {
-            // Text emitted before a tool call is provisional model narration
-            // (for example, "I will inspect..."), not a user-facing result.
-            // Persisting it on every ReAct cycle makes one run look stuck and
-            // produces repeated progress paragraphs. Explicit <eva-progress>
-            // tags are published as they arrive; the execution trace carries
-            // the tool status for untagged narration.
             clearPendingProgressMarkup()
-            provisionalAssistantContent = ''
-            assistantContent = ''
-            send(agentEvent)
+            if (agentEvent.reason === 'protocol-repair') {
+              executionTimeline.push({
+                id: uuidv4(),
+                kind: 'note',
+                content: '检测到回复包含未执行的协议标记，已自动重组并重试。',
+                timestamp: Date.now(),
+              })
+              emitExecutionTimeline()
+            }
+            // Ordinary model narration is the user-visible intermediate
+            // reasoning. Promote it to separate progress cards before the
+            // next tool cycle replaces the streaming surface. Raw protocol
+            // markup is discarded without being shown.
+            if (agentEvent.discardProvisionalText || provisionalAssistantContent.trim()) {
+              if (!agentEvent.discardProvisionalText && provisionalAssistantContent.trim()) {
+                await publishProgress('thinking', provisionalAssistantContent)
+              }
+              provisionalAssistantContent = ''
+              assistantContent = ''
+              send({ ...agentEvent, discardProvisionalText: true })
+            }
             continue
           }
           if (agentEvent.type === 'reasoning' && agentEvent.content) {
@@ -1515,12 +1576,27 @@ export function registerConversationHandlers(services?: ChatServices): void {
             clearPendingProgressMarkup()
             provisionalAssistantContent = ''
             if (agentEvent.content) {
-              assistantContent = agentEvent.content
+              const rawContent = agentEvent.content
+              const strippedContent = rawContent
                 .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '')
+                .trim()
+              // If the model wrapped its actual answer inside eva-progress tags,
+              // stripping them must not produce an empty reply; keep the tag
+              // contents as plain text instead.
+              assistantContent = strippedContent || rawContent
+                .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>|<\/eva-progress>/gi, '')
                 .trim()
               agentEvent.content = assistantContent
             }
             assistantUsage = agentEvent.usage
+            assistantTiming = agentEvent.timing
+              ? {
+                  ...agentEvent.timing,
+                  localPreparationMs: Math.max(0, Date.now() - requestStartedAt - agentEvent.timing.totalMs),
+                  totalMs: Date.now() - requestStartedAt,
+                }
+              : undefined
+            if (assistantTiming) agentEvent.timing = assistantTiming
             assistantFinishReason = agentEvent.finishReason
             completeCurrentAction()
             completeActiveNonToolTraceEntries()
@@ -1572,7 +1648,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           id: assistantMessageId,
           conversationId,
           role: 'assistant',
-          content: runError && !assistantContent && allToolCalls.length === 0 ? `Error: ${runError}` : assistantContent,
+          content: runError && !assistantContent && allToolCalls.length === 0 ? userFacingRunError(runError) : assistantContent,
           reasoningContent: assistantReasoningContent || undefined,
           executionTrace: executionTrace.length > 0 ? executionTrace : undefined,
           executionTimeline: executionTimeline.length > 0 ? executionTimeline : undefined,
@@ -1584,6 +1660,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           providerName: getStorage().config.getProvider(effectiveAgentConfig.providerId)?.name || effectiveAgentConfig.providerId,
           model: effectiveAgentConfig.model,
           usage: assistantUsage,
+          timing: assistantTiming,
           finishReason: assistantFinishReason,
           timestamp: Date.now(),
         }

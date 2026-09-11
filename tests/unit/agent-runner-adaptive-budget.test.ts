@@ -35,6 +35,147 @@ function chunks(...items: ChatChunk[]): AsyncIterable<ChatChunk> {
 }
 
 describe('AgentRunner adaptive tool budget', () => {
+  it.each([false, true])('handles a fragmented gateway rejection without confusing quoted explanations (quoted=%s)', async (quoted) => {
+    const notice = '[req_570e3146] [deepseek-v4.1-flash]\n**Bad request from AI provider**\nYour request was rejected by the AI provider.\nDo not resend the same request.\nRecommended tools: These responses are optimized for opencode, Claude Code, and Codex.'
+    const answer = quoted ? `The error you asked about means the gateway rejected the request. Example:\n${notice}` : notice
+    const chat = vi.fn(() => chunks(...Array.from(answer, (content) => ({ content })), { content: '', finishReason: 'stop' }))
+    const provider = { id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false, chat }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: [] }, provider: provider as never,
+      toolRegistry: new ToolRegistry(), contextManager: new ContextManager(), workspacePath: 'D:\\workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+    const events = []
+    for await (const event of runner.run({
+      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: quoted ? 'Explain this error' : 'Hello', timestamp: 0 },
+    })) events.push(event)
+    expect(chat).toHaveBeenCalledTimes(1)
+    if (quoted) {
+      expect(events.some((event) => event.type === 'error')).toBe(false)
+      expect(events).toContainEqual(expect.objectContaining({ type: 'done', content: answer }))
+    } else {
+      expect(events).toContainEqual(expect.objectContaining({ type: 'text_reset', discardProvisionalText: true, reason: 'provider-error' }))
+      expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('invalid_request') }))
+      expect(events.some((event) => event.type === 'done')).toBe(false)
+    }
+  })
+
+  it('rejects a gateway notice after a successful tool call without retrying', async () => {
+    const registry = new ToolRegistry()
+    const execute = vi.fn(async () => 'README contents')
+    registry.register({ definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } }, execute })
+    const chat = vi.fn()
+      .mockImplementationOnce(() => chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-1', name: 'read_file', arguments: '{}' }] }))
+      .mockImplementation(() => chunks({ content: '[req_failed] [test-model]\n**Bad request from AI provider**\nDo not resend the same request. Recommended tools: These responses are optimized for opencode.', finishReason: 'stop' }))
+    const provider = { id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false, chat }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file'] }, provider: provider as never,
+      toolRegistry: registry, contextManager: new ContextManager(), workspacePath: 'D:/workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+    const events = []
+    for await (const event of runner.run({
+      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: 'Read the README file and summarize it', timestamp: 0 },
+    })) events.push(event)
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(chat).toHaveBeenCalledTimes(2)
+    expect(chat.mock.calls[1][0].tools).toBeUndefined()
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('invalid_request') }))
+    expect(events.some((event) => event.type === 'done')).toBe(false)
+  })
+
+  it('sends a standalone greeting through the provider', async () => {
+    let providerCalls = 0
+    let requestMessages: Array<{ role: string; content: string }> = []
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { messages: Array<{ role: string; content: string }> }) => {
+        providerCalls += 1
+        requestMessages = params.messages
+        return chunks({ content: '你好！有什么我可以帮你处理的吗？', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: [] }, provider: provider as never,
+      toolRegistry: new ToolRegistry(), contextManager: new ContextManager(), workspacePath: 'D:\\workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [{ id: 'old', conversationId: 'conversation', role: 'assistant', content: 'A long unrelated answer.', timestamp: 0 }],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '你好！', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(providerCalls).toBe(1)
+    expect(requestMessages.at(-1)?.content).toContain('你好！')
+    expect(requestMessages.find((message) => message.role === 'system')?.content).toContain('Current Turn Priority')
+    expect(requestMessages.find((message) => message.role === 'system')?.content).toContain('one or two short sentences')
+    expect(requestMessages.find((message) => message.role === 'system')?.content).toContain('Do not recap earlier answers')
+    expect(events).toContainEqual(expect.objectContaining({ type: 'done', content: '你好！有什么我可以帮你处理的吗？' }))
+  })
+
+  it('rejects a gateway client notice instead of exposing it as an answer', async () => {
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: () => chunks({
+        content: '0 cached tokens.\\n\\nDo not resend the same request - it will keep failing and keep consuming your quota. Recommended tools: These responses are optimized for opencode, Claude Code, and Codex. If you are using a non-standard client and keep hitting errors, switch to one of the supported tools above.',
+        finishReason: 'stop',
+      }),
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: [] }, provider: provider as never,
+      toolRegistry: new ToolRegistry(), contextManager: new ContextManager(), workspacePath: 'D:\\workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '请检查当前服务状态', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(events).toContainEqual(expect.objectContaining({ type: 'text_reset', discardProvisionalText: true, reason: 'provider-error' }))
+    expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('未将其作为回答展示') }))
+    expect(events.some((event) => event.type === 'done')).toBe(false)
+  })
+
+  it('expands only an authorized minimal tool set before executing the requested tool', async () => {
+    // Tool-loading policy is covered through the actual provider request below.
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => 'README contents',
+    })
+    let request = 0
+    const toolSets: Array<string[] | undefined> = []
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }>; messages: Array<{ role: string; content: string }> }) => {
+        request += 1
+        if (request === 1) expect(params.messages[0].content).toContain('loading does not require new user approval')
+        toolSets.push(params.tools?.map((tool) => tool.name))
+        if (request === 1) return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'expand', name: 'request_additional_tools', arguments: '{"toolNames":["read_file"]}' }] })
+        if (request === 2) return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read', name: 'read_file', arguments: '{"path":"README.md"}' }] })
+        return chunks({ content: 'README inspected.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file'], maxIterations: 3 }, provider: provider as never,
+      toolRegistry: registry, contextManager: new ContextManager(), workspacePath: 'D:\\workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '帮我处理一下', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(toolSets).toEqual([['request_additional_tools'], ['read_file'], undefined])
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool_result', toolResult: expect.objectContaining({ name: 'read_file', isError: false }) }))
+    expect(events.find((event) => event.type === 'done')?.content).toBe('README inspected.')
+  })
+
   it('continues a provider-truncated response without imposing a max token request', async () => {
     let request = 0
     const requestedMaxTokens: Array<number | undefined> = []
@@ -68,7 +209,7 @@ describe('AgentRunner adaptive tool budget', () => {
     })) events.push(event)
 
     expect(request).toBe(2)
-    expect(requestedMaxTokens).toEqual([2048, 2048])
+    expect(requestedMaxTokens).toEqual([4096, 4096])
     expect(events.find((event) => event.type === 'done')).toMatchObject({
       content: 'The first part completes here.',
       finishReason: 'stop',
@@ -638,7 +779,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(requestedTools[0]).toEqual(['execute_command'])
   })
 
-  it('keeps all configured tools available for direct execution and synthesis', async () => {
+  it('starts a direct request with its relevant tools and discovery capability', async () => {
     const registry = new ToolRegistry()
     const toolNames = ['read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'execute_command', 'inspect_runtime', 'web_search', 'read_web_page']
     for (const name of toolNames) {
@@ -671,8 +812,9 @@ describe('AgentRunner adaptive tool budget', () => {
       // Exhaust the event stream.
     }
 
-    expect(requestedTools[0]).toEqual(toolNames)
-    expect(requestedTools[1]).toEqual(toolNames)
+    const expectedInitialTools = ['read_file', 'list_directory', 'search_files', 'inspect_runtime', 'request_additional_tools']
+    expect(requestedTools[0]).toEqual(expectedInitialTools)
+    expect(requestedTools[1]).toBeUndefined()
   })
 
   it('prioritizes the structured spreadsheet tool for workbook attachments', async () => {
@@ -770,5 +912,402 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(request).toBe(2)
     expect(events.find((event) => event.type === 'done')?.content).toBe('Recovered final answer.')
     expect(events.some((event) => event.type === 'error')).toBe(false)
+  })
+
+  it('retries an empty tool-result synthesis before surfacing failure', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => 'Observed file contents.',
+    })
+    let request = 0
+    const synthesisMessages: Array<{ role: string; toolCalls?: unknown }> = []
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { messages?: Array<{ role: string; toolCalls?: unknown }> }) => {
+        request += 1
+        if (request === 1) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read', name: 'read_file', arguments: '{"path":"README.md"}' }] })
+        }
+        if (request >= 2) synthesisMessages.push(...(params.messages || []).map(({ role, toolCalls }) => ({ role, toolCalls })))
+        return request === 2
+          ? chunks({ content: '', finishReason: 'stop' })
+          : chunks({ content: 'Recovered from completed tool results.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file'] },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '检查 README.md', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(request).toBe(3)
+    expect(synthesisMessages.some((message) => message.role === 'tool' || message.toolCalls)).toBe(false)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Recovered from completed tool results.')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+  })
+
+  it('re-reads a file after a successful write instead of reusing the cached pre-edit content', async () => {
+    const registry = new ToolRegistry()
+    let readExecutions = 0
+    let fileContents = 'export const version = 1'
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        readExecutions += 1
+        return fileContents
+      },
+    })
+    registry.register({
+      definition: { name: 'list_directory', description: 'List a directory.', parameters: { type: 'object' } },
+      execute: async () => 'notes.ts',
+    })
+    registry.register({
+      definition: { name: 'write_file', description: 'Write a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        fileContents = 'export const version = 2'
+        return JSON.stringify({ status: 'ok', path: 'notes.ts' })
+      },
+    })
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: () => {
+        request += 1
+        if (request === 1) {
+          return chunks({
+            content: '', finishReason: 'tool_calls',
+            toolCalls: [
+              { index: 0, id: 'read-1', name: 'read_file', arguments: '{"path":"notes.ts"}' },
+              { index: 1, id: 'list-1', name: 'list_directory', arguments: '{"path":"."}' },
+            ],
+          })
+        }
+        if (request === 2) {
+          return chunks({
+            content: '', finishReason: 'tool_calls',
+            toolCalls: [{ index: 0, id: 'write-1', name: 'write_file', arguments: '{"path":"notes.ts","content":"export const version = 2"}' }],
+          })
+        }
+        if (request === 3) {
+          return chunks({
+            content: '', finishReason: 'tool_calls',
+            toolCalls: [
+              { index: 0, id: 'read-2', name: 'read_file', arguments: '{"path":"notes.ts"}' },
+              { index: 1, id: 'list-2', name: 'list_directory', arguments: '{"path":"src"}' },
+            ],
+          })
+        }
+        return chunks({ content: 'Updated and verified.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file', 'list_directory', 'write_file'], maxIterations: 6 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '读取 notes.ts，修改 version 后重新读取验证。', timestamp: Date.now() },
+    })) events.push(event)
+
+    const readResults = events
+      .filter((event) => event.type === 'tool_result' && event.toolResult.name === 'read_file')
+      .map((event) => event.toolResult.result)
+    expect(readExecutions).toBe(2)
+    expect(readResults).toEqual(['export const version = 1', 'export const version = 2'])
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Updated and verified.')
+  })
+
+  it('decides a lone successful read at a tool-free checkpoint instead of forcing synthesis', async () => {
+    const registry = new ToolRegistry()
+    let readExecutions = 0
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        readExecutions += 1
+        return 'export const version = 1'
+      },
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        return request === 1
+          ? chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-1', name: 'read_file', arguments: '{"path":"notes.ts"}' }] })
+          : chunks({ content: 'FINAL: notes.ts exports version 1.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file'], maxIterations: 4 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '查看 notes.ts 的版本号。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(requestedTools).toEqual([['read_file'], undefined])
+    expect(readExecutions).toBe(1)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('notes.ts exports version 1.')
+  })
+
+  it('keeps acting after a lone read when the checkpoint reports pending work', async () => {
+    const registry = new ToolRegistry()
+    let readExecutions = 0
+    const readResults: string[] = []
+    let fileContents = 'export const version = 1'
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        readExecutions += 1
+        readResults.push(fileContents)
+        return fileContents
+      },
+    })
+    registry.register({
+      definition: { name: 'write_file', description: 'Write a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        fileContents = 'export const version = 2'
+        return JSON.stringify({ status: 'ok', path: 'notes.ts' })
+      },
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        if (request === 1) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-1', name: 'read_file', arguments: '{"path":"notes.ts"}' }] })
+        }
+        if (request === 2) {
+          return chunks({ content: 'CONTINUE: notes.ts still needs the version bump.', finishReason: 'stop' })
+        }
+        if (request === 3) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'write-1', name: 'write_file', arguments: '{"path":"notes.ts","content":"export const version = 2"}' }] })
+        }
+        if (request === 4) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-2', name: 'read_file', arguments: '{"path":"notes.ts"}' }] })
+        }
+        return chunks({ content: 'FINAL: notes.ts is now version 2.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file', 'write_file'], maxIterations: 6 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '查看并修改 notes.ts 的版本号。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(requestedTools).toEqual([
+      ['read_file', 'write_file'],
+      undefined,
+      ['read_file', 'write_file'],
+      ['read_file', 'write_file'],
+      undefined,
+    ])
+    expect(readExecutions).toBe(2)
+    expect(readResults).toEqual(['export const version = 1', 'export const version = 2'])
+    expect(events.find((event) => event.type === 'done')?.content).toBe('notes.ts is now version 2.')
+  })
+
+  it('re-runs an identical read batch after an intervening write', async () => {
+    const registry = new ToolRegistry()
+    const readCounts: Record<string, number> = {}
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async (params: { path?: string }) => {
+        const path = String(params.path)
+        readCounts[path] = (readCounts[path] || 0) + 1
+        return `${path} content`
+      },
+    })
+    registry.register({
+      definition: { name: 'write_file', description: 'Write a file.', parameters: { type: 'object' } },
+      execute: async () => JSON.stringify({ status: 'ok' }),
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        if (request === 1 || request === 3) {
+          return chunks({
+            content: '', finishReason: 'tool_calls',
+            toolCalls: [
+              { index: 0, id: `read-a-${request}`, name: 'read_file', arguments: '{"path":"a.ts"}' },
+              { index: 1, id: `read-b-${request}`, name: 'read_file', arguments: '{"path":"b.ts"}' },
+            ],
+          })
+        }
+        if (request === 2) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'write-a', name: 'write_file', arguments: '{"path":"a.ts","content":"updated"}' }] })
+        }
+        return chunks({ content: 'Both files were re-read after the write.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file', 'write_file'], maxIterations: 6 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '查看并修改 a.ts，然后重新读取两个文件。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(readCounts['a.ts']).toBe(2)
+    expect(readCounts['b.ts']).toBe(2)
+    expect(requestedTools).toEqual([
+      ['read_file', 'write_file'],
+      ['read_file', 'write_file'],
+      ['read_file', 'write_file'],
+      ['read_file', 'write_file'],
+    ])
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Both files were re-read after the write.')
+  })
+
+  it('still stops after an unchanged repeated read batch', async () => {
+    const registry = new ToolRegistry()
+    const readCounts: Record<string, number> = {}
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async (params: { path?: string }) => {
+        const path = String(params.path)
+        readCounts[path] = (readCounts[path] || 0) + 1
+        return `${path} content`
+      },
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        if (request <= 2) {
+          return chunks({
+            content: '', finishReason: 'tool_calls',
+            toolCalls: [
+              { index: 0, id: `read-a-${request}`, name: 'read_file', arguments: '{"path":"a.ts"}' },
+              { index: 1, id: `read-b-${request}`, name: 'read_file', arguments: '{"path":"b.ts"}' },
+            ],
+          })
+        }
+        return chunks({ content: 'The two files were already read.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file'], maxIterations: 6 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '查看 a.ts 和 b.ts。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(readCounts['a.ts']).toBe(1)
+    expect(readCounts['b.ts']).toBe(1)
+    expect(requestedTools).toEqual([['read_file'], ['read_file'], undefined])
+    expect(events.find((event) => event.type === 'done')?.content).toBe('The two files were already read.')
+  })
+
+  it('still stops after an unchanged repeated write batch', async () => {
+    const registry = new ToolRegistry()
+    let writeExecutions = 0
+    registry.register({
+      definition: { name: 'write_file', description: 'Write a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        writeExecutions += 1
+        return JSON.stringify({ status: 'ok' })
+      },
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        if (request <= 2) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: `write-${request}`, name: 'write_file', arguments: '{"path":"a.ts","content":"version 2"}' }] })
+        }
+        return chunks({ content: 'The write was already applied.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['write_file'], maxIterations: 6 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '写入 a.ts。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(writeExecutions).toBe(2)
+    expect(requestedTools).toEqual([['write_file'], ['write_file'], undefined])
+    expect(events.find((event) => event.type === 'done')?.content).toBe('The write was already applied.')
   })
 })

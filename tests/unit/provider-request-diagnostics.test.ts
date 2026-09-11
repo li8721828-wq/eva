@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatProviderRequestFailure } from '../../src/main/services/provider-request-diagnostics'
+import { classifyError } from '../../src/main/providers/errors'
 import type { LLMProvider } from '../../src/main/providers/base-provider'
 
 const provider = {
@@ -37,5 +38,17 @@ describe('provider request diagnostics', () => {
     expect(message).toContain('code=network')
     expect(message).toContain('retryable=true')
     expect(message).toContain('检查 baseUrl')
+  })
+
+  it('reports the HTTP status that caused a classified failure', () => {
+    const message = formatProviderRequestFailure(
+      classifyError(Object.assign(new Error('401 Authentication Fails'), { status: 401 }), 'console-go'),
+      provider,
+      'deepseek-v4-flash',
+      'goal-step',
+    )
+
+    expect(message).toContain('status=401')
+    expect(message).toContain('code=auth_failed')
   })
 })

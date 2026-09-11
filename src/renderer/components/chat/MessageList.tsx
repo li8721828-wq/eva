@@ -113,6 +113,16 @@ export function MessageList({ className }: MessageListProps) {
   const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
   const isStreaming = Boolean(stream?.isStreaming)
   const streamingContent = stream?.content || ''
+  // A terminal event is persisted to `messages` before the stream cleanup
+  // reaches the renderer. Never render a second in-flight bubble when it is
+  // byte-for-byte the same as the latest persisted assistant message.
+  const latestMessage = messages[messages.length - 1]
+  const isDuplicateStreamingReply = Boolean(
+    isStreaming &&
+    streamingContent &&
+    latestMessage?.role === 'assistant' &&
+    latestMessage.content === streamingContent
+  )
   const streamingReasoningContent = stream?.reasoningContent || ''
   const streamingAgentId = stream?.agentId
   const streamingAgentName = stream?.agentName
@@ -674,7 +684,7 @@ export function MessageList({ className }: MessageListProps) {
 
         {requirementProgress && (
           <section className="mb-8 w-full max-w-none border-l-2 border-violet-500 bg-violet-50/50 px-4 py-3.5" role="status" aria-live="polite" aria-label="需求工程执行进度">
-            <div className="flex items-center gap-2 text-sm font-medium text-zinc-900">
+            <div className="flex items-center gap-2 text-sm font-medium text-zinc-700">
               <Loader2 className={cn('h-4 w-4 text-violet-600', SMOOTH_SPIN_CLASS)} />
               <RequirementElapsedTime startedAt={requirementProgress.startedAt} />
               <span>需求工程</span>
@@ -689,14 +699,14 @@ export function MessageList({ className }: MessageListProps) {
                       : step.phase === 'failed'
                         ? <CircleAlert className="h-3.5 w-3.5 shrink-0 text-rose-600" />
                         : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />}
-                    <span className={cn(isCurrent ? 'font-medium text-violet-800' : 'text-zinc-600')}>{step.message}</span>
+                    <span className={cn(isCurrent ? 'font-medium text-violet-600' : 'text-zinc-600')}>{step.message}</span>
                   </li>
                 )
               })}
             </ol>
             {requirementProgress.steps.filter((step) => step.document).map((step) => (
               <details key={step.document!.id} open className="mt-3 border-t border-violet-100 pt-3">
-                <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-violet-800">
+                <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-violet-600">
                   {step.phase === 'started' ? <Loader2 className={cn('h-3.5 w-3.5 text-violet-600', SMOOTH_SPIN_CLASS)} /> : step.phase === 'failed' ? <CircleAlert className="h-3.5 w-3.5 text-rose-600" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />}
                   <span>{step.document!.title}</span>
                   {step.phase === 'started' && <span className="text-xs font-normal text-violet-600">正在生成</span>}
@@ -742,10 +752,11 @@ export function MessageList({ className }: MessageListProps) {
         {/* Render the in-flight Markdown through the same assistant-message surface.
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
-        {isStreaming && (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) && (
+        {isStreaming && !isDuplicateStreamingReply && (
           <div ref={attachStreamingRef} data-streaming-item="true" className="pb-9">
             <MessageBubble
               isStreaming
+              executingTools={streamingToolCalls.length > 0}
               message={{
                 id: `streaming-${currentConversationId || 'message'}`,
                 conversationId: currentConversationId || '',

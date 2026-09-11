@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* 聊天区排版基线：统一字体栈与层级字重（400 正文 / 500 标签 / 600 标题）。
+   MiSans / HarmonyOS Sans SC 在已安装的机器上自动生效，未安装则回退系统字体。 */
+@theme {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "MiSans", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+}
+
 @keyframes eva-focus-float {
   0%, 100% {
     box-shadow: -14px 3px 15px -5px rgba(15, 23, 42, 0.32), 0 2px 4px rgba(15, 23, 42, 0.08);
@@ -72,7 +78,7 @@ html, body, #root {
   overflow: hidden;
   background: #f7f8fd;
   color: var(--text-primary);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -562,7 +568,7 @@ html, body, #root {
 }
 
 .chat-message-markdown--claude strong {
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .chat-message-markdown--claude blockquote {
@@ -584,12 +590,16 @@ html, body, #root {
 .chat-message-markdown h4 {
   color: inherit;
   font-family: inherit;
-  font-size: 0.9375rem;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: 0;
-  line-height: 1.76;
+  line-height: 1.5;
   scroll-margin-top: 1rem;
 }
+
+.chat-message-markdown h1 { font-size: 1.2em; }
+.chat-message-markdown h2 { font-size: 1.1em; }
+.chat-message-markdown h3 { font-size: 1em; }
+.chat-message-markdown h4 { font-size: 0.94em; }
 
 .chat-message-markdown h1 {
   margin-top: 1.45rem;
@@ -601,8 +611,6 @@ html, body, #root {
 .chat-message-markdown h2 {
   margin-top: 1.35rem;
   margin-bottom: 0.4rem;
-  padding-left: 0.65rem;
-  border-left: 2px solid #ddd6fe;
 }
 
 .chat-message-markdown h3 {
@@ -612,7 +620,7 @@ html, body, #root {
 
 .chat-message-markdown strong {
   color: inherit;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .chat-message-markdown hr {
@@ -1338,7 +1346,6 @@ html, body, #root {
 
 .chat-message-markdown--renderer-classic .markdown-code-block :is(.hljs-comment, .hljs-quote) {
   color: #66768d;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   font-style: normal;
   font-weight: 500;
 }
@@ -1367,8 +1374,9 @@ html, body, #root {
   color: #825bd2;
 }
 
-/* Streamdown handles incomplete Markdown during streaming. The visual system
-   stays consistent with Eva and animations are deliberately disabled in React. */
+/* Streamdown handles incomplete Markdown during streaming. Eva feeds it a
+   paced display buffer so large provider chunks arrive as flowing text rather
+   than an abrupt paragraph repaint. */
 .chat-message-markdown--renderer-streamdown [data-streamdown] {
   color: inherit;
   font: inherit;
@@ -1390,7 +1398,6 @@ html, body, #root {
 
 .chat-usage-summary {
   border-top: 1px solid rgba(208, 217, 235, 0.7);
-  color: #8993a6;
 }
 
 .message-actions {
@@ -1423,12 +1430,63 @@ html, body, #root {
   padding-top: 0.25rem;
 }
 
+.chat-message-markdown--streaming {
+  text-rendering: optimizeLegibility;
+}
+
+.chat-message-markdown--streaming [data-sd-animate] {
+  will-change: opacity, filter, transform;
+}
+
+/* Streamdown scopes custom animation names with an `sd-` prefix. New glyphs
+   arrive like ink soaking into paper: the pigment gathers and darkens in
+   place, rather than a whole line blurring in and sharpening at once. */
+@keyframes sd-inkReveal {
+  from {
+    opacity: 0.04;
+    filter: contrast(0.52) saturate(0.48);
+    transform: scale(0.985);
+    text-shadow: 0 0 0.72em rgba(124, 58, 237, 0.5);
+  }
+
+  42% {
+    opacity: 0.38;
+    filter: contrast(0.72) saturate(0.7);
+    transform: scale(0.998);
+    text-shadow: 0 0 0.46em rgba(139, 92, 246, 0.32);
+  }
+
+  76% {
+    opacity: 0.82;
+    filter: contrast(0.9) saturate(0.92);
+    transform: scale(1);
+    text-shadow: 0 0 0.18em rgba(109, 40, 217, 0.16);
+  }
+
+  to {
+    opacity: 1;
+    filter: contrast(1) saturate(1);
+    transform: scale(1);
+    text-shadow: 0 0 0 transparent;
+  }
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-message-markdown--streaming [data-sd-animate] {
+    animation-duration: 0ms !important;
+    animation-delay: 0ms !important;
+  }
+
+}
+
 .tool-execution-status {
   min-height: 28px;
+  min-width: min(14rem, 100%);
   padding: 0.25rem 0;
   font-size: 0.875rem;
   font-weight: 400;
-  letter-spacing: 0.015em;
+  letter-spacing: 0;
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
 }
@@ -1512,9 +1570,8 @@ html, body, #root {
   min-width: 0;
   overflow: hidden;
   color: #334155;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
   font-size: 0.8125rem;
-  font-weight: 550;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1550,9 +1607,8 @@ html, body, #root {
   align-items: center;
   gap: 5px;
   color: #334155;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
   font-size: 0.875rem;
-  font-weight: 550;
+  font-weight: 500;
   line-height: 1.45;
 }
 
@@ -1563,7 +1619,7 @@ a.tool-call-source__title:hover {
 .tool-call-source__host {
   margin-top: 2px;
   color: #8a94a5;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
 }
 
 .tool-call-source__snippet {
@@ -1606,7 +1662,6 @@ a.tool-call-source__title:hover {
   max-height: 220px;
   overflow: auto;
   color: #526174;
-  font-family: "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", sans-serif;
   font-size: 0.75rem;
   line-height: 1.6;
   overflow-wrap: anywhere;

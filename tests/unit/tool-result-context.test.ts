@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  TOOL_FOLLOW_UP_INPUT_BUDGET_TOKENS,
   appendRollingToolEvidence,
   compactCompletedToolTransactions,
   compactToolResultForModel,
-  getToolFollowUpInputBudget,
 } from '../../src/main/agent-engine/tool-result-context'
 
 describe('tool result context', () => {
@@ -20,12 +18,6 @@ describe('tool result context', () => {
     expect(compacted).toContain('Full output remains in the execution record.')
     expect(compacted).toContain('first source')
     expect(compacted).toContain('final source')
-  })
-
-  it('only applies the transport budget after tool history exists', () => {
-    expect(getToolFollowUpInputBudget(900_000, false)).toBe(900_000)
-    expect(getToolFollowUpInputBudget(900_000, true)).toBe(TOOL_FOLLOW_UP_INPUT_BUDGET_TOKENS)
-    expect(getToolFollowUpInputBudget(16_000, true)).toBe(16_000)
   })
 
   it('replaces older complete tool transactions with bounded evidence', () => {

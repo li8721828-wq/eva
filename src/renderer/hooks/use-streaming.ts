@@ -13,36 +13,73 @@ import { useSymposiumStore } from '@/stores/use-symposium-store'
  */
 export function useStreaming(): void {
   useEffect(() => {
-    // Providers frequently emit very small token chunks. Rendering Markdown for
-    // every chunk is expensive, especially for longer responses, so coalesce
-    // visual updates to a stable ~30fps without delaying tool/status events.
-    let pendingConversationId: string | null = null
-    let pendingText = ''
+    // Keep the provider request genuinely streaming, but release text to the
+    // renderer one Unicode character at a time. This prevents a gateway-sized
+    // delta from causing several visual lines to appear in one repaint.
+    const CHARACTER_INTERVAL_MS = 42
+    const FINAL_INK_SETTLE_MS = 230
+    type QueuedStreamItem =
+      | { kind: 'text'; conversationId: string; content: string }
+      | { kind: 'event'; event: ChatStreamEvent }
+      | { kind: 'terminal'; event: ChatStreamEvent }
+    const pendingItems: QueuedStreamItem[] = []
     let flushTimer: number | null = null
 
-    const flushPendingText = () => {
+    const clearFlushTimer = () => {
       if (flushTimer !== null) {
         window.clearTimeout(flushTimer)
         flushTimer = null
       }
-
-      const conversationId = pendingConversationId
-      const content = pendingText
-      pendingConversationId = null
-      pendingText = ''
-
-      if (!conversationId || !content) return
-
-      useChatStore.getState().appendStreamEvent({
-        type: 'text_delta',
-        conversationId,
-        content,
-      })
     }
 
-    const scheduleTextFlush = () => {
-      if (flushTimer !== null) return
-      flushTimer = window.setTimeout(flushPendingText, 33)
+    const drainQueue = () => {
+      flushTimer = null
+      const item = pendingItems[0]
+      if (!item) return
+
+      if (item.kind === 'text') {
+        const character = Array.from(item.content)[0]
+        if (!character) {
+          pendingItems.shift()
+          flushTimer = window.setTimeout(drainQueue, 0)
+          return
+        }
+        item.content = item.content.slice(character.length)
+        useChatStore.getState().appendStreamEvent({ type: 'text_delta', conversationId: item.conversationId, content: character })
+        if (!item.content) pendingItems.shift()
+        flushTimer = window.setTimeout(drainQueue, CHARACTER_INTERVAL_MS)
+        return
+      }
+
+      pendingItems.shift()
+      if (item.kind === 'terminal') {
+        flushTimer = window.setTimeout(() => {
+          flushTimer = null
+          useChatStore.getState().appendStreamEvent(item.event)
+          drainQueue()
+        }, FINAL_INK_SETTLE_MS)
+        return
+      }
+
+      useChatStore.getState().appendStreamEvent(item.event)
+      flushTimer = window.setTimeout(drainQueue, 0)
+    }
+
+    const scheduleQueueDrain = () => {
+      if (flushTimer !== null || pendingItems.length === 0) return
+      flushTimer = window.setTimeout(drainQueue, 0)
+    }
+
+    const flushPendingItems = () => {
+      clearFlushTimer()
+      while (pendingItems.length > 0) {
+        const item = pendingItems.shift()!
+        if (item.kind === 'text') {
+          useChatStore.getState().appendStreamEvent({ type: 'text_delta', conversationId: item.conversationId, content: item.content })
+        } else {
+          useChatStore.getState().appendStreamEvent(item.event)
+        }
+      }
     }
 
     // Listen for chat stream events
@@ -50,19 +87,34 @@ export function useStreaming(): void {
       const streamEvent = data as unknown as ChatStreamEvent
       if (streamEvent.type === 'text_delta' && streamEvent.content) {
         if (!streamEvent.conversationId) return
-        if (pendingConversationId && pendingConversationId !== streamEvent.conversationId) {
-          flushPendingText()
-        }
-        pendingConversationId = streamEvent.conversationId
-        pendingText += streamEvent.content
-        scheduleTextFlush()
+        pendingItems.push({ kind: 'text', conversationId: streamEvent.conversationId, content: streamEvent.content })
+        scheduleQueueDrain()
         return
       }
 
       // Preserve event ordering: any text preceding a tool call, completion,
       // or error is committed before that structural event is applied.
-      flushPendingText()
-      useChatStore.getState().appendStreamEvent(streamEvent)
+      if (streamEvent.type === 'done' && streamEvent.conversationId) {
+        const conversationId = streamEvent.conversationId
+        // Some providers repeat the complete answer in the done event. Queue
+        // only the suffix not already represented by emitted and queued text.
+        const current = useChatStore.getState().streamingByConversation[conversationId]?.content || ''
+        const queued = current + pendingItems
+          .filter((item): item is Extract<QueuedStreamItem, { kind: 'text' }> => item.kind === 'text' && item.conversationId === conversationId)
+          .map((item) => item.content)
+          .join('')
+        const finalContent = streamEvent.content || ''
+        if (finalContent.startsWith(queued)) {
+          const suffix = finalContent.slice(queued.length)
+          if (suffix) pendingItems.push({ kind: 'text', conversationId, content: suffix })
+        }
+        pendingItems.push({ kind: 'terminal', event: { ...streamEvent, content: '' } })
+        scheduleQueueDrain()
+        return
+      }
+
+      pendingItems.push({ kind: 'event', event: streamEvent })
+      scheduleQueueDrain()
     })
 
     // Listen for task stream events (expert mode)
@@ -85,7 +137,7 @@ export function useStreaming(): void {
     })
 
     return () => {
-      flushPendingText()
+      flushPendingItems()
       cleanupChat()
       cleanupTask()
       cleanupGoal()

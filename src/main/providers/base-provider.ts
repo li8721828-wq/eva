@@ -1,4 +1,4 @@
-import type { ChatParams, ChatChunk, ToolDefinition, ChatMessageInput } from '../../shared/types/provider'
+import type { ChatParams, ChatChunk, ToolDefinition, ChatMessageInput, ProviderModelOption } from '../../shared/types/provider'
 import { sanitizeUnicode } from '../utils/unicode'
 
 export interface LLMProvider {
@@ -45,6 +45,7 @@ export interface ProviderCreateOptions {
   apiKey: string
   baseUrl?: string
   defaultModel?: string
+  models?: ProviderModelOption[]
 }
 
 /**
@@ -75,6 +76,13 @@ export function toOpenAIMessages(messages: ChatMessageInput[]): any[] {
       content: imageParts.length > 0
         ? [{ type: 'text', text: sanitizeUnicode(msg.content || '') }, ...imageParts]
         : sanitizeUnicode(msg.content || ''),
+    }
+
+    // DeepSeek thinking + tool calls requires the prior reasoning_content to
+    // be sent back on every subsequent request. Other OpenAI-compatible
+    // gateways ignore this optional field.
+    if (msg.role === 'assistant' && msg.reasoningContent?.trim()) {
+      base.reasoning_content = sanitizeUnicode(msg.reasoningContent)
     }
 
     // If assistant message has tool_calls

@@ -3,11 +3,11 @@ import fs from 'fs'
 import path from 'path'
 import type { ToolExecutor, ToolContext, ToolRegistry, FileService, TerminalService, ToolResultImage } from '../tools'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
-import type { ChatMessage, ChatUsage } from '../../shared/types/conversation'
+import type { ChatMessage, ChatUsage, ModelCallTiming, ResponseTiming, ToolCallTiming } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
-import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel, getToolFollowUpInputBudget } from './tool-result-context'
+import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel } from './tool-result-context'
 import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPool } from '../../shared/types/model-pool'
@@ -16,8 +16,9 @@ import type { ProviderRegistry } from '../providers'
 import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../services/usage-pricing-service'
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
-import { classifyError } from '../providers/errors'
+import { classifyError, InvalidRequestError } from '../providers/errors'
 import { describeModelCapabilityProfile, inferModelCapabilities } from '../../shared/model-capabilities'
+import { expandToolSet, isFastSynthesisReadTool, REQUEST_ADDITIONAL_TOOLS, selectInitialTools } from './tool-selection'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -97,12 +98,62 @@ const ROLLING_TOOL_EVIDENCE_END = '--- End earlier completed tool evidence ---'
 // when it explicitly reports `length`; a natural `stop` must end the turn.
 const MAX_PROVIDER_CONTINUATIONS = 3
 const MAX_EMPTY_RESPONSE_RETRIES = 1
-const MAX_NORMAL_TOOL_CYCLES = 12
-const MAX_AGENT_RESPONSE_TOKENS = 2_048
+const MAX_NORMAL_TOOL_CYCLES = 4
+const DEFAULT_AGENT_RESPONSE_TOKENS = 4_096
+const REASONING_AGENT_RESPONSE_TOKENS = 8_192
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
+// Reads of local files are only valid for the workspace state they observed.
+const LOCAL_FILE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files'])
+const WORKSPACE_MUTATION_TOOL_NAMES = new Set(['write_file', 'edit_file', 'execute_command'])
+// A lone successful read usually answers the request, but the same shape also
+// opens work that still needs an action. Ask the model itself before closing.
+const LONE_READ_CHECKPOINT_PROMPT = `You have the content you asked for. Decide whether the user's request can now be completed with the evidence already collected.
+
+Reply with exactly one of:
+FINAL: followed by the concise, complete answer for the user.
+CONTINUE: followed by the specific action that is still required.
+
+Choose CONTINUE whenever the request needs a change, a command, or a verification that has not happened yet. Never present unperformed work as complete.`
 const SEARCH_UNAVAILABLE_MARKER = '[SEARCH_UNAVAILABLE]'
 // Tool-generated screenshots need an independent bound from user attachments.
 const MAX_TOOL_REVIEW_IMAGE_BYTES = 32 * 1024 * 1024
+
+function normalizePendingUserMessage(message: RunParams['newMessage']): ChatMessage {
+  const candidate = message as unknown
+  if (typeof candidate === 'string') {
+    return {
+      id: '__pending_user_msg__',
+      conversationId: '',
+      role: 'user',
+      content: candidate,
+      timestamp: Date.now(),
+    }
+  }
+  return {
+    ...message,
+    id: '__pending_user_msg__',
+    role: message.role || 'user',
+    content: message.content || '',
+    timestamp: message.timestamp || Date.now(),
+  }
+}
+
+/**
+ * Some coding-plan gateways return an English client/quota notice with a 200
+ * response. It is neither an answer nor a provider error object, so detect it
+ * before it can become a persisted assistant message.
+ */
+function isGatewayInstructionLeak(content: string): boolean {
+  // Require a gateway envelope, not quoted troubleshooting text.
+  if (!/^(?:\[req_[\w-]+\]\s*\[[^\]\r\n]+\]\s*\*\*Bad request from AI provider\*\*|\d+ cached tokens\.)/i.test(content.trim())) return false
+  const markers = [
+    /do not resend the same request/i,
+    /these responses are optimized for (?:opencode|claude code|codex)/i,
+    /if you are using a non-standard client/i,
+    /recommended tools:/i,
+  ]
+  return markers.filter((pattern) => pattern.test(content)).length >= 2
+}
 const TEAM_DELEGATION_TOOL: ToolDefinition = {
   name: 'delegate_to_team',
   description: 'Delegate a complex multi-step task to Eva\'s internal specialist team. Use this when work benefits from separate research, implementation, review, or testing. The team returns a consolidated result; do not ask the user to switch modes.',
@@ -177,6 +228,10 @@ export class AgentRunner {
   private config: AgentRunnerConfig
   private abortController: AbortController | null = null
   private isRunning = false
+  private runStartedAt = 0
+  private contextBuildMs = 0
+  private modelCallTimings: ModelCallTiming[] = []
+  private toolCallTimings: ToolCallTiming[] = []
   /** Prevent a model feedback-loop from restarting the whole team in one chat turn. */
   private teamDelegationUsed = false
 
@@ -198,8 +253,14 @@ export class AgentRunner {
     this.isRunning = true
     this.teamDelegationUsed = false
     this.abortController = new AbortController()
+    this.runStartedAt = Date.now()
+    this.contextBuildMs = 0
+    this.modelCallTimings = []
+    this.toolCallTimings = []
 
     try {
+      const userMessage = normalizePendingUserMessage(params.newMessage)
+
       // Synchronize the active supplier connection before any model call so a
       // newly used connection does not require a separate Cost Center visit.
       await ensureProviderPricing(this.config.provider.id).catch(() => undefined)
@@ -257,22 +318,6 @@ export class AgentRunner {
       // Build initial context: system prompt + history + new user message
       // Internal callers should pass ChatMessage, but normalize defensively so
       // a malformed legacy caller can never send a role-less API message.
-      const candidateMessage = params.newMessage as unknown
-      const userMessage: ChatMessage = typeof candidateMessage === 'string'
-        ? {
-            id: '__pending_user_msg__',
-            conversationId: '',
-            role: 'user',
-            content: candidateMessage,
-            timestamp: Date.now(),
-          }
-        : {
-            ...params.newMessage,
-            id: '__pending_user_msg__',
-            role: params.newMessage.role || 'user',
-            content: params.newMessage.content || '',
-            timestamp: params.newMessage.timestamp || Date.now(),
-          }
       const allHistory = [...params.messages, userMessage]
       const primarySupportsVision = this.supportsVisionInput()
       // Text-only OpenAI-compatible endpoints reject multimodal content with
@@ -290,6 +335,17 @@ export class AgentRunner {
       // result. Reuse the result during one ReAct run instead of re-reading the
       // same file/page/search result over and over.
       const readOnlyToolCache = new Map<string, CompletedToolResult>()
+      // A successful workspace mutation invalidates earlier local reads so a
+      // verification read can never be served pre-edit content from the cache.
+      let workspaceRevision = 0
+      const readOnlyCacheKey = (toolName: string, toolArguments: Record<string, unknown>): string => {
+        const fingerprint = `${toolName}:${JSON.stringify(toolArguments)}`
+        return LOCAL_FILE_READ_TOOL_NAMES.has(toolName) ? `rev${workspaceRevision}:${fingerprint}` : fingerprint
+      }
+      const mutatesWorkspace = (toolName: string, toolArguments: Record<string, unknown>): boolean => {
+        if (WORKSPACE_MUTATION_TOOL_NAMES.has(toolName)) return true
+        return toolName === 'spreadsheet' && (toolArguments.action === 'create' || toolArguments.action === 'update')
+      }
       let mustReadWebPageBeforeMoreSearch = false
       const pendingWriteVerifications = new Set<string>()
       let recentVisualAttachments: ToolResultImage[] = dedupeToolImages(
@@ -306,17 +362,28 @@ export class AgentRunner {
       let protocolRepairAttempts = 0
       let latestProtocolResults: NonNullable<CompletedToolResult['protocol']>[] = []
       let rollingToolEvidence = ''
-      const previousNormalToolBatches = new Set<string>()
+      // A repeated tool batch only ends the loop while the workspace state its
+      // earlier result observed is unchanged; the value is the revision that
+      // was current when the batch last ran.
+      const previousNormalToolBatches = new Map<string, number>()
       let consecutiveSearchFailures = 0
 
-      // Progressive tool disclosure is intentionally disabled. The active
-      // agent's configured capabilities are all visible to the model, so an
-      // intent heuristic can never prevent a legitimate tool call.
-      const activeToolDefs = allToolDefs
+      // Goal steps retain their full, explicit tool budget. Ordinary chat
+      // starts with only the tools relevant to the current request; the model
+      // can request more from the same authorized catalog at runtime.
+      let activeToolDefs = adaptiveToolBudget
+        ? allToolDefs
+        : selectInitialTools(
+            allToolDefs,
+            userMessage.content,
+            hasSpreadsheetAttachment,
+            params.messages.flatMap((message) => message.toolCalls?.map((call) => call.name) || []),
+          )
       const spreadsheetPolicy = hasSpreadsheetAttachment
         ? '\n\n--- Spreadsheet attachment policy ---\nA spreadsheet attachment is present. Use the structured `spreadsheet` tool first. Make one `inspect` call without a `sheet` argument to get the workbook and sheet overview; inspect an individual sheet only when the first result shows it is necessary. Use `create` or `update` only when the user explicitly requests a file change. Do not write Python, PowerShell, Node, or other scripts for spreadsheet work unless the spreadsheet tool returns an error or explicitly reports that the requested operation is unsupported. If fallback is needed, report the spreadsheet tool failure before using `execute_command`. Do not repeat an identical spreadsheet call.\n'
         : ''
       const modelCapabilityPolicy = this.buildModelCapabilityPolicy(modelCapabilities, activeToolDefs.length > 0)
+      const contextBuildStartedAt = Date.now()
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
         workspacePath,
@@ -334,11 +401,12 @@ export class AgentRunner {
         tools: activeToolDefs,
         systemPromptSuffix: spreadsheetPolicy + modelCapabilityPolicy,
       })
+      this.contextBuildMs = Date.now() - contextBuildStartedAt
 
       // ── Tool execution loop ─────────────────────────────────────────────────
       for (let iteration = 0; iteration < toolCycleLimit; iteration++) {
         if (this.abortController.signal.aborted) {
-          yield { type: 'done', content: '' }
+          yield { type: 'done', content: '', timing: this.buildResponseTiming() }
           return
         }
 
@@ -368,17 +436,17 @@ export class AgentRunner {
         if (!hasToolCalls) {
           if (response.protocolTextDetected && !response.toolCallParseFailure && activeToolDefs.length > 0 && protocolRepairAttempts < 1) {
             protocolRepairAttempts += 1
-            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true, reason: 'protocol-repair' }
             completedResponse = ''
             messages.push({
               role: 'user',
-              content: 'Your previous response returned tool-call protocol markup without an executable structured call. Retry using the provided structured tool-calling interface only. Do not emit DSML, XML, or tool-call markup as ordinary response text.',
+              content: 'Your previous response returned tool-call protocol markup without an executable structured call. Retry using the provided structured tool-calling interface only. Do not emit DSML, XML, or tool-call markup as ordinary response text. Answer the user\'s most recent message directly; do not continue unrelated earlier work.',
             })
             yield { type: 'thinking', content: '检测到未执行的工具协议文本，正在按标准工具协议重试一次。' }
             continue
           }
           if (response.protocolTextDetected && !response.toolCallParseFailure) {
-            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true, reason: 'protocol-repair' }
             yield {
               type: 'error',
               error: '模型在最终回复中返回了未执行的工具协议文本；本轮未执行该工具。请重试，或更换兼容工具调用协议的模型。',
@@ -390,11 +458,11 @@ export class AgentRunner {
             // The provider streamed an unparseable tool envelope as prose.
             // Clear it rather than presenting it as a completed answer, then
             // give the model one bounded retry with the same tool schemas.
-            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true, reason: 'protocol-repair' }
             completedResponse = ''
             messages.push({
               role: 'user',
-              content: 'Your previous response attempted a tool call, but the gateway returned an invalid text envelope and nothing was executed. Retry the needed operation now using the provided structured tool-calling interface only. Do not emit DSML, XML, or tool-call markup as ordinary response text.',
+              content: 'Your previous response attempted a tool call, but the gateway returned an invalid text envelope and nothing was executed. Retry the needed operation now using the provided structured tool-calling interface only. Do not emit DSML, XML, or tool-call markup as ordinary response text. Answer the user\'s most recent message directly; do not continue unrelated earlier work.',
             })
             yield { type: 'thinking', content: '检测到未执行的工具调用格式，正在按标准工具协议重试一次。' }
             continue
@@ -404,7 +472,7 @@ export class AgentRunner {
             // answer. The provider may have streamed DSML/XML as provisional
             // text; clear it before surfacing a concise execution error so
             // protocol markup never becomes part of the user-visible reply.
-            if (response.content) yield { type: 'text_reset', discardProvisionalText: true }
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true, reason: 'protocol-repair' }
             yield {
               type: 'error',
               error: '模型返回了无法执行的工具协议文本；本轮未执行该工具。请确认 Agent 已启用所需工具，或让当前 Agent 直接完成该步骤。',
@@ -460,7 +528,7 @@ export class AgentRunner {
           }
           // Text chunks were already emitted by executeLLMCall. The done event
           // supplies the canonical, complete content for persistence.
-          yield { type: 'done', content: completedResponse, finishReason: response.finishReason, usage: accumulatedUsage }
+          yield { type: 'done', content: completedResponse, finishReason: response.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
 
@@ -482,8 +550,36 @@ export class AgentRunner {
         // only a wholly read-only batch in parallel; any mutation, terminal,
         // browser, or desktop action keeps the original strict ordering.
         const toolResults = new Map<string, CompletedToolResult>()
-        const parallelReadBatch = !mustReadWebPageBeforeMoreSearch && response.toolCalls.length > 1
-          && response.toolCalls.every((toolCall) => PARALLEL_SAFE_READ_TOOL_NAMES.has(toolCall.name))
+        const expansionCalls = response.toolCalls.filter((toolCall) => toolCall.name === REQUEST_ADDITIONAL_TOOLS)
+        for (const toolCall of expansionCalls) {
+          yield { type: 'tool_call', toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments } }
+          const expanded = expandToolSet(activeToolDefs, allToolDefs, toolCall.arguments.toolNames)
+          activeToolDefs = expanded.tools
+          const result: CompletedToolResult = {
+            result: expanded.granted.length > 0
+              ? `Additional authorized tools are now available: ${expanded.granted.join(', ')}.${expanded.unavailable.length ? ` Not authorized or unavailable: ${expanded.unavailable.join(', ')}.` : ''}`
+              : `No additional tools were granted.${expanded.unavailable.length ? ` Not authorized or unavailable: ${expanded.unavailable.join(', ')}.` : ''}`,
+            isError: false,
+          }
+          toolResults.set(toolCall.id, result)
+          yield { type: 'tool_result', toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: result.result, isError: false } }
+        }
+        const activeToolNames = new Set(activeToolDefs.map((tool) => tool.name))
+        const unavailableToolCalls = response.toolCalls.filter((toolCall) => toolCall.name !== REQUEST_ADDITIONAL_TOOLS && !activeToolNames.has(toolCall.name))
+        for (const toolCall of unavailableToolCalls) {
+          const result: CompletedToolResult = {
+            result: `Tool ${toolCall.name} is authorized for this agent but is not in the current minimal tool set. Call ${REQUEST_ADDITIONAL_TOOLS} with toolNames: ["${toolCall.name}"] before using it.`,
+            isError: true,
+          }
+          toolResults.set(toolCall.id, result)
+          yield { type: 'tool_result', toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: result.result, isError: true } }
+        }
+        const executableToolCalls = response.toolCalls.filter((toolCall) => toolCall.name !== REQUEST_ADDITIONAL_TOOLS && activeToolNames.has(toolCall.name))
+        // The workspace state this batch observed, captured before any of its
+        // own mutations run; repeat detection below compares against it.
+        const batchStartRevision = workspaceRevision
+        const parallelReadBatch = !mustReadWebPageBeforeMoreSearch && executableToolCalls.length > 1
+          && executableToolCalls.every((toolCall) => PARALLEL_SAFE_READ_TOOL_NAMES.has(toolCall.name))
         if (parallelReadBatch) {
           const visualAttachments = dedupeToolImages(recentVisualAttachments)
           const baseContext: ToolContext = {
@@ -498,15 +594,15 @@ export class AgentRunner {
             visualAttachments,
             agentContext: this.buildModelPoolContext(messages, toolResults),
           }
-          for (const toolCall of response.toolCalls) {
+          for (const toolCall of executableToolCalls) {
             yield {
               type: 'tool_call',
               toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments },
             }
           }
           const inFlightReadExecutions = new Map<string, Promise<CompletedToolResult>>()
-          const completedBatch = await Promise.all(response.toolCalls.map(async (toolCall) => {
-            const cacheKey = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
+          const completedBatch = await Promise.all(executableToolCalls.map(async (toolCall) => {
+            const cacheKey = readOnlyCacheKey(toolCall.name, toolCall.arguments)
             let execution = inFlightReadExecutions.get(cacheKey)
             if (!execution) {
               execution = Promise.resolve(readOnlyToolCache.get(cacheKey))
@@ -540,7 +636,7 @@ export class AgentRunner {
             }
           }
         } else {
-          for (const toolCall of response.toolCalls) {
+          for (const toolCall of executableToolCalls) {
           // Emit tool_call event
           yield {
             type: 'tool_call',
@@ -594,7 +690,7 @@ export class AgentRunner {
           }
           let result: CompletedToolResult
           const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
-          const cacheKey = cacheable ? `${toolCall.name}:${JSON.stringify(toolCall.arguments)}` : ''
+          const cacheKey = cacheable ? readOnlyCacheKey(toolCall.name, toolCall.arguments) : ''
           const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
           const rawResult = cached || await this.executeTool(toolCall, toolContext)
           result = this.normalizeToolResult(rawResult)
@@ -611,6 +707,7 @@ export class AgentRunner {
           }
 
           const targetPath = this.resolveWorkspacePath(toolCall.arguments.path, workspacePath)
+          if (!result.isError && mutatesWorkspace(toolCall.name, toolCall.arguments)) workspaceRevision += 1
           if (!result.isError && (toolCall.name === 'write_file' || toolCall.name === 'edit_file') && targetPath) pendingWriteVerifications.add(targetPath)
           if (!result.isError && toolCall.name === 'read_file' && targetPath) pendingWriteVerifications.delete(targetPath)
 
@@ -629,7 +726,7 @@ export class AgentRunner {
         }
 
         // Append assistant tool_calls + tool results to message history
-        messages = this.appendToolMessages(messages, response.toolCalls, toolResults)
+        messages = this.appendToolMessages(messages, response.toolCalls, toolResults, response.reasoningContent)
         const completedPageRead = response.toolCalls.some((toolCall) => toolCall.name === 'read_web_page' && !toolResults.get(toolCall.id)?.isError)
         const returnedReadableSearchResult = response.toolCalls.some((toolCall) => {
           const result = toolResults.get(toolCall.id)
@@ -691,15 +788,67 @@ export class AgentRunner {
           .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`)
           .sort()
           .join('|')
-        // Providers sometimes replay the same read batch after a long tool
-        // result (especially in hidden Goal-step conversations). Do not emit
-        // or execute it repeatedly: the prior result is already in `messages`,
-        // so move directly to synthesis. A deferred search is intentionally
-        // allowed once so the read_web_page guard can take effect.
+        // Providers sometimes replay the same batch after a long tool result
+        // (especially in hidden Goal-step conversations). Do not start another
+        // tool-planning turn while the earlier result is already in `messages`
+        // and still valid: move directly to synthesis. The recorded revision is
+        // the batch's own post-execution revision, so an identical batch
+        // repeated after a later mutation (a verification re-read after a
+        // write, a command re-run after an edit) is a new observation and runs
+        // again. A deferred search is intentionally allowed once so the
+        // read_web_page guard can take effect.
         const deferredForPageRead = mustReadWebPageBeforeMoreSearch
           && response.toolCalls.some((toolCall) => toolCall.name === 'web_search')
-        if (previousNormalToolBatches.has(batchSignature) && !deferredForPageRead) break
-        previousNormalToolBatches.add(batchSignature)
+        const batchRevision = previousNormalToolBatches.get(batchSignature)
+        if (batchRevision !== undefined && batchRevision === batchStartRevision && !deferredForPageRead) break
+        previousNormalToolBatches.set(batchSignature, workspaceRevision)
+
+        // A lone successful read in normal chat must not start another
+        // open-ended tool-planning turn: when it already answers the request,
+        // the shared tool-free synthesis below is substantially faster. The
+        // same shape also opens work that still needs an action ("read the
+        // file, then fix it"), so the model itself decides the next step at a
+        // tool-free checkpoint instead of a hard stop.
+        const onlyOneExecutableRead = !adaptiveToolBudget
+          && executableToolCalls.length === 1
+          && isFastSynthesisReadTool(executableToolCalls[0].name)
+          && !toolResults.get(executableToolCalls[0].id)?.isError
+        if (onlyOneExecutableRead) {
+          if (iteration + 1 >= toolCycleLimit) break
+          // Reading something else must not finalize unverified writes; reuse
+          // the loop's verification nudge instead of closing the turn.
+          if (pendingWriteVerifications.size > 0 && activeToolDefs.some((tool) => tool.name === 'read_file')) {
+            messages.push({
+              role: 'user',
+              content: `You wrote ${this.formatPaths(pendingWriteVerifications)} in this run but have not verified the saved contents. Before finalizing, call read_file for each changed path. Do not claim the file is correct or complete until that verification succeeds.`,
+            })
+            continue
+          }
+          yield { type: 'thinking', content: 'Reviewing whether the request is complete...' }
+          const checkpoint = yield* this.executeLLMCall(
+            this.buildFinalSynthesisMessages([
+              ...messages,
+              { role: 'user', content: LONE_READ_CHECKPOINT_PROMPT },
+            ]),
+            [],
+          )
+          accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, checkpoint.usage)
+          const checkpointContent = checkpoint.content.trim()
+          if (checkpoint.toolCalls.length > 0 || /^CONTINUE\s*:/i.test(checkpointContent)) {
+            if (checkpointContent) messages.push({ role: 'assistant', content: checkpointContent })
+            messages.push({
+              role: 'user',
+              content: 'The remaining step is still required. Complete it now with the available tools; do not report it as done until it has actually executed.',
+            })
+            continue
+          }
+          const checkpointFinal = checkpointContent.replace(/^FINAL\s*:\s*/i, '').trim()
+          if (checkpointFinal && !checkpoint.protocolTextDetected && !checkpoint.toolCallParseFailure) {
+            yield { type: 'done', content: checkpointFinal, usage: accumulatedUsage, timing: this.buildResponseTiming() }
+            return
+          }
+          break
+        }
 
         // Goal steps should not blindly consume their maximum tool budget. At
         // each checkpoint the model first decides whether the evidence is
@@ -728,7 +877,7 @@ export class AgentRunner {
           }
           const finalContent = decisionContent.replace(/^FINAL\s*:\s*/i, '').trim()
           if (finalContent) {
-            yield { type: 'done', content: finalContent, usage: accumulatedUsage }
+            yield { type: 'done', content: finalContent, usage: accumulatedUsage, timing: this.buildResponseTiming() }
             return
           }
         }
@@ -750,7 +899,14 @@ export class AgentRunner {
         content: `Tool execution is complete for this response. Using only the evidence already available in this conversation, provide the best concise final answer now. If evidence is incomplete, state the specific unverified limitation plainly and, where useful, the smallest user-facing next step. Do not mention internal tool limits, tool cycles, implementation details, or instructions.${finalVerificationNotice}`,
       })
       yield { type: 'thinking', content: 'Synthesizing the available results...' }
-      let finalResponse = yield* this.executeLLMCall(messages, [])
+      // Do not send the provider's native tool-call transcript back into the
+      // tool-free synthesis request. Some DeepSeek-compatible gateways accept
+      // the tool transaction while tools are enabled but return an empty
+      // message when that same transcript is followed by a tools=undefined
+      // request. Keep the user/system context and flatten completed results
+      // into one authoritative evidence message for the final answer.
+      let synthesisMessages = this.buildFinalSynthesisMessages(messages)
+      let finalResponse = yield* this.executeLLMCall(synthesisMessages, [])
       accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
       // The model may legitimately discover one or two missing pieces of
       // evidence while synthesizing. Recover those calls in a small bounded
@@ -795,12 +951,13 @@ export class AgentRunner {
             },
           }
         }
-        messages = this.appendToolMessages(messages, recoveryCalls, recoveryResults)
+        messages = this.appendToolMessages(messages, recoveryCalls, recoveryResults, finalResponse.reasoningContent)
         messages.push({
           role: 'user',
           content: 'The additional tool result is now available. Provide the concise final answer using the evidence already collected. Do not call another tool and do not emit DSML or XML tool-call markup.',
         })
-        finalResponse = yield* this.executeLLMCall(messages, [])
+        synthesisMessages = this.buildFinalSynthesisMessages(messages)
+        finalResponse = yield* this.executeLLMCall(synthesisMessages, [])
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
       }
       if (finalResponse.protocolTextDetected || finalResponse.toolCallParseFailure) {
@@ -808,17 +965,18 @@ export class AgentRunner {
         // tool-free synthesis turn even after all spreadsheet/file tools have
         // completed. Give the model one final plain-text-only retry before
         // surfacing an error; never execute a guessed call from this phase.
-        if (finalResponse.content) yield { type: 'text_reset', discardProvisionalText: true }
+        if (finalResponse.content) yield { type: 'text_reset', discardProvisionalText: true, reason: 'protocol-repair' }
         messages.push({
           role: 'user',
           content: 'The previous synthesis was invalid because it contained tool-call markup. All requested tool work is already complete. Reply with the concise final answer in ordinary plain text or Markdown only. Do not call tools and do not emit DSML, XML, JSON tool envelopes, or protocol tags.',
         })
         yield { type: 'thinking', content: '最终汇总格式异常，正在重试纯文本回复。' }
-        const plainTextRetry = yield* this.executeLLMCall(messages, [])
+        synthesisMessages = this.buildFinalSynthesisMessages(messages)
+        const plainTextRetry = yield* this.executeLLMCall(synthesisMessages, [])
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, plainTextRetry.usage)
         if (!plainTextRetry.protocolTextDetected && !plainTextRetry.toolCallParseFailure && plainTextRetry.content.trim()) {
           const finalContent = plainTextRetry.content.replace(/^FINAL\s*:\s*/i, '').trim()
-          yield { type: 'done', content: finalContent || plainTextRetry.content.trim(), usage: accumulatedUsage }
+          yield { type: 'done', content: finalContent || plainTextRetry.content.trim(), usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
         const protocolHint = finalResponse.toolCallParseFailure
@@ -828,20 +986,43 @@ export class AgentRunner {
           type: 'error',
           error: `模型在最终汇总阶段返回了未执行的工具协议文本${protocolHint}；之前已执行的工具结果不会被自动标记为最终成功。请重试，或更换兼容工具调用协议的模型。`,
         }
-        yield { type: 'done', content: '' }
+        yield { type: 'done', content: '', timing: this.buildResponseTiming() }
         return
       }
       if (finalResponse.content.trim()) {
         const finalContent = finalResponse.content.replace(/^FINAL\s*:\s*/i, '').trim()
-        yield { type: 'done', content: finalContent || finalResponse.content.trim(), usage: accumulatedUsage }
+        yield { type: 'done', content: finalContent || finalResponse.content.trim(), usage: accumulatedUsage, timing: this.buildResponseTiming() }
         return
       }
 
+      // A few OpenAI-compatible gateways (notably DeepSeek-compatible
+      // proxies) occasionally close a tool-free synthesis stream with only a
+      // finish reason and no visible content. The tool work is already
+      // complete at this point, so treat this as a transient synthesis
+      // failure and give the model a bounded, plain-text retry. Previously we
+      // surfaced the generic error immediately, making a successful 13-tool
+      // run look as if it had failed and leaving the user with no answer.
+      for (let emptyRetry = 0; emptyRetry < 2; emptyRetry += 1) {
+        synthesisMessages.push({
+          role: 'user',
+          content: 'Your previous final synthesis was empty. Reply now with a concise plain-text answer based only on the completed tool results above. If the evidence is incomplete, state that limitation explicitly. Do not call tools, emit DSML/XML/JSON envelopes, or return an empty response.',
+        })
+        yield { type: 'thinking', content: '最终汇总为空，正在重试纯文本回复。' }
+        const retryResponse = yield* this.executeLLMCall(synthesisMessages, [])
+        accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, retryResponse.usage)
+        if (!retryResponse.protocolTextDetected && !retryResponse.toolCallParseFailure && retryResponse.content.trim()) {
+          const finalContent = retryResponse.content.replace(/^FINAL\s*:\s*/i, '').trim()
+          yield { type: 'done', content: finalContent || retryResponse.content.trim(), usage: accumulatedUsage, timing: this.buildResponseTiming() }
+          return
+        }
+        if (retryResponse.protocolTextDetected || retryResponse.toolCallParseFailure) break
+      }
+
       yield { type: 'error', error: 'The model did not produce a final answer from the completed tool results. The available evidence remains in the activity record.' }
-      yield { type: 'done', content: '' }
+      yield { type: 'done', content: '', timing: this.buildResponseTiming() }
     } catch (err: any) {
       if (this.abortController?.signal.aborted) {
-        yield { type: 'done', content: '' }
+        yield { type: 'done', content: '', timing: this.buildResponseTiming() }
       } else {
         const errorMsg = formatProviderRequestFailure(
           err,
@@ -850,7 +1031,7 @@ export class AgentRunner {
           this.config.requestSource || 'chat',
         )
         yield { type: 'error', error: errorMsg }
-        yield { type: 'done', content: '' }
+        if (!(err instanceof InvalidRequestError)) yield { type: 'done', content: '', timing: this.buildResponseTiming() }
       }
     } finally {
       this.isRunning = false
@@ -872,6 +1053,22 @@ export class AgentRunner {
 
   // ─── Internal ──────────────────────────────────────────────────────────────
 
+  private buildResponseTiming(): ResponseTiming {
+    const modelCalls = this.modelCallTimings.map((timing) => ({ ...timing }))
+    const toolCalls = this.toolCallTimings.map((timing) => ({ ...timing }))
+    return {
+      contextBuildMs: this.contextBuildMs,
+      modelDurationMs: modelCalls.reduce((total, timing) => total + timing.durationMs, 0),
+      ...(modelCalls[0]?.timeToFirstResponseMs !== undefined
+        ? { timeToFirstResponseMs: modelCalls[0].timeToFirstResponseMs }
+        : {}),
+      toolExecutionMs: toolCalls.reduce((total, timing) => total + timing.durationMs, 0),
+      totalMs: Math.max(0, Date.now() - this.runStartedAt),
+      modelCalls,
+      toolCalls,
+    }
+  }
+
   /**
    * Execute a single LLM call with streaming.
    *
@@ -891,30 +1088,14 @@ export class AgentRunner {
     const modelCapabilities = this.config.providerRegistry?.getModelCapabilities(this.config.provider.id, agentConfig.model)
       || inferModelCapabilities(this.config.provider.type, agentConfig.model)
     const modelInputBudget = getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens)
-    const inputBudget = getToolFollowUpInputBudget(
-      modelInputBudget,
-      messages.some((message) => message.role === 'tool'),
-    )
     const fittedMessages = this.config.contextManager.fitMessages(
       messages,
-      inputBudget,
+      modelInputBudget,
       tools,
     )
 
-    const stream: AsyncIterable<ChatChunk> = provider.chat(
-      {
-        model: agentConfig.model,
-        messages: fittedMessages,
-        tools: tools.length > 0 ? tools : undefined,
-        temperature: agentConfig.temperature,
-        maxTokens: MAX_AGENT_RESPONSE_TOKENS,
-        stream: true,
-        reasoning: agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
-          ? { enabled: true, budgetTokens: 1024 }
-          : undefined,
-      },
-      signal
-    )
+    const modelCallStartedAt = Date.now()
+    let firstResponseMs: number | undefined
 
     let content = ''
     let reasoningContent = ''
@@ -933,9 +1114,28 @@ export class AgentRunner {
     const tcAccumulator: Map<number, { id: string; name: string; argsStr: string }> = new Map()
 
     try {
+      const stream: AsyncIterable<ChatChunk> = provider.chat(
+        {
+          model: agentConfig.model,
+          messages: fittedMessages,
+          tools: tools.length > 0 ? tools : undefined,
+          temperature: agentConfig.temperature,
+          maxTokens: provider.supportsReasoning(agentConfig.model)
+            ? REASONING_AGENT_RESPONSE_TOKENS
+            : DEFAULT_AGENT_RESPONSE_TOKENS,
+          stream: true,
+          reasoning: agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
+            ? { enabled: true, budgetTokens: 1024 }
+            : undefined,
+        },
+        signal
+      )
       for await (const chunk of stream) {
         // Check abort between chunks
         if (signal?.aborted) break
+        if (firstResponseMs === undefined && (chunk.content || chunk.reasoningContent || chunk.toolCalls?.length || chunk.finishReason)) {
+          firstResponseMs = Date.now() - modelCallStartedAt
+        }
         // A streaming request is still one model call. OpenAI-compatible
         // gateways commonly repeat a cumulative usage snapshot on every text
         // chunk, so adding it here inflates tokens and calls by chunk count.
@@ -989,6 +1189,20 @@ export class AgentRunner {
       const classified = classifyError(error, provider.id)
       Object.assign(classified, { phase: 'stream' })
       throw classified
+    } finally {
+      this.modelCallTimings.push({
+        durationMs: Date.now() - modelCallStartedAt,
+        ...(firstResponseMs !== undefined ? { timeToFirstResponseMs: firstResponseMs } : {}),
+      })
+    }
+
+    // Covers final synthesis and checkpoints as well as the main tool loop.
+    if (isGatewayInstructionLeak(content)) {
+      yield { type: 'text_reset', discardProvisionalText: true, reason: 'provider-error' }
+      throw new InvalidRequestError(
+        '模型服务拒绝了请求并返回客户端提示，未将其作为回答展示。请检查供应商的模型名称与接口兼容性；本轮不会自动重试。',
+        provider.id,
+      )
     }
 
     // Parse accumulated tool calls
@@ -1167,6 +1381,24 @@ export class AgentRunner {
     toolCall: CompletedToolCall,
     toolContext: ToolContext
   ): Promise<CompletedToolResult> {
+    const startedAt = Date.now()
+    let result: CompletedToolResult | undefined
+    try {
+      result = await this.executeToolInternal(toolCall, toolContext)
+      return result
+    } finally {
+      this.toolCallTimings.push({
+        name: toolCall.name,
+        durationMs: Date.now() - startedAt,
+        isError: result?.isError ?? true,
+      })
+    }
+  }
+
+  private async executeToolInternal(
+    toolCall: CompletedToolCall,
+    toolContext: ToolContext
+  ): Promise<CompletedToolResult> {
     if (toolCall.name === TEAM_DELEGATION_TOOL.name && this.config.delegateToTeam) {
       if (this.teamDelegationUsed) {
         return {
@@ -1298,7 +1530,8 @@ export class AgentRunner {
   private appendToolMessages(
     messages: ChatMessageInput[],
     toolCalls: CompletedToolCall[],
-    toolResults: Map<string, CompletedToolResult>
+    toolResults: Map<string, CompletedToolResult>,
+    reasoningContent?: string,
   ): ChatMessageInput[] {
     const updated = [...messages]
 
@@ -1306,6 +1539,7 @@ export class AgentRunner {
     updated.push({
       role: 'assistant',
       content: '',
+      ...(reasoningContent?.trim() ? { reasoningContent } : {}),
       toolCalls: toolCalls.map((tc) => ({
         id: tc.id,
         name: tc.name,
@@ -1324,6 +1558,50 @@ export class AgentRunner {
     }
 
     return updated
+  }
+
+  /**
+   * Build a provider-agnostic, tool-free context for final synthesis.
+   *
+   * Native assistant/tool message pairs are required while executing tools,
+   * but a number of compatible gateways are brittle when those pairs are sent
+   * again with tools omitted. Flattening the completed results also gives the
+   * final model a smaller, explicit evidence block instead of making it infer
+   * the answer from a long protocol transcript.
+   */
+  private buildFinalSynthesisMessages(messages: ChatMessageInput[]): ChatMessageInput[] {
+    const toolNames = new Map<string, string>()
+    for (const message of messages) {
+      if (message.role !== 'assistant' || !message.toolCalls?.length) continue
+      for (const toolCall of message.toolCalls) toolNames.set(toolCall.id, toolCall.name)
+    }
+
+    const baseMessages = messages.filter((message) => {
+      if (message.role === 'tool') return false
+      return !(message.role === 'assistant' && message.toolCalls?.length)
+    })
+    const toolResults = messages.filter((message) => message.role === 'tool' && message.content?.trim())
+    if (toolResults.length === 0) return baseMessages
+
+    const maxEvidenceChars = 36_000
+    let evidence = ''
+    for (const result of toolResults) {
+      const label = toolNames.get(result.toolCallId || '') || 'tool'
+      const remaining = maxEvidenceChars - evidence.length
+      if (remaining <= 0) break
+      const body = result.content.trim()
+      const prefix = `${label}: `
+      evidence += `${evidence ? '\n\n' : ''}${prefix}${body.slice(0, Math.max(0, remaining - prefix.length - 32))}`
+      if (body.length > remaining - prefix.length - 32) evidence += '\n[remaining output omitted; use the verified portion above]'
+    }
+
+    return [
+      ...baseMessages,
+      {
+        role: 'user',
+        content: `Completed tool evidence (authoritative; do not claim anything not supported here):\n${evidence}`,
+      },
+    ]
   }
 
   private normalizeToolResult(result: CompletedToolResult): CompletedToolResult {

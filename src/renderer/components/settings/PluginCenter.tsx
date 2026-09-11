@@ -164,7 +164,8 @@ export function PluginCenter() {
     const plugin = installed.find((item) => item.id === configuringId)
     if (!plugin) return
     const endpoint = configValues.endpoint?.trim() || ''
-    const settings = plugin.id === 'searxng-search' ? { endpoint } : { apiKey: configValues.apiKey?.trim() || '' }
+    const settings: Record<string, string> =
+      plugin.id === 'searxng-search' ? { endpoint } : { apiKey: configValues.apiKey?.trim() || '' }
     setConnectionTesting(true)
     setConnectionTest(null)
     try {
