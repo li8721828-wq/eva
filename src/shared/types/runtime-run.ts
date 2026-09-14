@@ -51,3 +51,27 @@ export interface RuntimeRunDescriptor {
   detail?: string
   metrics?: RuntimeRunMetrics
 }
+
+export type AgentRunEventType =
+  | 'run_started' | 'turn_started' | 'model_call_started' | 'model_call_completed'
+  | 'tool_started' | 'tool_completed' | 'approval_requested' | 'turn_interrupted'
+  | 'turn_completed' | 'run_failed' | 'run_completed'
+
+/** Append-only execution item used for replay, diagnostics, and recovery. */
+export interface AgentRunEvent {
+  id: string
+  runId: string
+  turnId: string
+  sequence: number
+  type: AgentRunEventType
+  timestamp: number
+  item?: {
+    id: string
+    kind: 'model_call' | 'tool_call' | 'approval' | 'assistant_output' | 'system'
+    status: 'started' | 'completed' | 'failed' | 'cancelled'
+    name?: string
+    content?: string
+    error?: string
+  }
+  metadata?: Record<string, string | number | boolean | null>
+}

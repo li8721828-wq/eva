@@ -30,6 +30,13 @@ import { TaskRunStore } from '../../src/main/storage/task-run-store'
 import { BUILT_IN_AGENTS } from '../../src/shared/constants'
 
 describe('ConversationStore', () => {
+  it('rejects stale execution status updates after a run is cancelled', async () => {
+    const conversation = await store.createConversation({ title: 'State guard', agentId: 'agent', mode: 'normal', workspacePath: '/tmp' })
+    await store.updateConversation(conversation.id, { executionStatus: 'running' })
+    await store.updateConversation(conversation.id, { executionStatus: 'cancelled' })
+    await expect(store.updateConversation(conversation.id, { executionStatus: 'completed' })).rejects.toThrow('Illegal run state transition')
+    expect((await store.getConversation(conversation.id))?.executionStatus).toBe('cancelled')
+  })
   let store: ConversationStore
   let tmpDir: string
 

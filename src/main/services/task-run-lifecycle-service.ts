@@ -58,10 +58,6 @@ export class TaskRunLifecycleService {
         nextRetryAt: update.nextRetryAt,
       },
     })
-    await this.storage.conversations.updateConversation(update.conversationId, {
-      executionStatus: status === 'completed' ? 'completed' : status === 'cancelled' ? 'cancelled' : status === 'failed' ? 'failed' : 'running',
-      executionUpdatedAt: Date.now(),
-    })
   }
 
   private statusForQueueUpdate(update: TaskQueueUpdate): TaskRunSnapshot['status'] {

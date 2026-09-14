@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { Conversation, ChatMessage } from '../../shared/types/conversation'
+import { assertRunTransition } from '../services/run-state-machine'
 
 interface ConversationIndex {
   ids: string[]
@@ -312,6 +313,11 @@ export class ConversationStore {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)
       if (!meta) throw new Error(`Conversation ${id} not found`)
+      if (updates.executionStatus && updates.executionStatus !== meta.executionStatus && !(updates.executionStatus === 'running' && meta.executionStatus && ['completed', 'failed', 'cancelled'].includes(meta.executionStatus))) {
+        // Conversations created before the runtime kernel had no lifecycle
+        // state; treat that first transition as a queued run.
+        assertRunTransition(meta.executionStatus || 'queued', updates.executionStatus)
+      }
 
       const hasNewTerminalState = updates.executionStatus !== undefined
         && updates.executionStatus !== meta.executionStatus

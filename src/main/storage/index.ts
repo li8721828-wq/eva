@@ -17,6 +17,7 @@ import { RuntimeRunStore } from './runtime-run-store'
 import { ActivePlanStore } from './active-plan-store'
 import { McpServerStore } from './mcp-server-store'
 import { PersonalPreferenceStore } from './personal-preference-store'
+import { AgentRunEventStore } from './agent-run-event-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -35,6 +36,7 @@ export class StorageManager {
   activePlans: ActivePlanStore
   mcpServers: McpServerStore
   personalPreferences: PersonalPreferenceStore
+  agentRunEvents: AgentRunEventStore
 
   private userDataPath: string
 
@@ -58,6 +60,7 @@ export class StorageManager {
     this.activePlans = new ActivePlanStore(this.userDataPath)
     this.mcpServers = new McpServerStore()
     this.personalPreferences = new PersonalPreferenceStore()
+    this.agentRunEvents = new AgentRunEventStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {

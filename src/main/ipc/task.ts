@@ -154,10 +154,6 @@ export async function cancelTaskRun(
         ? { ...snapshot.execution, state: 'cancelled', lastActivityAt: stoppedAt, nextRetryAt: undefined }
         : undefined,
     })
-    await taskStorage().conversations.updateConversation(conversationId, {
-      executionStatus: 'cancelled',
-      executionUpdatedAt: Date.now(),
-    })
     await getAgentOsScheduler().transitionTask(
       conversationId,
       snapshot.kind === 'expert' ? 'team' : 'goal',
@@ -184,14 +180,12 @@ export async function controlForegroundGoal(
   if (action === 'pause' && planner) {
     planner.pause()
     if (snapshot) await taskStorage().taskRuns.save({ ...snapshot, status: 'paused' })
-    await taskStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'paused', 'Paused by the user.')
     return { handled: true, status: 'paused' }
   }
   if (action === 'resume' && planner) {
     planner.resume()
     if (snapshot) await taskStorage().taskRuns.save({ ...snapshot, status: 'running' })
-    await taskStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'running', 'Resumed by the user.')
     return { handled: true, status: 'running' }
   }
@@ -455,7 +449,6 @@ export function registerTaskHandlers(services?: TaskServices): void {
         execution: { state: 'queued', attempt: 0, maxAttempts: 2, queuedAt: Date.now(), lastActivityAt: Date.now() },
       })
       await syncActivePlan(conversationId)
-      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
 
       const accepted = await getAgentOsScheduler().scheduleTask({
@@ -887,7 +880,6 @@ export function registerTaskHandlers(services?: TaskServices): void {
       checkpoints,
     })
     if (payload.pauseAfterCurrentOperation && (goalPlanner || teamOrchestrator)) {
-      await getStorage().conversations.updateConversation(payload.conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
       notifyConversationChanged(event, payload.conversationId)
     }
     return feedback
@@ -902,7 +894,6 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const snapshot = await getStorage().taskRuns.get(conversationId)
     if (snapshot?.status === 'paused' && resumedInProcess) {
       await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
-      await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       notifyConversationChanged(event, conversationId)
     }
     return resumedInProcess
@@ -932,7 +923,6 @@ export function registerTaskHandlers(services?: TaskServices): void {
         execution: { state: 'queued', attempt: 0, maxAttempts: 2, queuedAt: Date.now(), lastActivityAt: Date.now() },
       })
       await syncActivePlan(payload.conversationId)
-      await getStorage().conversations.updateConversation(payload.conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
       win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
 
       const accepted = await getAgentOsScheduler().scheduleTask({
@@ -1189,7 +1179,6 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const snapshot = await getStorage().taskRuns.get(conversationId)
     if (!snapshot) throw new Error('This Goal has no persisted task record.')
     await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
-    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'paused', 'Paused by the user.')
     notifyConversationChanged(event, conversationId)
   })
@@ -1207,7 +1196,6 @@ export function registerTaskHandlers(services?: TaskServices): void {
     const snapshot = await getStorage().taskRuns.get(conversationId)
     if (!snapshot) throw new Error('This Goal has no persisted task record.')
     await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
-    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionTask(conversationId, 'goal', 'running', 'Resumed by the user.')
     notifyConversationChanged(event, conversationId)
   })

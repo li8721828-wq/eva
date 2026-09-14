@@ -5,6 +5,8 @@ import { RuntimeKernelStore } from '../storage/runtime-kernel-store'
 import { RuntimeRunStore } from '../storage/runtime-run-store'
 import { TaskExecutionQueue, type TaskQueueJob, type TaskQueueResult, type TaskQueueUpdate } from './task-execution-queue'
 import { activeRunRegistry, type ActiveRunStatus } from './run-registry'
+import { RunLifecycleCoordinator } from './run-lifecycle-coordinator'
+import type { ConversationStore } from '../storage/conversation-store'
 
 type TaskKind = TaskQueueJob['kind']
 
@@ -53,13 +55,16 @@ export class AgentOsScheduler {
   private readonly recoveryHandlers = new Map<RuntimeProcessKind, RecoveryHandler>()
   private readonly recoveringRuns = new Set<string>()
   private readonly activeIdempotencyKeys = new Set<string>()
+  private readonly lifecycle: RunLifecycleCoordinator
 
   constructor(
     private readonly runtimeKernel: RuntimeKernelStore,
     maxConcurrentTasks = 2,
     private readonly runtimeRuns?: RuntimeRunStore,
+    conversations?: ConversationStore,
   ) {
     this.taskQueue = new TaskExecutionQueue(maxConcurrentTasks)
+    this.lifecycle = new RunLifecycleCoordinator(runtimeKernel, runtimeRuns, conversations)
   }
 
   hasTask(conversationId: string, kind: TaskKind): boolean {
@@ -81,8 +86,7 @@ export class AgentOsScheduler {
       resourceKeys: [input.resourceKey],
       summary: input.summary,
     })
-    this.taskProcesses.set(input.conversationId, { processId: process.id, kind: input.runtimeKind })
-    activeRunRegistry.transition('scheduler-task', input.conversationId, 'queued')
+    activeRunRegistry.set('scheduler-task', input.conversationId, { processId: process.id, kind: input.runtimeKind }, 'queued')
     try {
       await this.persistRun(process, 'queued', 'auto-queued', input.recoveryPayload)
     } catch (error) {
@@ -242,13 +246,7 @@ export class AgentOsScheduler {
   }
 
   private async transitionStores(processId: string, status: RuntimeProcessStatus, detail?: string, metrics?: import('./task-execution-queue').TaskExecutionMetrics): Promise<void> {
-    const results = await Promise.allSettled([
-      this.runtimeKernel.transition(processId, status, detail),
-      this.runtimeRuns?.transition(processId, status, detail, metrics),
-    ])
-    for (const result of results) {
-      if (result.status === 'rejected') console.error(`Agent OS state transition failed for ${processId}:`, result.reason)
-    }
+    await this.lifecycle.transition(processId, status, detail, metrics)
   }
 
   registerRecoveryHandler(kind: RuntimeProcessKind, handler: RecoveryHandler): void {
@@ -341,6 +339,6 @@ export class AgentOsScheduler {
 let scheduler: AgentOsScheduler | undefined
 
 export function getAgentOsScheduler(): AgentOsScheduler {
-  if (!scheduler) scheduler = new AgentOsScheduler(getStorage().runtimeKernel, 2, getStorage().runtimeRuns)
+  if (!scheduler) scheduler = new AgentOsScheduler(getStorage().runtimeKernel, 2, getStorage().runtimeRuns, getStorage().conversations)
   return scheduler
 }

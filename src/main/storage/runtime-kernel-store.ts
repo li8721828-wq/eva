@@ -9,6 +9,7 @@ import type {
   RuntimeProcessStatus,
   StartRuntimeProcessInput,
 } from '../../shared/types/runtime-kernel'
+import { assertRunTransition } from '../services/run-state-machine'
 
 const MAX_PROCESSES = 300
 const MAX_AUDIT_RECORDS = 1_500
@@ -76,6 +77,7 @@ export class RuntimeKernelStore {
       const process = state.processes[id]
       if (!process) return null
       if (!ACTIVE_STATUSES.has(process.status)) return process
+      assertRunTransition(process.status, status)
       this.applyTransition(state, process, status, detail, Date.now())
       this.write(state)
       return process
@@ -90,6 +92,7 @@ export class RuntimeKernelStore {
         .sort((left, right) => right.updatedAt - left.updatedAt)[0]
       if (!process) return null
       if (!ACTIVE_STATUSES.has(process.status)) return process
+      assertRunTransition(process.status, status)
       this.applyTransition(state, process, status, detail, Date.now())
       this.write(state)
       return process

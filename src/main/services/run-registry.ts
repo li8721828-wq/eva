@@ -65,15 +65,16 @@ export class RunRegistry {
     return this.entries.get(this.key(kind, conversationId))?.handle as T | undefined
   }
 
-  set<T>(kind: ActiveRunKind, conversationId: string, handle: T): void {
+  set<T>(kind: ActiveRunKind, conversationId: string, handle: T, status: ActiveRunStatus = 'running'): void {
     const now = Date.now()
-    this.entries.set(this.key(kind, conversationId), { kind, conversationId, handle, startedAt: now, updatedAt: now, status: 'running' })
+    this.entries.set(this.key(kind, conversationId), { kind, conversationId, handle, startedAt: now, updatedAt: now, status })
   }
 
   transition(kind: ActiveRunKind, conversationId: string, status: ActiveRunStatus, detail?: string): void {
     const key = this.key(kind, conversationId)
     const entry = this.entries.get(key)
     if (!entry) return
+    assertRunTransition(entry.status, status)
     this.entries.set(key, { ...entry, status, detail, updatedAt: Date.now() })
   }
 
@@ -99,3 +100,4 @@ export class RunRegistry {
 }
 
 export const activeRunRegistry = new RunRegistry()
+import { assertRunTransition } from './run-state-machine'

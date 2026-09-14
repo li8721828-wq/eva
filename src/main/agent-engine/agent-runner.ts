@@ -19,6 +19,8 @@ import { formatProviderRequestFailure, type ProviderRequestSource } from '../ser
 import { classifyError, InvalidRequestError } from '../providers/errors'
 import { describeModelCapabilityProfile, inferModelCapabilities } from '../../shared/model-capabilities'
 import { expandToolSet, isFastSynthesisReadTool, REQUEST_ADDITIONAL_TOOLS, selectInitialTools } from './tool-selection'
+import { randomUUID } from 'crypto'
+import type { AgentRunEventStore } from '../storage/agent-run-event-store'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -48,6 +50,8 @@ export interface AgentRunnerConfig {
   requestSource?: ProviderRequestSource
   modelPools?: ModelPool[]
   providerRegistry?: ProviderRegistry
+  /** Optional durable execution journal for run/turn lifecycle events. */
+  eventStore?: AgentRunEventStore
 }
 
 export interface AdaptiveToolBudget {
@@ -234,6 +238,8 @@ export class AgentRunner {
   private toolCallTimings: ToolCallTiming[] = []
   /** Prevent a model feedback-loop from restarting the whole team in one chat turn. */
   private teamDelegationUsed = false
+  private currentRunId = ''
+  private currentTurnId = ''
 
   constructor(config: AgentRunnerConfig) {
     this.config = config
@@ -257,9 +263,13 @@ export class AgentRunner {
     this.contextBuildMs = 0
     this.modelCallTimings = []
     this.toolCallTimings = []
+    this.currentRunId = randomUUID()
+    this.currentTurnId = randomUUID()
 
     try {
       const userMessage = normalizePendingUserMessage(params.newMessage)
+      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_started')
+      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_started')
 
       // Synchronize the active supplier connection before any model call so a
       // newly used connection does not require a separate Cost Center visit.
@@ -528,6 +538,8 @@ export class AgentRunner {
           }
           // Text chunks were already emitted by executeLLMCall. The done event
           // supplies the canonical, complete content for persistence.
+          await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_completed', { id: randomUUID(), kind: 'assistant_output', status: 'completed', content: completedResponse })
+          await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_completed')
           yield { type: 'done', content: completedResponse, finishReason: response.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
@@ -1022,6 +1034,9 @@ export class AgentRunner {
       yield { type: 'done', content: '', timing: this.buildResponseTiming() }
     } catch (err: any) {
       if (this.abortController?.signal.aborted) {
+        await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_interrupted', {
+          id: randomUUID(), kind: 'system', status: 'cancelled', content: 'Execution was interrupted before the current model or tool action completed.',
+        }).catch(() => undefined)
         yield { type: 'done', content: '', timing: this.buildResponseTiming() }
       } else {
         const errorMsg = formatProviderRequestFailure(
@@ -1031,6 +1046,9 @@ export class AgentRunner {
           this.config.requestSource || 'chat',
         )
         yield { type: 'error', error: errorMsg }
+        await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_failed', {
+          id: randomUUID(), kind: 'system', status: 'failed', error: errorMsg.slice(0, 1000),
+        }).catch(() => undefined)
         if (!(err instanceof InvalidRequestError)) yield { type: 'done', content: '', timing: this.buildResponseTiming() }
       }
     } finally {
@@ -1112,8 +1130,10 @@ export class AgentRunner {
 
     // Tool call accumulation state (keyed by chunk index)
     const tcAccumulator: Map<number, { id: string; name: string; argsStr: string }> = new Map()
+    const modelItemId = randomUUID()
 
     try {
+      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'model_call_started', { id: modelItemId, kind: 'model_call', status: 'started', name: provider.name })
       const stream: AsyncIterable<ChatChunk> = provider.chat(
         {
           model: agentConfig.model,
@@ -1186,6 +1206,7 @@ export class AgentRunner {
         }
       }
     } catch (error) {
+      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'model_call_completed', { id: modelItemId, kind: 'model_call', status: 'failed', name: provider.name, error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000) }).catch(() => undefined)
       const classified = classifyError(error, provider.id)
       Object.assign(classified, { phase: 'stream' })
       throw classified
@@ -1204,6 +1225,7 @@ export class AgentRunner {
         provider.id,
       )
     }
+    await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'model_call_completed', { id: modelItemId, kind: 'model_call', status: 'completed', name: provider.name, content: content.slice(0, 1000) }).catch(() => undefined)
 
     // Parse accumulated tool calls
     const toolCalls: CompletedToolCall[] = []
@@ -1382,9 +1404,12 @@ export class AgentRunner {
     toolContext: ToolContext
   ): Promise<CompletedToolResult> {
     const startedAt = Date.now()
+    const itemId = randomUUID()
+    await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'tool_started', { id: itemId, kind: 'tool_call', status: 'started', name: toolCall.name })
     let result: CompletedToolResult | undefined
     try {
       result = await this.executeToolInternal(toolCall, toolContext)
+      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'tool_completed', { id: itemId, kind: 'tool_call', status: result.isError ? 'failed' : 'completed', name: toolCall.name, content: result.result.slice(0, 1000) }).catch(() => undefined)
       return result
     } finally {
       this.toolCallTimings.push({

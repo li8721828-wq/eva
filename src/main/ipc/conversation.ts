@@ -136,7 +136,6 @@ async function controlBackgroundGoal(
   if (action === 'pause') {
     planner.pause()
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'paused' })
-    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'paused', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'paused', 'Paused by the user.')
     return { handled: true, status: 'paused' }
   }
@@ -144,7 +143,6 @@ async function controlBackgroundGoal(
   if (action === 'resume') {
     planner.resume()
     if (snapshot) await getStorage().taskRuns.save({ ...snapshot, status: 'running' })
-    await getStorage().conversations.updateConversation(conversationId, { executionStatus: 'running', executionUpdatedAt: Date.now() })
     await getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'running', 'Resumed by the user.')
     return { handled: true, status: 'running' }
   }
@@ -449,10 +447,6 @@ async function runInternalTeamDelegation(
       error: executionFailed ? 'Team orchestration failed.' : undefined,
       checkpoints,
     })
-    await getStorage().conversations.updateConversation(conversation.id, {
-      executionStatus: status === 'completed' ? 'completed' : status === 'failed' ? 'failed' : status === 'cancelled' ? 'cancelled' : 'running',
-      executionUpdatedAt: Date.now(),
-    })
     await taskLifecycle.syncActivePlan(conversation.id)
   }
 
@@ -621,7 +615,7 @@ async function runInternalTeamDelegation(
     fileService: services.fileService,
     terminalService: services.terminalService,
       modelPools: getStorage().config.get('modelPools'),
-      providerRegistry: services.providerRegistry,
+          providerRegistry: services.providerRegistry,
     createWorkerConversation,
     onWorkerEvent: persistWorkerEvent,
   })
@@ -978,8 +972,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
                 fileService: services.fileService,
                 terminalService: services.terminalService,
-      modelPools: getStorage().config.get('modelPools'),
-      providerRegistry: services.providerRegistry,
+                modelPools: getStorage().config.get('modelPools'),
+                providerRegistry: services.providerRegistry,
               })
               let output = ''
               const taskMessage: ChatMessage = {
@@ -1058,8 +1052,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 fullFilesystemAccess: workspaceAccess.fullFilesystemAccess,
                 fileService: services.fileService,
                 terminalService: services.terminalService,
-      modelPools: getStorage().config.get('modelPools'),
-      providerRegistry: services.providerRegistry,
+          modelPools: getStorage().config.get('modelPools'),
+          providerRegistry: services.providerRegistry,
                 maxSteps: automation.goal.maxSteps,
                 timeout,
                 prepareStepConversation: async ({ step, handoff }) => {
@@ -1233,7 +1227,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
           fileService: services.fileService,
           terminalService: services.terminalService,
       modelPools: getStorage().config.get('modelPools'),
-      providerRegistry: services.providerRegistry,
+          providerRegistry: services.providerRegistry,
+          eventStore: services.storage.agentRunEvents,
           delegateToTeam: automation.team.enabled && automation.team.autoInvoke ? (goal) => runInternalTeamDelegation(
             services,
             conversation,
@@ -1681,10 +1676,6 @@ export function registerConversationHandlers(services?: ChatServices): void {
         }
         const latestConversation = await convStore.getConversation(conversationId)
         if (latestConversation?.executionStatus !== 'cancelled') {
-          await convStore.updateConversation(conversationId, {
-            executionStatus: runError ? 'failed' : 'completed',
-            executionUpdatedAt: Date.now(),
-          })
         }
         await getStorage().runtimeMemory.recordConversationTurn({
           conversationId,
@@ -1740,10 +1731,6 @@ export function registerConversationHandlers(services?: ChatServices): void {
           await getAgentOsScheduler().finishInteractive(runtimeProcessId, 'failed', err?.message ?? String(err))
         }
         try {
-          await getStorage().conversations.updateConversation(conversationId, {
-            executionStatus: 'failed',
-            executionUpdatedAt: Date.now(),
-          })
           if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         } catch {
           // The conversation may not exist when validation failed before loading it.
@@ -1780,15 +1767,17 @@ export function registerConversationHandlers(services?: ChatServices): void {
       symposiumExecution?.abort(conversationId)
       activeTaskRunners.delete(conversationId)
       void getAgentOsScheduler().cancelInteractive(conversationId)
+      void getStorage().conversations.addMessage(conversationId, {
+        id: uuidv4(),
+        conversationId,
+        role: 'system',
+        content: '<turn_aborted>本轮执行已被用户中断。中断时正在进行的模型调用或工具调用未必完成；后续不得假设其成功。</turn_aborted>',
+        timestamp: Date.now(),
+      }).catch(() => undefined)
       void getAgentOsScheduler().transitionConversation(conversationId, 'goal', 'cancelled', 'Stopped by the user.')
       void getAgentOsScheduler().transitionConversation(conversationId, 'team', 'cancelled', 'Stopped by the user.')
-      void getStorage().conversations.updateConversation(conversationId, {
-        executionStatus: 'cancelled',
-        executionUpdatedAt: Date.now(),
-      }).then(() => {
-        const win = BrowserWindow.fromWebContents(event.sender)
-        if (win && !win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
-      }).catch(() => undefined)
+      const win = BrowserWindow.fromWebContents(event.sender)
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
     }
   })
 
