@@ -248,13 +248,35 @@ export interface GoalConfirmationRequest {
   requestedAt: number
 }
 
+/**
+ * The Agent asked to execute a tool that needs explicit human approval under
+ * the current chat policy. Mirrors `ToolApprovalRequest` from the main process
+ * (renderer-bound).
+ */
+export interface ToolApprovalRequest {
+  id: string
+  /** The tool call that requires approval. */
+  toolCallId: string
+  toolName: string
+  arguments: Record<string, unknown>
+  /** Workspace the call targets; used to render the approval card. */
+  workspacePath: string
+  /** Why this call was classified as approval-required. */
+  category: 'workspace-write' | 'terminal-command' | 'mcp-call' | 'browser-control' | 'other'
+  /** A short, user-facing summary of the operation. */
+  summary: string
+  /** Optional detail line (e.g. the command text or file path preview). */
+  detail?: string
+  requestedAt: number
+}
+
 export interface ChatStreamEvent {
   /** The conversation that owns this stream event. */
   conversationId?: string
   /** The Agent actually selected for this response by the main process. */
   agentId?: string
   agentName?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'done' | 'error'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'done' | 'error'
   messageId?: string
   content?: string
   /** True only when provisional text was protocol markup and must be discarded. */
@@ -270,6 +292,7 @@ export interface ChatStreamEvent {
   executionTimeline?: ExecutionTimelineEntry[]
   progressKind?: ProgressUpdateKind
   goalConfirmation?: GoalConfirmationRequest
+  toolApproval?: ToolApprovalRequest
   error?: string
   finishReason?: string
   usage?: ChatUsage

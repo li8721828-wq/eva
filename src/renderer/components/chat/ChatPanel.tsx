@@ -176,7 +176,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
   }
 
   return (
-    <div className={cn('eva-chat-surface flex h-full flex-col', className)}>
+    <div className={cn('eva-chat-surface flex h-full flex-col overflow-hidden', className)}>
       {/* Header */}
       <div className="eva-chat-header flex h-14 items-center justify-between gap-4 border-b px-6">
         <div className="flex min-w-0 items-center gap-2.5">

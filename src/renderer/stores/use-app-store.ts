@@ -26,7 +26,7 @@ interface AppState {
   currentView: AppView
   artifactWorkspaceId: string | null
   rightPanelVisible: boolean
-  rightPanelTab: 'tasks' | 'files' | 'requirements' | 'editor'
+  rightPanelTab: 'tasks' | 'files' | 'requirements' | 'project-knowledge' | 'editor'
   terminalVisible: boolean
   terminalHeight: number
   terminalWidth: number

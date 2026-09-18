@@ -1,0 +1,7 @@
+[toolchain]
+# Pin to a stable version that supports all our deps (napi-rs 2.x,
+# tokio 1.x, regex 1.x, lazy_static).
+# 1.80+ is required for LazyLock if we ever switch from lazy_static.
+channel = "1.83.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

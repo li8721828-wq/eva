@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import { SpecService } from '../services/spec-service'
+import { createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../services/tool-approval-policy'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
@@ -501,6 +502,11 @@ async function runInternalTeamDelegation(
   await persistTeamSnapshot('running')
   const access = await getConversationAccess(conversation)
   const durableMemory = await getStorage().runtimeMemory.buildContext(conversation.id, conversation.workspaceId)
+  const projectKnowledge = await getStorage().projectKnowledge.buildContext({
+    workspaceId: conversation.workspaceId,
+    workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
+  }, goal)
+  const teamDurableMemory = [durableMemory, projectKnowledge].filter(Boolean).join('\n\n')
   const workerContexts = new Map<string, string>()
   const workerTurnMessages = new Map<string, string>()
   const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
@@ -608,7 +614,7 @@ async function runInternalTeamDelegation(
     providerForAgent: (agent) => services.providerRegistry.get(agent.providerId),
     fallbackModel: { providerId: getStorage().config.get('activeProviderId'), model: getStorage().config.getActiveModel() },
     toolRegistry: services.toolRegistry,
-    contextManager: new ContextManager({ durableMemory, environmentRules: getStorage().config.get('environmentRules') }),
+    contextManager: new ContextManager({ durableMemory: teamDurableMemory, environmentRules: getStorage().config.get('environmentRules') }),
     workspacePath: conversationWorkspacePath(conversation, access.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath')),
     fileAccessGrants: access.fileAccessGrants,
     fullFilesystemAccess: access.fullFilesystemAccess,
@@ -819,7 +825,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(
     IPC.CHAT_SEND,
-    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[]; quotedMessage?: ChatMessageReference }) => {
+    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[]; quotedMessage?: ChatMessageReference; messageId?: string }) => {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
@@ -859,6 +865,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
           return
         }
         const memory = await getStorage().runtimeMemory.buildContext(conversationId, conversation.workspaceId)
+        const projectKnowledge = await getStorage().projectKnowledge.buildContext({
+          workspaceId: conversation.workspaceId,
+          workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
+        }, message)
         const activePlanScope = conversation.workspaceId
           ? `workspace:${conversation.workspaceId}`
           : conversation.workspacePath?.trim()
@@ -866,6 +876,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             : `conversation:${conversationId}`
         const durableMemory = [
           memory,
+          projectKnowledge,
           getStorage().personalPreferences.buildCapabilityContext(),
           getStorage().personalPreferences.buildContext(message),
           activePlanContext(await getStorage().activePlans.getActive(activePlanScope)),
@@ -923,7 +934,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const shouldGenerateTitle = conversation.messageCount === 0
 
         // 4. Save user message to storage immediately
-        const userMessageId = uuidv4()
+        // The renderer shows this message optimistically before the main
+        // process persists it. Reuse that id so the refresh snapshot replaces
+        // the optimistic row instead of rendering a second identical row.
+        const userMessageId = payload.messageId?.trim() || uuidv4()
         const referenceImages = loadReferenceImages(payload.images, true)
         const documentContext = await buildDocumentAttachmentContext(payload.attachments)
         const imageContext = referenceImages?.length && !primaryModelSupportsVision(effectiveAgentConfig, provider)
@@ -974,6 +988,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 terminalService: services.terminalService,
                 modelPools: getStorage().config.get('modelPools'),
                 providerRegistry: services.providerRegistry,
+                requestToolApproval: createLocalToolApproval({
+                  conversationId,
+                  workspaceId: conversation.workspaceId,
+                  window: win,
+                  config: { ...automation.toolApproval, policy: 'safe' },
+                }),
               })
               let output = ''
               const taskMessage: ChatMessage = {
@@ -1241,6 +1261,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
           manageGoal,
           createExecutionPlan,
           applySpecTemplate,
+          requestToolApproval: createLocalToolApproval({
+            conversationId,
+            workspaceId: conversation.workspaceId,
+            window: win,
+            config: automation.toolApproval,
+          }),
         })
         // The user can cancel while configuration and history are loading,
         // before this runner has been registered in `activeRunners`.
@@ -1685,6 +1711,20 @@ export function registerConversationHandlers(services?: ChatServices): void {
           outcome: assistantChatMessage.content,
           status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
         })
+        try {
+          await getStorage().projectKnowledge.recordEngineeringTurn({
+            conversationId,
+            assistantMessageId,
+            workspaceId: conversation.workspaceId,
+            workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
+            userRequest: message,
+            assistantContent: assistantChatMessage.content,
+            status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
+            toolCalls: toolCallsForMessage,
+          })
+        } catch (error) {
+          console.warn('Project knowledge recording failed:', error)
+        }
         void getStorage().personalPreferences.distillTurn({
           userMessage: message,
           assistantMessage: assistantChatMessage.content,
@@ -1760,6 +1800,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
     if (conversationId) {
       activeChatRunTokens.delete(conversationId)
       resolvePendingGoalConfirmation(conversationId, false)
+      rejectAllPendingApprovalsForConversation(conversationId, 'The user cancelled the chat.')
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
       activeBackgroundGoalPlanners.get(conversationId)?.abort()
@@ -1791,6 +1832,27 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
       pendingGoalConfirmations.delete(confirmationId)
       pending.resolve(payload.approved === true)
+      return true
+    }
+  )
+
+  ipcMain.handle(
+    IPC.CHAT_TOOL_APPROVAL_DECIDE,
+    async (_event, payload: { conversationId?: string; approvalId?: string; approved?: boolean; rememberScope?: 'once' | 'session' }): Promise<boolean> => {
+      const approvalId = typeof payload?.approvalId === 'string' ? payload.approvalId : ''
+      const conversationId = typeof payload?.conversationId === 'string' ? payload.conversationId : ''
+      const approved = payload?.approved === true
+      if (!approvalId) return false
+      const handled = resolvePendingApproval(approvalId, approved, approved ? undefined : 'The user denied the tool call.')
+      if (!handled) return false
+
+      void recordActivity({
+        category: 'permission',
+        action: approved ? 'chat.tool_approved' : 'chat.tool_rejected',
+        status: approved ? 'success' : 'error',
+        summary: `User ${approved ? 'approved' : 'rejected'} tool call (${payload?.rememberScope || 'once'}).`,
+        conversationId,
+      })
       return true
     }
   )

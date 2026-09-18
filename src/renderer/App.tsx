@@ -7,6 +7,7 @@ import { useStreaming } from '@/hooks/use-streaming'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { Sidebar } from '@/components/sidebar/Sidebar'
 import { ChatPanel } from '@/components/chat/ChatPanel'
+import { ToastViewport } from '@/components/ToastViewport'
 import { TaskArtifactCenter } from '@/components/tasks/TaskArtifactCenter'
 import { TaskWorkspacePanel } from '@/components/tasks/TaskWorkspacePanel'
 import { SymposiumWorkspace } from '@/components/symposium/SymposiumWorkspace'
@@ -191,6 +192,15 @@ const App: React.FC = () => {
   // Initialize streaming listeners
   useStreaming()
 
+  // Warm the dynamic-import cache for Streamdown so the first chat bubble
+  // does not pay the full library load latency on the rendering thread.
+  useEffect(() => {
+    void import('streamdown').catch(() => {
+      // Streamdown is optional; a transient load failure will retry on the
+      // next lazy import when a bubble actually needs it.
+    })
+  }, [])
+
   // Load data on mount
   useEffect(() => {
     loadConfig()
@@ -259,7 +269,7 @@ const App: React.FC = () => {
       {/* Main Workspace */}
       <div className="flex flex-1 flex-col min-w-0">
         <div className={settingsOpen ? 'hidden' : 'flex min-h-0 min-w-0 flex-1'} aria-hidden={settingsOpen || undefined}>
-          <div className="min-h-0 min-w-0 flex-1">
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
             {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
           </div>
 
@@ -324,6 +334,7 @@ const App: React.FC = () => {
       />
       </div>
     </div>
+      <ToastViewport />
     </ErrorBoundary>
   )
 }

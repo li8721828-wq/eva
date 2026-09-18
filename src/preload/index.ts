@@ -8,12 +8,15 @@ import type { TeamEvent, GoalConfig, GoalProgress, TaskArtifactRun, TaskFeedback
 import type { ModelCapabilityProbeRequest, ModelCapabilityProbeResult, ProviderConfigEntry, ProviderModelsResult, ProviderTestConfig } from '../shared/types/provider'
 import type { ModelPool, ModelRouteRequest, ModelRouteResult } from '../shared/types/model-pool'
 import type { CostUsageReport, ModelRateCard, SupplierRateRefreshResult } from '../shared/types/cost'
+import type { AppServerStatus, SandboxBackendStatus } from '../shared/types/automation'
+import type { SandboxConfig } from '../shared/types/automation'
 import type { SpecTemplate } from '../shared/types/spec'
 import type { Workspace } from '../shared/types/workspace'
 import type { ActivityLogEntry, ActivityLogFilter } from '../shared/types/activity'
 import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../shared/types/qq'
 import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView, SearchProviderConnectivity } from '../shared/types/plugin'
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
+import type { ProjectKnowledgeEntry, ProjectKnowledgeScope, ProjectKnowledgeStatus } from '../shared/types/project-knowledge'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
 import type { ActivePlan } from '../shared/types/active-plan'
@@ -70,10 +73,11 @@ export interface EvaAPI {
 
   // 聊天
   chat: {
-    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[], quotedMessage?: ChatMessageReference): Promise<void>
+    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[], quotedMessage?: ChatMessageReference, messageId?: string): Promise<void>
     onStream(callback: EventCallback<ChatStreamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
     decideGoalConfirmation(conversationId: string, confirmationId: string, approved: boolean): Promise<boolean>
+    decideToolApproval(conversationId: string, approvalId: string, approved: boolean, rememberScope?: 'once' | 'session'): Promise<boolean>
   }
 
   // 智能体管理
@@ -168,6 +172,13 @@ export interface EvaAPI {
     refresh(workspaceId: string): Promise<ProjectIndexSnapshot>
   }
 
+  projectKnowledge: {
+    list(scope?: ProjectKnowledgeScope): Promise<ProjectKnowledgeEntry[]>
+    search(scope: ProjectKnowledgeScope, query: string, limit?: number): Promise<ProjectKnowledgeEntry[]>
+    update(scope: ProjectKnowledgeScope, id: string, status: ProjectKnowledgeStatus): Promise<ProjectKnowledgeEntry | null>
+    delete(scope: ProjectKnowledgeScope, id: string): Promise<boolean>
+  }
+
   git: {
     status(conversationId: string): Promise<GitRepositoryStatus>
     switchBranch(conversationId: string, branch: string): Promise<Conversation>
@@ -233,6 +244,17 @@ export interface EvaAPI {
     getStatus(): Promise<QqRemoteStatus>
     connect(): Promise<QqRemoteStatus>
     disconnect(): Promise<QqRemoteStatus>
+  }
+
+  appServer: {
+    getStatus(): Promise<AppServerStatus>
+    start(): Promise<AppServerStatus>
+    stop(): Promise<AppServerStatus>
+  }
+
+  sandbox: {
+    getStatus(): Promise<{ config: SandboxConfig; backend: SandboxBackendStatus }>
+    setLevel(level: 'off' | 'permissive' | 'strict'): Promise<{ config: SandboxConfig; backend: SandboxBackendStatus }>
   }
 
   plugins: {
@@ -316,8 +338,8 @@ const evaAPI: EvaAPI = {
 
   // 聊天
   chat: {
-    send: (conversationId, message, agentId, images, attachments, quotedMessage) => {
-      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments, quotedMessage })
+    send: (conversationId, message, agentId, images, attachments, quotedMessage, messageId) => {
+      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments, quotedMessage, messageId })
       return Promise.resolve()
     },
     onStream: (callback) => onStream(IPC.CHAT_STREAM, callback),
@@ -326,6 +348,7 @@ const evaAPI: EvaAPI = {
       return Promise.resolve()
     },
     decideGoalConfirmation: (conversationId, confirmationId, approved) => ipcRenderer.invoke(IPC.CHAT_GOAL_CONFIRMATION_DECIDE, { conversationId, confirmationId, approved }),
+    decideToolApproval: (conversationId, approvalId, approved, rememberScope) => invokeContract(IPC.CHAT_TOOL_APPROVAL_DECIDE, { conversationId, approvalId, approved, rememberScope }),
   },
 
   // 智能体管理
@@ -450,6 +473,13 @@ const evaAPI: EvaAPI = {
     refresh: (workspaceId) => ipcRenderer.invoke(IPC.PROJECT_INDEX_REFRESH, workspaceId),
   },
 
+  projectKnowledge: {
+    list: (scope) => invokeContract(IPC.PROJECT_KNOWLEDGE_LIST, scope),
+    search: (scope, query, limit) => invokeContract(IPC.PROJECT_KNOWLEDGE_SEARCH, scope, query, limit),
+    update: (scope, id, status) => invokeContract(IPC.PROJECT_KNOWLEDGE_UPDATE, scope, id, status),
+    delete: (scope, id) => invokeContract(IPC.PROJECT_KNOWLEDGE_DELETE, scope, id),
+  },
+
   git: {
     status: (conversationId) => ipcRenderer.invoke(IPC.GIT_STATUS, conversationId),
     switchBranch: (conversationId, branch) => ipcRenderer.invoke(IPC.GIT_SWITCH_BRANCH, conversationId, branch),
@@ -515,6 +545,17 @@ const evaAPI: EvaAPI = {
     getStatus: () => ipcRenderer.invoke(IPC.QQ_REMOTE_GET_STATUS),
     connect: () => ipcRenderer.invoke(IPC.QQ_REMOTE_CONNECT),
     disconnect: () => ipcRenderer.invoke(IPC.QQ_REMOTE_DISCONNECT),
+  },
+
+  appServer: {
+    getStatus: () => ipcRenderer.invoke(IPC.APP_SERVER_GET_STATUS),
+    start: () => invokeContract(IPC.APP_SERVER_START) as Promise<AppServerStatus>,
+    stop: () => invokeContract(IPC.APP_SERVER_STOP) as Promise<AppServerStatus>,
+  },
+
+  sandbox: {
+    getStatus: () => ipcRenderer.invoke(IPC.SANDBOX_GET_STATUS),
+    setLevel: (level) => ipcRenderer.invoke(IPC.SANDBOX_SET_LEVEL, level),
   },
 
   plugins: {

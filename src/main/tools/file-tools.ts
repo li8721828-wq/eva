@@ -1,5 +1,10 @@
 import path from 'path'
 import { createExecutionEnvelope, type ToolExecutor, type ToolContext } from './index'
+import {
+  isMissingWorkspaceResourceError,
+  resolveExistingWorkspaceResource,
+  resolveMissingWorkspaceResource,
+} from '../services/workspace-resource-resolver'
 
 export function createFileTools(): ToolExecutor[] {
   return [readFileTool, editFileTool, writeFileTool, listDirectoryTool, searchFilesTool, fileInfoTool]
@@ -24,27 +29,9 @@ const readFileTool: ToolExecutor = {
     const startLine = params.startLine as number | undefined
     const endLine = params.endLine as number | undefined
 
-    let content: string
-    try {
-      content = await context.fileService.readFile(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
-    } catch (error: any) {
-      const message = error?.message ?? String(error)
-      if (/ENOENT|no such file|cannot find the path/i.test(message) && filePath) {
-        const candidates = await context.fileService.searchFiles(
-          path.basename(filePath),
-          context.workspacePath,
-          context.fileAccessGrants,
-          '.',
-          context.fullFilesystemAccess,
-        ).catch(() => [])
-        const uniqueCandidates = [...new Set(candidates)].slice(0, 8)
-        const hint = uniqueCandidates.length
-          ? ` Candidate paths returned by the workspace search:\n${uniqueCandidates.join('\n')}`
-          : ' No candidate with the same filename was found in the authorized workspace.'
-        throw new Error(`File not found: ${filePath}. Do not retry the same path; use search_files results and read the exact returned path.${hint}`)
-      }
-      throw error
-    }
+    const { content } = await resolveExistingWorkspaceResource(filePath, context, (resolvedPath) =>
+      context.fileService.readFile(resolvedPath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    )
 
     if (startLine !== undefined || endLine !== undefined) {
       const lines = content.split('\n')
@@ -102,21 +89,32 @@ const editFileTool: ToolExecutor = {
     const newContent = params.newContent as string
     if (!oldContent) throw new Error('edit_file requires a non-empty oldContent value.')
 
-    const content = await context.fileService.readFile(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    let resolvedPath = filePath
+    let content: string
+    try {
+      content = await context.fileService.readFile(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    } catch (error) {
+      if (!isMissingWorkspaceResourceError(error)) throw error
+      const resource = await resolveMissingWorkspaceResource(filePath, context)
+      resolvedPath = resource.resolvedPath
+      content = await context.fileService.readFile(resolvedPath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    }
     const firstMatch = content.indexOf(oldContent)
-    if (firstMatch < 0) throw new Error(`The requested text was not found in ${filePath}. Read the file again and use an exact fragment.`)
+    if (firstMatch < 0) throw new Error(`The requested text was not found in ${resolvedPath}. Read the file again and use an exact fragment.`)
     if (content.indexOf(oldContent, firstMatch + oldContent.length) >= 0) {
-      throw new Error(`The requested text occurs more than once in ${filePath}. Include more surrounding context so the edit is unambiguous.`)
+      throw new Error(`The requested text occurs more than once in ${resolvedPath}. Include more surrounding context so the edit is unambiguous.`)
     }
 
     await context.fileService.writeFile(
-      filePath,
+      resolvedPath,
       `${content.slice(0, firstMatch)}${newContent}${content.slice(firstMatch + oldContent.length)}`,
       context.workspacePath,
       context.fileAccessGrants,
       context.fullFilesystemAccess,
     )
-    return `Successfully edited ${filePath}`
+    return resolvedPath === filePath
+      ? `Successfully edited ${filePath}`
+      : `Successfully edited ${resolvedPath} (resolved from ${filePath})`
   },
 }
 
@@ -217,14 +215,22 @@ const fileInfoTool: ToolExecutor = {
   async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
     const filePath = params.path as string
 
-    const exists = await context.fileService.fileExists(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    let resolvedPath = filePath
+    let exists = await context.fileService.fileExists(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
     if (!exists) {
-      return `File not found: ${filePath}`
+      try {
+        const resource = await resolveMissingWorkspaceResource(filePath, context)
+        resolvedPath = resource.resolvedPath
+        exists = await context.fileService.fileExists(resolvedPath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+      } catch (error) {
+        return error instanceof Error ? error.message : `File not found: ${filePath}`
+      }
     }
+    if (!exists) return `File not found: ${filePath}`
 
-    const info = await context.fileService.getFileInfo(filePath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
+    const info = await context.fileService.getFileInfo(resolvedPath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
     return [
-      `Path: ${filePath}`,
+      `Path: ${resolvedPath}`,
       `Type: ${info.isDirectory ? 'Directory' : 'File'}`,
       `Size: ${formatSize(info.size)}`,
       `Modified: ${info.modified.toISOString()}`,

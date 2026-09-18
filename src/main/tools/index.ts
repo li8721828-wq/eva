@@ -105,6 +105,13 @@ export interface TerminalService {
   resize(sessionId: string, cols: number, rows: number): void
   destroySession(sessionId: string): void
   onOutput(sessionId: string, callback: (data: string) => void): () => void
+  /**
+   * Bind a sandbox context to this service. The service stores the context
+   * (or null to clear) and consults it before every `executeCommand` call
+   * and every `createSession`. Must be called before tool execution begins
+   * for the context to apply.
+   */
+  setSandboxContext(context: import('../services/sandbox/types').SandboxContext | null): void
 }
 
 export class ToolRegistry {

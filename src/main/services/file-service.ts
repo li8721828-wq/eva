@@ -3,8 +3,18 @@ import os from 'os'
 import path from 'path'
 import type { FileService, FileEntry } from '../tools'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import { evaluateSandboxPath, type SandboxContext } from './sandbox'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+// Process-level sandbox context. Set by AgentRunner via setSandboxContext before
+// tool execution begins. The FileService stores this so it can be validated
+// before any write syscall without requiring it to flow through every call site.
+let currentSandboxContext: SandboxContext | null = null
+
+export function setFileServiceSandboxContext(context: SandboxContext | null): void {
+  currentSandboxContext = context
+}
 
 /** Expand the one cross-shell home shorthand before path validation. */
 export function expandHomePath(filePath: string): string {
@@ -109,6 +119,10 @@ export class FileServiceImpl implements FileService {
 
   async writeFile(filePath: string, content: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<void> {
     let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
+    if (currentSandboxContext) {
+      const decision = evaluateSandboxPath(resolved, 'write', currentSandboxContext)
+      if (!decision.allowed) throw new Error(decision.reason)
+    }
     const dir = path.dirname(resolved)
     await fs.promises.mkdir(dir, { recursive: true })
     // Re-check after directory creation so a newly created or pre-existing
@@ -120,6 +134,10 @@ export class FileServiceImpl implements FileService {
   async writeBuffer(filePath: string, content: Buffer, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<void> {
     if (content.length > 32 * 1024 * 1024) throw new Error('Generated workbook exceeds the 32 MB file limit.')
     let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
+    if (currentSandboxContext) {
+      const decision = evaluateSandboxPath(resolved, 'write', currentSandboxContext)
+      if (!decision.allowed) throw new Error(decision.reason)
+    }
     await fs.promises.mkdir(path.dirname(resolved), { recursive: true })
     resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
     await fs.promises.writeFile(resolved, content)

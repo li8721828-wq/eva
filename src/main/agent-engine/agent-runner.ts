@@ -21,6 +21,10 @@ import { describeModelCapabilityProfile, inferModelCapabilities } from '../../sh
 import { expandToolSet, isFastSynthesisReadTool, REQUEST_ADDITIONAL_TOOLS, selectInitialTools } from './tool-selection'
 import { randomUUID } from 'crypto'
 import type { AgentRunEventStore } from '../storage/agent-run-event-store'
+import type { AutomationConfig } from '../../shared/types/automation'
+import { resolveSandboxPolicy } from '../services/sandbox/policy'
+import { setFileServiceSandboxContext } from '../services/file-service'
+import { ToolDispatcher } from '../services/tool-dispatcher'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -34,6 +38,8 @@ export interface AgentRunnerConfig {
   fullFilesystemAccess?: boolean
   fileService: FileService
   terminalService: TerminalService
+  /** Automation settings: tool approval policy and sandbox config. */
+  automation?: AutomationConfig
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
   /** Optional exact paths an otherwise permitted file-editing call may modify. */
   allowedWritePaths?: string[]
@@ -228,8 +234,29 @@ function modelPoolDelegationTool(modelPools: ModelPool[] | undefined, allowedPoo
     },
   }
 }
+
+/**
+ * Derive a {@link SandboxContext} from the active {@link AgentRunnerConfig}.
+ * Returns null when sandbox is effectively off (including when the user is in
+ * `normal` mode and explicitly disabled the sandbox).
+ */
+function buildSandboxContext(config: AgentRunnerConfig): import('../services/sandbox/types').SandboxContext | null {
+  const automation = config.automation
+  if (!automation) return null
+  const policy = resolveSandboxPolicy(automation.toolApproval.policy, automation.sandbox, automation.mode)
+  if (!policy.sandboxActive) return null
+  return {
+    workspacePath: config.workspacePath,
+    fileAccessGrants: config.fileAccessGrants ?? [],
+    extraAllowedPaths: automation.sandbox.extraAllowedPaths,
+    allowNetwork: automation.sandbox.allowNetwork,
+    level: policy.effectiveSandboxLevel,
+  }
+}
+
 export class AgentRunner {
   private config: AgentRunnerConfig
+  private readonly toolDispatcher: ToolDispatcher
   private abortController: AbortController | null = null
   private isRunning = false
   private runStartedAt = 0
@@ -243,6 +270,12 @@ export class AgentRunner {
 
   constructor(config: AgentRunnerConfig) {
     this.config = config
+    this.toolDispatcher = new ToolDispatcher({
+      toolRegistry: config.toolRegistry,
+      agentTools: config.agentConfig.tools,
+      requestToolApproval: config.requestToolApproval,
+      allowedWritePaths: config.allowedWritePaths,
+    })
   }
 
   /**
@@ -265,6 +298,20 @@ export class AgentRunner {
     this.toolCallTimings = []
     this.currentRunId = randomUUID()
     this.currentTurnId = randomUUID()
+
+    // Bind the sandbox context to terminal/file services for the duration of
+    // this run. The context is derived from the automation config and includes
+    // the workspace + grants that the per-backend policy evaluates against.
+    const sandboxContext = buildSandboxContext(this.config)
+
+    // Apply the resolved sandbox context to services. TerminalService supports
+    // the binding directly; FileService uses a module-level setter.
+    // Call only if the method is present (backward compat with test mocks that
+    // use a plain object as the terminal service).
+    if (typeof this.config.terminalService.setSandboxContext === 'function') {
+      this.config.terminalService.setSandboxContext(sandboxContext)
+    }
+    setFileServiceSandboxContext(sandboxContext)
 
     try {
       const userMessage = normalizePendingUserMessage(params.newMessage)
@@ -1054,6 +1101,12 @@ export class AgentRunner {
     } finally {
       this.isRunning = false
       this.abortController = null
+      // Always clear the sandbox binding after the run ends so a subsequent run
+      // in the same process (e.g. Auto conversation) starts with a clean state.
+      if (typeof this.config.terminalService.setSandboxContext === 'function') {
+        this.config.terminalService.setSandboxContext(null)
+      }
+      setFileServiceSandboxContext(null)
     }
   }
 
@@ -1409,7 +1462,17 @@ export class AgentRunner {
     let result: CompletedToolResult | undefined
     try {
       result = await this.executeToolInternal(toolCall, toolContext)
-      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'tool_completed', { id: itemId, kind: 'tool_call', status: result.isError ? 'failed' : 'completed', name: toolCall.name, content: result.result.slice(0, 1000) }).catch(() => undefined)
+      await this.config.eventStore?.appendLifecycle(
+        this.currentRunId,
+        this.currentTurnId,
+        'tool_completed',
+        { id: itemId, kind: 'tool_call', status: result.isError ? 'failed' : 'completed', name: toolCall.name, content: result.result.slice(0, 1000) },
+        {
+          operationId: result.protocol?.operationId || null,
+          protocolStatus: result.protocol?.status || null,
+          durationMs: result.protocol?.durationMs || null,
+        },
+      ).catch(() => undefined)
       return result
     } finally {
       this.toolCallTimings.push({
@@ -1489,62 +1552,12 @@ export class AgentRunner {
       try { return { result: await this.config.applySpecTemplate(templateId, parameters), isError: false } } catch (error: any) { return { result: `Error: Template expansion failed: ${error?.message ?? String(error)}`, isError: true } }
     }
 
-    const tool: ToolExecutor | undefined = this.config.toolRegistry.get(toolCall.name)
-
-    if (!tool) {
-      return { result: `Error: Tool '${toolCall.name}' not found in registry.`, isError: true }
-    }
-
-    const mcpAllowed = toolCall.name.startsWith('mcp__') && this.config.agentConfig.tools.includes('mcp:*')
-    const isPersonalPreferenceTool = toolCall.name === 'manage_personal_preferences'
-    const isSpreadsheetTool = toolCall.name === 'spreadsheet'
-    if (!this.config.agentConfig.tools.includes(toolCall.name) && !mcpAllowed && !isPersonalPreferenceTool && !isSpreadsheetTool) {
-      return {
-        result: `Error: Tool '${toolCall.name}' is not permitted for this agent.`,
-        isError: true,
-      }
-    }
-
-    if ((toolCall.name === 'write_file' || toolCall.name === 'edit_file') && this.config.allowedWritePaths?.length) {
-      const requestedPath = typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : ''
-      const resolvedRequested = requestedPath
-        ? path.resolve(path.isAbsolute(requestedPath) ? requestedPath : toolContext.workspacePath, requestedPath)
-        : ''
-      const isAllowed = this.config.allowedWritePaths.some((allowedPath) =>
-        path.resolve(allowedPath).toLowerCase() === resolvedRequested.toLowerCase()
-      )
-      if (!isAllowed) {
-        return {
-          result: 'Error: This agent may write only to its explicitly authorized paths.',
-          isError: true,
-        }
-      }
-    }
-
-    if (this.config.requestToolApproval) {
-      const approval = await this.config.requestToolApproval({
-        toolCall: {
-          id: toolCall.id,
-          name: toolCall.name,
-          arguments: toolCall.arguments,
-        },
-        workspacePath: toolContext.workspacePath,
-      })
-      if (!approval.approved) {
-        return {
-          result: approval.message || `Execution of '${toolCall.name}' was not approved.`,
-          isError: true,
-        }
-      }
-    }
-
-    try {
-      const output = await tool.execute(toolCall.arguments, toolContext)
-      if (typeof output === 'string') return { result: output, isError: false }
-      return { result: output.content, images: output.images, protocol: output.protocol, isError: false }
-    } catch (err: any) {
-      return { result: `Error: ${err?.message ?? String(err)}`, isError: true }
-    }
+    return this.toolDispatcher.dispatch({
+      id: toolCall.id,
+      name: toolCall.name,
+      arguments: toolCall.arguments,
+      context: toolContext,
+    })
   }
 
   /**

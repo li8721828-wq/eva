@@ -22,6 +22,12 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     console.error('[Eva] React Error Boundary caught:', error, errorInfo.componentStack)
+    try {
+      const stack = `${error.message}\n\n${error.stack || ''}\n\nComponent stack:\n${errorInfo.componentStack || ''}`
+      window.localStorage.setItem('eva.last-render-error', stack)
+    } catch {
+      // ignore
+    }
   }
 
   handleReload = (): void => {
@@ -48,11 +54,11 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
           </div>
 
           {this.state.error && (
-            <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-zinc-50 p-4">
+            <div className="w-full max-w-2xl rounded-lg border border-zinc-200 bg-zinc-50 p-4">
               <p className="text-xs font-mono text-zinc-500 mb-1">Error details:</p>
-              <p className="text-xs font-mono text-red-600 break-words line-clamp-4">
-                {this.state.error.message}
-              </p>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap text-xs font-mono text-red-600 break-words">
+                {this.state.error.stack || this.state.error.message}
+              </pre>
             </div>
           )}
 

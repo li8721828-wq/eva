@@ -4,6 +4,7 @@ import { IPC } from '../../shared/ipc-channels'
 import { markGoalProgressCancelled, markGoalProgressFailed, type GoalConfig, type GoalProgress, type TaskCheckpoint, type TaskFeedback, type TaskPlan, type TaskRunSnapshot, type TeamEvent } from '../../shared/types/task'
 import type { AgentConfig } from '../../shared/types/agent'
 import type { Conversation } from '../../shared/types/conversation'
+import type { AgentRunRecoverySummary } from '../../shared/types/runtime-run'
 import type { ChatMessage } from '../../shared/types/conversation'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -36,6 +37,7 @@ export interface ExpertTaskStartInput {
   goal: string
   resume?: boolean
   recoveryReason?: 'user-continue' | 'app-restart'
+  recoverySummary?: AgentRunRecoverySummary
   idempotencyKey?: string
 }
 
@@ -46,6 +48,7 @@ export interface GoalTaskStartInput {
   agentId: string
   resume?: boolean
   recoveryReason?: 'user-continue' | 'app-restart'
+  recoverySummary?: AgentRunRecoverySummary
   idempotencyKey?: string
 }
 
@@ -407,6 +410,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
       resume: run.status === 'interrupted' || Boolean(run.payload?.resume),
       recoveryReason: 'app-restart',
       idempotencyKey: run.idempotencyKey,
+      recoverySummary: run.payload?.recoverySummary,
     })
   })
   scheduler.registerRecoveryHandler('goal', async (run, context) => {
@@ -422,6 +426,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
       recoveryReason: 'app-restart',
       config: run.payload?.config,
       idempotencyKey: run.idempotencyKey,
+      recoverySummary: run.payload?.recoverySummary,
     })
   })
 

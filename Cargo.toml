@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/eva-sandbox",
+]
+exclude = [
+    # Future crates go here:
+    # "crates/eva-agent-engine",
+    # "crates/eva-tools",
+]
+
+# Shared package metadata that every member crate can inherit with
+# `edition.workspace = true`, `rust-version.workspace = true`, etc.
+# See https://doc.rust-lang.org/cargo/reference/workspaces.html#the-package-table
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Eva Team"]
+license = "MIT"
+rust-version = "1.83.0"
+repository = "https://github.com/your-org/eva"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# `all` covers most lints; we deny it but with priority=-1 so specific
+# `#[allow(...)]` attributes on individual items can override.
+all = { level = "deny", priority = -1 }
+# A few lints are too noisy on first bring-up; warn instead of deny.
+# Tighten these once the codebase stabilizes.
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# `module_name_repetitions` is too pedantic for our `eva_sandbox::SandboxBackendName` style.
+module_name_repetitions = "allow"

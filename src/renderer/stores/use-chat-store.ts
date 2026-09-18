@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, ExecutionTraceEntry, FileAccessGrant, GoalConfirmationRequest, ProgressUpdate, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, ExecutionTraceEntry, FileAccessGrant, GoalConfirmationRequest, ProgressUpdate, ToolApprovalRequest, ToolCall, ChatStreamEvent } from '../../shared/types'
 import type { RequirementProgress } from '../../shared/types/requirement-engineering'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
@@ -15,6 +15,7 @@ export interface ConversationStreamState {
   executionTimeline: ExecutionTimelineEntry[]
   progressUpdates: ProgressUpdate[]
   goalConfirmation?: GoalConfirmationRequest
+  toolApproval?: ToolApprovalRequest
   status: string
   startedAt: number | null
   lastActivityAt: number | null
@@ -35,6 +36,8 @@ interface ChatState {
   currentConversationId: string | null
   messages: ChatMessage[]
   isConversationLoading: boolean
+  /** Renderer-local messages waiting for the persistence snapshot. */
+  pendingMessageIds: Record<string, string[]>
   streamingByConversation: Record<string, ConversationStreamState>
   requirementProgressByConversation: Record<string, RequirementProgressState>
   inputText: string
@@ -75,6 +78,7 @@ interface ChatState {
   sendMessage: (agentId?: string) => Promise<void>
   abortStream: () => void
   decideGoalConfirmation: (conversationId: string, confirmationId: string, approved: boolean) => Promise<void>
+  decideToolApproval: (conversationId: string, approvalId: string, approved: boolean, rememberScope?: 'once' | 'session') => Promise<void>
   appendStreamEvent: (event: ChatStreamEvent) => void
   clearCurrentChat: () => void
 }
@@ -92,11 +96,24 @@ function parentDirectory(filePath: string): string {
   return filePath.replace(/[\\/][^\\/]+$/, '')
 }
 
+let conversationLoadSequence = 0
+
+function mergePendingMessages(serverMessages: ChatMessage[], localMessages: ChatMessage[], pendingIds: string[]): ChatMessage[] {
+  if (pendingIds.length === 0) return serverMessages
+  const pending = new Set(pendingIds)
+  const merged = new Map(serverMessages.map((message) => [message.id, message]))
+  for (const message of localMessages) {
+    if (pending.has(message.id) && !merged.has(message.id)) merged.set(message.id, message)
+  }
+  return Array.from(merged.values()).sort((left, right) => left.timestamp - right.timestamp)
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
   messages: [],
   isConversationLoading: false,
+  pendingMessageIds: {},
   streamingByConversation: {},
   requirementProgressByConversation: {},
   inputText: '',
@@ -220,11 +237,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   selectConversation: async (id) => {
+    const requestSequence = ++conversationLoadSequence
     try {
       set({ currentConversationId: id, messages: [], isConversationLoading: true, error: null })
       const result = await window.eva.conversation.load(id)
-      if (get().currentConversationId === id) {
-        set({ messages: result.messages, isConversationLoading: false })
+      if (get().currentConversationId === id && requestSequence === conversationLoadSequence) {
+        const state = get()
+        const pendingIds = state.pendingMessageIds[id] || []
+        const messages = mergePendingMessages(result.messages, state.messages, pendingIds)
+        const persistedIds = new Set(result.messages.map((message) => message.id))
+        const remainingPendingIds = pendingIds.filter((messageId) => !persistedIds.has(messageId))
+        set((current) => ({
+          messages,
+          isConversationLoading: false,
+          pendingMessageIds: remainingPendingIds.length > 0
+            ? { ...current.pendingMessageIds, [id]: remainingPendingIds }
+            : Object.fromEntries(Object.entries(current.pendingMessageIds).filter(([conversationId]) => conversationId !== id)),
+        }))
         const terminalStatus = result.conversation.executionStatus
         if ((terminalStatus === 'completed' || terminalStatus === 'failed' || terminalStatus === 'cancelled') && !result.conversation.executionStatusAcknowledgedAt) {
           const acknowledgedAt = Date.now()
@@ -240,16 +269,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     } catch (err) {
       console.error('Failed to load conversation:', err)
-      if (get().currentConversationId === id) set({ isConversationLoading: false })
+      if (get().currentConversationId === id && requestSequence === conversationLoadSequence) set({ isConversationLoading: false })
     }
   },
 
   refreshConversation: async (id) => {
+    const requestSequence = ++conversationLoadSequence
     try {
       const result = await window.eva.conversation.load(id)
-      if (get().currentConversationId !== id) return
+      if (get().currentConversationId !== id || requestSequence !== conversationLoadSequence) return
       set((state) => {
         const stream = state.streamingByConversation[id]
+        const pendingIds = state.pendingMessageIds[id] || []
+        const messages = mergePendingMessages(result.messages, state.messages, pendingIds)
+        const persistedIds = new Set(result.messages.map((message) => message.id))
+        const remainingPendingIds = pendingIds.filter((messageId) => !persistedIds.has(messageId))
         const assistantIndex = [...result.messages].map((message) => message.role).lastIndexOf('assistant')
         const persistedReply = assistantIndex >= 0 ? result.messages[assistantIndex] : undefined
         const hasUserAfterReply = assistantIndex >= 0 && result.messages.slice(assistantIndex + 1).some((message) => message.role === 'user')
@@ -261,7 +295,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           persistedReply.content.startsWith(stream.content)
         )
         return {
-          messages: result.messages,
+          messages,
+          isConversationLoading: false,
+          pendingMessageIds: remainingPendingIds.length > 0
+            ? { ...state.pendingMessageIds, [id]: remainingPendingIds }
+            : Object.fromEntries(Object.entries(state.pendingMessageIds).filter(([conversationId]) => conversationId !== id)),
           ...(streamWasPersisted
             ? { streamingByConversation: { ...state.streamingByConversation, [id]: createIdleStream() } }
             : {}),
@@ -280,7 +318,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set((s) => {
         const conversations = s.conversations.filter((c) => c.id !== id)
         const { [id]: _removed, ...streamingByConversation } = s.streamingByConversation
-        const updates: Partial<ChatState> = { conversations, streamingByConversation }
+        const { [id]: _pendingRemoved, ...pendingMessageIds } = s.pendingMessageIds
+        const updates: Partial<ChatState> = { conversations, streamingByConversation, pendingMessageIds }
         if (s.currentConversationId === id) {
           updates.currentConversationId = conversations.find((conversation) => !conversation.archived)?.id || null
           updates.messages = []
@@ -469,6 +508,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     set((s) => ({
       messages: [...s.messages, userMessage],
+      pendingMessageIds: {
+        ...s.pendingMessageIds,
+        [convId!]: [...new Set([...(s.pendingMessageIds[convId!] || []), userMessage.id])],
+      },
       inputText: '',
       quotedMessage: null,
       referenceImages: [],
@@ -481,7 +524,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }))
 
     try {
-      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined)
+      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined, userMessage.id)
     } catch (err) {
       console.error('Failed to send message:', err)
       set((s) => ({
@@ -506,6 +549,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...(s.streamingByConversation[currentConversationId] || createIdleStream()),
           isStreaming: false,
           goalConfirmation: undefined,
+          toolApproval: undefined,
           status: '已停止',
           lastActivityAt: Date.now(),
         },
@@ -527,6 +571,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
             ...stream,
             goalConfirmation: undefined,
             status: approved ? 'Starting Goal execution...' : 'Continuing in regular chat...',
+            lastActivityAt: Date.now(),
+          },
+        },
+      }
+    })
+  },
+
+  decideToolApproval: async (conversationId, approvalId, approved, rememberScope = 'once') => {
+    const accepted = await window.eva.chat.decideToolApproval(conversationId, approvalId, approved, rememberScope)
+    if (!accepted) return
+    set((state) => {
+      const stream = state.streamingByConversation[conversationId]
+      if (!stream || stream.toolApproval?.id !== approvalId) return state
+      return {
+        streamingByConversation: {
+          ...state.streamingByConversation,
+          [conversationId]: {
+            ...stream,
+            toolApproval: undefined,
+            status: approved ? 'Approved the tool call. Continuing…' : 'Denied the tool call.',
             lastActivityAt: Date.now(),
           },
         },
@@ -654,6 +718,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
 
+      case 'tool_approval_request': {
+        if (!event.toolApproval) break
+        set((s) => {
+          const existingStream = s.streamingByConversation[conversationId]
+          if (existingStream && !existingStream.isStreaming) return s
+          const stream = existingStream || createIdleStream()
+          return {
+            streamingByConversation: {
+              ...s.streamingByConversation,
+              [conversationId]: {
+                ...stream,
+                ...agentIdentity,
+                isStreaming: true,
+                toolApproval: event.toolApproval,
+                status: 'Waiting for you to approve a tool call…',
+                lastActivityAt: Date.now(),
+              },
+            },
+          }
+        })
+        break
+      }
+
       case 'reasoning_delta': {
         if (event.content) {
           set((s) => {
@@ -761,6 +848,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           && currentMessages.slice(matchingAssistantIndex + 1).some((message) => message.role === 'user')
         if (matchingAssistantIndex >= 0 && !hasUserAfterMatchingAssistant) {
           set((s) => ({
+            pendingMessageIds: Object.fromEntries(Object.entries(s.pendingMessageIds).filter(([id]) => id !== conversationId)),
             streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
           }))
           get().loadConversations()
@@ -784,6 +872,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
           set((s) => ({
             messages: s.currentConversationId === conversationId ? [...s.messages, assistantMessage] : s.messages,
+            pendingMessageIds: Object.fromEntries(Object.entries(s.pendingMessageIds).filter(([id]) => id !== conversationId)),
             streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
           }))
         } else {

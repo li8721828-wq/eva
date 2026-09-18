@@ -15,7 +15,12 @@
     "test": "vitest run",
     "verify:package-files": "node scripts/verify-package-files.mjs",
     "verify:ipc-boundary": "node scripts/check-ipc-boundary.mjs",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:rust": "napi build --platform --release --strip --cargo-cwd crates/eva-sandbox --js-package-name eva_sandbox --js index.cjs --dts index.d.ts native",
+    "build:rust:debug": "napi build --platform --cargo-cwd crates/eva-sandbox --js-package-name eva_sandbox --js index.cjs --dts index.d.ts native",
+    "test:rust": "cargo test --manifest-path crates/eva-sandbox/Cargo.toml",
+    "check:rust": "cargo check --manifest-path crates/eva-sandbox/Cargo.toml",
+    "clippy": "cargo clippy --manifest-path crates/eva-sandbox/Cargo.toml -- -D warnings"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
@@ -51,6 +56,7 @@
   "devDependencies": {
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@napi-rs/cli": "^2.18.4",
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
@@ -68,6 +74,9 @@
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "vitest": "^2.1.8"
+  },
+  "napi": {
+    "name": "eva_sandbox"
   },
   "build": {
     "appId": "com.eva.agent",

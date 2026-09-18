@@ -3,17 +3,19 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'streamdown/styles.css'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ProgressUpdate, ResponseTiming } from '../../../shared/types'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ExecutionTraceEntry, ProgressUpdate, ResponseTiming } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView, ToolCallView, getToolLabel } from './ToolCallView'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
 import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { normalizeChatMarkdown } from '@/lib/markdown-display'
+import { isFilePathLikeCodeSpan } from '@/lib/file-path-chip'
+import { FilePathChip } from './FilePathChip'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -161,7 +163,7 @@ function TimingSummary({ timing }: { timing: ResponseTiming }) {
     timing.contextBuildMs !== undefined ? `上下文 ${formatDuration(timing.contextBuildMs)}` : '',
     timing.timeToFirstResponseMs !== undefined ? `首响应 ${formatDuration(timing.timeToFirstResponseMs)}` : '',
     `模型 ${formatDuration(timing.modelDurationMs)}`,
-    timing.toolCalls.length > 0 ? `工具 ${formatDuration(timing.toolExecutionMs)} (${timing.toolCalls.length})` : '',
+    timing.toolCalls?.length ? `工具 ${formatDuration(timing.toolExecutionMs)} (${timing.toolCalls.length})` : '',
   ].filter(Boolean).join(' · ')
 
   return (
@@ -169,7 +171,7 @@ function TimingSummary({ timing }: { timing: ResponseTiming }) {
       <span>总耗时 {formatDuration(timing.totalMs)}</span>
       {timing.timeToFirstResponseMs !== undefined ? <span>首响应 {formatDuration(timing.timeToFirstResponseMs)}</span> : null}
       <span>模型 {formatDuration(timing.modelDurationMs)}</span>
-      {timing.toolCalls.length > 0 ? <span>工具 {formatDuration(timing.toolExecutionMs)} · {timing.toolCalls.length} 次</span> : null}
+      {timing.toolCalls?.length ? <span>工具 {formatDuration(timing.toolExecutionMs)} · {timing.toolCalls.length} 次</span> : null}
     </div>
   )
 }
@@ -219,13 +221,13 @@ function TimelineToolGroup({ entries }: { entries: ExecutionTimelineEntry[] }) {
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-zinc-700 transition-colors hover:bg-violet-50/70"
+        className="inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-zinc-700 transition-colors hover:bg-violet-50/70"
       >
         <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform', open && 'rotate-180')} />
         <Wrench className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
-        <span className="truncate">{singleLabel ? singleLabel.title : `执行工具 ${toolCalls.length} 次`}</span>
+        <span className="min-w-0 truncate">{singleLabel ? singleLabel.title : `执行工具 ${toolCalls.length} 次`}</span>
         {singleLabel?.detail && <span className="min-w-0 truncate text-xs font-normal text-zinc-500">{singleLabel.detail}</span>}
-        <span className="ml-auto shrink-0">
+        <span className="shrink-0">
           {isRunning
             ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
             : hasError
@@ -311,7 +313,36 @@ function ExecutionStatusIndicator() {
   )
 }
 
+function ExecutionTraceView({ entries, streaming = false }: { entries: ExecutionTraceEntry[]; streaming?: boolean }) {
+  const visibleEntries = entries.filter((entry) => entry.title.trim())
+  if (visibleEntries.length === 0) return null
+
+  return (
+    <section className="mb-3 border-l-2 border-violet-100 pl-3" aria-label="执行进度" aria-live={streaming ? 'polite' : undefined}>
+      <div className="space-y-1.5">
+        {visibleEntries.map((entry) => (
+          <div key={entry.id} className="flex min-w-0 items-start gap-2 text-xs leading-5">
+            {entry.status === 'active'
+              ? <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-violet-500" />
+              : entry.status === 'failed'
+                ? <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-500" />
+                : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />}
+            <span className={cn(
+              'min-w-0 flex-1',
+              entry.status === 'active' ? 'font-medium text-violet-600' : entry.status === 'failed' ? 'text-rose-600' : 'text-zinc-500',
+            )}>
+              {entry.title}
+              {entry.detail ? <span className="ml-2 text-zinc-400">{entry.detail}</span> : null}
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 type ProgressMarkdownOptions = {
+  conversationId?: string
   outputFormat: AgentOutputFormat
   outputStyle: AgentOutputStyle
   outputFont: AgentOutputFont
@@ -336,6 +367,7 @@ function ProgressUpdatesView({ updates, streaming = false, markdownOptions }: { 
           key={update.id}
           content={update.content}
           isStreaming={streaming}
+          conversationId={markdownOptions.conversationId}
           outputFormat={markdownOptions.outputFormat}
           outputStyle={markdownOptions.outputStyle}
           outputFont={markdownOptions.outputFont}
@@ -384,7 +416,7 @@ function StreamdownLink({ children, href, node: _node, ...props }: React.Compone
   return <a href={href} target="_blank" rel="noreferrer noopener" {...props}>{children}<ExternalLink aria-hidden="true" className="markdown-external-link" /></a>
 }
 
-const streamdownComponents = { a: StreamdownLink }
+const streamdownBaseComponents = { a: StreamdownLink }
 
 const StreamdownRenderer = React.lazy(async () => {
   const { Streamdown } = await import('streamdown')
@@ -398,9 +430,23 @@ function safeStreamdownUrl(url: string): string {
     : ''
 }
 
-export function MarkdownMessageContent({ content, className, isStreaming = false, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced' }: { content: string; className?: string; isStreaming?: boolean; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer }) {
+export function MarkdownMessageContent({ content, className, isStreaming = false, conversationId, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced' }: { content: string; className?: string; isStreaming?: boolean; conversationId?: string; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer }) {
   const markdownContent = normalizeChatMarkdown(content)
   const markdownClassName = cn('chat-message-markdown max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, isStreaming && 'chat-message-markdown--streaming', className)
+
+  // Path-like inline code becomes a clickable chip only once the reply is
+  // complete: mid-stream the backtick span is still being auto-closed, so
+  // chipping live text would flicker and mislabel partial tokens.
+  const streamdownComponents = useMemo(() => ({
+    ...streamdownBaseComponents,
+    inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<'code'> & { node?: unknown }) => {
+      const inlineText = markdownNodeText(children)
+      if (!isStreaming && isFilePathLikeCodeSpan(inlineText)) {
+        return <FilePathChip text={inlineText} conversationId={conversationId} />
+      }
+      return <code className="markdown-inline-code" {...props}>{children}</code>
+    },
+  }), [isStreaming, conversationId])
 
   // Streamdown is used for every live reply because it can animate only the
   // newly appended characters. Once complete, the user's chosen renderer
@@ -447,6 +493,10 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
           },
           code({ children, className: codeClassName, ...props }) {
             if (!codeClassName) {
+              const inlineText = markdownNodeText(children)
+              if (!isStreaming && isFilePathLikeCodeSpan(inlineText)) {
+                return <FilePathChip text={inlineText} conversationId={conversationId} />
+              }
               return <code className="markdown-inline-code" {...props}>{children}</code>
             }
             return <code className={codeClassName} {...props}>{children}</code>
@@ -627,14 +677,17 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             <ProgressUpdatesView
               updates={message.progressUpdates}
               streaming={isStreaming}
-              markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
+              markdownOptions={{ conversationId: message.conversationId, outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
             />
+          ) : null}
+          {processOutput !== 'off' && message.executionTrace?.length ? (
+            <ExecutionTraceView entries={message.executionTrace} streaming={isStreaming} />
           ) : null}
           {!message.executionTimeline?.length && shouldShowReasoning ? (
             <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />
           ) : null}
           {isStreaming && !message.content.trim() ? <ExecutionStatusIndicator key={message.id} /> : null}
-          <MarkdownMessageContent content={message.content} isStreaming={isStreaming} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
+          <MarkdownMessageContent content={message.content} isStreaming={isStreaming} conversationId={message.conversationId} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
           {message.executionTimeline?.length ? (
             <ExecutionTimelineView
               entries={message.executionTimeline}

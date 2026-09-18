@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process'
 import type { TerminalService } from '../tools'
+import { evaluateSandboxCommand, wrapCommandForSandbox, type SandboxContext } from './sandbox'
 
 interface TerminalSession {
   process: ChildProcess
@@ -51,9 +52,14 @@ interface PtySession {
 export class TerminalServiceImpl implements TerminalService {
   private ptySessions: Map<string, PtySession> = new Map()
   private fallbackSessions: Map<string, TerminalSession> = new Map()
+  private sandboxContext: SandboxContext | null = null
 
   private get usePty(): boolean {
     return nodePty !== null
+  }
+
+  setSandboxContext(context: SandboxContext | null): void {
+    this.sandboxContext = context
   }
 
   async createSession(id: string, cwd: string): Promise<void> {
@@ -63,7 +69,18 @@ export class TerminalServiceImpl implements TerminalService {
 
     if (this.usePty) {
       const shell = getShell()
-      const pty = nodePty!.spawn(shell.command, shell.args, {
+      let command = shell.command
+      let args = shell.args
+      // Wrap the shell process if a sandbox context is active.
+      if (this.sandboxContext && this.sandboxContext.level !== 'off') {
+        const wrapped = await wrapCommandForSandbox(command, args, {
+          ...this.sandboxContext,
+          workspacePath: this.sandboxContext.workspacePath || cwd,
+        })
+        command = wrapped.command
+        args = wrapped.args
+      }
+      const pty = nodePty!.spawn(command, args, {
         name: 'xterm-256color',
         cols: 120,
         rows: 30,
@@ -151,6 +168,16 @@ export class TerminalServiceImpl implements TerminalService {
     const session = this.ptySessions.get(sessionId)
     if (!session) throw new Error(`Terminal session ${sessionId} not found`)
 
+    // Sandbox command-line pre-check: deny catastrophic patterns before they
+    // ever reach the shell. The OS sandbox (if present) provides the real
+    // enforcement; this is the fast-path defense-in-depth.
+    if (this.sandboxContext) {
+      const decision = evaluateSandboxCommand(command, this.sandboxContext)
+      if (!decision.allowed) {
+        return { stdout: '', stderr: decision.reason, exitCode: 126 }
+      }
+    }
+
     const isWindows = process.platform === 'win32'
     const unixMarkerText = `EVA_CMD_DONE_${Date.now()}`
     const endMarker = isWindows ? POWERSHELL_PROMPT_MARKER : `\x1e${unixMarkerText}\x1e`
@@ -201,6 +228,14 @@ export class TerminalServiceImpl implements TerminalService {
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     const session = this.fallbackSessions.get(sessionId)
     if (!session) throw new Error(`Terminal session ${sessionId} not found`)
+
+    // Same sandbox pre-check for the fallback child_process path.
+    if (this.sandboxContext) {
+      const decision = evaluateSandboxCommand(command, this.sandboxContext)
+      if (!decision.allowed) {
+        return { stdout: '', stderr: decision.reason, exitCode: 126 }
+      }
+    }
 
     return new Promise((resolve, reject) => {
       const shell = getShell()

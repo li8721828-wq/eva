@@ -166,6 +166,22 @@ export class ConfigStore {
       if (isValid(stored[key])) continue
       this.store.set(key, DEFAULTS[key])
     }
+
+    // Migrate existing automation configs that lack newer sub-fields.
+    const automation = this.store.get('automation') as Partial<AutomationConfig> | undefined
+    if (automation) {
+      let mutated = false
+      let next: AutomationConfig | null = null
+      if (!('sandbox' in automation)) {
+        next = { ...(next ?? automation), sandbox: DEFAULT_AUTOMATION_CONFIG.sandbox } as AutomationConfig
+        mutated = true
+      }
+      if (!('mode' in automation)) {
+        next = { ...(next ?? automation), mode: DEFAULT_AUTOMATION_CONFIG.mode } as AutomationConfig
+        mutated = true
+      }
+      if (mutated && next) this.store.set('automation', next)
+    }
   }
 
   get<K extends keyof AppConfig>(key: K): AppConfig[K] {

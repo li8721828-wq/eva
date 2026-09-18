@@ -1,7 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
-import type { AgentRunEvent, AgentRunEventType } from '../../shared/types/runtime-run'
+import type { AgentRunEvent, AgentRunEventType, AgentRunRecoverySummary } from '../../shared/types/runtime-run'
 
 /** Durable append-only event journal for Agent run/turn/item lifecycles. */
 export class AgentRunEventStore {
@@ -28,6 +28,29 @@ export class AgentRunEventStore {
 
   async list(runId?: string, turnId?: string): Promise<AgentRunEvent[]> {
     return this.enqueue(() => this.read().filter((event) => (!runId || event.runId === runId) && (!turnId || event.turnId === turnId)))
+  }
+
+  async recoverySummary(runId: string): Promise<AgentRunRecoverySummary> {
+    return this.enqueue(() => {
+      const events = this.read().filter((event) => event.runId === runId)
+      const items = new Map<string, NonNullable<AgentRunEvent['item']>>()
+      let interrupted = false
+      for (const event of events) {
+        if (event.type === 'turn_interrupted') interrupted = true
+        if (!event.item) continue
+        if (event.item.status === 'started') items.set(event.item.id, event.item)
+        else items.delete(event.item.id)
+      }
+      const last = events.at(-1)
+      return {
+        runId,
+        lastTurnId: last?.turnId,
+        interrupted,
+        incompleteItems: Array.from(items.values()).map((item) => ({ id: item.id, kind: item.kind, name: item.name })),
+        lastEventType: last?.type,
+        generatedAt: Date.now(),
+      }
+    })
   }
 
   private read(): AgentRunEvent[] {

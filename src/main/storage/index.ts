@@ -18,6 +18,7 @@ import { ActivePlanStore } from './active-plan-store'
 import { McpServerStore } from './mcp-server-store'
 import { PersonalPreferenceStore } from './personal-preference-store'
 import { AgentRunEventStore } from './agent-run-event-store'
+import { ProjectKnowledgeStore } from './project-knowledge-store'
 
 export class StorageManager {
   config: ConfigStore
@@ -37,6 +38,7 @@ export class StorageManager {
   mcpServers: McpServerStore
   personalPreferences: PersonalPreferenceStore
   agentRunEvents: AgentRunEventStore
+  projectKnowledge: ProjectKnowledgeStore
 
   private userDataPath: string
 
@@ -61,6 +63,7 @@ export class StorageManager {
     this.mcpServers = new McpServerStore()
     this.personalPreferences = new PersonalPreferenceStore()
     this.agentRunEvents = new AgentRunEventStore(this.userDataPath)
+    this.projectKnowledge = new ProjectKnowledgeStore(this.userDataPath)
   }
 
   async initialize(): Promise<void> {

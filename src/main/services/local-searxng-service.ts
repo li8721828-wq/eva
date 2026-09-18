@@ -4,7 +4,8 @@ import fs from 'fs/promises'
 import path from 'path'
 import { randomBytes } from 'crypto'
 import { getStorage } from '../storage'
-import type { LocalSearxngStatus, SearchProviderConnectivity } from '../../shared/types/plugin'
+import { isKeylessSearchProviderPluginId, type LocalSearxngStatus, type SearchProviderConnectivity } from '../../shared/types/plugin'
+import { probeKeylessSearchProvider } from '../tools/web-tools'
 
 const LOCAL_ENDPOINT = 'http://127.0.0.1:8080'
 const SERVICE_DIRECTORY = 'eva-searxng'
@@ -100,6 +101,7 @@ export class LocalSearxngService {
   }
 
   async testSearchProvider(pluginId: string, settings: Record<string, unknown>): Promise<SearchProviderConnectivity> {
+    if (isKeylessSearchProviderPluginId(pluginId)) return probeKeylessSearchProvider(pluginId)
     if (pluginId === 'searxng-search') return this.testConnection(String(settings.endpoint || ''))
 
     if (pluginId !== 'tavily-search' && pluginId !== 'brave-search') {

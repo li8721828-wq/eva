@@ -6,6 +6,7 @@ describe('chat stream state', () => {
     useChatStore.setState({
       currentConversationId: 'foreground',
       messages: [],
+      pendingMessageIds: {},
       streamingByConversation: {},
       error: null,
     })
@@ -35,6 +36,70 @@ describe('chat stream state', () => {
     })
     expect(background.toolCalls).toHaveLength(1)
     expect(useChatStore.getState().streamingByConversation.foreground).toBeUndefined()
+  })
+
+  it('keeps a local user message when a stale conversation snapshot arrives', async () => {
+    let resolveLoad: ((value: unknown) => void) | undefined
+    const load = vi.fn(() => new Promise((resolve) => { resolveLoad = resolve }))
+    vi.stubGlobal('window', {
+      eva: {
+        conversation: { load },
+        task: { getSnapshot: vi.fn().mockResolvedValue(undefined) },
+      },
+    })
+
+    const selecting = useChatStore.getState().selectConversation('queued')
+    const localMessage = {
+      id: 'local-user',
+      conversationId: 'queued',
+      role: 'user' as const,
+      content: '这条消息不能消失',
+      timestamp: Date.now(),
+    }
+    useChatStore.setState({
+      messages: [localMessage],
+      pendingMessageIds: { queued: ['local-user'] },
+    })
+    resolveLoad?.({ conversation: { id: 'queued', executionStatus: 'running' }, messages: [] })
+    await selecting
+
+    expect(useChatStore.getState().messages).toEqual([localMessage])
+  })
+
+  it('does not duplicate an optimistic user message when the persisted snapshot uses the same id', async () => {
+    const load = vi.fn().mockResolvedValue({
+      conversation: { id: 'queued', executionStatus: 'running' },
+      messages: [{
+        id: 'local-user',
+        conversationId: 'queued',
+        role: 'user' as const,
+        content: '同一句话只显示一次',
+        timestamp: Date.now() + 1,
+      }],
+    })
+    vi.stubGlobal('window', {
+      eva: {
+        conversation: { load },
+        task: { getSnapshot: vi.fn().mockResolvedValue(undefined) },
+      },
+    })
+    const localMessage = {
+      id: 'local-user',
+      conversationId: 'queued',
+      role: 'user' as const,
+      content: '同一句话只显示一次',
+      timestamp: Date.now(),
+    }
+    useChatStore.setState({
+      currentConversationId: 'queued',
+      messages: [localMessage],
+      pendingMessageIds: { queued: ['local-user'] },
+    })
+
+    await useChatStore.getState().selectConversation('queued')
+
+    expect(useChatStore.getState().messages).toHaveLength(1)
+    expect(useChatStore.getState().messages[0].id).toBe('local-user')
   })
 
   it('clears provisional text when the runner starts tools', () => {
@@ -78,6 +143,22 @@ describe('chat stream state', () => {
       expect.objectContaining({ id: 'progress-2', content: 'Trying the corrected command.' }),
     ])
     expect(useChatStore.getState().messages).toEqual([])
+  })
+
+  it('persists execution summaries into the final assistant message', () => {
+    useChatStore.setState({ loadConversations: async () => {} })
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'execution_trace',
+      conversationId: 'foreground',
+      executionTrace: [{ id: 'trace-1', kind: 'activity', status: 'active', title: '正在定位相关文件', timestamp: Date.now() }],
+    })
+    store.appendStreamEvent({ type: 'done', conversationId: 'foreground', content: '已完成。' })
+
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      content: '已完成。',
+      executionTrace: [expect.objectContaining({ title: '正在定位相关文件' })],
+    })
   })
 
   it('keeps accumulated progress visible after response text begins streaming', () => {

@@ -1,0 +1,42 @@
+# eva-sandbox — OS-level sandbox primitives in Rust
+#
+# Phases:
+#   Phase 1 (this crate): Pure logic + sync probes.  FFI via napi-rs.
+#   Phase 2 (eva-agent-engine crate, future): Full agent-runner, tool execution, LLM providers.
+
+[package]
+name = "eva-sandbox"
+# version, edition, authors, license, repository inherited from workspace.package
+rust-version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "eva_sandbox"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+# --- FFI --------------------------------------------------------------------
+# `napi` is the runtime support crate.  `napi-derive` is the proc-macro
+# crate that provides the `#[napi]` attribute (used in src/napi.rs).
+# The runtime crate exposes features like `napi4` / `napi5` / `serde` /
+# `anyhow`; the `derive` feature lives on `napi-derive`, not here.
+napi = { version = "2", features = ["tokio_rt"] }
+napi-derive = "2"
+
+# --- Serialization -----------------------------------------------------------
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- Regex / lazy-static ----------------------------------------------------
+lazy_static = "1"
+regex = "1"
+
+# --- Logging -----------------------------------------------------------------
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Opt in to the workspace's lint configuration.  Without this section,
+# workspace-level lints defined in `[workspace.lints]` are NOT inherited.
+[lints]
+workspace = true

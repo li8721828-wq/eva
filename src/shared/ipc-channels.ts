@@ -34,6 +34,12 @@ export const IPC = {
   PROJECT_INDEX_BROWSE: 'project-index:browse',
   PROJECT_INDEX_REFRESH: 'project-index:refresh',
 
+  // Project-scoped engineering history
+  PROJECT_KNOWLEDGE_LIST: 'project-knowledge:list',
+  PROJECT_KNOWLEDGE_SEARCH: 'project-knowledge:search',
+  PROJECT_KNOWLEDGE_UPDATE: 'project-knowledge:update',
+  PROJECT_KNOWLEDGE_DELETE: 'project-knowledge:delete',
+
   // Per-conversation Git worktrees
   GIT_STATUS: 'git:status',
   GIT_SWITCH_BRANCH: 'git:switch-branch',
@@ -86,6 +92,7 @@ export const IPC = {
   CHAT_STREAM: 'chat:stream',
   CHAT_ABORT: 'chat:abort',
   CHAT_GOAL_CONFIRMATION_DECIDE: 'chat:goal-confirmation-decide',
+  CHAT_TOOL_APPROVAL_DECIDE: 'chat:tool-approval:decide',
 
   // Shared multi-agent discussion
   SYMPOSIUM_START: 'symposium:start',
@@ -173,4 +180,13 @@ export const IPC = {
   QQ_REMOTE_GET_STATUS: 'qq-remote:get-status',
   QQ_REMOTE_CONNECT: 'qq-remote:connect',
   QQ_REMOTE_DISCONNECT: 'qq-remote:disconnect',
+
+  // App-Server (loopback JSON-RPC + SSE)
+  APP_SERVER_GET_STATUS: 'app-server:get-status',
+  APP_SERVER_START: 'app-server:start',
+  APP_SERVER_STOP: 'app-server:stop',
+
+  // Sandbox (OS-level isolation layer)
+  SANDBOX_GET_STATUS: 'sandbox:get-status',
+  SANDBOX_SET_LEVEL: 'sandbox:set-level',
 } as const

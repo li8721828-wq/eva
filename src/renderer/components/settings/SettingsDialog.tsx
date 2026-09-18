@@ -44,6 +44,7 @@ import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { McpPanel } from './McpPanel'
 import { PersonalPreferencePanel } from './PersonalPreferencePanel'
+import { AppServerPanel } from './AppServerPanel'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
 import { ModelPoolPanel } from './ModelPoolPanel'
@@ -613,6 +614,7 @@ export function SettingsDialog() {
           <TabsTrigger value="mcp">MCP</TabsTrigger>
           <TabsTrigger value="preferences">偏好</TabsTrigger>
           <TabsTrigger value="qq">{copy.qq}</TabsTrigger>
+          <TabsTrigger value="app-server">App Server</TabsTrigger>
           <TabsTrigger value="about">{copy.about}</TabsTrigger>
         </TabsList>
 
@@ -1031,6 +1033,7 @@ export function SettingsDialog() {
           <RuntimeIntrospectionPanel />
         </TabsContent>
 
+
         <TabsContent value="automation" className="settings-dialog__content">
           <section className="mx-auto w-full max-w-6xl">
             <div className="mb-6">
@@ -1070,6 +1073,64 @@ export function SettingsDialog() {
                 )
               })}
             </div>
+
+            {/* Sandbox */}
+            <section className="mt-6 rounded-xl border border-zinc-200/90 bg-white/85 p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-zinc-900">{automationCopy.sandbox.title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-zinc-600">{automationCopy.sandbox.description}</p>
+                </div>
+                <select
+                  className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                  value={automation.sandbox.level}
+                  onChange={(event) => {
+                    const next = { ...automation, sandbox: { ...automation.sandbox, level: event.target.value as 'off' | 'permissive' | 'strict' } }
+                    setAutomation(next)
+                    void window.eva.config.set('automation', next).then(() => window.eva.sandbox.setLevel(event.target.value as 'off' | 'permissive' | 'strict'))
+                  }}
+                >
+                  <option value="off">{automationCopy.sandbox.off}</option>
+                  <option value="permissive">{automationCopy.sandbox.permissive}</option>
+                  <option value="strict">{automationCopy.sandbox.strict}</option>
+                </select>
+              </div>
+
+              {automation.sandbox.level !== 'off' && (
+                <dl className="mt-4 grid gap-3 border-t border-zinc-100 pt-4 text-xs leading-5 text-zinc-500">
+                  <div>
+                    <dt className="font-medium text-zinc-700">{automationCopy.sandbox.currentLevel}</dt>
+                    <dd className="mt-0.5">{automation.sandbox.level}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium text-zinc-700">{automationCopy.sandbox.networkAccess}</dt>
+                    <dd className="mt-0.5">
+                      <label className="inline-flex cursor-pointer items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={automation.sandbox.allowNetwork}
+                          onChange={(event) => {
+                            const next = { ...automation, sandbox: { ...automation.sandbox, allowNetwork: event.target.checked } }
+                            setAutomation(next)
+                            void window.eva.config.set('automation', next)
+                          }}
+                          className="h-3.5 w-3.5 accent-violet-600"
+                        />
+                        {automation.sandbox.allowNetwork ? automationCopy.sandbox.networkAllowed : automationCopy.sandbox.networkBlocked}
+                      </label>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium text-zinc-700">{automationCopy.sandbox.note}</dt>
+                    <dd className="mt-0.5">
+                      {automation.sandbox.level === 'permissive'
+                        ? automationCopy.sandbox.notePermissive
+                        : automationCopy.sandbox.noteStrict}
+                    </dd>
+                  </div>
+                </dl>
+              )}
+            </section>
           </section>
         </TabsContent>
 
@@ -1219,6 +1280,10 @@ export function SettingsDialog() {
               </div>
             )}
           </div>
+        </TabsContent>
+
+        <TabsContent value="app-server" className="settings-dialog__content">
+          <AppServerPanel />
         </TabsContent>
 
         <TabsContent value="about" className="settings-dialog__content">

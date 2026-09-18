@@ -78,13 +78,18 @@ export class ConversationStore {
    * Write via a unique temp file plus rename so a crash mid-write leaves the
    * previous version intact instead of a truncated JSON file that readers
    * would treat as "missing".
+   *
+   * On Windows, antivirus or search indexers briefly lock the destination
+   * after each write, which makes the rename fail with EPERM. We retry a few
+   * times with a tiny backoff before giving up so a transient lock does not
+   * corrupt the durable record.
    */
   private writeJsonAtomic(filePath: string, data: unknown): void {
     this.ensureDir(path.dirname(filePath))
     const tmpPath = `${filePath}.${uuidv4()}.tmp`
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
     try {
-      fs.renameSync(tmpPath, filePath)
+      this.renameWithRetry(tmpPath, filePath)
     } catch (error) {
       try {
         fs.rmSync(tmpPath, { force: true })
@@ -93,6 +98,27 @@ export class ConversationStore {
       }
       throw error
     }
+  }
+
+  private renameWithRetry(src: string, dest: string): void {
+    const maxAttempts = 5
+    let lastError: unknown
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        fs.renameSync(src, dest)
+        return
+      } catch (error) {
+        lastError = error
+        const code = (error as NodeJS.ErrnoException)?.code
+        const retriable = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
+        if (!retriable || attempt === maxAttempts) break
+        // Brief synchronous sleep so a Defender/Indexing handle can release.
+        const sleepMs = 10 * attempt
+        const until = Date.now() + sleepMs
+        while (Date.now() < until) { /* spin */ }
+      }
+    }
+    throw lastError
   }
 
   /** Serialize writes to avoid concurrent corruption */

@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { cn } from '@/lib/utils'
-import { isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type LocalSearxngStatus, type MarketplacePluginView, type PluginConfigField, type SearchProviderConnectivity } from '../../../shared/types/plugin'
+import { isKeylessSearchProviderPluginId, isSearchProviderPluginId, PLUGIN_CATEGORIES, PLUGIN_PERMISSIONS, type InstalledPlugin, type LocalSearxngStatus, type MarketplacePluginView, type PluginConfigField, type SearchProviderConnectivity } from '../../../shared/types/plugin'
 
 function PermissionPills({ plugin }: { plugin: Pick<InstalledPlugin, 'permissions'> }) {
   return (
@@ -101,6 +101,19 @@ export function PluginCenter() {
       setNotice({ kind: 'success', message: `${plugin.name} was removed from Eva.` })
     } catch (error) {
       setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to remove plugin.' })
+    } finally {
+      setWorkingId(null)
+    }
+  }
+
+  const runLiveSearchTest = async (plugin: InstalledPlugin) => {
+    setWorkingId(plugin.id)
+    setNotice(null)
+    try {
+      const result = await window.eva.plugins.testConnection(plugin.id, {})
+      setNotice({ kind: result.apiValid ? 'success' : 'error', message: `${plugin.name}: ${result.message}` })
+    } catch (error) {
+      setNotice({ kind: 'error', message: error instanceof Error ? error.message : 'Unable to run the test search.' })
     } finally {
       setWorkingId(null)
     }
@@ -277,6 +290,11 @@ export function PluginCenter() {
                     <div className="mt-3"><PermissionPills plugin={plugin} /></div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
+                    {isKeylessSearchProviderPluginId(plugin.id) ? (
+                      <Button variant="ghost" size="icon" onClick={() => void runLiveSearchTest(plugin)} disabled={workingId !== null} title="Run one live test search" aria-label={`Test ${plugin.name}`}>
+                        {workingId === plugin.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-zinc-500" />}
+                      </Button>
+                    ) : null}
                     {plugin.configuration?.length ? (
                       <Button variant="ghost" size="icon" onClick={() => openConfiguration(plugin)} disabled={workingId !== null} title="Configure plugin" aria-label={`Configure ${plugin.name}`}>
                         <Settings2 className="h-4 w-4 text-zinc-500" />
@@ -376,7 +394,7 @@ export function PluginCenter() {
         </TabsContent>
 
         <TabsContent value="marketplace" className="settings-dialog__plugin-tab-content">
-          <div className="settings-dialog__plugin-marketplace-note"><ShieldCheck className="h-4 w-4 text-violet-600" /> Curated entries are verified by Eva Labs. Search providers are alternatives: one enabled provider becomes the backend for the Web search Agent tool.</div>
+          <div className="settings-dialog__plugin-marketplace-note"><ShieldCheck className="h-4 w-4 text-violet-600" /> Curated entries are verified by Eva Labs. One enabled provider answers the Web search Agent tool, and any installed keyless provider is tried automatically when it is unreachable, out of quota, or returns nothing.</div>
           <div className="settings-dialog__plugin-marketplace-grid">
             {marketplace.map((plugin) => {
               const installedPlugin = plugin.installedPlugin

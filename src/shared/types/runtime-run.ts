@@ -26,6 +26,7 @@ export interface RuntimeRunPayload {
   }
   messageId?: string
   idempotencyKey?: string
+  recoverySummary?: AgentRunRecoverySummary
 }
 
 /**
@@ -74,4 +75,13 @@ export interface AgentRunEvent {
     error?: string
   }
   metadata?: Record<string, string | number | boolean | null>
+}
+
+export interface AgentRunRecoverySummary {
+  runId: string
+  lastTurnId?: string
+  interrupted: boolean
+  incompleteItems: Array<{ id: string; kind: 'model_call' | 'tool_call' | 'approval' | 'assistant_output' | 'system'; name?: string }>
+  lastEventType?: AgentRunEventType
+  generatedAt: number
 }

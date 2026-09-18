@@ -19,4 +19,16 @@ describe('AgentRunEventStore', () => {
       await fs.rm(dir, { recursive: true, force: true })
     }
   })
+
+  it('summarizes interrupted items without replaying their arguments', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-run-events-recovery-'))
+    try {
+      const store = new AgentRunEventStore(dir)
+      await store.appendLifecycle('run-a', 'turn-1', 'tool_started', { id: 'item-1', kind: 'tool_call', status: 'started', name: 'execute_command' })
+      await store.appendLifecycle('run-a', 'turn-1', 'turn_interrupted', { id: 'stop', kind: 'system', status: 'cancelled' })
+      const summary = await store.recoverySummary('run-a')
+      expect(summary.interrupted).toBe(true)
+      expect(summary.incompleteItems).toEqual([{ id: 'item-1', kind: 'tool_call', name: 'execute_command' }])
+    } finally { await fs.rm(dir, { recursive: true, force: true }) }
+  })
 })

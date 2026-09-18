@@ -14,6 +14,9 @@ import { registerRequirementEngineeringHandlers } from './requirement-engineerin
 import type { ApplicationServices } from '../services/application-services'
 import { registerMcpHandlers } from './mcp'
 import { registerPersonalPreferenceHandlers } from './personal-preferences'
+import { registerAppServerHandlers } from './app-server'
+import { registerSandboxHandlers } from './sandbox'
+import { registerProjectKnowledgeHandlers } from './project-knowledge'
 
 export type Services = ApplicationServices
 
@@ -52,4 +55,7 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerCostHandlers()
   registerTaskHandlers(taskServices)
   registerSystemHandlers(services?.fileService, services?.terminalService, services?.providerRegistry)
+  if (services) registerAppServerHandlers(services)
+  registerSandboxHandlers()
+  registerProjectKnowledgeHandlers()
 }

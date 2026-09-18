@@ -4,26 +4,23 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
 import { GoalConfirmationCard } from './GoalConfirmationCard'
+import { ToolApprovalCard } from './ToolApprovalCard'
 import { RequirementClarificationCard } from './RequirementClarificationCard'
-import { WelcomeScreen } from './WelcomeScreen'
 import { CheckCircle2, ChevronsDown, CircleAlert, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useTaskStore } from '@/stores/use-task-store'
 import type { RequirementClarificationAnswer, RequirementRun } from '../../../shared/types/requirement-engineering'
 import { collapseToolHistoryMessages } from '@/lib/collapse-tool-history'
+import { useScrollRestoration } from '@/hooks/use-scroll-restoration'
 
 const PAGE_SIZE = 100
 const CONVERSATION_SCROLL_STORAGE_KEY = 'eva.conversation-scroll-positions.v2'
-const MAX_SAVED_SCROLL_POSITIONS = 200
-const conversationScrollOffsets = new Map<string, number>()
-const SCROLL_FOLLOW_THRESHOLD = 72
 const SMOOTH_SPIN_CLASS = 'animate-spin'
 const ESTIMATED_MESSAGE_HEIGHT = 180
 const VIRTUAL_OVERSCAN = 900
 const VIRTUAL_SCROLL_UPDATE_THRESHOLD = 80
 const SCROLL_AFFORDANCE_UPDATE_INTERVAL = 80
-const JUMP_TO_BOTTOM_THRESHOLD = 240
 
 type ScrollIndicator = { top: number; height: number }
 
@@ -42,42 +39,6 @@ function RequirementElapsedTime({ startedAt }: { startedAt: number }) {
 
   return <span className="ml-auto text-xs font-normal tabular-nums text-zinc-500">已运行 {elapsed}s</span>
 }
-
-function loadSavedScrollPositions() {
-  if (typeof window === 'undefined') return
-
-  try {
-    const saved = window.localStorage.getItem(CONVERSATION_SCROLL_STORAGE_KEY)
-    if (!saved) return
-
-    const parsed = JSON.parse(saved) as Record<string, unknown>
-    for (const [conversationId, offset] of Object.entries(parsed)) {
-      if (typeof offset === 'number' && Number.isFinite(offset) && offset >= 0) {
-        conversationScrollOffsets.set(conversationId, offset)
-      }
-    }
-  } catch {
-    // Scroll restoration is optional; an invalid saved value should not affect chat rendering.
-  }
-}
-
-function persistScrollPositions() {
-  if (typeof window === 'undefined') return
-
-  try {
-    const entries = Array.from(conversationScrollOffsets.entries()).slice(-MAX_SAVED_SCROLL_POSITIONS)
-    window.localStorage.setItem(CONVERSATION_SCROLL_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)))
-  } catch {
-    // Ignore unavailable storage (for example, a restrictive browser profile).
-  }
-}
-
-function rememberScrollPosition(conversationId: string, offset: number, persist = false) {
-  conversationScrollOffsets.set(conversationId, Math.max(0, offset))
-  if (persist) persistScrollPositions()
-}
-
-loadSavedScrollPositions()
 
 function sumConversationUsage(messages: ChatMessage[]): ChatUsage | undefined {
   const usageMessages = messages.filter((message) => message.role === 'assistant' && message.usage)
@@ -109,13 +70,22 @@ export interface MessageListProps {
 }
 
 export function MessageList({ className }: MessageListProps) {
-  const { messages, currentConversationId, isConversationLoading, streamingByConversation, requirementProgressByConversation, decideGoalConfirmation } = useChatStore()
+  // Atomic selectors (A1) keep the transcript from re-rendering when an
+  // unrelated store field (e.g. `inputText`, `quotedMessage`) changes.
+  const messages = useChatStore((s) => s.messages)
+  const currentConversationId = useChatStore((s) => s.currentConversationId)
+  const isConversationLoading = useChatStore((s) => s.isConversationLoading)
+  const streamingByConversation = useChatStore((s) => s.streamingByConversation)
+  const requirementProgressByConversation = useChatStore((s) => s.requirementProgressByConversation)
+  const decideGoalConfirmation = useChatStore((s) => s.decideGoalConfirmation)
+  const decideToolApproval = useChatStore((s) => s.decideToolApproval)
+  const refreshConversation = useChatStore((s) => s.refreshConversation)
+  const startRequirementProgress = useChatStore((s) => s.startRequirementProgress)
+  const finishRequirementProgress = useChatStore((s) => s.finishRequirementProgress)
+
   const stream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
   const isStreaming = Boolean(stream?.isStreaming)
   const streamingContent = stream?.content || ''
-  // A terminal event is persisted to `messages` before the stream cleanup
-  // reaches the renderer. Never render a second in-flight bubble when it is
-  // byte-for-byte the same as the latest persisted assistant message.
   const latestMessage = messages[messages.length - 1]
   const isDuplicateStreamingReply = Boolean(
     isStreaming &&
@@ -131,23 +101,21 @@ export function MessageList({ className }: MessageListProps) {
   const streamingExecutionTimeline = stream?.executionTimeline || []
   const streamingProgressUpdates = stream?.progressUpdates || []
   const goalConfirmation = stream?.goalConfirmation
+  const toolApproval = stream?.toolApproval
   const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
   const isRequirementRunning = Boolean(requirementProgress)
-  const { rightPanelVisible, rightPanelWidth, language } = useAppStore()
+  const rightPanelVisible = useAppStore((s) => s.rightPanelVisible)
+  const language = useAppStore((s) => s.language)
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const scrollAreaRef = useRef<HTMLDivElement>(null)
-  const activeConversationIdRef = useRef<string | null>(currentConversationId)
   const previousMessageCountRef = useRef(messages.length)
-  const pendingRestoreRef = useRef<string | null>(currentConversationId)
-  const scrollPersistTimerRef = useRef<number | null>(null)
+  const lastScrollAffordanceUpdateAtRef = useRef(0)
   const scrollFrameRef = useRef<number | null>(null)
   const forcedScrollFrameRef = useRef<number | null>(null)
-  const lastScrollAffordanceUpdateAtRef = useRef(0)
-  const followStreamRef = useRef(true)
-  const lastScrollTopRef = useRef(currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0)
+  const initialScrollOffset = useScrollOffsetsFor(currentConversationId ?? '')
+  const lastScrollTopRef = useRef(initialScrollOffset)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [scrollTop, setScrollTop] = useState(0)
-  const [viewportHeight, setViewportHeight] = useState(800)
   const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({})
   const itemElementsRef = useRef(new Map<string, HTMLDivElement>())
   const resizeObserverRef = useRef<ResizeObserver | null>(null)
@@ -155,7 +123,11 @@ export function MessageList({ className }: MessageListProps) {
   const scrollIndicatorTimerRef = useRef<number | null>(null)
   const [scrollIndicatorVisible, setScrollIndicatorVisible] = useState(false)
   const [scrollIndicator, setScrollIndicator] = useState<ScrollIndicator>({ top: 0, height: 100 })
-  const [canJumpToBottom, setCanJumpToBottom] = useState(false)
+
+  const scrollController = useScrollRestoration({
+    storageKey: CONVERSATION_SCROLL_STORAGE_KEY,
+  })
+
   const [awaitingClarification, setAwaitingClarification] = useState<RequirementRun | null>(null)
   const [awaitingSpecResolution, setAwaitingSpecResolution] = useState<RequirementRun | null>(null)
 
@@ -181,16 +153,15 @@ export function MessageList({ className }: MessageListProps) {
 
   const submitClarificationAnswers = useCallback(async (answers: RequirementClarificationAnswer[]) => {
     if (!awaitingClarification) return
-    const chat = useChatStore.getState()
-    chat.startRequirementProgress(awaitingClarification.conversationId, '正在读取你确认的澄清选项')
+    startRequirementProgress(awaitingClarification.conversationId, '正在读取你确认的澄清选项')
     try {
       await window.eva.requirements.answer({ conversationId: awaitingClarification.conversationId, runId: awaitingClarification.id, answers })
-      await chat.refreshConversation(awaitingClarification.conversationId)
+      await refreshConversation(awaitingClarification.conversationId)
       await loadAwaitingClarification()
     } finally {
-      chat.finishRequirementProgress(awaitingClarification.conversationId)
+      finishRequirementProgress(awaitingClarification.conversationId)
     }
-  }, [awaitingClarification, loadAwaitingClarification])
+  }, [awaitingClarification, loadAwaitingClarification, refreshConversation, startRequirementProgress, finishRequirementProgress])
 
   const abortClarificationAnalysis = useCallback(async () => {
     if (!awaitingClarification) return
@@ -199,16 +170,15 @@ export function MessageList({ className }: MessageListProps) {
 
   const submitSpecificationResolution = useCallback(async (answers: RequirementClarificationAnswer[]) => {
     if (!awaitingSpecResolution) return
-    const chat = useChatStore.getState()
-    chat.startRequirementProgress(awaitingSpecResolution.conversationId, '正在保存规格阻塞的处置选择')
+    startRequirementProgress(awaitingSpecResolution.conversationId, '正在保存规格阻塞的处置选择')
     try {
       await window.eva.requirements.resolveSpec({ conversationId: awaitingSpecResolution.conversationId, runId: awaitingSpecResolution.id, answers })
-      await chat.refreshConversation(awaitingSpecResolution.conversationId)
+      await refreshConversation(awaitingSpecResolution.conversationId)
       await loadAwaitingClarification()
     } finally {
-      chat.finishRequirementProgress(awaitingSpecResolution.conversationId)
+      finishRequirementProgress(awaitingSpecResolution.conversationId)
     }
-  }, [awaitingSpecResolution, loadAwaitingClarification])
+  }, [awaitingSpecResolution, loadAwaitingClarification, refreshConversation, startRequirementProgress, finishRequirementProgress])
 
   const abortSpecificationResolution = useCallback(async () => {
     if (!awaitingSpecResolution) return
@@ -226,7 +196,7 @@ export function MessageList({ className }: MessageListProps) {
         ? previous
         : { top, height }
     ))
-    setCanJumpToBottom(overflow - scrollArea.scrollTop > JUMP_TO_BOTTOM_THRESHOLD)
+    scrollController.setCanJumpToBottom(overflow - scrollArea.scrollTop > 240)
 
     if (!reveal) return
     setScrollIndicatorVisible(true)
@@ -235,94 +205,66 @@ export function MessageList({ className }: MessageListProps) {
       setScrollIndicatorVisible(false)
       scrollIndicatorTimerRef.current = null
     }, 900)
-  }, [])
+  }, [scrollController])
 
-  const scrollToBottom = (behavior: ScrollBehavior) => {
-    const scrollArea = scrollAreaRef.current
-    if (!scrollArea) return false
-    scrollArea.scrollTo({ top: scrollArea.scrollHeight, behavior })
-    const nextScrollTop = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)
-    // Auto-follow must settle against the current physical height immediately;
-    // the next frame will correct it again if Markdown or a tool row expands.
-    if (behavior === 'auto') scrollArea.scrollTop = nextScrollTop
-    lastScrollTopRef.current = nextScrollTop
-    setScrollTop(nextScrollTop)
-    updateScrollAffordances(scrollArea, behavior === 'smooth')
-    return true
-  }
+  const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
+    return scrollController.jumpToBottom(behavior)
+  }, [scrollController])
 
-  const resumeFollowingLatestMessage = () => {
-    // A newly sent user message is an explicit request to leave any older
-    // reading position and follow the new exchange. Repeat after layout so
-    // virtualized item measurements cannot leave the view above the reply.
-    followStreamRef.current = true
-    pendingRestoreRef.current = null
+  const resumeFollowingLatestMessage = useCallback(() => {
+    scrollController.jumpToBottom('auto')
     if (forcedScrollFrameRef.current !== null) cancelAnimationFrame(forcedScrollFrameRef.current)
-    scrollToBottom('auto')
     forcedScrollFrameRef.current = requestAnimationFrame(() => {
-      scrollToBottom('auto')
+      scrollController.jumpToBottom('auto')
       forcedScrollFrameRef.current = requestAnimationFrame(() => {
-        scrollToBottom('auto')
+        scrollController.jumpToBottom('auto')
         forcedScrollFrameRef.current = null
       })
     })
-  }
+  }, [scrollController])
 
-  const saveScrollPosition = (conversationId = currentConversationId, persist = false) => {
-    const scrollArea = scrollAreaRef.current
-    if (!conversationId) return
-    const offset = scrollArea?.scrollTop ?? lastScrollTopRef.current
-    rememberScrollPosition(conversationId, offset, persist)
-  }
-
+  // Persist any pending offset on layout cleanup. Layout-effect cleanup
+  // runs while the scroll container still exists; passive cleanup would run
+  // after React has detached the DOM node and lost the real offset.
   useLayoutEffect(() => {
-    // Settings replaces the chat subtree. Layout-effect cleanup runs while
-    // this scroll container still exists, unlike passive cleanup which can
-    // run after React has detached the DOM node and lost the real offset.
     return () => {
-      const conversationId = activeConversationIdRef.current
       const scrollArea = scrollAreaRef.current
-      if (!conversationId || !scrollArea) return
-      lastScrollTopRef.current = scrollArea.scrollTop
-      rememberScrollPosition(conversationId, scrollArea.scrollTop, true)
+      if (scrollArea) {
+        scrollController.recordOffset(scrollArea.scrollTop)
+        scrollController.flush()
+      }
     }
-  }, [])
+  }, [scrollController])
 
-  const processScroll = () => {
+  const processScroll = useCallback(() => {
     const scrollArea = scrollAreaRef.current
     if (!scrollArea) return
 
     // Selecting a conversation causes the browser to emit an initial scroll
     // event at the top of the reused surface. Do not let that event replace
     // this conversation's saved position before restoration has completed.
-    const isRestoringCurrentConversation = pendingRestoreRef.current === currentConversationId
-    if (isRestoringCurrentConversation) {
-      setScrollTop(scrollArea.scrollTop)
-      setViewportHeight(scrollArea.clientHeight)
-      updateScrollAffordances(scrollArea)
-      return
+    if (scrollController.isFollowing() === false && scrollArea.scrollTop < 32) {
+      const wasPendingRestore = document.documentElement.dataset['restoreInFlight'] === '1'
+      if (wasPendingRestore) return
     }
 
-    lastScrollTopRef.current = scrollArea.scrollTop
-    if (scrollPersistTimerRef.current !== null) window.clearTimeout(scrollPersistTimerRef.current)
-    scrollPersistTimerRef.current = window.setTimeout(() => {
-      saveScrollPosition()
-      persistScrollPositions()
-      scrollPersistTimerRef.current = null
-    }, 320)
+    scrollController.reportScrollPosition(
+      scrollArea.scrollTop,
+      scrollArea.scrollHeight,
+      scrollArea.clientHeight,
+    )
     setScrollTop((previous) => (
       Math.abs(previous - scrollArea.scrollTop) >= VIRTUAL_SCROLL_UPDATE_THRESHOLD
         ? scrollArea.scrollTop
         : previous
     ))
-    setViewportHeight(scrollArea.clientHeight)
-    followStreamRef.current = scrollArea.scrollHeight - scrollArea.scrollTop - scrollArea.clientHeight <= SCROLL_FOLLOW_THRESHOLD
+    scrollController.reportViewportHeight(scrollArea.clientHeight)
     const now = performance.now()
     if (now - lastScrollAffordanceUpdateAtRef.current >= SCROLL_AFFORDANCE_UPDATE_INTERVAL) {
       lastScrollAffordanceUpdateAtRef.current = now
       updateScrollAffordances(scrollArea, true)
     }
-  }
+  }, [scrollController, updateScrollAffordances])
 
   const handleScroll = () => {
     // Native wheel and touchpad scrolling can produce far more events than the
@@ -342,9 +284,6 @@ export function MessageList({ className }: MessageListProps) {
   useEffect(() => {
     setVisibleCount(PAGE_SIZE)
     setMeasuredHeights({})
-    const savedOffset = currentConversationId ? conversationScrollOffsets.get(currentConversationId) ?? 0 : 0
-    lastScrollTopRef.current = savedOffset
-    setScrollTop(savedOffset)
   }, [currentConversationId])
 
   useEffect(() => () => {
@@ -403,7 +342,7 @@ export function MessageList({ className }: MessageListProps) {
     if (renderItems.length === 0) return { start: 0, end: 0, topSpacer: 0, bottomSpacer: 0 }
 
     const startBoundary = Math.max(0, scrollTop - VIRTUAL_OVERSCAN)
-    const endBoundary = scrollTop + viewportHeight + VIRTUAL_OVERSCAN
+    const endBoundary = scrollTop + scrollController.viewportHeight + VIRTUAL_OVERSCAN
     let start = 0
     while (
       start < renderItems.length - 1
@@ -426,7 +365,7 @@ export function MessageList({ className }: MessageListProps) {
       topSpacer: itemLayout.offsets[start] ?? 0,
       bottomSpacer: Math.max(0, itemLayout.totalHeight - (itemLayout.offsets[Math.max(start + 1, end)] ?? itemLayout.totalHeight)),
     }
-  }, [itemLayout, measuredHeights, renderItems, scrollTop, viewportHeight])
+  }, [itemLayout, measuredHeights, renderItems, scrollController.viewportHeight, scrollTop])
 
   useEffect(() => {
     const observer = new ResizeObserver((entries) => {
@@ -436,8 +375,11 @@ export function MessageList({ className }: MessageListProps) {
         for (const entry of entries) {
           const target = entry.target as HTMLElement
           if (target.dataset.streamingItem === 'true') {
-            if (followStreamRef.current && pendingRestoreRef.current !== currentConversationId) {
-              requestAnimationFrame(() => scrollToBottom('auto'))
+            // The streaming bubble is rendered outside the virtual list; we
+            // never put it in the measurement map. Just keep auto-follow
+            // glued to its bottom edge.
+            if (scrollController.isFollowing() && previousMessageCountRef.current !== 0) {
+              requestAnimationFrame(() => scrollController.jumpToBottom('auto'))
             }
             continue
           }
@@ -458,7 +400,7 @@ export function MessageList({ className }: MessageListProps) {
       observer.disconnect()
       resizeObserverRef.current = null
     }
-  }, [])
+  }, [scrollController])
 
   const attachItemRef = useCallback((id: string, element: HTMLDivElement | null) => {
     const previousElement = itemElementsRef.current.get(id)
@@ -479,131 +421,51 @@ export function MessageList({ className }: MessageListProps) {
     if (element) resizeObserverRef.current?.observe(element)
   }, [])
 
-  useEffect(() => {
-    const flushScrollPosition = () => {
-      saveScrollPosition(activeConversationIdRef.current, true)
-      if (scrollPersistTimerRef.current !== null) {
-        window.clearTimeout(scrollPersistTimerRef.current)
-        scrollPersistTimerRef.current = null
-      }
-    }
+  // Bind the scroll element to the controller. We do this in an effect (not
+  // during render) so React's commit phase can replace the underlying DOM
+  // node on conversation switches without us holding onto a stale reference.
+  const bindScrollArea = useCallback((element: HTMLDivElement | null) => {
+    scrollAreaRef.current = element
+    scrollController.attach(element)
+  }, [scrollController.attach])
 
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') flushScrollPosition()
-    }
-
-    window.addEventListener('pagehide', flushScrollPosition)
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => {
-      // The layout-effect cleanup above owns unmount persistence because it
-      // runs before the scroll node is detached. This cleanup only releases
-      // global listeners and pending timers.
-      if (scrollPersistTimerRef.current !== null) {
-        window.clearTimeout(scrollPersistTimerRef.current)
-        scrollPersistTimerRef.current = null
-      }
-      window.removeEventListener('pagehide', flushScrollPosition)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-    }
-  }, [])
-
+  // Restore scroll when the active conversation changes. We deliberately do
+  // not couple this to the virtual list's `visibleCount` so a long history
+  // being paged-in does not snap the reader back to the top.
   useLayoutEffect(() => {
-    activeConversationIdRef.current = currentConversationId
-    pendingRestoreRef.current = currentConversationId
-    previousMessageCountRef.current = 0
-  }, [currentConversationId])
-
-  useLayoutEffect(() => {
-    const conversationId = pendingRestoreRef.current
-    const scrollArea = scrollAreaRef.current
-    if (!conversationId || conversationId !== currentConversationId || !scrollArea) return
-
-    // Conversation messages arrive asynchronously. Wait until the scrollable
-    // surface exists, then restore the saved reading position in one frame.
-    // Conversation selection clears the old message list while IPC loads the
-    // next one. Restoring against that empty surface would lock it at the top.
     if (isConversationLoading) return
+    // Re-engage auto-follow so sending a new message always jumps to the latest
+    // reply even if the previous session was left scrolled up.
+    const teardown = scrollController.restore(currentConversationId, true)
+    previousMessageCountRef.current = messages.length
+    return teardown
+  }, [currentConversationId, isConversationLoading, scrollController.restore])
 
-    // A stored scrollTop is meaningful only when the virtual list exposes the
-    // complete conversation height. With just the newest page in the layout,
-    // an older position is clamped and appears to be shared with the top.
-    if (visibleCount < renderableMessages.length) {
-      setVisibleCount(renderableMessages.length)
-      return
-    }
-
-    const savedOffset = conversationScrollOffsets.get(conversationId)
-    let settleTimer: number | null = null
-    let finalSettleTimer: number | null = null
-    let secondFrame: number | null = null
-    const restore = () => {
-      const area = scrollAreaRef.current
-      if (!area || pendingRestoreRef.current !== conversationId) return
-
-      area.scrollTop = savedOffset === undefined
-        ? area.scrollHeight
-        : Math.min(savedOffset, Math.max(0, area.scrollHeight - area.clientHeight))
-      lastScrollTopRef.current = area.scrollTop
-      setScrollTop(area.scrollTop)
-      setViewportHeight(area.clientHeight)
-      followStreamRef.current = area.scrollHeight - area.scrollTop - area.clientHeight <= SCROLL_FOLLOW_THRESHOLD
-      updateScrollAffordances(area)
-    }
-
-    // The virtualized list needs one layout frame to establish its spacers.
-    // Apply the saved position again after it settles so loading a long
-    // conversation cannot clamp the reader back to the top.
-    const firstFrame = requestAnimationFrame(() => {
-      restore()
-      secondFrame = requestAnimationFrame(() => {
-        restore()
-        settleTimer = window.setTimeout(() => {
-          restore()
-          // Measured message heights can update after the first layout pass.
-          // Keep restoration exclusive to this conversation until that final
-          // pass completes, then allow its future user scrolls to persist.
-          finalSettleTimer = window.setTimeout(() => {
-            restore()
-            previousMessageCountRef.current = messages.length
-            pendingRestoreRef.current = null
-          }, 320)
-        }, 240)
-      })
-    })
-
-    return () => {
-      cancelAnimationFrame(firstFrame)
-      if (secondFrame !== null) cancelAnimationFrame(secondFrame)
-      if (settleTimer !== null) window.clearTimeout(settleTimer)
-      if (finalSettleTimer !== null) window.clearTimeout(finalSettleTimer)
-    }
-  }, [currentConversationId, isConversationLoading, messages.length, renderableMessages.length, updateScrollAffordances, visibleCount])
-
+  // Auto-follow the latest message only when a real content change happened.
+  // ResizeObserver-driven `measuredHeights` updates must not yank the reader
+  // back to the bottom — those changes are layout stabilizations, not new
+  // material.
   useLayoutEffect(() => {
     const previousMessageCount = previousMessageCountRef.current
     previousMessageCountRef.current = messages.length
-    const latestMessage = messages[messages.length - 1]
+    const latest = messages[messages.length - 1]
 
     if (
       messages.length > previousMessageCount
-      && latestMessage?.role === 'user'
-      && latestMessage.conversationId === currentConversationId
+      && latest?.role === 'user'
+      && latest.conversationId === currentConversationId
     ) {
       resumeFollowingLatestMessage()
       return
     }
 
-    // Persisted conversation refreshes replace the array even when no message
-    // was added. Only follow genuine new messages, and never pull a reader
-    // away from the position they intentionally scrolled to.
     if (
-      pendingRestoreRef.current === currentConversationId ||
       messages.length <= previousMessageCount ||
-      !followStreamRef.current
+      !scrollController.isFollowing()
     ) return
 
-    scrollToBottom('auto')
-  }, [currentConversationId, messages])
+    scrollController.jumpToBottom('auto')
+  }, [currentConversationId, messages, resumeFollowingLatestMessage, scrollController])
 
   useLayoutEffect(() => {
     // A message can grow after its first render when Markdown settles or the
@@ -611,12 +473,11 @@ export function MessageList({ className }: MessageListProps) {
     // physical bottom after that later layout pass, not just after the first
     // message insertion.
     if (
-      pendingRestoreRef.current !== currentConversationId
-      && followStreamRef.current
+      scrollController.isFollowing()
     ) {
-      scrollToBottom('auto')
+      scrollController.jumpToBottom('auto')
     }
-  }, [currentConversationId, itemLayout.totalHeight])
+  }, [currentConversationId, itemLayout.totalHeight, scrollController])
 
   useLayoutEffect(() => {
     // Keep the reader pinned after any streamed surface changes, including
@@ -624,16 +485,15 @@ export function MessageList({ className }: MessageListProps) {
     if (
       isStreaming &&
       (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
-      pendingRestoreRef.current !== currentConversationId &&
-      followStreamRef.current
+      scrollController.isFollowing()
     ) {
-      const frame = requestAnimationFrame(() => scrollToBottom('auto'))
+      const frame = requestAnimationFrame(() => scrollController.jumpToBottom('auto'))
       return () => cancelAnimationFrame(frame)
     }
-  }, [currentConversationId, isStreaming, streamingContent, streamingReasoningContent, streamingToolCalls.length, streamingExecutionTrace.length, streamingExecutionTimeline.length, streamingProgressUpdates.length])
+  }, [currentConversationId, isStreaming, scrollController, streamingContent, streamingReasoningContent, streamingExecutionTrace.length, streamingExecutionTimeline.length, streamingProgressUpdates.length, streamingToolCalls.length])
 
   if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !isRequirementRunning) {
-    return <WelcomeScreen className={className} />
+    return <div className={cn('relative min-h-0 flex-1', className)} aria-hidden />
   }
 
   const jumpToBottomLabel = language === 'zh' ? '回到最新消息' : language === 'ja' ? '最新メッセージへ' : 'Jump to latest message'
@@ -642,7 +502,7 @@ export function MessageList({ className }: MessageListProps) {
     <div className={cn('relative min-h-0 flex-1', className)}>
       <ScrollArea
         key={currentConversationId ?? 'no-conversation'}
-        ref={scrollAreaRef}
+        ref={bindScrollArea}
         onScroll={handleScroll}
         className="eva-message-scroll h-full"
       >
@@ -749,6 +609,13 @@ export function MessageList({ className }: MessageListProps) {
           />
         )}
 
+        {toolApproval && currentConversationId && (
+          <ToolApprovalCard
+            request={toolApproval}
+            onDecide={(approved, rememberScope) => void decideToolApproval(currentConversationId, toolApproval.id, approved, rememberScope)}
+          />
+        )}
+
         {/* Render the in-flight Markdown through the same assistant-message surface.
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
@@ -778,26 +645,28 @@ export function MessageList({ className }: MessageListProps) {
       </ScrollArea>
 
       <div
-        className="pointer-events-none absolute bottom-5 right-3 top-7 z-20"
-        style={rightPanelVisible ? { right: `${12 - rightPanelWidth}px` } : undefined}
+        className="pointer-events-none absolute bottom-5 right-1 top-7 z-20"
       >
         <div
           aria-hidden="true"
           className={cn(
-            'absolute bottom-0 right-0 top-0 w-[3px] transition-opacity duration-300',
-            scrollIndicatorVisible ? 'opacity-100' : 'opacity-0'
+            'absolute bottom-0 right-0 top-0 w-[2px] transition-opacity duration-300',
+            scrollIndicatorVisible && scrollIndicator.height < 100 ? 'opacity-75' : 'opacity-0'
           )}
         >
           <span
-            className="absolute left-0 w-full rounded-full bg-violet-300/70 shadow-[0_0_7px_rgba(139,92,246,0.2)] transition-[top,height] duration-150"
+            className="absolute left-0 w-full rounded-full bg-violet-400/60 shadow-[0_0_4px_rgba(139,92,246,0.14)] transition-[top,height] duration-150"
             style={{ top: `${scrollIndicator.top}%`, height: `${scrollIndicator.height}%` }}
           />
         </div>
 
-        {canJumpToBottom && (
+        {scrollIndicatorVisible && scrollController.canJumpToBottom && (
           <button
             type="button"
-            onClick={() => scrollToBottom('smooth')}
+            onClick={(event) => {
+              event.stopPropagation()
+              scrollController.jumpToBottom('auto')
+            }}
             title={jumpToBottomLabel}
             aria-label={jumpToBottomLabel}
             className="pointer-events-auto absolute bottom-2 right-3 grid h-9 w-9 place-items-center rounded-full border border-violet-100 bg-white/90 text-violet-500 shadow-[0_12px_24px_-15px_rgba(79,70,229,0.5)] backdrop-blur transition duration-200 hover:-translate-y-0.5 hover:border-violet-200 hover:bg-violet-50 hover:text-violet-700 focus:outline-none focus:ring-2 focus:ring-violet-200"
@@ -808,4 +677,24 @@ export function MessageList({ className }: MessageListProps) {
       </div>
     </div>
   )
+}
+
+/**
+ * Read-only accessor for the saved offset cache. Used as a stable seed for
+ * `lastScrollTopRef` so the very first paint of a conversation starts at the
+ * previously persisted position rather than 0.
+ */
+function useScrollOffsetsFor(conversationId: string): number {
+  return useMemo(() => {
+    if (typeof window === 'undefined') return 0
+    try {
+      const raw = window.localStorage.getItem(CONVERSATION_SCROLL_STORAGE_KEY)
+      if (!raw) return 0
+      const parsed = JSON.parse(raw) as Record<string, unknown>
+      const value = parsed[conversationId]
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
+    } catch {
+      return 0
+    }
+  }, [conversationId])
 }

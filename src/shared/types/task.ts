@@ -1,5 +1,6 @@
 import type { ToolCall } from './conversation'
 import type { AgentModelPreference } from './agent'
+import type { AgentRunRecoverySummary } from './runtime-run'
 
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
 
@@ -204,6 +205,7 @@ export interface TaskRecoveryState {
   replayCount: number
   lastReplayAt: number
   reason: 'user-continue' | 'app-restart'
+  summary?: AgentRunRecoverySummary
 }
 
 export interface TaskRunSnapshot {

@@ -186,12 +186,79 @@ html, body, #root {
 }
 
 .eva-message-scroll {
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
 }
 
+/* A vertical scrollbar in a chat transcript never needs to be more than a
+   glint of light. The track is a thin translucent tube inset from the panel
+   edge; the thumb is a glowing glass pill that brightens on hover. */
 .eva-message-scroll::-webkit-scrollbar,
 .task-workspace-note__content::-webkit-scrollbar {
-  display: none;
+  width: 6px;
+  height: 6px;
+  background: transparent;
+}
+
+.eva-message-scroll::-webkit-scrollbar-track,
+.task-workspace-note__content::-webkit-scrollbar-track {
+  background: linear-gradient(
+    180deg,
+    rgba(167, 139, 250, 0.04),
+    rgba(167, 139, 250, 0.10),
+    rgba(167, 139, 250, 0.04)
+  );
+  border-radius: 9999px;
+  margin: 6px 2px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.eva-message-scroll::-webkit-scrollbar-thumb,
+.task-workspace-note__content::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    135deg,
+    rgba(196, 181, 253, 0.55) 0%,
+    rgba(167, 139, 250, 0.40) 50%,
+    rgba(139, 92, 246, 0.45) 100%
+  );
+  border-radius: 9999px;
+  min-height: 32px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(124, 58, 237, 0.30),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.30),
+    0 0 10px rgba(167, 139, 250, 0.40),
+    0 0 22px rgba(167, 139, 250, 0.20);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+
+.eva-message-scroll:hover::-webkit-scrollbar-thumb,
+.eva-message-scroll:focus-within::-webkit-scrollbar-thumb,
+.eva-message-scroll:active::-webkit-scrollbar-thumb,
+.task-workspace-note__content:hover::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    135deg,
+    rgba(221, 214, 254, 0.78) 0%,
+    rgba(167, 139, 250, 0.60) 50%,
+    rgba(139, 92, 246, 0.65) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -1px 0 rgba(124, 58, 237, 0.45),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.45),
+    0 0 14px rgba(167, 139, 250, 0.65),
+    0 0 28px rgba(167, 139, 250, 0.35);
+}
+
+.eva-message-scroll::-webkit-scrollbar-thumb:hover,
+.task-workspace-note__content::-webkit-scrollbar-thumb:hover {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    inset 0 -1px 0 rgba(124, 58, 237, 0.55),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.55),
+    0 0 18px rgba(167, 139, 250, 0.80),
+    0 0 36px rgba(167, 139, 250, 0.45);
 }
 
 .eva-chat-surface {
@@ -645,10 +712,10 @@ html, body, #root {
 
 .chat-message-markdown .markdown-inline-code {
   border: 1px solid #e2e8f0;
-  border-radius: 4px;
+  border-radius: 5px;
   background: #f8fafc;
   color: #475569;
-  padding: 0.08rem 0.32rem;
+  padding: 0.1rem 0.36rem;
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: 0.84em;
   font-weight: 500;
@@ -673,6 +740,49 @@ html, body, #root {
   height: 0.78em;
   margin-left: 0.22em;
   vertical-align: -0.04em;
+}
+
+/* File references inside replies: clickable chips that open the in-app editor.
+   Kept in the base layer only, so every format and style preference layer
+   below keeps owning its own inline-code look. */
+.chat-message-markdown .markdown-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  max-width: 100%;
+  padding: 0.08rem 0.42rem;
+  border: 1px solid #ddd6fe;
+  border-radius: 5px;
+  background: #f5f3ff;
+  color: #7c3aed;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.84em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.chat-message-markdown .markdown-file-chip:hover {
+  background: #ede9fe;
+  border-color: #c4b5fd;
+}
+
+.chat-message-markdown .markdown-file-chip:focus-visible {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 1px;
+}
+
+.markdown-file-chip__icon {
+  flex: none;
+  width: 0.85em;
+  height: 0.85em;
+  color: #8b5cf6;
+}
+
+.markdown-file-chip__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Search results often include long, unbroken URLs. Keep them inside the
@@ -714,7 +824,15 @@ html, body, #root {
 }
 
 .chat-message-markdown .markdown-list-item + .markdown-list-item {
-  margin-top: 0.38rem;
+  margin-top: 0.4rem;
+}
+
+.chat-message-markdown .markdown-list .markdown-list {
+  margin: 0.35rem 0 0.4rem;
+}
+
+.chat-message-markdown :is(h1, h2, h3, h4) + :is(p, ul, ol) {
+  margin-top: 0.3rem;
 }
 
 .chat-message-markdown .markdown-list-item::marker {
@@ -2731,4 +2849,51 @@ a.tool-call-source__title:hover {
   .settings-dialog__access-row > span {
     min-width: calc(100% - 32px);
   }
+}
+
+/* New: caret + always-visible message actions + global disabled cursor. */
+@keyframes caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.18; }
+}
+
+.animate-caret-blink {
+  animation: caret-blink 1.05s steps(1, end) infinite;
+  will-change: opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-caret-blink {
+    animation: none;
+    opacity: 0.65;
+  }
+}
+
+/* Message actions: a soft resting state is friendlier on touch and long reads
+   than a hidden bar that requires the cursor to discover. */
+.message-actions--always-visible {
+  opacity: 0.45;
+}
+
+.message-actions--always-visible .message-action {
+  color: #6b7280;
+}
+
+.message-actions--always-visible:hover {
+  opacity: 1;
+}
+
+.message-actions--always-visible:hover .message-action {
+  color: #475569;
+}
+
+/* Consistent disabled cursor across every interactive surface so forms feel
+   coherent when a save button is in flight. */
+button:disabled,
+[role='button']:disabled,
+button[aria-disabled='true'],
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
 }

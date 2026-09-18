@@ -3,6 +3,7 @@ import { createApplicationMenu, createMainWindow } from './window'
 import { registerAllIpcHandlers } from './ipc'
 import { recoverQueuedTasks } from './ipc/task'
 import { initializeStorage, getStorage } from './storage'
+import { initializeSandbox } from './services/sandbox'
 import { providerRegistry } from './providers'
 import { setupGlobalErrorHandlers } from './utils/error-handler'
 import { QqRemoteBridge } from './services/qq-remote-bridge'
@@ -62,7 +63,14 @@ async function initializeApplication(): Promise<void> {
   mainWindow = createMainWindow()
   registerTrustedRenderer(mainWindow.webContents)
 
-  // 4. Register all IPC handlers with explicit service references.
+  // 4. Initialize the sandbox dispatcher (probes the OS backend, sets initial status).
+  // This runs before IPC so the sandbox status is correct when the first Settings
+  // panel is opened. A level change in Settings triggers a refresh via IPC.
+  await initializeSandbox().catch((error) => {
+    console.warn('[Sandbox] initialization failed; sandbox is off:', error)
+  })
+
+  // 5. Register all IPC handlers with explicit service references.
   registerAllIpcHandlers(services)
 
   // NSIS invokes this once after the application files are copied to disk.

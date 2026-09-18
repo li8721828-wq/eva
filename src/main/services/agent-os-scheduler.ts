@@ -7,6 +7,7 @@ import { TaskExecutionQueue, type TaskQueueJob, type TaskQueueResult, type TaskQ
 import { activeRunRegistry, type ActiveRunStatus } from './run-registry'
 import { RunLifecycleCoordinator } from './run-lifecycle-coordinator'
 import type { ConversationStore } from '../storage/conversation-store'
+import type { AgentRunEventStore } from '../storage/agent-run-event-store'
 
 type TaskKind = TaskQueueJob['kind']
 
@@ -62,6 +63,7 @@ export class AgentOsScheduler {
     maxConcurrentTasks = 2,
     private readonly runtimeRuns?: RuntimeRunStore,
     conversations?: ConversationStore,
+    private readonly agentRunEvents?: AgentRunEventStore,
   ) {
     this.taskQueue = new TaskExecutionQueue(maxConcurrentTasks)
     this.lifecycle = new RunLifecycleCoordinator(runtimeKernel, runtimeRuns, conversations)
@@ -263,6 +265,9 @@ export class AgentOsScheduler {
       let accepted = false
       this.recoveringRuns.add(run.id)
       try {
+        if (this.agentRunEvents && run.status === 'interrupted') {
+          run.payload = { ...run.payload, recoverySummary: await this.agentRunEvents.recoverySummary(run.id) }
+        }
         accepted = await handler(run, context)
       } catch (error) {
         await this.runtimeRuns.save({
@@ -339,6 +344,6 @@ export class AgentOsScheduler {
 let scheduler: AgentOsScheduler | undefined
 
 export function getAgentOsScheduler(): AgentOsScheduler {
-  if (!scheduler) scheduler = new AgentOsScheduler(getStorage().runtimeKernel, 2, getStorage().runtimeRuns, getStorage().conversations)
+  if (!scheduler) scheduler = new AgentOsScheduler(getStorage().runtimeKernel, 2, getStorage().runtimeRuns, getStorage().conversations, getStorage().agentRunEvents)
   return scheduler
 }

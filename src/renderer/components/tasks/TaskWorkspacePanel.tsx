@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BarChart3,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -30,6 +31,7 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { EMPTY_EXPERT_TASK, EMPTY_GOAL_TASK, useTaskStore } from '@/stores/use-task-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import type { RequirementDocument, RequirementRun } from '../../../shared/types/requirement-engineering'
+import { ProjectKnowledgePanel } from '@/components/settings/ProjectKnowledgePanel'
 
 type StepItem = {
   id: string
@@ -397,6 +399,15 @@ export function TaskWorkspacePanel() {
         </button>
         <button
           type="button"
+          role="tab"
+          aria-selected={rightPanelTab === 'project-knowledge'}
+          onClick={() => setRightPanelTab('project-knowledge')}
+          className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'project-knowledge' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
+        >
+          <BookOpen className="h-3.5 w-3.5" /> 记录
+        </button>
+        <button
+          type="button"
           onClick={() => { setRightPanelTab('tasks'); setTaskView((view) => view === 'usage' ? 'plan' : 'usage') }}
           className={cn('ml-auto flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'tasks' && taskView === 'usage' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
           title={taskView === 'usage' ? 'Show task plan' : 'Show conversation usage'}
@@ -417,6 +428,8 @@ export function TaskWorkspacePanel() {
       </div>
 
       {rightPanelTab === 'files' && <FileExplorer className="min-h-0 flex-1" onFileSelect={() => setRightPanelTab('editor')} />}
+
+      {rightPanelTab === 'project-knowledge' && <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3"><ProjectKnowledgePanel /></div>}
 
       {rightPanelTab === 'requirements' && (
         <div className="task-workspace-note__content min-h-0 flex-1 overflow-y-auto px-4 py-4">
