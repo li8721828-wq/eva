@@ -40,6 +40,12 @@ export const IPC = {
   PROJECT_KNOWLEDGE_UPDATE: 'project-knowledge:update',
   PROJECT_KNOWLEDGE_DELETE: 'project-knowledge:delete',
 
+  // Unified long-term memory
+  LONG_TERM_MEMORY_LIST: 'long-term-memory:list',
+  LONG_TERM_MEMORY_SEARCH: 'long-term-memory:search',
+  LONG_TERM_MEMORY_UPDATE: 'long-term-memory:update',
+  LONG_TERM_MEMORY_DELETE: 'long-term-memory:delete',
+
   // Per-conversation Git worktrees
   GIT_STATUS: 'git:status',
   GIT_SWITCH_BRANCH: 'git:switch-branch',

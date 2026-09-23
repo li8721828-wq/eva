@@ -7,7 +7,7 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { Separator } from '@/components/ui/Separator'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
-import { APP_VERSION, getModelContextWindowOptions } from '../../../shared/constants'
+import { getModelContextWindowOptions } from '../../../shared/constants'
 import {
   AlertCircle,
   ArrowLeft,
@@ -17,7 +17,6 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
-  Info,
   Key,
   Link,
   Loader2,
@@ -35,15 +34,14 @@ import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } fro
 import type { QqRemoteConfig, QqRemoteStatus } from '../../../shared/types/qq'
 import type { Workspace } from '../../../shared/types/workspace'
 import type { AgentConfig } from '../../../shared/types/agent'
-import type { AutomationConfig, HiddenCapabilityId } from '../../../shared/types/automation'
+import type { AutomationConfig, HiddenCapabilityId, ToolApprovalPolicy } from '../../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import type { NetworkConfig, NetworkTestResult } from '../../../shared/types/network'
 import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
 import { inferModelCapabilities } from '../../../shared/model-capabilities'
-import evaMark from '@/assets/eva-mark.svg'
 import { PluginCenter } from './PluginCenter'
 import { McpPanel } from './McpPanel'
-import { PersonalPreferencePanel } from './PersonalPreferencePanel'
+import { LongTermMemoryPanel } from './LongTermMemoryPanel'
 import { AppServerPanel } from './AppServerPanel'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
@@ -131,6 +129,15 @@ export function SettingsDialog() {
   const [networkTesting, setNetworkTesting] = useState(false)
   const copy = uiCopy[language].settings
   const automationCopy = uiCopy[language].automation
+
+  // The approval policy is a single global setting, unlike the per-conversation
+  // file permission level, so it has no home in the per-capability cards.
+  const approvalNotes: Record<ToolApprovalPolicy, string> = {
+    off: automationCopy.approval.noteOff,
+    safe: automationCopy.approval.noteSafe,
+    strict: automationCopy.approval.noteStrict,
+    paranoid: automationCopy.approval.noteParanoid,
+  }
 
   const getProviderTestConfig = (): ProviderTestConfig => ({
     id: editingProviderId || `provider-${providerType}`,
@@ -241,6 +248,8 @@ export function SettingsDialog() {
         goal: { ...DEFAULT_AUTOMATION_CONFIG.goal, ...config?.goal },
         plan: { ...DEFAULT_AUTOMATION_CONFIG.plan, ...config?.plan },
         spec: { ...DEFAULT_AUTOMATION_CONFIG.spec, ...config?.spec },
+        toolApproval: { ...DEFAULT_AUTOMATION_CONFIG.toolApproval, ...config?.toolApproval },
+        sandbox: { ...DEFAULT_AUTOMATION_CONFIG.sandbox, ...config?.sandbox },
       }))
       .catch(() => setAutomation(DEFAULT_AUTOMATION_CONFIG))
   }, [settingsOpen])
@@ -604,18 +613,14 @@ export function SettingsDialog() {
       <Tabs defaultValue="general" className="settings-dialog__tabs">
         <TabsList className="settings-dialog__tabs-list">
           <TabsTrigger value="general">{copy.general}</TabsTrigger>
-          <TabsTrigger value="network">网络</TabsTrigger>
           <TabsTrigger value="models">{copy.models}</TabsTrigger>
           <TabsTrigger value="cost">{copy.cost}</TabsTrigger>
           <TabsTrigger value="introspection">系统自省</TabsTrigger>
           <TabsTrigger value="agents">{copy.agents}</TabsTrigger>
-          <TabsTrigger value="automation">{copy.automation}</TabsTrigger>
           <TabsTrigger value="plugins">{copy.plugins}</TabsTrigger>
-          <TabsTrigger value="mcp">MCP</TabsTrigger>
-          <TabsTrigger value="preferences">偏好</TabsTrigger>
+          <TabsTrigger value="memory">记忆系统</TabsTrigger>
           <TabsTrigger value="qq">{copy.qq}</TabsTrigger>
           <TabsTrigger value="app-server">App Server</TabsTrigger>
-          <TabsTrigger value="about">{copy.about}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="settings-dialog__content">
@@ -674,23 +679,19 @@ export function SettingsDialog() {
                 {copy.workspaceDescription}
               </p>
             </div>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="network" className="settings-dialog__content">
-          <section className="mx-auto w-full max-w-3xl">
-            <div className="settings-dialog__card settings-dialog__model-card gap-5">
+          <section className="mt-8 w-full border-t border-zinc-200/90 pt-8">
+            <div className="settings-dialog__model-card gap-5">
               <div className="flex items-start justify-between gap-6">
                 <div className="settings-help-trigger">
                   <div className="flex items-center gap-2 text-sm font-medium text-zinc-800">
-                    <Network className="h-4 w-4 text-violet-500" />
+                    <Network className="h-4 w-4 text-zinc-500" />
                     网络路由
                   </div>
                   <p className="settings-help mt-1 text-sm leading-6 text-zinc-500">
                     此设置会统一用于模型调用、供应商费率同步和 Eva 的其他网络服务。
                   </p>
                 </div>
-                <span className="shrink-0 rounded-md bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">应用级</span>
+                <span className="shrink-0 text-xs text-zinc-500">应用级设置</span>
               </div>
 
               <Separator />
@@ -782,6 +783,7 @@ export function SettingsDialog() {
               ) : null}
             </div>
           </section>
+          </div>
         </TabsContent>
 
         <TabsContent value="models" className="settings-dialog__content">
@@ -1034,7 +1036,7 @@ export function SettingsDialog() {
         </TabsContent>
 
 
-        <TabsContent value="automation" className="settings-dialog__content">
+        <TabsContent value="plugins" className="settings-dialog__content">
           <section className="mx-auto w-full max-w-6xl">
             <div className="mb-6">
               <h2 className="text-base font-semibold text-zinc-900">{automationCopy.title}</h2>
@@ -1044,7 +1046,7 @@ export function SettingsDialog() {
               {HIDDEN_CAPABILITIES.map((capability) => {
                 const config = automation[capability.id]
                 return (
-                  <article key={capability.id} className="flex min-h-[270px] flex-col rounded-xl border border-zinc-200/90 bg-white/85 p-5 shadow-[0_12px_30px_-24px_rgba(79,70,229,0.55)] transition-shadow hover:shadow-[0_16px_34px_-24px_rgba(79,70,229,0.6)]">
+                  <article key={capability.id} className="flex min-h-[270px] flex-col rounded-lg border border-zinc-200 bg-white p-5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <h3 className="text-sm font-semibold text-zinc-900">{capability.name}</h3>
@@ -1074,8 +1076,39 @@ export function SettingsDialog() {
               })}
             </div>
 
+            {/* Tool approval */}
+            <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-zinc-900">{automationCopy.approval.title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-zinc-600">{automationCopy.approval.description}</p>
+                </div>
+                <select
+                  className="shrink-0 rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 focus:border-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                  value={automation.toolApproval.policy}
+                  onChange={(event) => {
+                    const next = { ...automation, toolApproval: { ...automation.toolApproval, policy: event.target.value as ToolApprovalPolicy } }
+                    setAutomation(next)
+                    void window.eva.config.set('automation', next)
+                  }}
+                >
+                  <option value="off">{automationCopy.approval.off}</option>
+                  <option value="safe">{automationCopy.approval.safe}</option>
+                  <option value="strict">{automationCopy.approval.strict}</option>
+                  <option value="paranoid">{automationCopy.approval.paranoid}</option>
+                </select>
+              </div>
+
+              <dl className="mt-4 grid gap-3 border-t border-zinc-100 pt-4 text-xs leading-5 text-zinc-500">
+                <div>
+                  <dt className="font-medium text-zinc-700">{automationCopy.approval.note}</dt>
+                  <dd className="mt-0.5">{approvalNotes[automation.toolApproval.policy]}</dd>
+                </div>
+              </dl>
+            </section>
+
             {/* Sandbox */}
-            <section className="mt-6 rounded-xl border border-zinc-200/90 bg-white/85 p-5">
+            <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-5">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h3 className="text-sm font-semibold text-zinc-900">{automationCopy.sandbox.title}</h3>
@@ -1132,22 +1165,20 @@ export function SettingsDialog() {
               )}
             </section>
           </section>
+          <section className="mx-auto mt-8 w-full max-w-6xl border-t border-zinc-200/80 pt-8">
+            <PluginCenter />
+          </section>
+          <section className="mx-auto mt-8 w-full max-w-6xl border-t border-zinc-200/80 pt-8">
+            <McpPanel />
+          </section>
         </TabsContent>
 
         <TabsContent value="agents" className="settings-dialog__content settings-dialog__content--agents">
           <AgentManagementWorkspace />
         </TabsContent>
 
-        <TabsContent value="plugins" className="settings-dialog__content">
-          <PluginCenter />
-        </TabsContent>
-
-        <TabsContent value="mcp" className="settings-dialog__content">
-          <McpPanel />
-        </TabsContent>
-
-        <TabsContent value="preferences" className="settings-dialog__content">
-          <PersonalPreferencePanel />
+        <TabsContent value="memory" className="settings-dialog__content">
+          <LongTermMemoryPanel />
         </TabsContent>
 
         <TabsContent value="qq" className="settings-dialog__content">
@@ -1286,21 +1317,6 @@ export function SettingsDialog() {
           <AppServerPanel />
         </TabsContent>
 
-        <TabsContent value="about" className="settings-dialog__content">
-          <div className="settings-dialog__about">
-            <div className="flex justify-center">
-              <img src={evaMark} alt="Eva" className="h-12 w-12" />
-            </div>
-            <div>
-              <h3 className="flex items-center justify-center gap-2 text-lg font-semibold text-zinc-900">
-                <Info className="h-4 w-4" />
-                Eva
-              </h3>
-              <p className="text-sm text-zinc-500">AI Coding Agent Desktop Client</p>
-              <p className="mt-1 text-xs text-zinc-400">Version {APP_VERSION}</p>
-            </div>
-          </div>
-        </TabsContent>
       </Tabs>
     </section>
   )

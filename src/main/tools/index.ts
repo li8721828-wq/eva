@@ -15,6 +15,7 @@ import { createRuntimeProposalTools } from './runtime-proposal-tools'
 import { createPersonalPreferenceTools } from './personal-preference-tools'
 import { createSpreadsheetTools } from './spreadsheet-tools'
 import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
+import type { LongTermMemoryStore } from '../storage/long-term-memory-store'
 import type { ProjectIndexService } from '../services/project-index-service'
 import type { ProviderRegistry } from '../providers'
 
@@ -76,6 +77,12 @@ export interface FileService {
   writeBuffer?(filePath: string, content: Buffer, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<void>
   listDirectory(dirPath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<FileEntry[]>
   searchFiles(pattern: string, workspacePath: string, grants?: FileAccessGrant[], searchPath?: string, fullFilesystemAccess?: boolean): Promise<string[]>
+  /**
+   * Canonicalize a path and reject it when it is outside the authorized roots.
+   * Directory traversal must call this for each directory it descends into, so
+   * a link or reparse point cannot carry the walk out of the workspace.
+   */
+  resolveAuthorizedPath(filePath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<string>
   fileExists(filePath: string, workspacePath: string, grants?: FileAccessGrant[], fullFilesystemAccess?: boolean): Promise<boolean>
   getFileInfo(
     filePath: string,
@@ -106,12 +113,12 @@ export interface TerminalService {
   destroySession(sessionId: string): void
   onOutput(sessionId: string, callback: (data: string) => void): () => void
   /**
-   * Bind a sandbox context to this service. The service stores the context
-   * (or null to clear) and consults it before every `executeCommand` call
-   * and every `createSession`. Must be called before tool execution begins
-   * for the context to apply.
+   * Evaluate a command line against the sandbox of the currently running
+   * agent run. Returns the denial reason, or null when the command may run.
+   * `write_terminal` must call this before typing a submitted command, since
+   * `writeInput` is also used for raw interactive keystrokes from the panel.
    */
-  setSandboxContext(context: import('../services/sandbox/types').SandboxContext | null): void
+  checkSandboxCommand(command: string): string | null
 }
 
 export class ToolRegistry {
@@ -154,7 +161,7 @@ export class ToolRegistry {
   }
 }
 
-export function createToolRegistry(projectIndexService?: ProjectIndexService, providerRegistry?: ProviderRegistry, personalPreferenceStore?: PersonalPreferenceStore): ToolRegistry {
+export function createToolRegistry(projectIndexService?: ProjectIndexService, providerRegistry?: ProviderRegistry, personalPreferenceStore?: PersonalPreferenceStore, longTermMemory?: LongTermMemoryStore): ToolRegistry {
   const registry = new ToolRegistry()
 
   // Register all tools
@@ -174,7 +181,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createRuntimeProposalTools(registry)) registry.register(tool)
   for (const tool of createSpreadsheetTools()) registry.register(tool)
   if (personalPreferenceStore) {
-    for (const tool of createPersonalPreferenceTools(personalPreferenceStore)) registry.register(tool)
+    for (const tool of createPersonalPreferenceTools(personalPreferenceStore, longTermMemory)) registry.register(tool)
   }
 
   return registry

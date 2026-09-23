@@ -29,21 +29,28 @@ const readFileTool: ToolExecutor = {
     const startLine = params.startLine as number | undefined
     const endLine = params.endLine as number | undefined
 
-    const { content } = await resolveExistingWorkspaceResource(filePath, context, (resolvedPath) =>
+    const { resource, content } = await resolveExistingWorkspaceResource(filePath, context, (resolvedPath) =>
       context.fileService.readFile(resolvedPath, context.workspacePath, context.fileAccessGrants, context.fullFilesystemAccess)
     )
+
+    // The basename fallback reads a different file than the one the model
+    // asked for. Disclose the substitution so reasoning never continues on a
+    // silently swapped file.
+    const notice = resource.strategy === 'exact'
+      ? ''
+      : `[read_file] ${resource.requestedPath} was not found; showing the unique workspace file with the same name: ${resource.resolvedPath}\n\n`
 
     if (startLine !== undefined || endLine !== undefined) {
       const lines = content.split('\n')
       const start = Math.max(1, startLine ?? 1) - 1
       const end = endLine !== undefined ? Math.min(lines.length, endLine) : lines.length
       const sliced = lines.slice(start, end)
-      return sliced
+      return notice + sliced
         .map((line, i) => `${start + i + 1}\t${line}`)
         .join('\n')
     }
 
-    return content
+    return notice + content
   },
 }
 

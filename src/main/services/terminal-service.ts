@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import type { TerminalService } from '../tools'
-import { evaluateSandboxCommand, wrapCommandForSandbox, type SandboxContext } from './sandbox'
+import { evaluateSandboxCommand, wrapCommandForSandbox } from './sandbox'
+import { currentSandboxScope } from './sandbox/scope'
 
 interface TerminalSession {
   process: ChildProcess
@@ -52,14 +53,20 @@ interface PtySession {
 export class TerminalServiceImpl implements TerminalService {
   private ptySessions: Map<string, PtySession> = new Map()
   private fallbackSessions: Map<string, TerminalSession> = new Map()
-  private sandboxContext: SandboxContext | null = null
 
   private get usePty(): boolean {
     return nodePty !== null
   }
 
-  setSandboxContext(context: SandboxContext | null): void {
-    this.sandboxContext = context
+  /**
+   * Evaluate a command line against the sandbox of the running agent, if any.
+   * Returns the denial reason, or null when the command may proceed.
+   */
+  checkSandboxCommand(command: string): string | null {
+    const scope = currentSandboxScope()
+    if (!scope) return null
+    const decision = evaluateSandboxCommand(command, scope)
+    return decision.allowed ? null : decision.reason
   }
 
   async createSession(id: string, cwd: string): Promise<void> {
@@ -72,10 +79,11 @@ export class TerminalServiceImpl implements TerminalService {
       let command = shell.command
       let args = shell.args
       // Wrap the shell process if a sandbox context is active.
-      if (this.sandboxContext && this.sandboxContext.level !== 'off') {
+      const scope = currentSandboxScope()
+      if (scope && scope.level !== 'off') {
         const wrapped = await wrapCommandForSandbox(command, args, {
-          ...this.sandboxContext,
-          workspacePath: this.sandboxContext.workspacePath || cwd,
+          ...scope,
+          workspacePath: scope.workspacePath || cwd,
         })
         command = wrapped.command
         args = wrapped.args
@@ -171,8 +179,9 @@ export class TerminalServiceImpl implements TerminalService {
     // Sandbox command-line pre-check: deny catastrophic patterns before they
     // ever reach the shell. The OS sandbox (if present) provides the real
     // enforcement; this is the fast-path defense-in-depth.
-    if (this.sandboxContext) {
-      const decision = evaluateSandboxCommand(command, this.sandboxContext)
+    const scope = currentSandboxScope()
+    if (scope) {
+      const decision = evaluateSandboxCommand(command, scope)
       if (!decision.allowed) {
         return { stdout: '', stderr: decision.reason, exitCode: 126 }
       }
@@ -230,8 +239,9 @@ export class TerminalServiceImpl implements TerminalService {
     if (!session) throw new Error(`Terminal session ${sessionId} not found`)
 
     // Same sandbox pre-check for the fallback child_process path.
-    if (this.sandboxContext) {
-      const decision = evaluateSandboxCommand(command, this.sandboxContext)
+    const scope = currentSandboxScope()
+    if (scope) {
+      const decision = evaluateSandboxCommand(command, scope)
       if (!decision.allowed) {
         return { stdout: '', stderr: decision.reason, exitCode: 126 }
       }

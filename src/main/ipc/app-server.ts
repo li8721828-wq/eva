@@ -1,5 +1,6 @@
 import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
+import { DEFAULT_APP_SERVER_CONFIG } from '../../shared/types/automation'
 import {
   startAppServer,
   stopAppServer,
@@ -24,12 +25,17 @@ export function registerAppServerHandlers(services: ApplicationServices | undefi
 
   ipcMain.handle(IPC.APP_SERVER_START, async (): Promise<ServerStatus> => {
     if (!services) throw new Error('App-Server requires the renderer chat services to be composed first.')
+    const appServerConfig = { ...DEFAULT_APP_SERVER_CONFIG, ...services.storage.config.get('appServer') }
     return startAppServer({
       storage: services.storage,
       toolRegistry: services.toolRegistry,
       providerRegistry: services.providerRegistry,
       fileService: services.fileService,
       terminalService: services.terminalService,
+      memoryAgent: services.memoryAgent,
+    }, {
+      preferredPort: appServerConfig.preferredPort,
+      acpRequireAuth: appServerConfig.acpRequireAuth,
     })
   })
 

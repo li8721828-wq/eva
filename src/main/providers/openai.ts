@@ -314,6 +314,14 @@ export class OpenAIProvider implements LLMProvider {
             ...(params.reasoning?.enabled && (this.type === 'deepseek' || this.type === 'custom') && includeThinking
               ? { thinking: { type: 'enabled' } }
               : {}),
+            // An explicit `{ enabled: false }` asks the route to stop spending
+            // its output budget on hidden reasoning. Omitting the field instead
+            // would leave the gateway's own default in force. Custom connections
+            // skip it once they have rejected the thinking extension.
+            ...(params.reasoning && !params.reasoning.enabled
+              && (this.type === 'deepseek' || (this.type === 'custom' && this.customStreamCapabilities.thinking))
+              ? { thinking: { type: 'disabled' } }
+              : {}),
           },
           { signal },
         )
@@ -375,17 +383,28 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
 
-      // Map finish_reason
+      // Map finish_reason. A gateway-specific value still means the stream
+      // ended abnormally, so it maps to 'error' and is preserved verbatim
+      // instead of being dropped as if the turn had stopped normally. Only a
+      // non-standard value is kept in rawFinishReason, so its presence always
+      // marks an abnormal ending rather than duplicating stop/tool_calls/length.
+      const providerFinishReason = typeof choice.finish_reason === 'string' && choice.finish_reason ? choice.finish_reason : undefined
       let finishReason: ChatChunk['finishReason'] | undefined
-      if (choice.finish_reason === 'stop') finishReason = 'stop'
-      else if (choice.finish_reason === 'tool_calls') finishReason = 'tool_calls'
-      else if (choice.finish_reason === 'length') finishReason = 'length'
+      let rawFinishReason: string | undefined
+      if (providerFinishReason === 'stop') finishReason = 'stop'
+      else if (providerFinishReason === 'tool_calls') finishReason = 'tool_calls'
+      else if (providerFinishReason === 'length') finishReason = 'length'
+      else if (providerFinishReason) {
+        finishReason = 'error'
+        rawFinishReason = providerFinishReason
+      }
 
       const reasoningContent = (delta as { reasoning_content?: string } | undefined)?.reasoning_content
       const yieldChunk: ChatChunk = {
         content: delta?.content || '',
         ...(reasoningContent ? { reasoningContent } : {}),
         ...(usage ? { usage } : {}),
+        ...(rawFinishReason ? { rawFinishReason } : {}),
       }
 
       if (finishReason) {

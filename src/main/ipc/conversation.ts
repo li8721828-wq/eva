@@ -3,7 +3,7 @@ import path from 'path'
 import { BrowserWindow } from 'electron'
 import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
-import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTimelineEntry, ExecutionTraceEntry, ProgressUpdate, ProgressUpdateKind } from '../../shared/types/conversation'
+import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTimelineEntry, ProgressUpdate, ProgressUpdateKind } from '../../shared/types/conversation'
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ToolRegistry, FileService, TerminalService } from '../tools'
 import type { ProviderRegistry } from '../providers'
@@ -18,7 +18,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import { SpecService } from '../services/spec-service'
-import { createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../services/tool-approval-policy'
+import { clearSessionApprovals, createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../services/tool-approval-policy'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
@@ -27,6 +27,7 @@ import { prepareGoalStepConversation, persistGoalStepEvent } from '../services/g
 import { resolveEffectiveAgentConfig } from '../services/effective-agent-config'
 import type { SymposiumContinueInput, SymposiumStartInput } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
+import { TurnProgressProjector, isAnswerLikeContent, stripProgressBlocks, toProgressSummaries, unwrapProgressTags } from './progress-protocol'
 import { registerBackgroundGoalController, type BackgroundGoalAction, type BackgroundGoalControlResult } from '../services/background-goal-control'
 import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
 import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
@@ -35,9 +36,11 @@ import type { ModelPoolEntry } from '../../shared/types/model-pool'
 import type { ActivePlan } from '../../shared/types/active-plan'
 import { ConversationLifecycleService, type CreateConversationInput, type UpdateConversationInput } from '../services/conversation-lifecycle-service'
 import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
+import { resolveAssistantTurnContent } from '../services/assistant-turn-content'
 import { activeRunRegistry } from '../services/run-registry'
 import { SymposiumExecutionService } from '../services/symposium-execution-service'
 import { TaskRunLifecycleService } from '../services/task-run-lifecycle-service'
+import type { MemoryAgentService } from '../services/memory-agent-service'
 
 export interface ChatServices {
   storage: StorageManager
@@ -45,6 +48,7 @@ export interface ChatServices {
   providerRegistry: ProviderRegistry
   fileService: FileService
   terminalService: TerminalService
+  memoryAgent: MemoryAgentService
 }
 
 // Each conversation owns its runner. A model connection may be shared, but the
@@ -57,6 +61,9 @@ const activeTaskRunners = activeRunRegistry.forKind<AgentRunner>('chat-task')
 // newer message has started. The token prevents stale events and responses
 // from being delivered to or persisted for the newer request.
 const activeChatRunTokens = new Map<string, string>()
+// Runs the user stopped explicitly. Unlike a superseded run, a stopped run
+// still stores the text it had already streamed, marked as cancelled.
+const userStoppedChatRunTokens = new Set<string>()
 let legacyTitleRefreshTimer: ReturnType<typeof setTimeout> | undefined
 
 function scheduleLegacyTitleRefresh(services: ChatServices): void {
@@ -171,103 +178,6 @@ function activePlanContext(plan: ActivePlan | null): string {
 function compactToolResult(result: string): string {
   if (result.length <= MAX_PERSISTED_TOOL_RESULT_CHARS) return result
   return `${result.slice(0, MAX_PERSISTED_TOOL_RESULT_CHARS)}\n\n[Tool output truncated for conversation storage: ${result.length} characters total]`
-}
-
-function redactExecutionText(value: string): string {
-  return value
-    .replace(/(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, '$1=[已隐藏]')
-    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, 'Bearer [已隐藏]')
-}
-
-function summarizeExecutionText(value: unknown, limit = 260): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const normalized = redactExecutionText(value.replace(/\s+/g, ' ').trim())
-  if (!normalized) return undefined
-  return normalized.length > limit ? `${normalized.slice(0, limit)}...` : normalized
-}
-
-/** Keep provider diagnostics out of the persisted assistant answer. */
-function userFacingRunError(value: string): string {
-  const firstLine = value.split(/\r?\n/, 1)[0]?.trim() || ''
-  if (/[\u4e00-\u9fff]/.test(firstLine)) return `本次回复未完成：${firstLine}`
-  return '本次回复未完成：模型服务返回异常，请检查当前供应商和模型配置后重试。'
-}
-
-/** Keep intermediate narration readable as a sequence of small work units. */
-function splitExecutionSegments(value: string, limit = 220): string[] {
-  const normalized = redactExecutionText(value.replace(/\s+/g, ' ').trim())
-  if (!normalized) return []
-  const sentences = normalized.match(/[^。！？!?；;]+[。！？!?；;]?/g) || [normalized]
-  const segments: string[] = []
-  let current = ''
-  for (const sentence of sentences) {
-    const next = `${current}${sentence}`.trim()
-    if (current && next.length > limit) {
-      segments.push(current)
-      current = sentence.trim()
-    } else {
-      current = next
-    }
-  }
-  if (current) segments.push(current)
-  return segments.flatMap((segment) => {
-    if (segment.length <= limit) return [segment]
-    const chunks: string[] = []
-    for (let index = 0; index < segment.length; index += limit) chunks.push(segment.slice(index, index + limit))
-    return chunks
-  })
-}
-
-function extractProgressUpdates(content: string): Array<{ kind: ProgressUpdateKind; content: string }> {
-  const updates: Array<{ kind: ProgressUpdateKind; content: string }> = []
-  const tagPattern = /<eva-progress(?:\s+kind=["'](thinking|finding|action|issue)["'])?\s*>([\s\S]*?)<\/eva-progress>/gi
-  let match: RegExpExecArray | null
-  while ((match = tagPattern.exec(content))) {
-    const summary = summarizeExecutionText(match[2], 520)
-    if (summary) updates.push({ kind: (match[1]?.toLowerCase() as ProgressUpdateKind | undefined) || 'thinking', content: summary })
-  }
-  return updates
-}
-
-function executionActionTitle(toolNames: string[]): string {
-  const names = new Set(toolNames)
-  if (names.has('manage_goal') || names.has('run_goal') || names.has('run_task')) return '正在推进任务计划并核对完成状态'
-  if (names.has('write_file') || names.has('edit_file')) return '正在落地方案并更新项目产物'
-  if (names.has('open_terminal') || names.has('read_terminal') || names.has('write_terminal') || names.has('close_terminal')) return '正在控制此对话的终端'
-  if (names.has('execute_command')) return '正在执行验证并确认实际结果'
-  if (names.has('web_search') || names.has('read_web_page')) return '正在补充外部资料并核对依据'
-  if (names.has('search_code') || names.has('search_files') || names.has('project_search')) return '正在定位关键位置并核查影响范围'
-  if (names.has('read_file') || names.has('list_directory') || names.has('file_info') || names.has('project_index_status')) return '正在核查项目现状和已有资料'
-  return '正在执行本阶段必要操作'
-}
-
-function executionActionOutcome(toolNames: string[], results: Array<{ name: string; result: string; isError: boolean }>): string {
-  const names = new Set(toolNames)
-  const completed = results.filter((result) => !result.isError)
-  const failed = results.length - completed.length
-  if (failed > 0) return `本阶段有 ${failed} 项操作未完成，已保留有效结果并调整后续处理方向。`
-  if (names.has('manage_goal')) {
-    const goalResult = results.find((result) => result.name === 'manage_goal')?.result || ''
-    const progress = goalResult.match(/Progress:\s*([^\n.]+)/i)?.[1]
-    return progress ? `任务计划已推进，当前进度 ${progress.trim()}。` : '任务计划已推进，正在根据完成情况安排后续工作。'
-  }
-  if (names.has('write_file') || names.has('edit_file')) return `已完成 ${completed.length} 项项目更新，接下来会核对产物是否满足目标。`
-  if (names.has('open_terminal') || names.has('read_terminal') || names.has('write_terminal') || names.has('close_terminal')) return '已完成此对话终端的受控操作。'
-  if (names.has('execute_command')) return '已获得实际验证结果，正在判断是否需要修正方案。'
-  if (names.has('web_search') || names.has('read_web_page')) return '已补充外部资料，正在结合项目约束判断其适用性。'
-  if (names.has('search_code') || names.has('search_files') || names.has('project_search')) return '已定位相关位置，正在评估范围、依赖和可行路径。'
-  if (names.has('read_file') || names.has('list_directory') || names.has('file_info') || names.has('project_index_status')) return `已完成 ${completed.length} 项资料与项目核查，正在归纳对当前决策有影响的事实。`
-  return `已完成 ${completed.length} 项必要操作，正在评估结果并决定下一步。`
-}
-
-function executionThinkingLabel(content?: string): string {
-  const normalized = (content || '').toLowerCase()
-  if (normalized.includes('preparing the response')) return '正在理解请求并确定执行方式'
-  if (normalized.includes('reviewing the tool results')) return '正在根据已获得的结果调整下一步'
-  if (normalized.includes('reviewing progress')) return '正在检查已获得的证据是否足够'
-  if (normalized.includes('continuing with an expanded')) return '需要补充证据，继续执行后续步骤'
-  if (normalized.includes('synthesizing')) return '正在汇总已验证的结果'
-  return '正在分析当前进展并决定下一步'
 }
 
 function selectAutoAgent(agents: AgentConfig[], content: string): AgentConfig | null {
@@ -501,12 +411,11 @@ async function runInternalTeamDelegation(
 
   await persistTeamSnapshot('running')
   const access = await getConversationAccess(conversation)
-  const durableMemory = await getStorage().runtimeMemory.buildContext(conversation.id, conversation.workspaceId)
-  const projectKnowledge = await getStorage().projectKnowledge.buildContext({
+  const durableMemory = await getStorage().longTermMemory.buildContext('default', {
     workspaceId: conversation.workspaceId,
     workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
-  }, goal)
-  const teamDurableMemory = [durableMemory, projectKnowledge].filter(Boolean).join('\n\n')
+  }, goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
+  const teamDurableMemory = durableMemory
   const workerContexts = new Map<string, string>()
   const workerTurnMessages = new Map<string, string>()
   const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
@@ -745,6 +654,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
   )
 
   ipcMain.handle(IPC.CONVERSATION_DELETE, async (event, id: string): Promise<void> => {
+    clearSessionApprovals(id)
     const conversation = await conversationLifecycle.delete(id)
     void recordActivity({
       category: 'conversation',
@@ -837,6 +747,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
       // the new request from inheriting a late response from the prior turn.
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
+      // The prior turn may be waiting on an approval card. Release it so this
+      // request's own approvals are not queued behind a stale card.
+      rejectAllPendingApprovalsForConversation(conversationId, 'A newer chat request superseded this approval request.')
       resolvePendingGoalConfirmation(conversationId, false)
       let runner: AgentRunner | null = null
       let runtimeProcessId: string | null = null
@@ -864,11 +777,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
           send({ type: 'done', content: '' })
           return
         }
-        const memory = await getStorage().runtimeMemory.buildContext(conversationId, conversation.workspaceId)
-        const projectKnowledge = await getStorage().projectKnowledge.buildContext({
+        const memory = await getStorage().longTermMemory.buildContext('default', {
           workspaceId: conversation.workspaceId,
           workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
-        }, message)
+        }, message, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
         const activePlanScope = conversation.workspaceId
           ? `workspace:${conversation.workspaceId}`
           : conversation.workspacePath?.trim()
@@ -876,9 +788,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             : `conversation:${conversationId}`
         const durableMemory = [
           memory,
-          projectKnowledge,
           getStorage().personalPreferences.buildCapabilityContext(),
-          getStorage().personalPreferences.buildContext(message),
           activePlanContext(await getStorage().activePlans.getActive(activePlanScope)),
         ]
           .filter(Boolean)
@@ -969,6 +879,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
           goal: { ...DEFAULT_AUTOMATION_CONFIG.goal, ...storedAutomation?.goal },
           plan: { ...DEFAULT_AUTOMATION_CONFIG.plan, ...storedAutomation?.plan },
           spec: { ...DEFAULT_AUTOMATION_CONFIG.spec, ...storedAutomation?.spec },
+          // Both of these are nested objects; a shallow spread would drop the
+          // shipped defaults for any key the stored entry omits (e.g. a
+          // `toolApproval` saved without `timeoutMs` would lose it).
+          toolApproval: { ...DEFAULT_AUTOMATION_CONFIG.toolApproval, ...storedAutomation?.toolApproval },
+          sandbox: { ...DEFAULT_AUTOMATION_CONFIG.sandbox, ...storedAutomation?.sandbox },
         }
         const runnerWorkspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const runTask = automation.task.enabled && automation.task.autoInvoke
@@ -1303,31 +1218,25 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let assistantTiming: import('../../shared/types/conversation').ResponseTiming | undefined
         let assistantFinishReason: string | undefined
         let runError: string | null = null
+        // The runner emits `done` before the assistant row exists. Hold it so
+        // the renderer can bind its reply row to the persisted id instead of
+        // guessing by content.
+        let deferredDoneEvent: AgentEvent | null = null
         // Keep only a possible partial eva-progress tag between token chunks.
         // Ordinary response text must not wait for the model's final `done`
         // event, otherwise every provider appears to be non-streaming.
-        let pendingProgressMarkup = ''
+        const progressProjector = new TurnProgressProjector()
         // Keep provisional model text long enough to preserve it as a progress
         // entry when the runner replaces it with a tool call.
         let provisionalAssistantContent = ''
         let latestProgressContent = ''
+        // Answer-structured text written before a tool cycle. It belongs to
+        // the final reply, not to the thinking/progress feed.
+        const answerPrefixSegments: string[] = []
         const progressUpdates: ProgressUpdate[] = []
         const processOutput = effectiveAgentConfig.processOutput || (effectiveAgentConfig.showThinking ? 'detailed' : 'compact')
         const progressCharacterLimit = processOutput === 'detailed' ? 280 : 140
-        const executionTrace: ExecutionTraceEntry[] = []
         const executionTimeline: ExecutionTimelineEntry[] = []
-        let currentAction: {
-          entry: ExecutionTraceEntry
-          toolNames: string[]
-          results: Array<{ name: string; result: string; isError: boolean }>
-        } | null = null
-
-        const emitExecutionTrace = (): void => {
-          sendStreamEvent({
-            type: 'execution_trace',
-            executionTrace: executionTrace.map((entry) => ({ ...entry })),
-          })
-        }
         const emitExecutionTimeline = (): void => {
           sendStreamEvent({
             type: 'execution_timeline',
@@ -1339,59 +1248,17 @@ export function registerConversationHandlers(services?: ChatServices): void {
             })),
           })
         }
-        const addTraceEntry = (entry: Omit<ExecutionTraceEntry, 'id' | 'timestamp'>): ExecutionTraceEntry => {
-          const traceEntry: ExecutionTraceEntry = {
-            ...entry,
-            id: uuidv4(),
-            timestamp: Date.now(),
-          }
-          executionTrace.push(traceEntry)
-          emitExecutionTrace()
-          return traceEntry
-        }
-        const completeActiveNonToolTraceEntries = (): void => {
-          let changed = false
-          for (const entry of executionTrace) {
-            if (entry.status === 'active' && entry.kind !== 'tool') {
-              entry.status = 'completed'
-              changed = true
-            }
-          }
-          if (changed) emitExecutionTrace()
-        }
-        const completeCurrentAction = (): void => {
-          if (!currentAction) return
-          const failed = currentAction.results.filter((result) => result.isError).length
-          currentAction.entry.status = failed > 0 ? 'failed' : 'completed'
-          currentAction.entry.title = failed > 0 ? '本阶段出现问题，正在调整处理方向' : '本阶段行动已完成'
-          currentAction.entry.detail = executionActionOutcome(currentAction.toolNames, currentAction.results)
-          emitExecutionTrace()
-          if (failed > 0) {
-            addTraceEntry({
-              kind: 'issue',
-              status: 'failed',
-              title: '已识别执行阻塞，后续会避开或修正该路径',
-            })
-          } else {
-            addTraceEntry({
-              kind: 'observation',
-              status: 'completed',
-              title: '已获得阶段性结论，正在据此调整下一步',
-            })
-          }
-          currentAction = null
-        }
-
-        const publishProgress = async (kind: ProgressUpdateKind, content: string): Promise<void> => {
+        const publishProgress = async (kind: ProgressUpdateKind, content: string, item?: number): Promise<void> => {
           if (processOutput === 'off') return
-          for (const segment of splitExecutionSegments(content, progressCharacterLimit)) {
-            const summary = summarizeExecutionText(segment, progressCharacterLimit)
+          const summaries = toProgressSummaries(kind, content, progressCharacterLimit)
+          for (const summary of summaries) {
             if (!summary || summary === latestProgressContent) continue
             latestProgressContent = summary
             const progressUpdate: ProgressUpdate = {
               id: uuidv4(),
               kind,
               content: summary,
+              ...(item ? { item } : {}),
               timestamp: Date.now(),
             }
             progressUpdates.push(progressUpdate)
@@ -1401,6 +1268,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               role: 'assistant',
               content: summary,
               progressKind: kind,
+              ...(item ? { progressItem: item } : {}),
               agentId: effectiveAgentConfig.id,
               agentName: effectiveAgentConfig.name,
               timestamp: progressUpdate.timestamp,
@@ -1413,68 +1281,22 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 messageId: progressMessage.id,
                 content: summary,
                 progressKind: kind,
+                ...(item ? { progressItem: item } : {}),
               } satisfies ChatStreamEvent)
             }
           }
         }
-        const progressOpeningTag = '<eva-progress'
-        const progressClosingTag = '</eva-progress>'
         const streamTextDelta = async (content: string): Promise<void> => {
-          pendingProgressMarkup += content
-
-          while (pendingProgressMarkup) {
-            const normalized = pendingProgressMarkup.toLowerCase()
-            const openingIndex = normalized.indexOf(progressOpeningTag)
-
-            if (openingIndex < 0) {
-              // A tag opener can be split across chunks. Retain only the small
-              // matching suffix and immediately forward everything else.
-              const maxPrefixLength = Math.min(progressOpeningTag.length - 1, pendingProgressMarkup.length)
-              let retainedLength = 0
-              for (let length = maxPrefixLength; length > 0; length--) {
-                if (progressOpeningTag.startsWith(normalized.slice(-length))) {
-                  retainedLength = length
-                  break
-                }
-              }
-              const visible = pendingProgressMarkup.slice(0, pendingProgressMarkup.length - retainedLength)
-              pendingProgressMarkup = pendingProgressMarkup.slice(pendingProgressMarkup.length - retainedLength)
-              if (visible) {
-                provisionalAssistantContent += visible
-                send({ type: 'text', content: visible })
-              }
-              return
-            }
-
-            if (openingIndex > 0) {
-              const visible = pendingProgressMarkup.slice(0, openingIndex)
-              provisionalAssistantContent += visible
-              send({ type: 'text', content: visible })
-              pendingProgressMarkup = pendingProgressMarkup.slice(openingIndex)
+          for (const segment of progressProjector.feed(content)) {
+            if (segment.type === 'text') {
+              provisionalAssistantContent += segment.content
+              send({ type: 'text', content: segment.content })
               continue
             }
-
-            const closingIndex = normalized.indexOf(progressClosingTag)
-            if (closingIndex < 0) return
-
-            const markupEnd = closingIndex + progressClosingTag.length
-            const updates = extractProgressUpdates(pendingProgressMarkup.slice(0, markupEnd))
-            pendingProgressMarkup = pendingProgressMarkup.slice(markupEnd)
-            for (const update of updates) await publishProgress(update.kind, update.content)
+            await publishProgress(segment.kind, segment.content, segment.item)
           }
         }
 
-        const clearPendingProgressMarkup = (): void => {
-          // A tool call can only follow a complete, user-visible progress tag.
-          // Drop malformed/incomplete tag fragments rather than exposing them.
-          pendingProgressMarkup = ''
-        }
-
-        addTraceEntry({
-          kind: 'plan',
-          status: 'active',
-          title: '正在理解目标并制定首轮处理方向',
-        })
         const primarySupportsVision = primaryModelSupportsVision(effectiveAgentConfig, provider)
         const runnerHistory = primarySupportsVision ? historyMessages : historyMessages.map((history) => history.images?.length ? { ...history, images: undefined } : history)
         const runnerMessage = imageContext ? { ...userChatMessage, images: undefined } : userChatMessage
@@ -1485,7 +1307,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             continue
           }
           if (agentEvent.type === 'text_reset') {
-            clearPendingProgressMarkup()
+            progressProjector.discardPending()
             if (agentEvent.reason === 'protocol-repair') {
               executionTimeline.push({
                 id: uuidv4(),
@@ -1501,7 +1323,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
             // markup is discarded without being shown.
             if (agentEvent.discardProvisionalText || provisionalAssistantContent.trim()) {
               if (!agentEvent.discardProvisionalText && provisionalAssistantContent.trim()) {
-                await publishProgress('thinking', provisionalAssistantContent)
+                if (isAnswerLikeContent(provisionalAssistantContent)) {
+                  answerPrefixSegments.push(provisionalAssistantContent.trim())
+                } else {
+                  await publishProgress('thinking', provisionalAssistantContent)
+                }
               }
               provisionalAssistantContent = ''
               assistantContent = ''
@@ -1519,17 +1345,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
             }
             emitExecutionTimeline()
           }
-          if (agentEvent.type === 'thinking') {
-            completeCurrentAction()
-            completeActiveNonToolTraceEntries()
-            addTraceEntry({
-              kind: 'activity',
-              status: 'active',
-              title: executionThinkingLabel(agentEvent.content),
-            })
-          }
           if (agentEvent.type === 'tool_call' && agentEvent.toolCall) {
-            clearPendingProgressMarkup()
+            progressProjector.discardPending()
             allToolCalls.push(agentEvent.toolCall)
             executionTimeline.push({
               id: uuidv4(),
@@ -1542,20 +1359,6 @@ export function registerConversationHandlers(services?: ChatServices): void {
               },
             })
             emitExecutionTimeline()
-            if (!currentAction) {
-              completeActiveNonToolTraceEntries()
-              currentAction = {
-                entry: addTraceEntry({
-                  kind: 'tool',
-                  status: 'active',
-                  title: executionActionTitle([agentEvent.toolCall.name]),
-                }),
-                toolNames: [],
-                results: [],
-              }
-            }
-            currentAction.toolNames.push(agentEvent.toolCall.name)
-            currentAction.entry.title = executionActionTitle(currentAction.toolNames)
             void recordActivity({
               category: 'tool',
               action: 'tool.started',
@@ -1577,11 +1380,6 @@ export function registerConversationHandlers(services?: ChatServices): void {
               }
               emitExecutionTimeline()
             }
-            currentAction?.results.push({
-              name: agentEvent.toolResult.name,
-              result: agentEvent.toolResult.result,
-              isError: agentEvent.toolResult.isError,
-            })
             void recordActivity({
               category: 'tool',
               action: 'tool.completed',
@@ -1594,21 +1392,25 @@ export function registerConversationHandlers(services?: ChatServices): void {
           if (agentEvent.type === 'done') {
             // `done` carries the canonical, complete response. Any remaining
             // buffer is only an incomplete tag opener and must not be shown.
-            clearPendingProgressMarkup()
-            provisionalAssistantContent = ''
+            progressProjector.discardPending()
+            // A stopped round never produced a final answer, so the streamed
+            // text is the only copy of what the user read. Keep it for the
+            // persist step instead of discarding it with the buffer.
+            if (!userStoppedChatRunTokens.has(runToken)) provisionalAssistantContent = ''
             if (agentEvent.content) {
               const rawContent = agentEvent.content
-              const strippedContent = rawContent
-                .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>[\s\S]*?<\/eva-progress>/gi, '')
-                .trim()
+              const strippedContent = stripProgressBlocks(rawContent).trim()
               // If the model wrapped its actual answer inside eva-progress tags,
               // stripping them must not produce an empty reply; keep the tag
               // contents as plain text instead.
-              assistantContent = strippedContent || rawContent
-                .replace(/<eva-progress(?:\s+kind=["'](?:thinking|finding|action|issue)["'])?\s*>|<\/eva-progress>/gi, '')
-                .trim()
-              agentEvent.content = assistantContent
+              assistantContent = strippedContent || unwrapProgressTags(rawContent).trim()
             }
+            // Reattach answer-structured sections the model wrote before tool
+            // cycles so the persisted reply keeps its beginning in order.
+            if (answerPrefixSegments.length > 0) {
+              assistantContent = [...answerPrefixSegments, assistantContent.trim()].filter(Boolean).join('\n\n')
+            }
+            if (assistantContent) agentEvent.content = assistantContent
             assistantUsage = agentEvent.usage
             assistantTiming = agentEvent.timing
               ? {
@@ -1619,34 +1421,29 @@ export function registerConversationHandlers(services?: ChatServices): void {
               : undefined
             if (assistantTiming) agentEvent.timing = assistantTiming
             assistantFinishReason = agentEvent.finishReason
-            completeCurrentAction()
-            completeActiveNonToolTraceEntries()
-            addTraceEntry({
-              kind: 'result',
-              status: 'completed',
-              title: '已完成本次处理，正在整理回复',
-            })
           }
           if (agentEvent.type === 'error') {
             runError = agentEvent.error || 'The model response failed.'
-            completeCurrentAction()
-            completeActiveNonToolTraceEntries()
-            addTraceEntry({
-              kind: 'issue',
-              status: 'failed',
-              title: '执行过程中遇到问题',
-              detail: summarizeExecutionText(runError),
-            })
           }
 
-          // Forward event to renderer
-          send(agentEvent)
+          // Forward event to renderer, except the terminal event: it is sent
+          // once the assistant row is stored (see below).
+          if (agentEvent.type === 'done') {
+            deferredDoneEvent = agentEvent
+          } else {
+            send(agentEvent)
+          }
         }
 
         // The request may have been replaced while the runner was awaiting a
         // provider response. Do not let stale output reach storage or update
         // the conversation status after a newer request took ownership.
-        if (!isCurrentRun()) return
+        // A run the user stopped is different: its streamed text is the only
+        // copy of what they were reading, so it is stored as cancelled. A run
+        // superseded by a newer message stores nothing; that message owns the
+        // conversation now.
+        const stoppedByUser = userStoppedChatRunTokens.delete(runToken)
+        if (!isCurrentRun() && !(stoppedByUser && !activeChatRunTokens.has(conversationId))) return
 
         // 7. Save assistant response to storage
         const assistantMessageId = uuidv4()
@@ -1665,13 +1462,19 @@ export function registerConversationHandlers(services?: ChatServices): void {
               })
             : undefined
 
+        const persistedContent = resolveAssistantTurnContent({
+          completedContent: assistantContent,
+          provisionalContent: provisionalAssistantContent,
+          runError,
+          userAborted: stoppedByUser,
+        })
+
         const assistantChatMessage: ChatMessage = {
           id: assistantMessageId,
           conversationId,
           role: 'assistant',
-          content: runError && !assistantContent && allToolCalls.length === 0 ? userFacingRunError(runError) : assistantContent,
+          content: persistedContent,
           reasoningContent: assistantReasoningContent || undefined,
-          executionTrace: executionTrace.length > 0 ? executionTrace : undefined,
           executionTimeline: executionTimeline.length > 0 ? executionTimeline : undefined,
           progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
           toolCalls: toolCallsForMessage,
@@ -1686,6 +1489,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, assistantChatMessage)
+        if (deferredDoneEvent) {
+          sendStreamEvent({ ...toChatStreamEvent(deferredDoneEvent), messageId: assistantMessageId })
+        }
         // Save individual tool messages for tool results
         for (const tr of allToolResults) {
           const toolMessage: ChatMessage = {
@@ -1701,15 +1507,18 @@ export function registerConversationHandlers(services?: ChatServices): void {
           await convStore.addMessage(conversationId, toolMessage)
         }
         const latestConversation = await convStore.getConversation(conversationId)
-        if (latestConversation?.executionStatus !== 'cancelled') {
-        }
+        // The abort handler writes `executionStatus` asynchronously, so it can
+        // still read as 'running' here. The stopped-run flag is authoritative.
+        const turnStatus = stoppedByUser
+          ? 'cancelled'
+          : latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed'
         await getStorage().runtimeMemory.recordConversationTurn({
           conversationId,
           workspaceId: conversation.workspaceId,
           assistantMessageId,
           userRequest: message,
           outcome: assistantChatMessage.content,
-          status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
+          status: turnStatus,
         })
         try {
           await getStorage().projectKnowledge.recordEngineeringTurn({
@@ -1719,39 +1528,47 @@ export function registerConversationHandlers(services?: ChatServices): void {
             workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
             userRequest: message,
             assistantContent: assistantChatMessage.content,
-            status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
+            status: turnStatus,
             toolCalls: toolCallsForMessage,
           })
         } catch (error) {
           console.warn('Project knowledge recording failed:', error)
         }
-        void getStorage().personalPreferences.distillTurn({
-          userMessage: message,
-          assistantMessage: assistantChatMessage.content,
-          recentTurns: [
-            ...historyMessages
-              .filter((item) => item.role === 'user' || item.role === 'assistant')
-              .slice(-6)
-              .map((item) => ({ role: item.role as 'user' | 'assistant', content: item.content })),
-            { role: 'user', content: message },
-            { role: 'assistant', content: assistantChatMessage.content },
-          ],
-          status: latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
-        }, provider, effectiveAgentConfig.model).catch((error) => console.warn('Personal preference distillation failed:', error))
+        services.memoryAgent.enqueue({
+          conversationId,
+          messageId: assistantMessageId,
+          workspaceId: conversation.workspaceId,
+          workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
+          userRequest: message,
+          assistantResult: assistantChatMessage.content,
+          status: turnStatus,
+          changedFiles: (toolCallsForMessage || []).flatMap((toolCall) => {
+            const value = toolCall.arguments.path
+            return typeof value === 'string' ? [value] : []
+          }),
+          toolCalls: (toolCallsForMessage || []).map((toolCall) => ({
+            name: toolCall.name,
+            target: typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : undefined,
+            resultSummary: toolCall.result?.slice(0, 500),
+            isError: toolCall.isError,
+          })),
+        }, effectiveAgentConfig.providerId, effectiveAgentConfig.model)
         win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         void recordActivity({
           category: 'agent',
-          action: runError ? 'agent.failed' : 'agent.completed',
-          status: runError ? 'error' : 'success',
-          summary: runError || `${effectiveAgentConfig.name} completed the response.`,
+          action: stoppedByUser ? 'agent.cancelled' : runError ? 'agent.failed' : 'agent.completed',
+          status: stoppedByUser ? 'info' : runError ? 'error' : 'success',
+          summary: stoppedByUser
+            ? `${effectiveAgentConfig.name}'s response was stopped by the user.`
+            : runError || `${effectiveAgentConfig.name} completed the response.`,
           conversationId,
           workspaceId: conversation.workspaceId,
         }, win)
         if (runtimeProcessId) {
           await getAgentOsScheduler().finishInteractive(
             runtimeProcessId,
-            latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed',
-            runError || `${effectiveAgentConfig.name} completed the chat request.`,
+            turnStatus,
+            stoppedByUser ? 'Stopped by the user.' : runError || `${effectiveAgentConfig.name} completed the chat request.`,
           )
         }
         if (shouldGenerateTitle) {
@@ -1790,6 +1607,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           activeRunners.delete(conversationId)
         }
         if (isCurrentRun()) activeChatRunTokens.delete(conversationId)
+        userStoppedChatRunTokens.delete(runToken)
       }
     }
   )
@@ -1798,6 +1616,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(IPC.CHAT_ABORT, (event, conversationId?: string) => {
     if (conversationId) {
+      const stoppedRunToken = activeChatRunTokens.get(conversationId)
+      if (stoppedRunToken) userStoppedChatRunTokens.add(stoppedRunToken)
       activeChatRunTokens.delete(conversationId)
       resolvePendingGoalConfirmation(conversationId, false)
       rejectAllPendingApprovalsForConversation(conversationId, 'The user cancelled the chat.')
@@ -1842,15 +1662,21 @@ export function registerConversationHandlers(services?: ChatServices): void {
       const approvalId = typeof payload?.approvalId === 'string' ? payload.approvalId : ''
       const conversationId = typeof payload?.conversationId === 'string' ? payload.conversationId : ''
       const approved = payload?.approved === true
+      const rememberScope = payload?.rememberScope === 'session' ? 'session' : 'once'
       if (!approvalId) return false
-      const handled = resolvePendingApproval(approvalId, approved, approved ? undefined : 'The user denied the tool call.')
+      const handled = resolvePendingApproval(
+        approvalId,
+        approved,
+        approved ? undefined : 'The user denied the tool call.',
+        rememberScope,
+      )
       if (!handled) return false
 
       void recordActivity({
         category: 'permission',
         action: approved ? 'chat.tool_approved' : 'chat.tool_rejected',
         status: approved ? 'success' : 'error',
-        summary: `User ${approved ? 'approved' : 'rejected'} tool call (${payload?.rememberScope || 'once'}).`,
+        summary: `User ${approved ? 'approved' : 'rejected'} tool call (${rememberScope}).`,
         conversationId,
       })
       return true

@@ -17,6 +17,7 @@ import { registerPersonalPreferenceHandlers } from './personal-preferences'
 import { registerAppServerHandlers } from './app-server'
 import { registerSandboxHandlers } from './sandbox'
 import { registerProjectKnowledgeHandlers } from './project-knowledge'
+import { registerLongTermMemoryHandlers } from './long-term-memory'
 
 export type Services = ApplicationServices
 
@@ -28,6 +29,7 @@ export function registerAllIpcHandlers(services?: Services): void {
         providerRegistry: services.providerRegistry,
         fileService: services.fileService,
         terminalService: services.terminalService,
+        memoryAgent: services.memoryAgent,
       }
     : undefined
 
@@ -38,6 +40,7 @@ export function registerAllIpcHandlers(services?: Services): void {
         providerRegistry: services.providerRegistry,
         fileService: services.fileService,
         terminalService: services.terminalService,
+        memoryAgent: services.memoryAgent,
       }
     : undefined
   registerConversationHandlers(chatServices)
@@ -58,4 +61,5 @@ export function registerAllIpcHandlers(services?: Services): void {
   if (services) registerAppServerHandlers(services)
   registerSandboxHandlers()
   registerProjectKnowledgeHandlers()
+  registerLongTermMemoryHandlers()
 }

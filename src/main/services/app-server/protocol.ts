@@ -30,6 +30,23 @@ export interface ServerEvent {
 
 export type RpcMethodHandler = (params: unknown) => Promise<unknown> | unknown
 
+/**
+ * Canonical JSON-RPC codes for this server. Both transports answer with these,
+ * so a client sees the same code for the same mistake whichever door it came
+ * in through.
+ */
+export const RPC_ERROR_CODE = {
+  PARSE_ERROR: -32700,
+  INVALID_REQUEST: -32600,
+  METHOD_NOT_FOUND: -32601,
+  INVALID_PARAMS: -32602,
+  INTERNAL_ERROR: -32603,
+  UNAUTHORIZED: -32001,
+  /** The connection has not completed `initialize` yet. */
+  NOT_INITIALIZED: -32002,
+  ALREADY_RUNNING: -32003,
+} as const
+
 export type ServerStatus = import('../../../shared/types/automation').AppServerStatus
 
 // Method names: keep these as plain string literal types so they map directly
@@ -51,6 +68,7 @@ export type RpcMethod = typeof RPC_METHOD[keyof typeof RPC_METHOD]
 export const EVENT_TYPE = {
   TURN_STARTED: 'turn/started',
   TURN_TEXT_DELTA: 'turn/text_delta',
+  TURN_PROGRESS: 'turn/progress',
   TURN_TOOL_CALL_START: 'turn/tool_call_start',
   TURN_TOOL_RESULT: 'turn/tool_result',
   TURN_APPROVAL_REQUEST: 'turn/approval_request',

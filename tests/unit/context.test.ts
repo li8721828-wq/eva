@@ -207,6 +207,10 @@ describe('ContextManager', () => {
       expect(prompt).toContain('lead with actionable findings ordered by severity')
       expect(prompt).toContain('Keep unverified concerns separate from confirmed findings')
       expect(prompt).toContain('Do not modify reviewed code unless requested')
+      expect(prompt).toContain('silently classify the active request')
+      expect(prompt).toContain('never add a section merely because it is available')
+      expect(prompt).toContain('usually no more than five')
+      expect(prompt).toContain('If no tool was used, do not imply')
     })
 
     it('prioritizes the active request over historical context and durable memory', () => {
@@ -260,6 +264,54 @@ describe('ContextManager', () => {
       expect(prompt).toContain('--- Evidence and Action Integrity ---')
       expect(prompt).toContain('Custom platform suffix.')
       expect(prompt).not.toContain('{{default_platform_rules}}')
+    })
+
+    it('asks for a plan plus numbered step reports when detailed process output is on', () => {
+      const agent: AgentConfig = {
+        id: 'detailed-agent', name: 'Detailed Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        processOutput: 'detailed', model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const prompt = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+
+      expect(prompt).toContain('<eva-progress kind="plan">')
+      expect(prompt).toContain('<eva-progress kind="step" item="N">')
+      expect(prompt).toContain('Every line becomes one entry of the user-visible checklist')
+      expect(prompt).toContain('it replaces the checklist')
+      expect(prompt).toContain('Do not number the steps yourself')
+      expect(prompt).not.toContain('at most three')
+    })
+
+    it('keeps the capped legacy protocol for compact mode and only the final answer for off', () => {
+      const base: AgentConfig = {
+        id: 'output-mode-agent', name: 'Output Mode Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const compact = cm.buildSystemPrompt({ ...base, processOutput: 'compact' }, 'C:\\workspace', undefined, false, [])
+      expect(compact).toContain('at most three')
+      expect(compact).not.toContain('kind="plan"')
+      expect(compact).not.toContain('kind="step"')
+
+      const off = cm.buildSystemPrompt({ ...base, processOutput: 'off' }, 'C:\\workspace', undefined, false, [])
+      expect(off).toContain('Give the user the final answer only.')
+      expect(off).not.toContain('kind="plan"')
+      expect(off).not.toContain('kind="step"')
+    })
+
+    it('requires process updates to follow the user language', () => {
+      const agent: AgentConfig = {
+        id: 'language-agent', name: 'Language Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        processOutput: 'detailed', model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const prompt = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+
+      expect(prompt).toContain('in the same language the user is using')
+      expect(prompt).toContain('the update must be Chinese')
     })
   })
 

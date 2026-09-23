@@ -27,4 +27,8 @@ describe('web URL network policy', () => {
   it('allows a public hostname', () => {
     expect(isBlockedWebHostname('www.example.com')).toBe(false)
   })
+
+  it.each(['fda.gov', 'fc2.com', 'fdic.gov'])('does not mistake the public hostname %s for an IPv6 range', (hostname) => {
+    expect(isBlockedWebHostname(hostname)).toBe(false)
+  })
 })

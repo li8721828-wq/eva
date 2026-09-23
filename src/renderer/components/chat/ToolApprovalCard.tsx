@@ -138,9 +138,10 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
             <button
               type="button"
               onClick={() => handleDecision(true, 'session')}
+              title={`本会话内不再询问「${label}」类操作`}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
             >
-              本会话内都允许
+              本会话内都允许「{label}」
             </button>
             <button
               type="button"

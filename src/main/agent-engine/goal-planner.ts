@@ -721,7 +721,19 @@ Respond with JSON:
     const messages: ChatMessageInput[] = [
       {
         role: 'system',
-        content: 'You are summarizing the completion of a goal. Provide a clear, concise summary.',
+        content: [
+          'You are summarizing the completion of a goal for the user.',
+          'Return a concise, well-structured Markdown summary with exactly these sections:',
+          '## 结论',
+          'One sentence stating the outcome.',
+          '## 已完成',
+          'A short bullet list of verified changes or results.',
+          '## 问题与风险',
+          'A short bullet list; write 无 if there are none.',
+          '## 下一步',
+          'A short bullet list of concrete follow-up actions; write 无 if none are needed.',
+          'Do not output chain-of-thought, raw tool logs, isolated code fragments, line-by-line notes, or unfinished Markdown markers.',
+        ].join('\n'),
       },
       {
         role: 'user',

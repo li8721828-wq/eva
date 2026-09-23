@@ -8,6 +8,7 @@ function context(): ToolContext {
     writeFile: vi.fn(),
     listDirectory: vi.fn(),
     searchFiles: vi.fn(),
+    resolveAuthorizedPath: vi.fn(async (filePath: string) => filePath),
     fileExists: vi.fn(),
     getFileInfo: vi.fn(),
   }
@@ -20,7 +21,7 @@ function context(): ToolContext {
     resize: vi.fn(),
     destroySession: vi.fn(),
     onOutput: vi.fn(() => () => undefined),
-    setSandboxContext: vi.fn(),
+    checkSandboxCommand: vi.fn(() => null),
   }
   return { workspacePath: 'C:/workspace', fileService, terminalService }
 }

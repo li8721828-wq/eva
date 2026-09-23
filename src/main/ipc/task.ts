@@ -23,6 +23,7 @@ import { TaskRunLifecycleService } from '../services/task-run-lifecycle-service'
 import { v4 as uuidv4 } from 'uuid'
 import { prepareGoalStepConversation, persistGoalStepEvent } from '../services/goal-step-conversation'
 import { activeRunRegistry } from '../services/run-registry'
+import type { MemoryAgentService } from '../services/memory-agent-service'
 
 export interface TaskServices {
   storage: StorageManager
@@ -30,6 +31,7 @@ export interface TaskServices {
   providerRegistry: ProviderRegistry
   fileService: FileService
   terminalService: TerminalService
+  memoryAgent: MemoryAgentService
 }
 
 export interface ExpertTaskStartInput {
@@ -535,7 +537,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
         if (!conversation) {
           throw new Error('Conversation not found.')
         }
-        const durableMemory = await getStorage().runtimeMemory.buildContext(conversationId, conversation.workspaceId)
+        const durableMemory = await getStorage().longTermMemory.buildContext('default', {
+          workspaceId: conversation.workspaceId,
+          workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
+        }, goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const historyMessages = await getStorage().conversations.getMessages(conversationId, { limit: 12 })
@@ -770,6 +775,15 @@ export function registerTaskHandlers(services?: TaskServices): void {
           status: wasCancelled ? 'cancelled' : executionFailed ? 'failed' : 'completed',
           updatedAt: Date.now(),
         })
+        services?.memoryAgent.enqueue({
+          conversationId,
+          messageId: `task:team:${Date.now()}`,
+          workspaceId: conversation.workspaceId,
+          workspacePath: conversation.workspacePath,
+          userRequest: goal,
+          assistantResult: finalSummary || '',
+          status: wasCancelled ? 'cancelled' : executionFailed ? 'failed' : 'completed',
+        }, leader.providerId, leader.model)
       } catch (err: any) {
         await getStorage().taskRuns.save({
           conversationId,
@@ -1010,7 +1024,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
         if (!conversation) throw new Error('The Goal conversation is unavailable.')
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
-        const durableMemory = await getStorage().runtimeMemory.buildContext(payload.conversationId, conversation?.workspaceId)
+        const durableMemory = await getStorage().longTermMemory.buildContext('default', {
+          workspaceId: conversation.workspaceId,
+          workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
+        }, payload.goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
 
         // 4. Create GoalPlanner
         const goalConfig: GoalConfig = {
@@ -1106,6 +1123,15 @@ export function registerTaskHandlers(services?: TaskServices): void {
               status,
               updatedAt: Date.now(),
             })
+            services?.memoryAgent.enqueue({
+              conversationId: payload.conversationId,
+              messageId: `task:goal:${Date.now()}`,
+              workspaceId: conversation?.workspaceId,
+              workspacePath: conversation?.workspacePath,
+              userRequest: payload.goal,
+              assistantResult: goalEvent.progress.summary || '',
+              status,
+            }, goalAgentConfig.providerId, goalAgentConfig.model)
           } else if (goalEvent.type === 'error') {
             await getAgentOsScheduler().transitionTask(payload.conversationId, 'goal', 'failed', goalEvent.error)
           } else if (planner?.paused) {

@@ -9,8 +9,8 @@ import {
 } from '../../shared/constants'
 import type { ProviderConfigEntry } from '../../shared/types/provider'
 import type { FileAccessGrant } from '../../shared/types/file-access'
-import type { AutomationConfig } from '../../shared/types/automation'
-import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
+import type { AppServerConfig, AutomationConfig } from '../../shared/types/automation'
+import { DEFAULT_APP_SERVER_CONFIG, DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ModelRateCard } from '../../shared/types/cost'
 import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
 import { DEFAULT_NETWORK_CONFIG, type NetworkConfig } from '../../shared/types/network'
@@ -47,6 +47,8 @@ export interface AppConfig {
   temperature: number
   maxTokens: number
   automation: AutomationConfig
+  /** Loopback App-Server / ACP transport preferences. */
+  appServer: AppServerConfig
   costRateCards: ModelRateCard[]
   network: NetworkConfig
   /** Shared OS, shell, path, and tool rules injected into every Agent prompt. */
@@ -97,6 +99,7 @@ const DEFAULTS: AppConfig = {
   temperature: DEFAULT_TEMPERATURE,
   maxTokens: DEFAULT_MAX_TOKENS,
   automation: DEFAULT_AUTOMATION_CONFIG,
+  appServer: DEFAULT_APP_SERVER_CONFIG,
   costRateCards: [],
   network: DEFAULT_NETWORK_CONFIG,
   environmentRules: DEFAULT_ENVIRONMENT_RULES,
@@ -157,6 +160,7 @@ export class ConfigStore {
       ['activeProviderId', (value) => typeof value === 'string'],
       ['activeModel', (value) => typeof value === 'string'],
       ['automation', isRecord],
+      ['appServer', isRecord],
       ['network', isRecord],
       ['environmentRules', isRecord],
     ]

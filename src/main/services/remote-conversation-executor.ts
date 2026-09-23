@@ -5,17 +5,10 @@ import { AgentRunner } from '../agent-engine/agent-runner'
 import { ContextManager } from '../agent-engine/context'
 import { getStorage } from '../storage'
 import { recordActivity } from './activity-log'
-import { BrowserWindow } from 'electron'
-import { IPC } from '../../shared/ipc-channels'
 import { createRemoteToolApproval } from './remote-tool-policy'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import { resolveEffectiveAgentConfig } from './effective-agent-config'
-
-function notifyConversationChanged(conversationId: string): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) window.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
-  }
-}
+import { notifyRendererConversationChanged } from './conversation-notify'
 
 function getConversationAccess(conversation: Conversation): { fileAccessGrants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean } {
   if (conversation.permissionLevel === 'full-access') return { fileAccessGrants: [], fullFilesystemAccess: true }
@@ -56,15 +49,19 @@ export async function executeRemoteConversationMessage(
     timestamp: Date.now(),
   }
   await storage.conversations.addMessage(conversationId, userMessage)
-  notifyConversationChanged(conversationId)
+  notifyRendererConversationChanged(conversationId)
 
   const access = getConversationAccess(conversation)
+  const durableMemory = await storage.longTermMemory.buildContext('default', {
+    workspaceId: conversation.workspaceId,
+    workspacePath: conversation.workspacePath || storage.config.get('workspacePath'),
+  }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled })
   const runner = new AgentRunner({
     conversationId,
     agentConfig: effectiveAgent,
     provider,
     toolRegistry: services.toolRegistry,
-    contextManager: new ContextManager({ environmentRules: storage.config.get('environmentRules') }),
+    contextManager: new ContextManager({ durableMemory, environmentRules: storage.config.get('environmentRules') }),
     workspacePath: conversation.workspacePath,
     fileAccessGrants: access.fileAccessGrants,
     fullFilesystemAccess: access.fullFilesystemAccess,
@@ -116,8 +113,9 @@ export async function executeRemoteConversationMessage(
       if (event.type === 'error') throw new Error(event.error || 'The agent failed to respond.')
     }
 
+    const assistantMessageId = uuidv4()
     await storage.conversations.addMessage(conversationId, {
-      id: uuidv4(),
+      id: assistantMessageId,
       conversationId,
       role: 'assistant',
       content: assistantContent,
@@ -139,7 +137,23 @@ export async function executeRemoteConversationMessage(
         timestamp: Date.now(),
       })
     }
-    notifyConversationChanged(conversationId)
+    services.memoryAgent.enqueue({
+      conversationId,
+      messageId: assistantMessageId,
+      workspaceId: conversation.workspaceId,
+      workspacePath: conversation.workspacePath || storage.config.get('workspacePath'),
+      userRequest: message,
+      assistantResult: assistantContent,
+      status: 'completed',
+      changedFiles: toolCalls.flatMap((toolCall) => typeof toolCall.arguments.path === 'string' ? [toolCall.arguments.path] : []),
+      toolCalls: toolCalls.map((toolCall) => ({
+        name: toolCall.name,
+        target: typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : undefined,
+        resultSummary: toolCall.result?.slice(0, 500),
+        isError: toolCall.isError,
+      })),
+    }, effectiveAgent.providerId, effectiveAgent.model)
+    notifyRendererConversationChanged(conversationId)
     void recordActivity({
       category: 'agent', action: 'qq.agent_completed', status: 'success',
       summary: `${effectiveAgent.name} completed a QQ remote response.`,

@@ -64,12 +64,12 @@ export interface ChatMessage {
   attachmentContext?: string
   /** Provider-supplied reasoning shown separately from the final answer. */
   reasoningContent?: string
-  /** Safe, user-visible execution record for this response. */
-  executionTrace?: ExecutionTraceEntry[]
   /** Chronological provider reasoning, tool calls, and tool feedback. */
   executionTimeline?: ExecutionTimelineEntry[]
   /** A concise, user-visible progress update emitted while work is underway. */
   progressKind?: ProgressUpdateKind
+  /** For a `step` row: the 1-based plan line this report completes. */
+  progressItem?: number
   /** Ordered, user-visible progress retained with the response that produced it. */
   progressUpdates?: ProgressUpdate[]
   /** Files and folders the user attached to this message. Their contents stay local. */
@@ -208,29 +208,18 @@ export interface ToolCall {
   protocol?: ExecutionEnvelope
 }
 
-export type ExecutionTraceKind = 'plan' | 'activity' | 'tool' | 'observation' | 'issue' | 'result'
-export type ExecutionTraceStatus = 'active' | 'completed' | 'failed'
-export type ProgressUpdateKind = 'thinking' | 'finding' | 'action' | 'issue'
+/** `plan` and `step` are the structured work report: one opening plan block
+ *  plus one numbered report per meaningful step. The remaining kinds are the
+ *  older free-form progress updates and stay supported. */
+export type ProgressUpdateKind = 'thinking' | 'finding' | 'action' | 'issue' | 'plan' | 'step'
 
 export interface ProgressUpdate {
   id: string
   kind: ProgressUpdateKind
   content: string
+  /** For a `step` update: the 1-based plan line this report completes. */
+  item?: number
   timestamp: number
-}
-
-/**
- * A concise, verifiable progress event. This intentionally contains a
- * summary of work performed rather than provider chain-of-thought.
- */
-export interface ExecutionTraceEntry {
-  id: string
-  kind: ExecutionTraceKind
-  status: ExecutionTraceStatus
-  title: string
-  detail?: string
-  timestamp: number
-  toolCallId?: string
 }
 
 export interface ExecutionTimelineEntry {
@@ -276,7 +265,7 @@ export interface ChatStreamEvent {
   /** The Agent actually selected for this response by the main process. */
   agentId?: string
   agentName?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_trace' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'done' | 'error'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'done' | 'error'
   messageId?: string
   content?: string
   /** True only when provisional text was protocol markup and must be discarded. */
@@ -288,9 +277,10 @@ export interface ChatStreamEvent {
   toolResult?: string
   isError?: boolean
   protocol?: ExecutionEnvelope
-  executionTrace?: ExecutionTraceEntry[]
   executionTimeline?: ExecutionTimelineEntry[]
   progressKind?: ProgressUpdateKind
+  /** For a `progress` event of kind `step`: the plan line the report completes. */
+  progressItem?: number
   goalConfirmation?: GoalConfirmationRequest
   toolApproval?: ToolApprovalRequest
   error?: string

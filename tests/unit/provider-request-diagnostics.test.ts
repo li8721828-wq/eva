@@ -35,9 +35,11 @@ describe('provider request diagnostics', () => {
       'chat',
     )
 
+    // The banner and the persisted round notice both keep only this first line.
+    expect(message.split('\n', 1)[0]).toBe('无法连接模型服务。检查该连接的 baseUrl、代理与 DNS 设置；若只有这个模型失败，再核对模型名称和工具调用兼容性。')
+    expect(message).toContain('The provider closed the connection')
     expect(message).toContain('code=network')
     expect(message).toContain('retryable=true')
-    expect(message).toContain('检查 baseUrl')
   })
 
   it('reports the HTTP status that caused a classified failure', () => {

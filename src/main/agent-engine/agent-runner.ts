@@ -18,12 +18,11 @@ import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
 import { classifyError, InvalidRequestError } from '../providers/errors'
 import { describeModelCapabilityProfile, inferModelCapabilities } from '../../shared/model-capabilities'
-import { expandToolSet, isFastSynthesisReadTool, REQUEST_ADDITIONAL_TOOLS, selectInitialTools } from './tool-selection'
 import { randomUUID } from 'crypto'
 import type { AgentRunEventStore } from '../storage/agent-run-event-store'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { resolveSandboxPolicy } from '../services/sandbox/policy'
-import { setFileServiceSandboxContext } from '../services/file-service'
+import { openSandboxScope, closeSandboxScope } from '../services/sandbox/scope'
 import { ToolDispatcher } from '../services/tool-dispatcher'
 
 export interface AgentRunnerConfig {
@@ -112,6 +111,16 @@ const MAX_NORMAL_TOOL_CYCLES = 4
 const DEFAULT_AGENT_RESPONSE_TOKENS = 4_096
 const REASONING_AGENT_RESPONSE_TOKENS = 8_192
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
+/** Identity of one concrete tool invocation, used to detect repeated batches and calls. */
+function toolCallSignature(name: string, toolArguments: Record<string, unknown>): string {
+  return `${name}:${JSON.stringify(toolArguments)}`
+}
+// Directory/search results commonly identify the next file to read, so they
+// remain in the bounded loop. A concrete read is usually sufficient to
+// synthesize immediately.
+function isFastSynthesisReadTool(name: string): boolean {
+  return ['read_file', 'read_terminal', 'read_web_page', 'inspect_runtime'].includes(name)
+}
 // Reads of local files are only valid for the workspace state they observed.
 const LOCAL_FILE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files'])
 const WORKSPACE_MUTATION_TOOL_NAMES = new Set(['write_file', 'edit_file', 'execute_command'])
@@ -285,7 +294,7 @@ export class AgentRunner {
    */
   async *run(params: RunParams): AsyncGenerator<AgentEvent> {
     if (this.isRunning) {
-      yield { type: 'error', error: 'AgentRunner is already running' }
+      yield { type: 'error', error: '上一个任务仍在同一个执行器中运行，本次请求未发送。请等待它完成，或先停止上一轮。' }
       return
     }
 
@@ -299,19 +308,12 @@ export class AgentRunner {
     this.currentRunId = randomUUID()
     this.currentTurnId = randomUUID()
 
-    // Bind the sandbox context to terminal/file services for the duration of
-    // this run. The context is derived from the automation config and includes
-    // the workspace + grants that the per-backend policy evaluates against.
-    const sandboxContext = buildSandboxContext(this.config)
-
-    // Apply the resolved sandbox context to services. TerminalService supports
-    // the binding directly; FileService uses a module-level setter.
-    // Call only if the method is present (backward compat with test mocks that
-    // use a plain object as the terminal service).
-    if (typeof this.config.terminalService.setSandboxContext === 'function') {
-      this.config.terminalService.setSandboxContext(sandboxContext)
-    }
-    setFileServiceSandboxContext(sandboxContext)
+    // Bind the sandbox context for the duration of this run. The context is
+    // derived from the automation config and includes the workspace + grants
+    // that the per-backend policy evaluates against. It lives in a per-run
+    // scope registry so concurrent runs cannot clear each other's policy when
+    // the first one finishes.
+    const sandboxScopeToken = openSandboxScope(buildSandboxContext(this.config))
 
     try {
       const userMessage = normalizePendingUserMessage(params.newMessage)
@@ -320,7 +322,10 @@ export class AgentRunner {
 
       // Synchronize the active supplier connection before any model call so a
       // newly used connection does not require a separate Cost Center visit.
-      await ensureProviderPricing(this.config.provider.id).catch(() => undefined)
+      // Not awaited: pricing is hydrated when a conversation is read, while
+      // this refresh is an untimed request to the supplier, and the first token
+      // must not wait on it.
+      void ensureProviderPricing(this.config.provider.id).catch(() => undefined)
       const { agentConfig, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
       const configuredMaxIterations = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
       const adaptiveToolBudget = this.config.adaptiveToolBudget
@@ -416,26 +421,25 @@ export class AgentRunner {
       let completedResponse = ''
       let providerContinuationCount = 0
       let emptyResponseRetries = 0
+      // Set by a recovery branch to change how the *next* loop call is made.
+      let nextCallOverrides: { disableReasoning?: boolean } | undefined
       let protocolRepairAttempts = 0
+      let continuationDirectiveAttempts = 0
       let latestProtocolResults: NonNullable<CompletedToolResult['protocol']>[] = []
       let rollingToolEvidence = ''
       // A repeated tool batch only ends the loop while the workspace state its
       // earlier result observed is unchanged; the value is the revision that
       // was current when the batch last ran.
       const previousNormalToolBatches = new Map<string, number>()
+      // Every call this run has actually executed. The synthesis recovery batch
+      // consults it so a repeated call cannot run a mutation a second time.
+      const executedToolSignatures = new Set<string>()
       let consecutiveSearchFailures = 0
 
-      // Goal steps retain their full, explicit tool budget. Ordinary chat
-      // starts with only the tools relevant to the current request; the model
-      // can request more from the same authorized catalog at runtime.
-      let activeToolDefs = adaptiveToolBudget
-        ? allToolDefs
-        : selectInitialTools(
-            allToolDefs,
-            userMessage.content,
-            hasSpreadsheetAttachment,
-            params.messages.flatMap((message) => message.toolCalls?.map((call) => call.name) || []),
-          )
+      // The agent's configured catalog is loaded in full for every run. Which
+      // tool to call is the model's decision, not a keyword match on this
+      // turn's text; the agent config stays the authorization boundary.
+      const activeToolDefs: ToolDefinition[] = allToolDefs
       const spreadsheetPolicy = hasSpreadsheetAttachment
         ? '\n\n--- Spreadsheet attachment policy ---\nA spreadsheet attachment is present. Use the structured `spreadsheet` tool first. Make one `inspect` call without a `sheet` argument to get the workbook and sheet overview; inspect an individual sheet only when the first result shows it is necessary. Use `create` or `update` only when the user explicitly requests a file change. Do not write Python, PowerShell, Node, or other scripts for spreadsheet work unless the spreadsheet tool returns an error or explicitly reports that the requested operation is unsupported. If fallback is needed, report the spreadsheet tool failure before using `execute_command`. Do not repeat an identical spreadsheet call.\n'
         : ''
@@ -472,8 +476,11 @@ export class AgentRunner {
           content: iteration === 0 ? 'Preparing the response and any required tools...' : 'Reviewing the tool results...',
         }
 
-        // Call LLM (yields real-time text_delta events to caller)
-        const response = yield* this.executeLLMCall(messages, activeToolDefs)
+        // Call LLM (yields real-time text_delta events to caller). The override
+        // applies only to a recovery retry requested by the previous response
+        // and is consumed here so later calls return to the configured route.
+        const response = yield* this.executeLLMCall(messages, activeToolDefs, nextCallOverrides)
+        nextCallOverrides = undefined
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, response.usage)
 
         // A few gateways duplicate the same tool invocation in one response
@@ -536,28 +543,47 @@ export class AgentRunner {
             }
             return
           }
-          if (!response.content.trim() && emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
-            emptyResponseRetries += 1
+          const continuationDirective = response.content.match(/^CONTINUE\s*:\s*([\s\S]*)$/i)?.[1]?.trim()
+          if (continuationDirective && activeToolDefs.length > 0 && continuationDirectiveAttempts < 2) {
+            continuationDirectiveAttempts += 1
+            if (response.content) yield { type: 'text_reset', discardProvisionalText: true, reason: 'protocol-repair' }
+            completedResponse = ''
+            messages.push({ role: 'assistant', content: continuationDirective })
             messages.push({
               role: 'user',
-              content: 'The previous request did not include a final answer. Reply with the concise user-facing answer now. Do not return reasoning-only content, an empty message, or tool-call markup.',
+              content: 'The preceding text was an internal continuation decision, not a final answer. Complete the specific remaining action now with the available structured tools, then provide the user-facing result. Do not emit CONTINUE: or FINAL: markers in ordinary text.',
+            })
+            yield { type: 'thinking', content: `已识别待完成事项：${continuationDirective.slice(0, 180)}` }
+            continue
+          }
+          if (!response.content.trim() && emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+            emptyResponseRetries += 1
+            // Retrying the identical request reproduces the identical failure.
+            // An empty answer from a reasoning route means the budget went to
+            // thinking the user never sees, so the retry switches that mode off.
+            const truncated = response.finishReason === 'length'
+            nextCallOverrides = { disableReasoning: true }
+            messages.push({
+              role: 'user',
+              content: truncated
+                ? 'The previous attempt reached the provider output limit before producing any user-visible text, so everything it generated was internal reasoning. Reply with the answer itself now and keep internal reasoning to a minimum; the answer must be visible text.'
+                : 'The previous request did not include a final answer. Reply with the concise user-facing answer now. Do not return reasoning-only content, an empty message, or tool-call markup.',
             })
             yield {
               type: 'thinking',
-              content: '供应商未返回最终答案，正在自动重试一次。',
+              content: truncated
+                ? '供应商在产出正文前就用尽了输出上限，正在关闭思考模式后重试一次。'
+                : '供应商未返回最终答案，正在关闭思考模式后重试一次。',
             }
             continue
           }
           if (!response.content.trim()) {
-            const imageHint = hasImageInput
-              ? ` The conversation includes image input; select a vision-capable model before retrying.`
-              : ''
-            const reasoningHint = response.reasoningContent?.trim()
-              ? ' The provider returned reasoning content but no final answer; its reasoning/response mode may be incompatible with this gateway.'
+            const attemptHint = emptyResponseRetries > 0
+              ? '已关闭思考模式重试一次仍未产出正文。'
               : ''
             yield {
               type: 'error',
-              error: `Model ${agentConfig.model} returned an empty response.${reasoningHint}${imageHint}`,
+              error: `${this.describeEmptyResponse(response, agentConfig.model, hasImageInput)}${attemptHint}`,
             }
             return
           }
@@ -585,9 +611,10 @@ export class AgentRunner {
           }
           // Text chunks were already emitted by executeLLMCall. The done event
           // supplies the canonical, complete content for persistence.
-          await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_completed', { id: randomUUID(), kind: 'assistant_output', status: 'completed', content: completedResponse })
+          const finalResponseContent = completedResponse.replace(/^FINAL\s*:\s*/i, '').trim()
+          await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_completed', { id: randomUUID(), kind: 'assistant_output', status: 'completed', content: finalResponseContent })
           await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_completed')
-          yield { type: 'done', content: completedResponse, finishReason: response.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
+          yield { type: 'done', content: finalResponseContent || completedResponse, finishReason: response.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
 
@@ -609,31 +636,17 @@ export class AgentRunner {
         // only a wholly read-only batch in parallel; any mutation, terminal,
         // browser, or desktop action keeps the original strict ordering.
         const toolResults = new Map<string, CompletedToolResult>()
-        const expansionCalls = response.toolCalls.filter((toolCall) => toolCall.name === REQUEST_ADDITIONAL_TOOLS)
-        for (const toolCall of expansionCalls) {
-          yield { type: 'tool_call', toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments } }
-          const expanded = expandToolSet(activeToolDefs, allToolDefs, toolCall.arguments.toolNames)
-          activeToolDefs = expanded.tools
-          const result: CompletedToolResult = {
-            result: expanded.granted.length > 0
-              ? `Additional authorized tools are now available: ${expanded.granted.join(', ')}.${expanded.unavailable.length ? ` Not authorized or unavailable: ${expanded.unavailable.join(', ')}.` : ''}`
-              : `No additional tools were granted.${expanded.unavailable.length ? ` Not authorized or unavailable: ${expanded.unavailable.join(', ')}.` : ''}`,
-            isError: false,
-          }
-          toolResults.set(toolCall.id, result)
-          yield { type: 'tool_result', toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: result.result, isError: false } }
-        }
         const activeToolNames = new Set(activeToolDefs.map((tool) => tool.name))
-        const unavailableToolCalls = response.toolCalls.filter((toolCall) => toolCall.name !== REQUEST_ADDITIONAL_TOOLS && !activeToolNames.has(toolCall.name))
+        const unavailableToolCalls = response.toolCalls.filter((toolCall) => !activeToolNames.has(toolCall.name))
         for (const toolCall of unavailableToolCalls) {
           const result: CompletedToolResult = {
-            result: `Tool ${toolCall.name} is authorized for this agent but is not in the current minimal tool set. Call ${REQUEST_ADDITIONAL_TOOLS} with toolNames: ["${toolCall.name}"] before using it.`,
+            result: `Tool ${toolCall.name} is not available to this agent. Continue with the tools that are available to you.`,
             isError: true,
           }
           toolResults.set(toolCall.id, result)
           yield { type: 'tool_result', toolResult: { toolCallId: toolCall.id, name: toolCall.name, result: result.result, isError: true } }
         }
-        const executableToolCalls = response.toolCalls.filter((toolCall) => toolCall.name !== REQUEST_ADDITIONAL_TOOLS && activeToolNames.has(toolCall.name))
+        const executableToolCalls = response.toolCalls.filter((toolCall) => activeToolNames.has(toolCall.name))
         // The workspace state this batch observed, captured before any of its
         // own mutations run; repeat detection below compares against it.
         const batchStartRevision = workspaceRevision
@@ -677,6 +690,7 @@ export class AgentRunner {
           }))
           for (const { toolCall, result } of completedBatch) {
             toolResults.set(toolCall.id, result)
+            executedToolSignatures.add(toolCallSignature(toolCall.name, toolCall.arguments))
             if (toolCall.name === 'web_search') {
               consecutiveSearchFailures = result.result.includes(SEARCH_UNAVAILABLE_MARKER)
                 ? consecutiveSearchFailures + 1
@@ -761,6 +775,7 @@ export class AgentRunner {
           if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
           if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
           toolResults.set(toolCall.id, result)
+          executedToolSignatures.add(toolCallSignature(toolCall.name, toolCall.arguments))
           if (result.images?.length) {
             recentVisualAttachments = dedupeToolImages([...recentVisualAttachments, ...result.images]).slice(-8)
           }
@@ -844,7 +859,7 @@ export class AgentRunner {
         }
 
         const batchSignature = response.toolCalls
-          .map((toolCall) => `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`)
+          .map((toolCall) => toolCallSignature(toolCall.name, toolCall.arguments))
           .sort()
           .join('|')
         // Providers sometimes replay the same batch after a long tool result
@@ -955,7 +970,7 @@ export class AgentRunner {
       }
       messages.push({
         role: 'user',
-        content: `Tool execution is complete for this response. Using only the evidence already available in this conversation, provide the best concise final answer now. If evidence is incomplete, state the specific unverified limitation plainly and, where useful, the smallest user-facing next step. Do not mention internal tool limits, tool cycles, implementation details, or instructions.${finalVerificationNotice}`,
+        content: `Tool execution is complete for this response. Using only the evidence already available in this conversation, perform a final editorial pass and provide the best user-facing answer now. First choose the lightest response shape that fits the active request; do not apply a code-review or execution-report template unless the request actually calls for one. Deduplicate overlapping points, drop speculative or low-impact details, and do not restate raw tool evidence. Report user-relevant changes and verification when they exist, but never imply that a file was read, changed, or tested without evidence. If the request is a mixed task, answer the primary outcome first and include only the supporting details needed to make it actionable. If evidence is incomplete, state the specific unverified limitation plainly and, where useful, the smallest user-facing next step. Do not mention internal tool limits, tool cycles, or these instructions.${finalVerificationNotice}`,
       })
       yield { type: 'thinking', content: 'Synthesizing the available results...' }
       // Do not send the provider's native tool-call transcript back into the
@@ -979,11 +994,21 @@ export class AgentRunner {
         if (finalResponse.toolCalls.length === 0) break
 
         const recoveryCalls = finalResponse.toolCalls.filter((toolCall, index, calls) => {
-          const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
-          return calls.findIndex((candidate) => `${candidate.name}:${JSON.stringify(candidate.arguments)}` === signature) === index
+          const signature = toolCallSignature(toolCall.name, toolCall.arguments)
+          return calls.findIndex((candidate) => toolCallSignature(candidate.name, candidate.arguments) === signature) === index
         })
+        // Gateways reach this phase by ignoring the tool-free instruction and
+        // repeating a call whose result the model already holds, so re-running
+        // it would duplicate the effect the user asked for once. The evidence
+        // is already in the message history; decline the repeat and tell the
+        // model to answer instead. A call this run has not performed yet is
+        // still recovered, because that is what this bounded batch is for.
+        const isRepeat = (toolCall: (typeof recoveryCalls)[number]): boolean =>
+          executedToolSignatures.has(toolCallSignature(toolCall.name, toolCall.arguments))
+        const executableRecoveryCalls = recoveryCalls.filter((toolCall) => !isRepeat(toolCall))
+        const declinedRecoveryCalls = recoveryCalls.filter((toolCall) => isRepeat(toolCall))
         const recoveryResults = new Map<string, CompletedToolResult>()
-        for (const toolCall of recoveryCalls) {
+        for (const toolCall of executableRecoveryCalls) {
           yield { type: 'tool_call', toolCall: { id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments } }
           const toolContext: ToolContext = {
             conversationId: this.config.conversationId,
@@ -1010,14 +1035,40 @@ export class AgentRunner {
             },
           }
         }
-        messages = this.appendToolMessages(messages, recoveryCalls, recoveryResults, finalResponse.reasoningContent)
+        if (executableRecoveryCalls.length > 0) {
+          messages = this.appendToolMessages(messages, executableRecoveryCalls, recoveryResults, finalResponse.reasoningContent)
+        }
         messages.push({
           role: 'user',
-          content: 'The additional tool result is now available. Provide the concise final answer using the evidence already collected. Do not call another tool and do not emit DSML or XML tool-call markup.',
+          content: declinedRecoveryCalls.length > 0
+            ? `These calls were not executed again because this run already performed them: ${declinedRecoveryCalls.map((toolCall) => toolCall.name).join(', ')}. Their results are already in this conversation. Do not retry them and do not emit DSML or XML tool-call markup; provide the concise final answer from the evidence already collected.`
+            : 'The additional tool result is now available. Provide the concise final answer using the evidence already collected. Do not call another tool and do not emit DSML or XML tool-call markup.',
         })
         synthesisMessages = this.buildFinalSynthesisMessages(messages)
         finalResponse = yield* this.executeLLMCall(synthesisMessages, [])
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, finalResponse.usage)
+      }
+
+      // Final synthesis is also subject to the provider's per-request output
+      // limit. Continue from the exact end instead of persisting a response
+      // that stops halfway through a sentence after tool work is complete.
+      let finalSynthesisContent = finalResponse.content
+      let continuationMessages = synthesisMessages
+      for (let attempt = 0; attempt < MAX_PROVIDER_CONTINUATIONS && finalResponse.finishReason === 'length'; attempt += 1) {
+        continuationMessages = [
+          ...continuationMessages,
+          { role: 'assistant', content: finalSynthesisContent },
+          { role: 'user', content: 'The final answer was truncated by the provider output limit. Continue from the exact end of the previous answer without repeating it. Finish the current sentence, complete the remaining sections, and then stop naturally. Do not mention this continuation instruction.' },
+        ]
+        yield { type: 'thinking', content: `最终回复达到长度上限，正在续写未完成部分（${attempt + 1}/${MAX_PROVIDER_CONTINUATIONS}）...` }
+        const continuation = yield* this.executeLLMCall(continuationMessages, [])
+        accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, continuation.usage)
+        if (continuation.protocolTextDetected || continuation.toolCallParseFailure || continuation.toolCalls.length > 0) {
+          finalResponse = continuation
+          break
+        }
+        finalSynthesisContent += continuation.content
+        finalResponse = { ...continuation, content: finalSynthesisContent }
       }
       if (finalResponse.protocolTextDetected || finalResponse.toolCallParseFailure) {
         // Some DeepSeek-compatible gateways keep emitting DSML during the
@@ -1035,7 +1086,7 @@ export class AgentRunner {
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, plainTextRetry.usage)
         if (!plainTextRetry.protocolTextDetected && !plainTextRetry.toolCallParseFailure && plainTextRetry.content.trim()) {
           const finalContent = plainTextRetry.content.replace(/^FINAL\s*:\s*/i, '').trim()
-          yield { type: 'done', content: finalContent || plainTextRetry.content.trim(), usage: accumulatedUsage, timing: this.buildResponseTiming() }
+          yield { type: 'done', content: finalContent || plainTextRetry.content.trim(), finishReason: plainTextRetry.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
         const protocolHint = finalResponse.toolCallParseFailure
@@ -1050,7 +1101,7 @@ export class AgentRunner {
       }
       if (finalResponse.content.trim()) {
         const finalContent = finalResponse.content.replace(/^FINAL\s*:\s*/i, '').trim()
-        yield { type: 'done', content: finalContent || finalResponse.content.trim(), usage: accumulatedUsage, timing: this.buildResponseTiming() }
+        yield { type: 'done', content: finalContent || finalResponse.content.trim(), finishReason: finalResponse.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
         return
       }
 
@@ -1067,17 +1118,20 @@ export class AgentRunner {
           content: 'Your previous final synthesis was empty. Reply now with a concise plain-text answer based only on the completed tool results above. If the evidence is incomplete, state that limitation explicitly. Do not call tools, emit DSML/XML/JSON envelopes, or return an empty response.',
         })
         yield { type: 'thinking', content: '最终汇总为空，正在重试纯文本回复。' }
-        const retryResponse = yield* this.executeLLMCall(synthesisMessages, [])
+        // The failed synthesis was empty because the route spent its budget on
+        // hidden reasoning; repeating the same request would reproduce it, so
+        // the retry asks the provider to stop thinking and answer directly.
+        const retryResponse = yield* this.executeLLMCall(synthesisMessages, [], { disableReasoning: true })
         accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, retryResponse.usage)
         if (!retryResponse.protocolTextDetected && !retryResponse.toolCallParseFailure && retryResponse.content.trim()) {
           const finalContent = retryResponse.content.replace(/^FINAL\s*:\s*/i, '').trim()
-          yield { type: 'done', content: finalContent || retryResponse.content.trim(), usage: accumulatedUsage, timing: this.buildResponseTiming() }
+          yield { type: 'done', content: finalContent || retryResponse.content.trim(), finishReason: retryResponse.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
         if (retryResponse.protocolTextDetected || retryResponse.toolCallParseFailure) break
       }
 
-      yield { type: 'error', error: 'The model did not produce a final answer from the completed tool results. The available evidence remains in the activity record.' }
+      yield { type: 'error', error: '工具已执行完成，但模型没有依据现有结果给出最终答案。已获得的证据仍保留在活动记录中，请重试本轮。' }
       yield { type: 'done', content: '', timing: this.buildResponseTiming() }
     } catch (err: any) {
       if (this.abortController?.signal.aborted) {
@@ -1101,12 +1155,8 @@ export class AgentRunner {
     } finally {
       this.isRunning = false
       this.abortController = null
-      // Always clear the sandbox binding after the run ends so a subsequent run
-      // in the same process (e.g. Auto conversation) starts with a clean state.
-      if (typeof this.config.terminalService.setSandboxContext === 'function') {
-        this.config.terminalService.setSandboxContext(null)
-      }
-      setFileServiceSandboxContext(null)
+      // Release only this run's sandbox scope so a concurrent run keeps its own.
+      closeSandboxScope(sandboxScopeToken)
     }
   }
 
@@ -1149,8 +1199,9 @@ export class AgentRunner {
    */
   private async *executeLLMCall(
     messages: ChatMessageInput[],
-    tools: ToolDefinition[]
-  ): AsyncGenerator<AgentEvent, { content: string; reasoningContent?: string; toolCalls: CompletedToolCall[]; finishReason: string; usage?: ChatUsage; toolCallParseFailure?: string; textToolCallEnvelope?: boolean; protocolTextDetected?: boolean }> {
+    tools: ToolDefinition[],
+    options?: { disableReasoning?: boolean }
+  ): AsyncGenerator<AgentEvent, { content: string; reasoningContent?: string; toolCalls: CompletedToolCall[]; finishReason: string; rawFinishReason?: string; reasoningCharacters: number; usage?: ChatUsage; toolCallParseFailure?: string; textToolCallEnvelope?: boolean; protocolTextDetected?: boolean }> {
     const { agentConfig, provider } = this.config
     const signal = this.abortController?.signal
     // Tool output can grow on every ReAct cycle. Refit immediately before the
@@ -1170,8 +1221,12 @@ export class AgentRunner {
 
     let content = ''
     let reasoningContent = ''
-    let receivedReasoning = false
+    // Characters of provider reasoning, counted even when the user does not
+    // display it: a route that spends its whole output budget on hidden
+    // reasoning is the main way to get an empty answer from a long request.
+    let reasoningCharacters = 0
     let finishReason = ''
+    let rawFinishReason = ''
     let usage: ChatUsage | undefined
     let toolCallParseFailure: string | undefined
     let textToolCallEnvelope = false
@@ -1197,9 +1252,11 @@ export class AgentRunner {
             ? REASONING_AGENT_RESPONSE_TOKENS
             : DEFAULT_AGENT_RESPONSE_TOKENS,
           stream: true,
-          reasoning: agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
-            ? { enabled: true, budgetTokens: 1024 }
-            : undefined,
+          reasoning: options?.disableReasoning
+            ? { enabled: false }
+            : agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
+              ? { enabled: true, budgetTokens: 1024 }
+              : undefined,
         },
         signal
       )
@@ -1216,10 +1273,12 @@ export class AgentRunner {
         if (chunk.toolCallParseFailure) toolCallParseFailure = chunk.toolCallParseFailure
         if (chunk.textToolCallEnvelope) textToolCallEnvelope = true
 
-        if (agentConfig.showThinking && chunk.reasoningContent) {
-          receivedReasoning = true
-          reasoningContent += chunk.reasoningContent
-          yield { type: 'reasoning', content: chunk.reasoningContent }
+        if (chunk.reasoningContent) {
+          reasoningCharacters += chunk.reasoningContent.length
+          if (agentConfig.showThinking) {
+            reasoningContent += chunk.reasoningContent
+            yield { type: 'reasoning', content: chunk.reasoningContent }
+          }
         }
 
         // ── Text content ──────────────────────────────────────────────────────
@@ -1254,6 +1313,7 @@ export class AgentRunner {
           }
         }
 
+        if (chunk.rawFinishReason) rawFinishReason = chunk.rawFinishReason
         if (chunk.finishReason) {
           finishReason = chunk.finishReason
         }
@@ -1278,7 +1338,18 @@ export class AgentRunner {
         provider.id,
       )
     }
-    await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'model_call_completed', { id: modelItemId, kind: 'model_call', status: 'completed', name: provider.name, content: content.slice(0, 1000) }).catch(() => undefined)
+    // Record how the stream ended alongside its content. Without the finish
+    // reason and reasoning size, an empty model response is indistinguishable
+    // from a clean stop in the run journal.
+    await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'model_call_completed', {
+      id: modelItemId, kind: 'model_call', status: 'completed', name: provider.name, content: content.slice(0, 1000),
+    }, {
+      finishReason: finishReason || null,
+      rawFinishReason: rawFinishReason || null,
+      reasoningCharacters,
+      completionTokens: usage?.completionTokens ?? null,
+      contentCharacters: content.length,
+    }).catch(() => undefined)
 
     // Parse accumulated tool calls
     const toolCalls: CompletedToolCall[] = []
@@ -1317,6 +1388,8 @@ export class AgentRunner {
       ...(reasoningContent ? { reasoningContent } : {}),
       toolCalls,
       finishReason,
+      ...(rawFinishReason ? { rawFinishReason } : {}),
+      reasoningCharacters,
       usage: usage ? { ...usage, ...(contextDiagnostics ? { contextDiagnostics } : {}) } : usage,
       toolCallParseFailure,
       textToolCallEnvelope,
@@ -1336,6 +1409,37 @@ export class AgentRunner {
       lines.push('Tool support is not confirmed for this custom connection. Attempt the supplied structured interface once; if the provider rejects it, report the provider limitation instead of retrying the same call or using protocol text.')
     }
     return lines.join('\n')
+  }
+
+  /**
+   * Explain an empty model response in terms the user can act on. Every empty
+   * answer used to read as the same opaque failure, even though the causes
+   * differ: a route that spent its output budget on hidden reasoning, a
+   * gateway-specific stop, or an unsupported image input. The finish reason and
+   * reasoning size are carried into the message so the cause is visible.
+   */
+  private describeEmptyResponse(
+    response: { finishReason: string; rawFinishReason?: string; reasoningCharacters: number; usage?: ChatUsage },
+    model: string,
+    hasImageInput: boolean,
+  ): string {
+    const details = [`finish reason=${response.rawFinishReason || response.finishReason || '未知'}`]
+    if (typeof response.usage?.completionTokens === 'number') {
+      details.push(`输出 ${response.usage.completionTokens} tokens`)
+    }
+    if (response.reasoningCharacters > 0) {
+      details.push(`${response.reasoningCharacters} 字符为隐藏思考`)
+    }
+
+    let advice = '供应商本次响应没有返回任何可见正文。请重试本轮，仍未产出答案时更换连接。'
+    if (response.finishReason === 'length') {
+      advice = '输出上限在产生正文之前就用完了，生成的内容全部留在内部。请重试本轮，或为该模型提高输出上限。'
+    } else if (response.reasoningCharacters > 0) {
+      advice = '模型把输出全部用在内部推理上，没有写出可见答案。请重试本轮，或关闭慢思考后重试。'
+    } else if (hasImageInput) {
+      advice = '所选模型可能不接受图片输入。请移除图片附件后重试，或改用支持视觉的模型。'
+    }
+    return `模型 ${model} 未返回可见答案（${details.join('；')}）。${advice}`
   }
 
   private toChatUsage(usage?: ChatChunk['usage']): ChatUsage | undefined {

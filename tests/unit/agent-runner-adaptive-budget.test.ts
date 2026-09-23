@@ -10,6 +10,15 @@ vi.mock('../../src/main/services/usage-pricing-service', () => ({
   resolveRateCardUsageCost: () => ({}),
 }))
 
+/** Stands in for the supplier HTTP round-trip; stays pending until a test settles it. */
+const pricingProbe = vi.hoisted(() => ({ settled: false }))
+
+vi.mock('../../src/main/services/supplier-pricing-service', () => ({
+  ensureProviderPricing: () => new Promise<void>(() => {
+    pricingProbe.settled = false
+  }),
+}))
+
 const agent: AgentConfig = {
   id: 'adaptive-budget-agent',
   name: 'Adaptive budget agent',
@@ -35,6 +44,31 @@ function chunks(...items: ChatChunk[]): AsyncIterable<ChatChunk> {
 }
 
 describe('AgentRunner adaptive tool budget', () => {
+  it('issues the first model request while the supplier pricing refresh is still in flight', async () => {
+    let pricingSettledAtModelCall: boolean | null = null
+    const chat = vi.fn(() => {
+      pricingSettledAtModelCall = pricingProbe.settled
+      return chunks({ content: 'Answer.', finishReason: 'stop' })
+    })
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false, chat,
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: [] }, provider: provider as never,
+      toolRegistry: new ToolRegistry(), contextManager: new ContextManager(), workspacePath: 'D:\\workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '你好！', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(chat).toHaveBeenCalledTimes(1)
+    expect(pricingSettledAtModelCall).toBe(false)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Answer.')
+  })
+
   it.each([false, true])('handles a fragmented gateway rejection without confusing quoted explanations (quoted=%s)', async (quoted) => {
     const notice = '[req_570e3146] [deepseek-v4.1-flash]\n**Bad request from AI provider**\nYour request was rejected by the AI provider.\nDo not resend the same request.\nRecommended tools: These responses are optimized for opencode, Claude Code, and Codex.'
     const answer = quoted ? `The error you asked about means the gateway rejected the request. Example:\n${notice}` : notice
@@ -140,24 +174,66 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.some((event) => event.type === 'done')).toBe(false)
   })
 
-  it('expands only an authorized minimal tool set before executing the requested tool', async () => {
-    // Tool-loading policy is covered through the actual provider request below.
+  it('loads the whole configured catalog on the first request instead of gating tools by keywords', async () => {
+    // "进行改造吧" carries no tool keyword; the model must still receive every
+    // tool its agent config authorizes, including the write tools.
     const registry = new ToolRegistry()
-    registry.register({
-      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
-      execute: async () => 'README contents',
-    })
+    const executed: string[] = []
+    for (const name of ['read_file', 'write_file']) {
+      registry.register({
+        definition: { name, description: `Tool ${name}.`, parameters: { type: 'object' } },
+        execute: async () => { executed.push(name); return `${name} complete` },
+      })
+    }
     let request = 0
     const toolSets: Array<string[] | undefined> = []
     const provider = {
       id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
       chat: (params: { tools?: Array<{ name: string }>; messages: Array<{ role: string; content: string }> }) => {
         request += 1
-        if (request === 1) expect(params.messages[0].content).toContain('loading does not require new user approval')
+        if (request === 1) expect(params.messages[0].content).not.toContain('request_additional_tools')
         toolSets.push(params.tools?.map((tool) => tool.name))
-        if (request === 1) return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'expand', name: 'request_additional_tools', arguments: '{"toolNames":["read_file"]}' }] })
-        if (request === 2) return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read', name: 'read_file', arguments: '{"path":"README.md"}' }] })
+        if (request === 1) return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read', name: 'read_file', arguments: '{"path":"README.md"}' }] })
         return chunks({ content: 'README inspected.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file', 'write_file'], maxIterations: 3 }, provider: provider as never,
+      toolRegistry: registry, contextManager: new ContextManager(), workspacePath: 'D:\\workspace',
+      fileService: {} as never, terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '进行改造吧', timestamp: Date.now() },
+    })) events.push(event)
+
+    // The full authorized catalog is present on the first request; the lone read
+    // then goes through the tool-free synthesis checkpoint, so the second
+    // request intentionally carries no tools.
+    expect(toolSets[0]).toEqual(['read_file', 'write_file'])
+    expect(toolSets[1]).toBeUndefined()
+    expect(executed).toEqual(['read_file'])
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool_result', toolResult: expect.objectContaining({ name: 'read_file', isError: false }) }))
+    expect(events.find((event) => event.type === 'done')?.content).toBe('README inspected.')
+  })
+
+  it('refuses a tool the agent config does not authorize', async () => {
+    const registry = new ToolRegistry()
+    for (const name of ['read_file', 'execute_command']) {
+      registry.register({
+        definition: { name, description: `Tool ${name}.`, parameters: { type: 'object' } },
+        execute: async () => `${name} complete`,
+      })
+    }
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: () => {
+        request += 1
+        return request === 1
+          ? chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'run', name: 'execute_command', arguments: '{"command":"rm -rf /"}' }] })
+          : chunks({ content: '我只有只读权限。', finishReason: 'stop' })
       },
     }
     const runner = new AgentRunner({
@@ -168,12 +244,11 @@ describe('AgentRunner adaptive tool budget', () => {
 
     const events = []
     for await (const event of runner.run({
-      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '帮我处理一下', timestamp: Date.now() },
+      messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '帮我跑个命令', timestamp: Date.now() },
     })) events.push(event)
 
-    expect(toolSets).toEqual([['request_additional_tools'], ['read_file'], undefined])
-    expect(events).toContainEqual(expect.objectContaining({ type: 'tool_result', toolResult: expect.objectContaining({ name: 'read_file', isError: false }) }))
-    expect(events.find((event) => event.type === 'done')?.content).toBe('README inspected.')
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool_result', toolResult: expect.objectContaining({ name: 'execute_command', isError: true }) }))
+    expect(events.some((event) => event.type === 'tool_call' && (event as { toolCall?: { name?: string } }).toolCall?.name === 'execute_command')).toBe(false)
   })
 
   it('continues a provider-truncated response without imposing a max token request', async () => {
@@ -223,6 +298,48 @@ describe('AgentRunner adaptive tool budget', () => {
           { promptTokens: 320, completionTokens: 60, cachedTokens: 120, cacheMissTokens: 200 },
         ],
       },
+    })
+  })
+
+  it('continues a truncated final synthesis after tool execution', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect the current state.', parameters: { type: 'object' } },
+      execute: async () => 'inspection complete',
+    })
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: () => {
+        request += 1
+        if (request === 1) return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'inspect-1', name: 'inspect', arguments: '{}' }] })
+        if (request === 2) return chunks({ content: '结论的前半部分，', finishReason: 'length' })
+        return chunks({ content: '后半部分已经补齐。', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 1 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '检查当前状态并总结', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(request).toBe(3)
+    expect(events.find((event) => event.type === 'done')).toMatchObject({
+      content: '结论的前半部分，后半部分已经补齐。',
+      finishReason: 'stop',
     })
   })
 
@@ -779,7 +896,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(requestedTools[0]).toEqual(['execute_command'])
   })
 
-  it('starts a direct request with its relevant tools and discovery capability', async () => {
+  it('sends every configured tool on the first request', async () => {
     const registry = new ToolRegistry()
     const toolNames = ['read_file', 'write_file', 'edit_file', 'list_directory', 'search_files', 'execute_command', 'inspect_runtime', 'web_search', 'read_web_page']
     for (const name of toolNames) {
@@ -812,8 +929,7 @@ describe('AgentRunner adaptive tool budget', () => {
       // Exhaust the event stream.
     }
 
-    const expectedInitialTools = ['read_file', 'list_directory', 'search_files', 'inspect_runtime', 'request_additional_tools']
-    expect(requestedTools[0]).toEqual(expectedInitialTools)
+    expect(requestedTools[0]).toEqual(toolNames)
     expect(requestedTools[1]).toBeUndefined()
   })
 
@@ -914,6 +1030,132 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.some((event) => event.type === 'error')).toBe(false)
   })
 
+  it('turns hidden reasoning off for the empty-response retry', async () => {
+    const reasoningParams: Array<unknown> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'deepseek' as const,
+      supportsReasoning: () => true,
+      chat: (params: { reasoning?: unknown }) => {
+        reasoningParams.push(params.reasoning)
+        request += 1
+        return request === 1
+          ? chunks({ content: '', reasoningContent: 'a long internal plan that never reached the answer', finishReason: 'length' })
+          : chunks({ content: 'Visible answer.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, model: 'deepseek-v4-flash', showThinking: true, tools: [] },
+      provider: provider as never,
+      toolRegistry: new ToolRegistry(),
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '改造这个模块', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(reasoningParams[0]).toEqual({ enabled: true, budgetTokens: 1024 })
+    expect(reasoningParams[1]).toEqual({ enabled: false })
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Visible answer.')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+  })
+
+  it('names the finish reason and reasoning size when the answer stays empty', async () => {
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'deepseek' as const,
+      supportsReasoning: () => true,
+      chat: () => {
+        request += 1
+        return chunks({ content: '', reasoningContent: 'thinking forever', finishReason: 'length', usage: { promptTokens: 100, completionTokens: 8192 } })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, model: 'deepseek-v4-flash', showThinking: true, tools: [] },
+      provider: provider as never,
+      toolRegistry: new ToolRegistry(),
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '改造这个模块', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(request).toBe(2)
+    const errorEvent = events.find((event) => event.type === 'error')
+    // Only this sentence's first line is stored as the round's explanation, so
+    // it has to carry both the evidence and what the user can do next.
+    expect(errorEvent?.error).toContain('模型 deepseek-v4-flash 未返回可见答案')
+    expect(errorEvent?.error).toContain('finish reason=length')
+    expect(errorEvent?.error).toContain('输出 8192 tokens')
+    expect(errorEvent?.error).toContain('16 字符为隐藏思考')
+    expect(errorEvent?.error).toContain('输出上限在产生正文之前就用完了')
+    expect(errorEvent?.error).toContain('已关闭思考模式重试一次仍未产出正文')
+  })
+
+  it('disables reasoning for the empty tool-result synthesis retry', async () => {
+    const registry = new ToolRegistry()
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => 'Observed file contents.',
+    })
+    const reasoningParams: Array<unknown> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'deepseek' as const,
+      supportsReasoning: () => true,
+      chat: (params: { reasoning?: unknown }) => {
+        reasoningParams.push(params.reasoning)
+        request += 1
+        // 1: the read tool call. 2: the lone-read checkpoint. 3: the empty
+        // synthesis. 4: the synthesis retry, which must drop hidden reasoning.
+        if (request === 1) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read', name: 'read_file', arguments: '{"path":"README.md"}' }] })
+        }
+        return request === 4
+          ? chunks({ content: 'Recovered from completed tool results.', finishReason: 'stop' })
+          : chunks({ content: '', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, model: 'deepseek-v4-flash', showThinking: true, tools: ['read_file'] },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '检查 README.md', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(request).toBe(4)
+    expect(reasoningParams[3]).toEqual({ enabled: false })
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Recovered from completed tool results.')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+  })
+
   it('retries an empty tool-result synthesis before surfacing failure', async () => {
     const registry = new ToolRegistry()
     registry.register({
@@ -957,6 +1199,124 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(request).toBe(3)
     expect(synthesisMessages.some((message) => message.role === 'tool' || message.toolCalls)).toBe(false)
     expect(events.find((event) => event.type === 'done')?.content).toBe('Recovered from completed tool results.')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+  })
+
+  it('does not re-run a side-effecting tool repeated during the final synthesis', async () => {
+    const registry = new ToolRegistry()
+    let writeExecutions = 0
+    registry.register({
+      definition: { name: 'write_file', description: 'Write a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        writeExecutions += 1
+        return '{"status":"ok"}'
+      },
+    })
+    let request = 0
+    const synthesisNotices: string[] = []
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: (params: { messages?: Array<{ role: string; content?: string }>; tools?: Array<{ name: string }> }) => {
+        request += 1
+        // 1-2: the same write batch twice, which stops the tool loop. 3: the
+        // tool-free synthesis, where a gateway that ignores the instruction
+        // repeats that same call instead of answering.
+        if (request <= 2) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: `write-${request}`, name: 'write_file', arguments: '{"path":"notes.md","content":"x"}' }] })
+        }
+        if (!params.tools?.length) {
+          synthesisNotices.push(...(params.messages || []).filter((message) => message.role === 'user' && message.content).map((message) => message.content!))
+        }
+        if (request === 3) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'write-3', name: 'write_file', arguments: '{"path":"notes.md","content":"x"}' }] })
+        }
+        return chunks({ content: 'The write was already applied.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['write_file'], maxIterations: 6 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '写入 notes.md。', timestamp: Date.now() },
+    })) events.push(event)
+
+    // The loop itself tolerates one repeated batch, so the write runs twice
+    // there. The synthesis turn must not add a third execution of the same
+    // call: its result is already in the conversation.
+    expect(writeExecutions).toBe(2)
+    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(2)
+    expect(synthesisNotices.some((content) => content.includes('already performed them'))).toBe(true)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('The write was already applied.')
+    expect(events.some((event) => event.type === 'error')).toBe(false)
+  })
+
+  it('recovers a read-only call during the final synthesis', async () => {
+    const registry = new ToolRegistry()
+    let writeExecutions = 0
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async () => 'Observed file contents.',
+    })
+    registry.register({
+      definition: { name: 'write_file', description: 'Write a file.', parameters: { type: 'object' } },
+      execute: async () => {
+        writeExecutions += 1
+        return '{"status":"ok"}'
+      },
+    })
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => false,
+      chat: () => {
+        request += 1
+        // 1: read a file. 2: tool-free completion checkpoint. 3: the final
+        // synthesis, which asks for the one action this run has not performed.
+        if (request === 1) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-1', name: 'read_file', arguments: '{"path":"README.md"}' }] })
+        }
+        if (request === 2) return chunks({ content: '', finishReason: 'stop' })
+        if (request === 3) {
+          return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'write-1', name: 'write_file', arguments: '{"path":"notes.md","content":"x"}' }] })
+        }
+        return chunks({ content: 'Answer from the evidence already collected.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['read_file', 'write_file'] },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '读取 README.md 并写入 notes.md', timestamp: Date.now() },
+    })) events.push(event)
+
+    // A call the run has not performed yet is still recovered, so a task that
+    // reads at synthesis time can finish its action; only repeats are declined.
+    expect(writeExecutions).toBe(1)
+    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(2)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Answer from the evidence already collected.')
     expect(events.some((event) => event.type === 'error')).toBe(false)
   })
 

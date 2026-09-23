@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
 import { ProviderRegistry, createProvider } from '../../src/main/providers'
 import { OpenAIProvider } from '../../src/main/providers/openai'
 import { resolveOpenCodeRoute } from '../../src/main/providers/opencode'
-import type { LLMProviderConfig } from '../../src/shared/types/provider'
+import type { ChatChunk, LLMProviderConfig } from '../../src/shared/types/provider'
 
 describe('ProviderRegistry', () => {
   let registry: ProviderRegistry
@@ -218,6 +218,41 @@ describe('OpenAIProvider streaming tool calls', () => {
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ thinking: { type: 'enabled' } }), expect.anything())
     expect(chunks.some((chunk) => chunk.reasoningContent === 'plan')).toBe(true)
+  })
+
+  it('sends an explicit disabled thinking switch when reasoning is turned off', async () => {
+    async function* responseStream() {
+      yield { choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Volcano Coding Plan', 'custom', { apiKey: 'test-key' })
+    const create = vi.fn().mockResolvedValue(responseStream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+
+    for await (const _chunk of provider.chat({
+      model: 'deepseek-v4-flash',
+      messages: [],
+      reasoning: { enabled: false },
+    })) { /* exhaust */ }
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ thinking: { type: 'disabled' } }), expect.anything())
+  })
+
+  it('preserves a gateway-specific finish reason instead of dropping it', async () => {
+    async function* responseStream() {
+      yield { choices: [{ delta: { content: '' }, finish_reason: 'insufficient_system_resource' }] }
+    }
+
+    const provider = new OpenAIProvider('gateway', 'Volcano Coding Plan', 'custom', { apiKey: 'test-key' })
+    const create = vi.fn().mockResolvedValue(responseStream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+
+    const chunks: ChatChunk[] = []
+    for await (const chunk of provider.chat({ model: 'deepseek-v4-flash', messages: [] })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks).toContainEqual(expect.objectContaining({ finishReason: 'error', rawFinishReason: 'insufficient_system_resource' }))
   })
 
   it('replays assistant reasoning_content for DeepSeek tool turns', async () => {

@@ -32,6 +32,16 @@ export interface ToolApprovalConfig {
  * between main and renderer to keep the preload contract typed without
  * importing main-process modules from the web bundle.
  */
+export interface AppServerAcpStatus {
+  /** Whether the `/acp` WebSocket was mounted when this server started. */
+  enabled: boolean
+  /** Path on the loopback host; a client connects to `ws://<host>:<port><path>`. */
+  path: string
+  /** False only while debugging a client that cannot send an `Authorization` header yet. */
+  requireAuth: boolean
+  connections: number
+}
+
 export interface AppServerStatus {
   running: boolean
   host: string
@@ -42,6 +52,33 @@ export interface AppServerStatus {
   /** Always `true` for the loopback-only profile. */
   loopbackOnly: true
   connections: number
+  acp?: AppServerAcpStatus
+}
+
+/**
+ * Transport preferences for the loopback App-Server. There is deliberately no
+ * host field: the server binds `127.0.0.1` and nothing else. A phone reaches it
+ * through `adb reverse`, which terminates the connection on this machine, so
+ * exposing a port is not a prerequisite for remote clients.
+ */
+export interface AppServerConfig {
+  /**
+   * Port to try before falling back to a free one. `adb reverse` needs a number
+   * that survives a restart, which a random high port does not give.
+   */
+  preferredPort: number | null
+  /**
+   * Whether the `/acp` WebSocket must carry the bearer token. Turning this off
+   * is a debugging convenience for a client that cannot send an `Authorization`
+   * header yet; while off, any upgrade carrying an `Origin` header is refused,
+   * because that would let a local web page drive an agent that runs commands.
+   */
+  acpRequireAuth: boolean
+}
+
+export const DEFAULT_APP_SERVER_CONFIG: AppServerConfig = {
+  preferredPort: null,
+  acpRequireAuth: true,
 }
 
 // -----------------------------------------------------------------------------

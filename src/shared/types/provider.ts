@@ -138,6 +138,12 @@ export interface ChatChunk {
     arguments?: string
   }>
   finishReason?: 'stop' | 'tool_calls' | 'length' | 'error'
+  /**
+   * The provider's unmodified `finish_reason`. A gateway-specific value (quota,
+   * resource, content-filter stops) is mapped to `finishReason: 'error'` but kept
+   * verbatim here, so a stream that ends without an answer stays diagnosable.
+   */
+  rawFinishReason?: string
   usage?: {
     promptTokens: number
     completionTokens: number

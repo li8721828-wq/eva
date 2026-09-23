@@ -2,8 +2,14 @@ import net from 'net'
 
 export function isPrivateNetworkAddress(address: string): boolean {
   const normalized = address.toLowerCase()
-  if (normalized === '::1' || normalized === '::' || normalized.startsWith('fe80:') || normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+  if (normalized === '::1' || normalized === '::') return true
   if (normalized.startsWith('::ffff:')) return isPrivateNetworkAddress(normalized.slice(7))
+  // Unique-local fc00::/7 and link-local fe80::/10 must be matched on an IPv6
+  // literal. A bare `startsWith('fc')` also fired for hostnames such as
+  // `fda.gov` or `fc2.com`, which are ordinary public sites.
+  if (net.isIP(normalized) === 6) {
+    return normalized.startsWith('fe80:') || /^f[cd][0-9a-f]{2}:/.test(normalized)
+  }
   if (net.isIP(normalized) !== 4) return false
 
   const [first, second] = normalized.split('.').map(Number)

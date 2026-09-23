@@ -25,6 +25,8 @@ import type { ActivePlan } from '../../../shared/types/active-plan'
 import { getModelInputBudgetTokens } from '../../../shared/constants'
 import { CodeEditor } from '@/components/editor/CodeEditor'
 import { FileExplorer } from '@/components/editor/FileExplorer'
+import { PlanChecklist } from '@/components/chat/PlanChecklist'
+import { buildPlanChecklist } from '../../../shared/plan-checklist'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
@@ -150,7 +152,7 @@ export function TaskWorkspacePanel() {
     setRightPanelTab,
     workspacePath,
   } = useAppStore()
-  const { conversations, currentConversationId, messages, selectConversation, setError } = useChatStore()
+  const { conversations, currentConversationId, messages, selectConversation, setError, streamingByConversation } = useChatStore()
   const { workspaces, activeWorkspaceId } = useWorkspaceStore()
   const liveGoalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] || EMPTY_GOAL_TASK : EMPTY_GOAL_TASK)
   const liveExpertTask = useTaskStore((state) => currentConversationId ? state.expertTasks[currentConversationId] || EMPTY_EXPERT_TASK : EMPTY_EXPERT_TASK)
@@ -173,6 +175,13 @@ export function TaskWorkspacePanel() {
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
+  // The note ticks the round's plan. While a round streams, only its own updates
+  // count: falling back to the previous reply would show finished ticks before
+  // this round has published anything.
+  const liveStream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
+  const roundChecklist = useMemo(() => buildPlanChecklist(liveStream?.isStreaming
+    ? liveStream.progressUpdates
+    : [...messages].reverse().find((message) => message.role === 'assistant' && !message.progressKind && message.progressUpdates?.length)?.progressUpdates || []), [liveStream, messages])
   const activePlanScopeKey = activeWorkspaceId
     ? `workspace:${activeWorkspaceId}`
     : resolvedWorkspacePath?.trim()
@@ -584,6 +593,12 @@ export function TaskWorkspacePanel() {
               </>}
             </div>
           </div>
+
+          {roundChecklist && (
+            <section className="border-b border-indigo-100/80 py-4">
+              <PlanChecklist checklist={roundChecklist} streaming={Boolean(liveStream?.isStreaming)} />
+            </section>
+          )}
 
           {!hasTaskRun ? (
             currentConversation?.parentConversationId ? (

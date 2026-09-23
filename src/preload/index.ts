@@ -17,6 +17,7 @@ import type { QqRemoteConfig, QqRemoteConfigInput, QqRemoteStatus } from '../sha
 import type { InstalledPlugin, LocalSearxngStatus, MarketplacePluginView, SearchProviderConnectivity } from '../shared/types/plugin'
 import type { ProjectIndexCatalogPage, ProjectIndexScope, ProjectIndexSearchResult, ProjectIndexSnapshot, ProjectIndexStatus } from '../shared/types/project-index'
 import type { ProjectKnowledgeEntry, ProjectKnowledgeScope, ProjectKnowledgeStatus } from '../shared/types/project-knowledge'
+import type { LongTermMemory, LongTermMemoryScope, UpdateLongTermMemoryInput } from '../shared/types/long-term-memory'
 import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution'
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
 import type { ActivePlan } from '../shared/types/active-plan'
@@ -177,6 +178,13 @@ export interface EvaAPI {
     search(scope: ProjectKnowledgeScope, query: string, limit?: number): Promise<ProjectKnowledgeEntry[]>
     update(scope: ProjectKnowledgeScope, id: string, status: ProjectKnowledgeStatus): Promise<ProjectKnowledgeEntry | null>
     delete(scope: ProjectKnowledgeScope, id: string): Promise<boolean>
+  }
+
+  longTermMemory: {
+    list(scope?: { scope?: LongTermMemoryScope; scopeId?: string }): Promise<LongTermMemory[]>
+    search(query: string, scopes: Array<{ scope: LongTermMemoryScope; scopeId: string }>, limit?: number): Promise<LongTermMemory[]>
+    update(id: string, input: UpdateLongTermMemoryInput): Promise<LongTermMemory | null>
+    delete(id: string): Promise<boolean>
   }
 
   git: {
@@ -480,6 +488,13 @@ const evaAPI: EvaAPI = {
     delete: (scope, id) => invokeContract(IPC.PROJECT_KNOWLEDGE_DELETE, scope, id),
   },
 
+  longTermMemory: {
+    list: (scope) => invokeContract(IPC.LONG_TERM_MEMORY_LIST, scope),
+    search: (query, scopes, limit) => invokeContract(IPC.LONG_TERM_MEMORY_SEARCH, query, scopes, limit),
+    update: (id, input) => invokeContract(IPC.LONG_TERM_MEMORY_UPDATE, id, input),
+    delete: (id) => invokeContract(IPC.LONG_TERM_MEMORY_DELETE, id),
+  },
+
   git: {
     status: (conversationId) => ipcRenderer.invoke(IPC.GIT_STATUS, conversationId),
     switchBranch: (conversationId, branch) => ipcRenderer.invoke(IPC.GIT_SWITCH_BRANCH, conversationId, branch),
@@ -548,9 +563,9 @@ const evaAPI: EvaAPI = {
   },
 
   appServer: {
-    getStatus: () => ipcRenderer.invoke(IPC.APP_SERVER_GET_STATUS),
-    start: () => invokeContract(IPC.APP_SERVER_START) as Promise<AppServerStatus>,
-    stop: () => invokeContract(IPC.APP_SERVER_STOP) as Promise<AppServerStatus>,
+    getStatus: () => invokeContract(IPC.APP_SERVER_GET_STATUS),
+    start: () => invokeContract(IPC.APP_SERVER_START),
+    stop: () => invokeContract(IPC.APP_SERVER_STOP),
   },
 
   sandbox: {

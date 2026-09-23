@@ -26,6 +26,7 @@ function makeContext(fullFilesystemAccess: boolean): ToolContext {
       writeInput: vi.fn(),
       resize: vi.fn(),
       onOutput: vi.fn(() => () => {}),
+      checkSandboxCommand: vi.fn(() => null),
     },
   }
 }
@@ -128,6 +129,25 @@ describe('controlled terminal visibility', () => {
 
     await expect(tool.execute({ text: 'Get-ChildItem | Where-Object { .Name -eq \'x\' }', submit: true }, context)).resolves.toContain('$_.Property')
     expect(context.terminalService.writeInput).not.toHaveBeenCalled()
+  })
+
+  it('does not submit a command the sandbox denies', async () => {
+    const tool = createTerminalTools().find((candidate) => candidate.definition.name === 'write_terminal')!
+    const context = { ...makeContext(false), conversationId: 'conversation-typed-sandboxed' }
+    vi.mocked(context.terminalService.checkSandboxCommand).mockReturnValue('Sandbox denied: command touches an unauthorized path')
+
+    await expect(tool.execute({ text: 'type C:\\Users\\secret.txt', submit: true }, context)).resolves.toContain('Sandbox denied')
+    expect(context.terminalService.writeInput).not.toHaveBeenCalled()
+  })
+
+  it('still types unsubmitted text when the sandbox would deny a submitted command', async () => {
+    const tool = createTerminalTools().find((candidate) => candidate.definition.name === 'write_terminal')!
+    const context = { ...makeContext(false), conversationId: 'conversation-typed-partial' }
+    vi.mocked(context.terminalService.checkSandboxCommand).mockReturnValue('Sandbox denied')
+
+    await expect(tool.execute({ text: 'rm -rf /', submit: false }, context)).resolves.toContain('Typed the text')
+    expect(context.terminalService.checkSandboxCommand).not.toHaveBeenCalled()
+    expect(context.terminalService.writeInput).toHaveBeenCalledWith(expect.any(String), 'rm -rf /')
   })
 
   it('closes only the current conversation terminal', async () => {

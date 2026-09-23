@@ -280,7 +280,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
       {error && (
         <div className="mx-4 mt-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700 flex items-center gap-2">
           <AlertCircle className="h-4 w-4 shrink-0" />
-          <span className="flex-1">{error}</span>
+          <span className="flex-1" title={error}>{error.split('\n', 1)[0]}</span>
           <button
             onClick={() => setError(null)}
             aria-label="Dismiss error"

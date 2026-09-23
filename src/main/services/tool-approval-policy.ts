@@ -1,5 +1,6 @@
 import { BrowserWindow } from 'electron'
 import type { ToolApprovalDecision, ToolApprovalRequest } from '../agent-engine/agent-runner'
+import type { ToolApprovalRequest as ToolApprovalCard } from '../../shared/types/conversation'
 import type { ToolApprovalConfig, ToolApprovalPolicy } from '../../shared/types/automation'
 import { IPC } from '../../shared/ipc-channels'
 import { v4 as uuidv4 } from 'uuid'
@@ -7,19 +8,25 @@ import { recordActivity } from './activity-log'
 
 // -----------------------------------------------------------------------------
 // Tool classification: which tools need approval, at which policy level.
-// Mirrors `PARALLEL_SAFE_READ_TOOL_NAMES` and `WORKSPACE_MUTATION_TOOL_NAMES`
-// defined inside agent-runner.ts, but exposed here so the policy logic does
-// not need to import a private constant. Keep both lists in sync.
+// Mirrors the read/write sets used inside agent-runner.ts, but this list is the
+// broader one: every registered tool name must appear here under its real name,
+// otherwise it silently falls through to "no approval".
 // -----------------------------------------------------------------------------
 
 const READ_ONLY_TOOLS = new Set([
   'read_file',
   'list_directory',
   'search_files',
+  'search_code',
+  'search_by_regex',
+  'file_info',
   'web_search',
   'read_web_page',
   'read_terminal',
   'project_search',
+  'project_index_status',
+  'inspect_runtime',
+  'diagnose_runtime',
   'delegate_to_team',
   'delegate_to_model_pool',
   'run_task',
@@ -41,12 +48,7 @@ const TERMINAL_COMMAND_TOOLS = new Set([
 ])
 
 const BROWSER_CONTROL_TOOLS = new Set([
-  'browser_navigate',
-  'browser_click',
-  'browser_type',
-  'browser_screenshot',
-  'browser_evaluate',
-  'close_browser',
+  'browser_control',
 ])
 
 export type ApprovalCategory =
@@ -111,7 +113,8 @@ function buildSummary(toolName: string, args: Record<string, unknown>, category:
     return { summary: `MCP tool: ${server}/${action}`, detail: JSON.stringify(args).slice(0, 400) }
   }
   if (category === 'browser-control') {
-    return { summary: `Browser: ${toolName}`, detail: JSON.stringify(args).slice(0, 200) }
+    const action = typeof args.action === 'string' ? args.action : 'control'
+    return { summary: `Browser: ${action}`, detail: JSON.stringify(args).slice(0, 200) }
   }
   return { summary: `Tool: ${toolName}`, detail: JSON.stringify(args).slice(0, 200) }
 }
@@ -124,15 +127,84 @@ function buildSummary(toolName: string, args: Record<string, unknown>, category:
 interface PendingApproval {
   conversationId: string
   toolName: string
+  category: ApprovalCategory
   resolve: (decision: ToolApprovalDecision) => void
   timer: NodeJS.Timeout
 }
 
 const pendingApprovals = new Map<string, PendingApproval>()
 
+// -----------------------------------------------------------------------------
+// Session-scoped approvals: the card offers "allow for this session" beside
+// "allow once". A session grant is remembered per conversation and per category,
+// which is the scope the card actually shows the user (its category chip), so an
+// accepted grant stops the same kind of operation from asking again in that
+// conversation. The registry is in-memory: a "session" ends with the process or
+// when the conversation itself is deleted.
+// -----------------------------------------------------------------------------
+
+const sessionApprovals = new Map<string, Set<ApprovalCategory>>()
+
+function grantCategoryForSession(conversationId: string, category: ApprovalCategory): void {
+  const granted = sessionApprovals.get(conversationId)
+  if (granted) granted.add(category)
+  else sessionApprovals.set(conversationId, new Set([category]))
+}
+
+function hasSessionGrant(conversationId: string, category: ApprovalCategory): boolean {
+  return sessionApprovals.get(conversationId)?.has(category) === true
+}
+
+export function clearSessionApprovals(conversationId: string): void {
+  sessionApprovals.delete(conversationId)
+}
+
+/**
+ * One approval card is visible per conversation, so a request that arrives while
+ * another is on screen waits its turn. A parallel tool batch (paranoid mode asks
+ * for every tool) would otherwise replace the visible card and auto-deny every
+ * sibling that never got shown.
+ */
+const approvalWaiters = new Map<string, ApprovalWaiter[]>()
+const displayedApprovals = new Set<string>()
+
+interface ApprovalWaiter {
+  conversationId: string
+  deliver: () => void
+  deny: (reason: string) => void
+}
+
 const APPROVAL_DEFAULTS_DENIED_MESSAGE = 'Approval window expired before a decision was made.'
 
+/** Show the request, or queue it behind the card the user is already looking at. */
+function presentApproval(waiter: ApprovalWaiter): void {
+  if (displayedApprovals.has(waiter.conversationId)) {
+    const waiting = approvalWaiters.get(waiter.conversationId) ?? []
+    waiting.push(waiter)
+    approvalWaiters.set(waiter.conversationId, waiting)
+    return
+  }
+  displayedApprovals.add(waiter.conversationId)
+  waiter.deliver()
+}
+
+/** The visible card was decided: hand the slot to the next waiting request. */
+function releaseApprovalSlot(conversationId: string): void {
+  const waiting = approvalWaiters.get(conversationId)
+  const next = waiting?.shift()
+  if (next) {
+    next.deliver()
+    return
+  }
+  if (waiting) approvalWaiters.delete(conversationId)
+  displayedApprovals.delete(conversationId)
+}
+
 function rejectAllForConversation(conversationId: string, reason: string): void {
+  const waiting = approvalWaiters.get(conversationId)
+  approvalWaiters.delete(conversationId)
+  displayedApprovals.delete(conversationId)
+  for (const waiter of waiting ?? []) waiter.deny(reason)
   for (const [approvalId, pending] of pendingApprovals) {
     if (pending.conversationId !== conversationId) continue
     clearTimeout(pending.timer)
@@ -145,11 +217,19 @@ export function rejectAllPendingApprovalsForConversation(conversationId: string,
   rejectAllForConversation(conversationId, reason)
 }
 
-export function resolvePendingApproval(approvalId: string, approved: boolean, message?: string): boolean {
+export function resolvePendingApproval(
+  approvalId: string,
+  approved: boolean,
+  message?: string,
+  rememberScope?: 'once' | 'session',
+): boolean {
   const pending = pendingApprovals.get(approvalId)
   if (!pending) return false
   clearTimeout(pending.timer)
   pendingApprovals.delete(approvalId)
+  if (approved && rememberScope === 'session') {
+    grantCategoryForSession(pending.conversationId, pending.category)
+  }
   pending.resolve(approved
     ? { approved: true }
     : { approved: false, message: message || 'The user denied the request.' })
@@ -164,18 +244,34 @@ export function resolvePendingApproval(approvalId: string, approved: boolean, me
 export interface ApprovalFactoryContext {
   conversationId: string
   workspaceId?: string
-  /** The browser window the stream runs through. `null` means no renderer is
-   *  available (e.g. external app-server client). The policy will then fall
-   *  back to a tool-by-tool allow/deny based on `mode`. */
+  /** The desktop window the stream runs through. A relay registered for this
+   *  conversation (see `setApprovalRelay`) takes the card first; this is the
+   *  fallback. When both are absent the policy falls back to `headlessMode`. */
   window: BrowserWindow | null
   config: ToolApprovalConfig
+  /** Called with the card as soon as it exists, wherever it is ultimately shown. */
+  onRequested?: (approval: ToolApprovalCard) => void
   /**
-   * When the window is null, what should we do? `auto-approve` (default for
-   * app-server clients that talk to operators who set them up), `deny`, or
-   * `delegate-to-approval-request` (recommended for live streaming to a
-   * remote renderer via `EVA_APPROVAL_BRIDGE_HOST`).
+   * What to do when no window and no relay can receive the card: `auto-approve`
+   * (the default when the policy is `off`), or `deny` (the default otherwise).
    */
   headlessMode?: 'auto-approve' | 'deny'
+}
+
+/**
+ * A transport that has no `BrowserWindow` takes ownership of one conversation's
+ * approvals for as long as it drives that conversation. The relay returns
+ * `false` when the card could not be handed over, which denies the call on the
+ * spot; the answer arrives later through `resolvePendingApproval` with the
+ * card's id, exactly as the renderer delivers one.
+ */
+export type ApprovalRelay = (approval: ToolApprovalCard) => boolean
+
+const approvalRelays = new Map<string, ApprovalRelay>()
+
+export function setApprovalRelay(conversationId: string, relay: ApprovalRelay | null): void {
+  if (relay) approvalRelays.set(conversationId, relay)
+  else approvalRelays.delete(conversationId)
 }
 
 export function createLocalToolApproval(context: ApprovalFactoryContext): (request: ToolApprovalRequest) => Promise<ToolApprovalDecision> {
@@ -187,12 +283,15 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
       return { approved: true }
     }
 
-    // A newer request from the same runner must not stall on a stale approval.
-    rejectAllForConversation(conversationId, 'A newer tool call superseded this approval request.')
+    // Earlier in this session the user asked not to be prompted again for this
+    // category in this conversation, and that decision still holds.
+    if (hasSessionGrant(conversationId, category)) {
+      return { approved: true }
+    }
 
     const approvalId = uuidv4()
     const { summary, detail } = buildSummary(request.toolCall.name, request.toolCall.arguments, category)
-    const rendererPayload = {
+    const approvalPayload: ToolApprovalCard = {
       id: approvalId,
       toolCallId: request.toolCall.id,
       toolName: request.toolCall.name,
@@ -213,43 +312,76 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
       workspaceId,
     })
 
-    // Headless / app-server path: no live renderer to ask. Pick a static mode.
-    if (!window) {
+    // One owner for "where does this card go". An injected transport (the ACP
+    // WebSocket) wins; otherwise the desktop window, checked per call because it
+    // can be closed while the run is still going.
+    const deliverCard: ((approval: ToolApprovalCard) => boolean) | null = approvalRelays.get(conversationId)
+      ?? (window
+        ? (approval) => {
+            if (window.isDestroyed()) return false
+            window.webContents.send(IPC.CHAT_STREAM, {
+              conversationId,
+              type: 'tool_approval_request',
+              toolApproval: approval,
+            })
+            return true
+          }
+        : null)
+
+    // Nothing to ask: fall back to a static mode.
+    if (!deliverCard) {
       const headlessMode = context.headlessMode ?? (config.policy === 'off' ? 'auto-approve' : 'deny')
       if (headlessMode === 'auto-approve') return { approved: true }
       return { approved: false, message: 'No renderer available to approve this tool call; denied by policy.' }
     }
 
-    if (!window.isDestroyed()) {
-      window.webContents.send(IPC.CHAT_STREAM, {
-        conversationId,
-        type: 'tool_approval_request',
-        toolApproval: rendererPayload,
-      })
-    }
-
     return new Promise<ToolApprovalDecision>((resolve) => {
-      const timer = setTimeout(() => {
-        if (!pendingApprovals.has(approvalId)) return
-        pendingApprovals.delete(approvalId)
-        void recordActivity({
-          category: 'permission',
-          action: 'chat.tool_approval_timeout',
-          status: 'error',
-          summary: `Approval timed out: ${request.toolCall.name}.`,
+      const settle = (decision: ToolApprovalDecision): void => {
+        releaseApprovalSlot(conversationId)
+        resolve(decision)
+      }
+
+      const deliver = (): void => {
+        // Registered before the card leaves: a client can answer as soon as it
+        // receives it, and that answer has to find something to resolve.
+        const timer = setTimeout(() => {
+          if (!pendingApprovals.has(approvalId)) return
+          pendingApprovals.delete(approvalId)
+          void recordActivity({
+            category: 'permission',
+            action: 'chat.tool_approval_timeout',
+            status: 'error',
+            summary: `Approval timed out: ${request.toolCall.name}.`,
+            conversationId,
+            workspaceId,
+          })
+          settle({
+            approved: false,
+            message: `Approval timed out after ${Math.round(config.timeoutMs / 1000)}s. The tool call was denied.`,
+          })
+        }, config.timeoutMs)
+        pendingApprovals.set(approvalId, {
           conversationId,
-          workspaceId,
+          toolName: request.toolCall.name,
+          category,
+          resolve: settle,
+          timer,
         })
-        resolve({
-          approved: false,
-          message: `Approval timed out after ${Math.round(config.timeoutMs / 1000)}s. The tool call was denied.`,
-        })
-      }, config.timeoutMs)
-      pendingApprovals.set(approvalId, {
+        // Announced only now: before this moment the id does not resolve, and an
+        // observer that answered straight away would have its decision dropped.
+        context.onRequested?.(approvalPayload)
+
+        if (!deliverCard(approvalPayload)) {
+          clearTimeout(timer)
+          pendingApprovals.delete(approvalId)
+          settle({ approved: false, message: '审批卡片无法送达该客户端，本次调用已按拒绝处理。' })
+        }
+      }
+
+      presentApproval({
         conversationId,
-        toolName: request.toolCall.name,
-        resolve,
-        timer,
+        deliver,
+        deny: (reason) => resolve({ approved: false, message: reason }),
       })
     })
   }

@@ -16,6 +16,8 @@ const SEARCH_MIN_INTERVAL_MS = 250
 const MAX_CONCURRENT_SEARCHES = 3
 const SEARCH_MAX_RETRIES = 2
 const WEB_REQUEST_TIMEOUT_MS = 15_000
+/** Upper bound for a server-requested backoff so `Retry-After` cannot park the tool call. */
+const MAX_RETRY_DELAY_MS = 30_000
 const MAX_RESPONSE_BYTES = 2_000_000
 
 export interface SearchResult {
@@ -371,6 +373,44 @@ async function fetchBingWebSearch(query: string, language?: string): Promise<Sea
   return requireScrapedResults(parseBingWebResults(html))
 }
 
+/**
+ * Run one `net.fetch` under a hard deadline. `net.fetch` has no timeout of its
+ * own, so a search API that accepts the connection and then stalls would park
+ * the whole tool call indefinitely. The timer also covers the body read.
+ */
+async function fetchTimedText(
+  url: string,
+  init: RequestInit,
+  label: string,
+): Promise<{ ok: boolean; status: number; headers: Headers; body: string }> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), WEB_REQUEST_TIMEOUT_MS)
+  try {
+    const response = await net.fetch(url, { ...init, signal: controller.signal })
+    return {
+      ok: response.ok,
+      status: response.status,
+      headers: response.headers,
+      body: await readResponseText(response, MAX_RESPONSE_BYTES),
+    }
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`${label} timed out after ${WEB_REQUEST_TIMEOUT_MS / 1000} seconds.`)
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Backoff for a retryable search-API response. A server-supplied `Retry-After`
+ * is honored but clamped: an hour-long value would otherwise suspend the turn.
+ */
+function retryDelayMs(retryAfterSeconds: number, attempt: number): number {
+  const exponential = 1_000 * 2 ** attempt
+  if (!Number.isFinite(retryAfterSeconds) || retryAfterSeconds <= 0) return exponential
+  return Math.min(retryAfterSeconds * 1_000, MAX_RETRY_DELAY_MS)
+}
+
 /** Public search pages are fetched from a constant host, so no user-controlled URL reaches this path. */
 async function fetchSearchPage(url: string, request: { method?: 'GET' | 'POST'; body?: string } = {}): Promise<string> {
   const controller = new AbortController()
@@ -511,16 +551,16 @@ async function fetchBraveSearch(query: string, apiKey: string): Promise<SearchRe
   url.searchParams.set('count', String(MAX_RESULTS))
 
   for (let attempt = 0; attempt <= SEARCH_MAX_RETRIES; attempt += 1) {
-    const response = await net.fetch(url.toString(), {
+    const response = await fetchTimedText(url.toString(), {
       headers: {
         Accept: 'application/json',
         'Accept-Encoding': 'gzip',
         'User-Agent': USER_AGENT,
         'X-Subscription-Token': apiKey,
       },
-    })
+    }, 'Brave Search API request')
     if (response.ok) {
-      const data = await response.json() as { web?: { results?: Array<{ title?: string; url?: string; description?: string }> } }
+      const data = JSON.parse(response.body) as { web?: { results?: Array<{ title?: string; url?: string; description?: string }> } }
       return normalizeSearchResults(data.web?.results || [], 'description')
     }
 
@@ -531,31 +571,31 @@ async function fetchBraveSearch(query: string, apiKey: string): Promise<SearchRe
       if (response.status === 429) throw new Error('Brave Search API quota or rate limit was reached. Wait briefly or check your Brave API plan.')
       throw new Error(`Brave Search API request failed (${response.status}).`)
     }
-    await delay(Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : 1_000 * 2 ** attempt)
+    await delay(retryDelayMs(retryAfterSeconds, attempt))
   }
   return []
 }
 
 async function fetchTavilySearch(query: string, apiKey: string): Promise<SearchResult[]> {
-  const response = await net.fetch('https://api.tavily.com/search', {
+  const response = await fetchTimedText('https://api.tavily.com/search', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT, Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ query, max_results: MAX_RESULTS, search_depth: 'basic' }),
-  })
+  }, 'Tavily Search request')
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) throw new Error('Tavily rejected the configured API key. Check the plugin configuration.')
     if (response.status === 429) throw new Error('Tavily quota or rate limit was reached. Wait briefly or check the Tavily plan.')
     throw new Error(`Tavily Search request failed (${response.status}).`)
   }
-  const data = await response.json() as { results?: Array<{ title?: string; url?: string; content?: string }> }
+  const data = JSON.parse(response.body) as { results?: Array<{ title?: string; url?: string; content?: string }> }
   return normalizeSearchResults(data.results || [], 'content')
 }
 
 async function fetchSearxngSearch(query: string, endpoint: string, language?: string): Promise<SearchResult[]> {
   const url = buildSearxngSearchUrl(endpoint, query, language)
-  const response = await net.fetch(url.toString(), { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT } })
+  const response = await fetchTimedText(url.toString(), { headers: { Accept: 'application/json', 'User-Agent': USER_AGENT } }, 'SearXNG Search request')
   if (!response.ok) throw new Error(`SearXNG Search request failed (${response.status}). Check the endpoint and JSON API setting.`)
-  const data = await response.json() as { results?: Array<{ title?: string; url?: string; content?: string }>; unresponsive_engines?: unknown }
+  const data = JSON.parse(response.body) as { results?: Array<{ title?: string; url?: string; content?: string }>; unresponsive_engines?: unknown }
   const results = normalizeSearchResults(data.results || [], 'content')
   if (!results.length) {
     // A 200 with zero results usually means every upstream engine timed out or
@@ -576,13 +616,13 @@ export function describeUnresponsiveEngines(value: unknown): string {
 }
 
 async function fetchTavilyExtract(url: string, apiKey: string): Promise<string> {
-  const response = await net.fetch('https://api.tavily.com/extract', {
+  const response = await fetchTimedText('https://api.tavily.com/extract', {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': USER_AGENT, Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ urls: [url], extract_depth: 'basic', format: 'markdown' }),
-  })
+  }, 'Tavily Extract request')
   if (!response.ok) return ''
-  const data = await response.json() as { results?: Array<{ url?: string; raw_content?: string }> }
+  const data = JSON.parse(response.body) as { results?: Array<{ url?: string; raw_content?: string }> }
   const result = data.results?.find((entry) => entry.raw_content?.trim())
   if (!result?.raw_content?.trim()) return ''
   return [`URL: ${result.url || url}`, '', result.raw_content.trim()].join('\n')
@@ -769,7 +809,9 @@ function fetchPublicHop(url: string, accept: string): Promise<PublicHop> {
       void readHopBody(response, MAX_RESPONSE_BYTES).then((body) => finish({
         kind: 'response',
         statusCode: response.statusCode,
-        retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1_000 : undefined,
+        retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? Math.min(retryAfterSeconds * 1_000, MAX_RETRY_DELAY_MS)
+          : undefined,
         body,
       }), fail)
     })

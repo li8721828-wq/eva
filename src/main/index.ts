@@ -95,6 +95,7 @@ async function initializeApplication(): Promise<void> {
     terminalService: services.terminalService,
     toolRegistry: services.toolRegistry,
     providerRegistry: services.providerRegistry,
+    memoryAgent: services.memoryAgent,
   })
   registerQqRemoteHandlers(qqRemoteBridge)
 

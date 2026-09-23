@@ -413,6 +413,45 @@ describe('web_search failover chain', () => {
   })
 })
 
+describe('search provider request deadlines', () => {
+  /** A stub that only settles when the caller aborts, like a server that accepts a socket then stalls. */
+  const stallingFetch = () => vi.fn((_input: string, init?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener('abort', () => reject(new Error('This operation was aborted')))
+  }))
+
+  it('gives up on a search API that never answers instead of parking the turn', async () => {
+    vi.useFakeTimers()
+    try {
+      pluginStoreStub.list = () => [plugin('searxng-search', { name: 'SearXNG Search', enabled: true, settings: { endpoint: 'http://127.0.0.1:8080' } })]
+      netFetchStub.mockImplementation(stallingFetch())
+
+      const pending = webSearch.execute({ query: 'quantum computing stalled provider' }, {} as never)
+      await vi.advanceTimersByTimeAsync(20_000)
+
+      await expect(pending).resolves.toContain('timed out after 15 seconds')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clamps a server-supplied Retry-After instead of waiting out the whole window', async () => {
+    vi.useFakeTimers()
+    try {
+      pluginStoreStub.list = () => [plugin('brave-search', { name: 'Brave Search', enabled: true, settings: { apiKey: 'test-key' } })]
+      // An hour-long Retry-After would suspend the turn if it were honored verbatim.
+      netFetchStub.mockImplementation(async () => new Response('', { status: 429, headers: { 'retry-after': '86400' } }))
+
+      const pending = webSearch.execute({ query: 'quantum computing retry clamp' }, {} as never)
+      // Two clamped 30s backoffs; the unclamped value would need 48 hours.
+      await vi.advanceTimersByTimeAsync(61_000)
+
+      await expect(pending).resolves.toContain('rate limit')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('read_web_page redirect handling', () => {
   const readWebPage = createWebTools().find((tool) => tool.definition.name === 'read_web_page')!
   const releaseNote = '<html><head><title>Rust blog</title></head><body><main>Rust 1.96.1 has been released.</main></body></html>'

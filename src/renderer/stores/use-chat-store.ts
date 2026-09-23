@@ -1,8 +1,9 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, ExecutionTraceEntry, FileAccessGrant, GoalConfirmationRequest, ProgressUpdate, ToolApprovalRequest, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, FileAccessGrant, GoalConfirmationRequest, ProgressUpdate, ToolApprovalRequest, ToolCall, ChatStreamEvent } from '../../shared/types'
 import type { RequirementProgress } from '../../shared/types/requirement-engineering'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
+import { dropQueuedItemsFor } from '../lib/stream-reveal-queue'
 
 export interface ConversationStreamState {
   isStreaming: boolean
@@ -11,14 +12,11 @@ export interface ConversationStreamState {
   content: string
   reasoningContent: string
   toolCalls: ToolCall[]
-  executionTrace: ExecutionTraceEntry[]
   executionTimeline: ExecutionTimelineEntry[]
   progressUpdates: ProgressUpdate[]
   goalConfirmation?: GoalConfirmationRequest
   toolApproval?: ToolApprovalRequest
-  status: string
   startedAt: number | null
-  lastActivityAt: number | null
 }
 
 export interface RequirementProgressState {
@@ -28,7 +26,28 @@ export interface RequirementProgressState {
 }
 
 function createIdleStream(): ConversationStreamState {
-  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], executionTimeline: [], progressUpdates: [], status: '', startedAt: null, lastActivityAt: null }
+  return { isStreaming: false, content: '', reasoningContent: '', toolCalls: [], executionTimeline: [], progressUpdates: [], startedAt: null }
+}
+
+/**
+ * Whether the in-flight answer text is actually on screen. Character pacing
+ * exists to make visible text appear gradually, so text the transcript is not
+ * rendering would only delay the terminal event by tens of seconds of invisible
+ * animation. That happens when the reply row for this round already shows the
+ * same content, in which case the streamed copy is a duplicate.
+ *
+ * A tool round used to hide its streamed synthesis entirely, which is why this
+ * check once keyed off `toolCalls`. The synthesis now streams in place, so the
+ * duplicate reply row is the only case where pacing must be skipped.
+ */
+export function isStreamedTextRendered(
+  state: Pick<ChatState, 'messages' | 'streamingByConversation'>,
+  conversationId: string,
+): boolean {
+  const stream = state.streamingByConversation[conversationId]
+  if (!stream?.isStreaming || !stream.content) return false
+  const latest = state.messages[state.messages.length - 1]
+  return !(latest?.role === 'assistant' && latest.content === stream.content)
 }
 
 interface ChatState {
@@ -97,6 +116,11 @@ function parentDirectory(filePath: string): string {
 }
 
 let conversationLoadSequence = 0
+
+// `sendMessage` awaits conversation setup before it flips `isStreaming`, so a
+// second submit in that window would slip past the stream guard and send the
+// same prompt twice. Held until the round is live (or the send failed).
+let sendStartInFlight = false
 
 function mergePendingMessages(serverMessages: ChatMessage[], localMessages: ChatMessage[], pendingIds: string[]): ChatMessage[] {
   if (pendingIds.length === 0) return serverMessages
@@ -193,7 +217,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Remove the original prompt and response branch so sendMessage can add
     // one clean prompt for the regenerated answer.
     await state.deleteMessagesFrom(previousUser.id)
-    set({ inputText: previousUser.content, referenceImages: previousUser.images || [] })
+    set({
+      inputText: previousUser.content,
+      referenceImages: previousUser.images || [],
+      documentAttachments: previousUser.attachments || [],
+    })
     await get().sendMessage()
   },
 
@@ -294,13 +322,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
           persistedReply?.content &&
           persistedReply.content.startsWith(stream.content)
         )
+        // A round the user stopped keeps its revealed text until the cancelled
+        // row arrives, otherwise the transcript would lose what was on screen
+        // while the run is still unwinding. Match loosely: the persisted copy
+        // also carries the answer paragraphs written before a tool cycle.
+        const stoppedTextIsPersisted = Boolean(
+          stream && !stream.isStreaming && !hasUserAfterReply &&
+          stream.content &&
+          persistedReply?.content?.includes(stream.content)
+        )
         return {
           messages,
           isConversationLoading: false,
           pendingMessageIds: remainingPendingIds.length > 0
             ? { ...state.pendingMessageIds, [id]: remainingPendingIds }
             : Object.fromEntries(Object.entries(state.pendingMessageIds).filter(([conversationId]) => conversationId !== id)),
-          ...(streamWasPersisted
+          ...(streamWasPersisted || stoppedTextIsPersisted
             ? { streamingByConversation: { ...state.streamingByConversation, [id]: createIdleStream() } }
             : {}),
         }
@@ -446,102 +483,120 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (agentId) => {
     const { inputText, quotedMessage, referenceImages, documentAttachments, currentConversationId } = get()
     if ((!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
-
-    const messageContent = inputText.trim() || (referenceImages.length ? 'Review the attached reference images.' : 'Read and analyze the attached files.')
-
-    let convId = currentConversationId
-    const existingConversation = convId
-      ? get().conversations.find((item) => item.id === convId)
-      : null
-    // Let the main process assign the configured primary Agent to a brand-new
-    // conversation. Existing conversations always retain their own Agent.
-    const requestedAgentId = agentId || existingConversation?.agentId
-
-    // Create conversation if none exists
-    if (!convId) {
-      const conv = await get().createConversation(requestedAgentId)
-      convId = conv.id
-    }
-
-    const initialTitle = createConversationTitle(messageContent)
-    const conversation = get().conversations.find((item) => item.id === convId)
-
-    // Selecting an image is explicit consent to let this conversation read it.
-    // Preserve workspace write access while adding image folders as read-only grants.
-    if (conversation && conversation.permissionLevel !== 'full-access' && (referenceImages.length > 0 || documentAttachments.length > 0)) {
-      const existingGrants = conversation.fileAccessGrants || []
-      const nextGrants = [...existingGrants]
-      for (const image of referenceImages) {
-        const folder = parentDirectory(image.path)
-        if (folder && !nextGrants.some((grant) => grant.path === folder)) {
-          nextGrants.push({ path: folder, access: 'read' })
-        }
-      }
-      if (nextGrants.length !== existingGrants.length || conversation.permissionLevel !== 'granted-folders') {
-        await get().setConversationPermissions(convId, 'granted-folders', nextGrants)
-      }
-    }
-    if (conversation?.title === 'New Conversation' && conversation.messageCount === 0) {
-      try {
-        await window.eva.conversation.update(convId, { title: initialTitle, titleSource: 'auto' })
-        set((state) => ({
-          conversations: state.conversations.map((item) =>
-            item.id === convId ? { ...item, title: initialTitle, titleSource: 'auto' } : item
-          ),
-        }))
-      } catch (err) {
-        console.error('Failed to set initial conversation title:', err)
-      }
-    }
-
-    // Add user message to UI immediately
-    const userMessage: ChatMessage = {
-      id: generateId(),
-      conversationId: convId,
-      role: 'user',
-      content: messageContent,
-      quotedMessage: quotedMessage || undefined,
-      attachments: documentAttachments,
-      images: referenceImages,
-      timestamp: Date.now(),
-    }
-
-    set((s) => ({
-      messages: [...s.messages, userMessage],
-      pendingMessageIds: {
-        ...s.pendingMessageIds,
-        [convId!]: [...new Set([...(s.pendingMessageIds[convId!] || []), userMessage.id])],
-      },
-      inputText: '',
-      quotedMessage: null,
-      referenceImages: [],
-      documentAttachments: [],
-      streamingByConversation: {
-        ...s.streamingByConversation,
-        [convId!]: { isStreaming: true, content: '', reasoningContent: '', toolCalls: [], executionTrace: [], executionTimeline: [], progressUpdates: [], status: '正在准备请求...', startedAt: Date.now(), lastActivityAt: Date.now() },
-      },
-      error: null,
-    }))
+    if (sendStartInFlight) return
+    sendStartInFlight = true
 
     try {
-      await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined, userMessage.id)
-    } catch (err) {
-      console.error('Failed to send message:', err)
+      const messageContent = inputText.trim() || (referenceImages.length ? 'Review the attached reference images.' : 'Read and analyze the attached files.')
+
+      let convId = currentConversationId
+      const existingConversation = convId
+        ? get().conversations.find((item) => item.id === convId)
+        : null
+      // Let the main process assign the configured primary Agent to a brand-new
+      // conversation. Existing conversations always retain their own Agent.
+      const requestedAgentId = agentId || existingConversation?.agentId
+
+      // Create conversation if none exists
+      if (!convId) {
+        const conv = await get().createConversation(requestedAgentId)
+        convId = conv.id
+      }
+
+      const initialTitle = createConversationTitle(messageContent)
+      const conversation = get().conversations.find((item) => item.id === convId)
+
+      // Selecting an image is explicit consent to let this conversation read it.
+      // Preserve workspace write access while adding image folders as read-only grants.
+      if (conversation && conversation.permissionLevel !== 'full-access' && (referenceImages.length > 0 || documentAttachments.length > 0)) {
+        const existingGrants = conversation.fileAccessGrants || []
+        const nextGrants = [...existingGrants]
+        for (const image of referenceImages) {
+          const folder = parentDirectory(image.path)
+          if (folder && !nextGrants.some((grant) => grant.path === folder)) {
+            nextGrants.push({ path: folder, access: 'read' })
+          }
+        }
+        if (nextGrants.length !== existingGrants.length || conversation.permissionLevel !== 'granted-folders') {
+          await get().setConversationPermissions(convId, 'granted-folders', nextGrants)
+        }
+      }
+      if (conversation?.title === 'New Conversation' && conversation.messageCount === 0) {
+        try {
+          await window.eva.conversation.update(convId, { title: initialTitle, titleSource: 'auto' })
+          set((state) => ({
+            conversations: state.conversations.map((item) =>
+              item.id === convId ? { ...item, title: initialTitle, titleSource: 'auto' } : item
+            ),
+          }))
+        } catch (err) {
+          console.error('Failed to set initial conversation title:', err)
+        }
+      }
+
+      // The previous round can still be revealing text after its reply was
+      // persisted. Drop those leftovers before this round resets the stream,
+      // otherwise they replay inside the new reply.
+      dropQueuedItemsFor(convId)
+
+      // Add user message to UI immediately
+      const userMessage: ChatMessage = {
+        id: generateId(),
+        conversationId: convId,
+        role: 'user',
+        content: messageContent,
+        quotedMessage: quotedMessage || undefined,
+        attachments: documentAttachments,
+        images: referenceImages,
+        timestamp: Date.now(),
+      }
+
       set((s) => ({
-        streamingByConversation: { ...s.streamingByConversation, [convId!]: createIdleStream() },
-        error: 'Failed to send message. Please check your configuration.',
+        messages: [...s.messages, userMessage],
+        pendingMessageIds: {
+          ...s.pendingMessageIds,
+          [convId!]: [...new Set([...(s.pendingMessageIds[convId!] || []), userMessage.id])],
+        },
+        inputText: '',
+        quotedMessage: null,
+        referenceImages: [],
+        documentAttachments: [],
+        streamingByConversation: {
+          ...s.streamingByConversation,
+          [convId!]: { isStreaming: true, content: '', reasoningContent: '', toolCalls: [], executionTimeline: [], progressUpdates: [], startedAt: Date.now() },
+        },
+        error: null,
       }))
+
+      try {
+        await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined, userMessage.id)
+      } catch (err) {
+        console.error('Failed to send message:', err)
+        set((s) => ({
+          streamingByConversation: { ...s.streamingByConversation, [convId!]: createIdleStream() },
+          // The send never reached the persistence layer, so the optimistic row
+          // has nothing to reconcile against and would stay on screen forever.
+          pendingMessageIds: Object.fromEntries(Object.entries(s.pendingMessageIds).filter(([id]) => id !== convId)),
+          error: 'Failed to send message. Please check your configuration.',
+        }))
+      }
+    } finally {
+      sendStartInFlight = false
     }
   },
 
   abortStream: () => {
     const { currentConversationId } = get()
     if (!currentConversationId) return
+    // Text already queued for reveal is no longer part of any live round.
+    dropQueuedItemsFor(currentConversationId)
 
     // The main process suppresses every later event from the cancelled run.
     // End the renderer state immediately as well; otherwise the red Stop
     // button and "正在执行" indicator remain stuck forever waiting for a
-    // terminal event that is intentionally no longer forwarded.
+    // terminal event that is intentionally no longer forwarded. The revealed
+    // text stays: the cancelled reply row is only written after the run stops
+    // unwinding, and refreshConversation clears this copy once it lands.
     set((s) => ({
       streamingByConversation: {
         ...s.streamingByConversation,
@@ -550,8 +605,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isStreaming: false,
           goalConfirmation: undefined,
           toolApproval: undefined,
-          status: '已停止',
-          lastActivityAt: Date.now(),
         },
       },
     }))
@@ -570,8 +623,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           [conversationId]: {
             ...stream,
             goalConfirmation: undefined,
-            status: approved ? 'Starting Goal execution...' : 'Continuing in regular chat...',
-            lastActivityAt: Date.now(),
           },
         },
       }
@@ -590,8 +641,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
           [conversationId]: {
             ...stream,
             toolApproval: undefined,
-            status: approved ? 'Approved the tool call. Continuing…' : 'Denied the tool call.',
-            lastActivityAt: Date.now(),
           },
         },
       }
@@ -609,32 +658,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set((s) => {
           const existingStream = s.streamingByConversation[conversationId]
           if (existingStream && !existingStream.isStreaming) return s
-          return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(existingStream || createIdleStream()), ...agentIdentity, isStreaming: true, status: event.content || 'Preparing the next step...', lastActivityAt: Date.now() } } }
+          return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...(existingStream || createIdleStream()), ...agentIdentity, isStreaming: true } } }
         })
-        break
-      }
-
-      case 'execution_trace': {
-        if (event.executionTrace) {
-          set((s) => {
-            const existingStream = s.streamingByConversation[conversationId]
-            if (existingStream && !existingStream.isStreaming) return s
-            const stream = existingStream || createIdleStream()
-            const latest = event.executionTrace![event.executionTrace!.length - 1]
-            return {
-              streamingByConversation: {
-                ...s.streamingByConversation,
-                [conversationId]: {
-                  ...stream,
-                  isStreaming: true,
-                  executionTrace: event.executionTrace!,
-                  status: latest?.title || stream.status,
-                  lastActivityAt: Date.now(),
-                },
-              },
-            }
-          })
-        }
         break
       }
 
@@ -644,7 +669,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existingStream = s.streamingByConversation[conversationId]
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-            const latest = event.executionTimeline![event.executionTimeline!.length - 1]
             return {
               streamingByConversation: {
                 ...s.streamingByConversation,
@@ -653,8 +677,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ...agentIdentity,
                   isStreaming: true,
                   executionTimeline: event.executionTimeline!,
-                  status: latest?.kind === 'tool' ? `Running ${latest.toolCall?.name || 'tool'}...` : '模型正在思考...',
-                  lastActivityAt: Date.now(),
                 },
               },
             }
@@ -684,10 +706,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 isStreaming: true,
                 progressUpdates: [
                   ...(existingStream?.progressUpdates || []),
-                  { id: progressMessage.id, kind: event.progressKind!, content: event.content!, timestamp: progressMessage.timestamp },
+                  { id: progressMessage.id, kind: event.progressKind!, content: event.content!, item: event.progressItem, timestamp: progressMessage.timestamp },
                 ],
-                status: event.content!,
-                lastActivityAt: Date.now(),
               },
             },
           }
@@ -709,8 +729,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   ...agentIdentity,
                   isStreaming: true,
                 goalConfirmation: event.goalConfirmation,
-                status: 'Waiting for your decision about Goal execution...',
-                lastActivityAt: Date.now(),
               },
             },
           }
@@ -732,8 +750,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ...agentIdentity,
                 isStreaming: true,
                 toolApproval: event.toolApproval,
-                status: 'Waiting for you to approve a tool call…',
-                lastActivityAt: Date.now(),
               },
             },
           }
@@ -747,7 +763,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existingStream = s.streamingByConversation[conversationId]
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningContent: stream.reasoningContent + event.content!, status: '模型正在思考...', lastActivityAt: Date.now() } } }
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningContent: stream.reasoningContent + event.content! } } }
           })
         }
         break
@@ -762,7 +778,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // stale delta reopen it and render a duplicate assistant bubble.
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content!, status: 'Generating response...', lastActivityAt: Date.now() } } }
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content! } } }
           })
         }
         break
@@ -776,7 +792,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return {
             streamingByConversation: {
               ...s.streamingByConversation,
-              [conversationId]: { ...stream, isStreaming: true, content: '', status: 'Running tools...', lastActivityAt: Date.now() },
+              [conversationId]: { ...stream, isStreaming: true, content: '' },
             },
           }
         })
@@ -794,7 +810,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existing = stream.toolCalls.find((t) => t.id === tc.id)
             if (existing) {
               return {
-                streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, toolCalls: stream.toolCalls.map((t) => t.id === tc.id ? { ...t, ...tc } : t), status: `Running ${tc.name || 'tool'}...`, lastActivityAt: Date.now() } },
+                streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, toolCalls: stream.toolCalls.map((t) => t.id === tc.id ? { ...t, ...tc } : t) } },
               }
             }
             return {
@@ -804,7 +820,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   arguments: (tc.arguments as Record<string, unknown>) || {},
                   result: tc.result,
                   isError: tc.isError,
-                }], status: `Running ${tc.name || 'tool'}...`, lastActivityAt: Date.now() } },
+                }] } },
             }
           })
         }
@@ -817,7 +833,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existingStream = s.streamingByConversation[conversationId]
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-              return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError), protocol: event.protocol } : tc), status: event.isError ? 'A tool needs attention.' : 'Tool completed. Preparing the final response...', lastActivityAt: Date.now() } } }
+              return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError), protocol: event.protocol } : tc) } } }
           })
         }
         break
@@ -830,6 +846,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // been persisted. They otherwise create a second identical bubble.
         if (existingStream && !existingStream.isStreaming) break
         const stream = existingStream || createIdleStream()
+
+        // The terminal event names the persisted assistant row. When that row
+        // is already on screen the stream only has to settle; appending it
+        // again would duplicate the reply. A terminal event that names an
+        // older row while a newer round streams is a leftover from the
+        // previous round and must leave the live stream untouched.
+        const persistedReply = event.messageId
+          ? get().messages.find((message) => message.id === event.messageId)
+          : undefined
+        if (persistedReply) {
+          if (stream.startedAt !== null && persistedReply.timestamp < stream.startedAt) break
+          dropQueuedItemsFor(conversationId)
+          set((s) => ({
+            pendingMessageIds: Object.fromEntries(Object.entries(s.pendingMessageIds).filter(([id]) => id !== conversationId)),
+            streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
+          }))
+          get().loadConversations()
+          break
+        }
 
         // For 'done' event, content may carry the final full content
         const finalContent = event.content || stream.content
@@ -862,12 +897,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             role: 'assistant',
             content: finalContent,
             reasoningContent: stream.reasoningContent || undefined,
-            executionTrace: stream.executionTrace.length > 0 ? stream.executionTrace : undefined,
             executionTimeline: stream.executionTimeline.length > 0 ? stream.executionTimeline : undefined,
             progressUpdates: stream.progressUpdates.length > 0 ? stream.progressUpdates : undefined,
             toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,
             usage: event.usage,
             finishReason: event.finishReason,
+            timing: event.timing,
             timestamp: Date.now(),
           }
           set((s) => ({
@@ -888,6 +923,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const errorMsg = event.error || 'An error occurred'
         set((s) => ({
           streamingByConversation: { ...s.streamingByConversation, [conversationId]: createIdleStream() },
+          // The optimistic user row only bridged the gap until the persistence
+          // snapshot. A failed round never produced one, so keeping the id would
+          // leave a bubble that storage does not contain.
+          pendingMessageIds: Object.fromEntries(Object.entries(s.pendingMessageIds).filter(([id]) => id !== conversationId)),
           error: s.currentConversationId === conversationId ? errorMsg : s.error,
         }))
         // The main process persists the canonical failure message and then
@@ -900,6 +939,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   clearCurrentChat: () => {
+    const currentConversationId = get().currentConversationId
+    if (currentConversationId) dropQueuedItemsFor(currentConversationId)
     set((s) => {
       const conversationId = s.currentConversationId
       if (!conversationId) return { messages: [], error: null }

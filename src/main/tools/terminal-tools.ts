@@ -79,6 +79,10 @@ const writeTerminalTool: ToolExecutor = {
     if (submitted) {
       const guardError = commandGuardError(text)
       if (guardError) return guardError
+      // writeInput is shared with the panel's raw keystrokes, so the sandbox
+      // command policy must be applied here instead.
+      const sandboxError = context.terminalService.checkSandboxCommand(text)
+      if (sandboxError) return sandboxError
     }
     await context.terminalService.createSession(sessionId, context.workspacePath || process.cwd())
     context.terminalService.writeInput(sessionId, submitted ? `${text}\r` : text)

@@ -491,6 +491,169 @@ html, body, #root {
   backdrop-filter: none;
 }
 
+.execution-feed {
+  margin: 0 0 1rem;
+  color: #687386;
+}
+
+.execution-feed__reports,
+.execution-feed__timeline {
+  display: grid;
+  gap: 0.35rem;
+}
+
+/* The work report is the narrative of a run: the plan and each numbered step
+   are typeset on the assistant answer's own scale, while the tool rows below
+   stay deliberately quieter. */
+.execution-feed__reports {
+  gap: 0.7rem;
+  margin-bottom: 0.4rem;
+}
+
+.execution-feed__report-header {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: #4b5563;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.execution-feed__report--plan {
+  padding: 0.6rem 0.8rem;
+  border-left: 2px solid #ddd6fe;
+  border-radius: 0 6px 6px 0;
+  background: rgba(245, 243, 255, 0.5);
+}
+
+.execution-feed__report--plan .execution-feed__report-header {
+  color: #7c3aed;
+}
+
+.execution-feed__report--plan .plan-checklist__title {
+  color: #7c3aed;
+}
+
+/* The round's plan as a tickable list. Hosts only add their own frame, so the
+   task note and the reply can never disagree about how an item looks. */
+.plan-checklist__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.plan-checklist__title {
+  color: #4b5563;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.plan-checklist__count {
+  flex-shrink: 0;
+  color: #a1a1aa;
+  font-size: 0.75rem;
+}
+
+.plan-checklist__items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-checklist__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.plan-checklist__icon {
+  width: 1rem;
+  height: 1rem;
+  margin-top: 0.3rem;
+  flex-shrink: 0;
+}
+
+.plan-checklist__icon--done {
+  color: #059669;
+}
+
+.plan-checklist__icon--active {
+  color: #7c3aed;
+}
+
+.plan-checklist__icon--pending {
+  color: #d4d4d8;
+}
+
+.plan-checklist__index {
+  min-width: 1ch;
+  margin-top: 0.4rem;
+  flex-shrink: 0;
+  color: #a1a1aa;
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+.plan-checklist__text {
+  min-width: 0;
+  flex: 1;
+}
+
+.plan-checklist__item--done .plan-checklist__text {
+  color: #71717a;
+}
+
+.plan-checklist__overflow {
+  margin-top: 0.35rem;
+  color: #a1a1aa;
+  font-size: 0.75rem;
+}
+
+.execution-feed__update {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.2rem 0;
+}
+
+.execution-feed__update-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  margin-top: 0.25rem;
+  color: #a0a8b7;
+}
+
+.execution-feed__update-label {
+  display: block;
+  margin-bottom: 0.05rem;
+  color: #8b95a6;
+  font-size: 0.6875rem;
+  font-weight: 650;
+}
+
+.execution-feed__timeline {
+  margin-top: 0.35rem;
+  width: 100%;
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-self: flex-start;
+  scrollbar-width: thin;
+}
+
+.execution-feed__timeline > div,
+.execution-feed__timeline .tool-call-item__trigger {
+  border-radius: 4px;
+}
+
 .chat-message-avatar {
   border: 1px solid rgba(213, 202, 255, 0.7);
   box-shadow: 0 9px 20px -16px rgba(104, 69, 204, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.7);
@@ -1548,56 +1711,6 @@ html, body, #root {
   padding-top: 0.25rem;
 }
 
-.chat-message-markdown--streaming {
-  text-rendering: optimizeLegibility;
-}
-
-.chat-message-markdown--streaming [data-sd-animate] {
-  will-change: opacity, filter, transform;
-}
-
-/* Streamdown scopes custom animation names with an `sd-` prefix. New glyphs
-   arrive like ink soaking into paper: the pigment gathers and darkens in
-   place, rather than a whole line blurring in and sharpening at once. */
-@keyframes sd-inkReveal {
-  from {
-    opacity: 0.04;
-    filter: contrast(0.52) saturate(0.48);
-    transform: scale(0.985);
-    text-shadow: 0 0 0.72em rgba(124, 58, 237, 0.5);
-  }
-
-  42% {
-    opacity: 0.38;
-    filter: contrast(0.72) saturate(0.7);
-    transform: scale(0.998);
-    text-shadow: 0 0 0.46em rgba(139, 92, 246, 0.32);
-  }
-
-  76% {
-    opacity: 0.82;
-    filter: contrast(0.9) saturate(0.92);
-    transform: scale(1);
-    text-shadow: 0 0 0.18em rgba(109, 40, 217, 0.16);
-  }
-
-  to {
-    opacity: 1;
-    filter: contrast(1) saturate(1);
-    transform: scale(1);
-    text-shadow: 0 0 0 transparent;
-  }
-}
-
-
-@media (prefers-reduced-motion: reduce) {
-  .chat-message-markdown--streaming [data-sd-animate] {
-    animation-duration: 0ms !important;
-    animation-delay: 0ms !important;
-  }
-
-}
-
 .tool-execution-status {
   min-height: 28px;
   min-width: min(14rem, 100%);
@@ -2143,7 +2256,7 @@ a.tool-call-source__title:hover {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  width: min(100%, 860px);
+  width: min(100%, 1060px);
   margin: 0 auto;
 }
 

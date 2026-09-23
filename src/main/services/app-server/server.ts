@@ -2,10 +2,11 @@ import http, { type IncomingMessage, type ServerResponse } from 'http'
 import { randomBytes } from 'crypto'
 import { SseHub } from './sse-hub'
 import type { ChatServices } from '../../ipc/conversation'
-import type { RpcEnvelope, RpcErr, RpcMethod, RpcMethodHandler, ServerEvent, ServerStatus } from './protocol'
-import { RPC_METHOD } from './protocol'
+import { RPC_ERROR_CODE as RPC_ERROR, RPC_METHOD, type RpcEnvelope, type RpcErr, type RpcMethod, type RpcMethodHandler, type ServerEvent, type ServerStatus } from './protocol'
 import { getStorage } from '../../storage'
-import { BrowserWindow } from 'electron'
+import { app, BrowserWindow } from 'electron'
+import { ACP_PATH, registerAcpUpgrade, type AcpGateway } from './acp'
+import { activeRunRegistry } from '../run-registry'
 import { AgentRunner } from '../../agent-engine/agent-runner'
 import { ContextManager } from '../../agent-engine/context'
 import { v4 as uuidv4 } from 'uuid'
@@ -14,8 +15,10 @@ import { resolveEffectiveAgentConfig } from '../effective-agent-config'
 import { createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../tool-approval-policy'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import { recordActivity } from '../activity-log'
+import { notifyRendererConversationChanged } from '../conversation-notify'
 import type { AgentConfig } from '../../../shared/types/agent'
-import type { ChatMessage } from '../../../shared/types/conversation'
+import type { ChatMessage, ChatUsage, ConversationPermissionLevel, ProgressUpdate, ProgressUpdateKind, ResponseTiming, ToolCall } from '../../../shared/types/conversation'
+import { TurnProgressProjector, stripProgressBlocks, toProgressSummaries, unwrapProgressTags } from '../../ipc/progress-protocol'
 import { ConversationLifecycleService } from '../conversation-lifecycle-service'
 
 // -----------------------------------------------------------------------------
@@ -40,17 +43,6 @@ export function getAppServerStatus(): ServerStatus {
 // -----------------------------------------------------------------------------
 // JSON-RPC errors
 // -----------------------------------------------------------------------------
-
-const RPC_ERROR = {
-  PARSE_ERROR: -32700,
-  INVALID_REQUEST: -32600,
-  METHOD_NOT_FOUND: -32601,
-  INVALID_PARAMS: -32602,
-  INTERNAL_ERROR: -32603,
-  UNAUTHORIZED: -32001,
-  NOT_RUNNING: -32002,
-  ALREADY_RUNNING: -32003,
-} as const
 
 function rpcError(id: unknown, code: number, message: string, data?: unknown): RpcErr {
   return { jsonrpc: '2.0', id: (id as RpcEnvelope['id']) ?? null, error: { code, message, data } }
@@ -89,6 +81,25 @@ function checkAuth(req: IncomingMessage, token: string): boolean {
   return header === `Bearer ${token}`
 }
 
+/**
+ * Conversations created over a network door are bounded to their workspace.
+ * `ConversationLifecycleService` defaults to `full-access` when no workspace is
+ * attached, which suits a window the user is looking at but must not be
+ * reachable by a params object — so the default is applied on this side.
+ */
+function networkPermissionLevel(level: ConversationPermissionLevel | undefined): ConversationPermissionLevel {
+  return level === 'granted-folders' ? 'granted-folders' : 'workspace'
+}
+
+/**
+ * Free the conversation's `chat` slot for a turn that started here. Only when the
+ * handle is still ours: a desktop send takes the slot over (abort + set) long
+ * before this turn unwinds, and clearing that would leave the desktop run unnamed.
+ */
+function releaseChatRunOwnership(runner: AgentRunner, conversationId: string): void {
+  if (activeChatRunners.get(conversationId) === runner) activeChatRunners.delete(conversationId)
+}
+
 function jsonResponse(res: ServerResponse, status: number, body: unknown): void {
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -118,17 +129,26 @@ function withChatServices<T>(services: ChatServices | undefined, fn: (s: ChatSer
 interface TurnSession {
   conversationId: string
   abort: () => void
-  done: Promise<{ finishReason?: string; usage?: unknown }>
+  done: Promise<{ finishReason?: string; usage?: ChatUsage; timing?: ResponseTiming }>
 }
 
 const activeTurnsByAppServer = new Map<string, TurnSession>()
+
+/** One ownership slot per conversation, shared with the desktop chat runs: whoever
+ *  holds it is the runner that `CHAT_ABORT` stops and that a second `turn/start`
+ *  has to refuse. */
+const activeChatRunners = activeRunRegistry.forKind<AgentRunner>('chat')
 
 function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler> {
   const { chatServices: services, hub } = deps
 
   const handlers = new Map<RpcMethod, RpcMethodHandler>()
 
-  handlers.set(RPC_METHOD.SERVER_STATUS, async () => ({ ...status, connections: hub.clientCount() }))
+  handlers.set(RPC_METHOD.SERVER_STATUS, async () => ({
+    ...status,
+    connections: hub.clientCount(),
+    acp: status.acp ? { ...status.acp, connections: acpGateway?.connections() ?? 0 } : undefined,
+  }))
 
   handlers.set(RPC_METHOD.SERVER_SHUTDOWN, async () => {
     setTimeout(() => serverRef?.close(), 100)
@@ -163,12 +183,20 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
 
   handlers.set(RPC_METHOD.THREAD_START, async (params) => {
     return withChatServices(services, async (s) => {
-      const { agentId, title, workspaceId } = (params ?? {}) as { agentId?: string; title?: string; workspaceId?: string }
+      const { agentId, title, workspaceId, workspacePath, permissionLevel } = (params ?? {}) as {
+        agentId?: string
+        title?: string
+        workspaceId?: string
+        workspacePath?: string
+        permissionLevel?: ConversationPermissionLevel
+      }
       const lifecycle = new ConversationLifecycleService(s.storage)
       const conversation = await lifecycle.create({
         title: title || 'App-Server thread',
         agentId,
         workspaceId,
+        workspacePath,
+        permissionLevel: networkPermissionLevel(permissionLevel),
       })
       void recordActivity({
         category: 'system',
@@ -191,6 +219,13 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
 
       if (activeTurnsByAppServer.has(threadId)) {
         throw new Error(`A turn is already running for thread ${threadId}; call turn/interrupt first.`)
+      }
+      // The registry is the one place that knows who owns a conversation's run, so
+      // this refuses both a desktop turn in flight and another app-server turn —
+      // two runners over one history would interleave their messages and compete
+      // for the same approval card.
+      if (activeChatRunners.has(threadId)) {
+        throw new Error(`Thread ${threadId} is already running a turn; stop it before starting another one.`)
       }
 
       const targetAgentId = agentId || conversation.agentId
@@ -217,7 +252,9 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
           : { fileAccessGrants: [], fullFilesystemAccess: false }
       const workspacePath = conversation.workspacePath || storage.config.get('workspacePath') || ''
 
-      const history = sanitizeToolHistory(await storage.conversations.getMessages(threadId))
+      // Same recent-window rule the desktop chat run uses; sending a long
+      // conversation in full made a remotely driven turn cost differently.
+      const history = sanitizeToolHistory(await storage.conversations.getRecentMessages(threadId, 80))
       const userMessage: ChatMessage = {
         id: uuidv4(),
         conversationId: threadId,
@@ -226,6 +263,13 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
         timestamp: Date.now(),
       }
       await storage.conversations.addMessage(threadId, userMessage)
+      // External clients drive this turn; the desktop windows still have to see
+      // the new request and the reply that follows.
+      notifyRendererConversationChanged(threadId)
+      const durableMemory = await storage.longTermMemory.buildContext('default', {
+        workspaceId: conversation.workspaceId,
+        workspacePath,
+      }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled })
 
       const storedAutomation = storage.config.get('automation') ?? DEFAULT_AUTOMATION_CONFIG
       const toolApprovalConfig = {
@@ -238,7 +282,7 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
         agentConfig: effectiveAgent,
         provider,
         toolRegistry: s.toolRegistry,
-        contextManager: new ContextManager({ environmentRules: storage.config.get('environmentRules') }),
+        contextManager: new ContextManager({ durableMemory, environmentRules: storage.config.get('environmentRules') }),
         workspacePath,
         fileAccessGrants: access.fileAccessGrants,
         fullFilesystemAccess: access.fullFilesystemAccess,
@@ -252,24 +296,87 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
           workspaceId: conversation.workspaceId,
           window: win,
           config: toolApprovalConfig,
+          onRequested: (approval) => hub.broadcast({
+            topic: 'turn',
+            conversationId: threadId,
+            type: 'turn/approval_request',
+            data: { approval: approval as unknown as Record<string, unknown> },
+            ts: Date.now(),
+          }),
         }),
       })
+      // Owned by the shared registry the moment it exists, on the same synchronous
+      // stretch the desktop send uses: a turn driven from a phone then holds `chat`
+      // for this conversation exactly like a desktop run, so the window can stop it
+      // and neither transport can quietly build a second runner over one history.
+      activeChatRunners.set(threadId, runner)
 
       hub.broadcast({ topic: 'turn', conversationId: threadId, type: 'turn/started', data: { threadId, message, startedAt: Date.now() }, ts: Date.now() })
 
       let assistantContent = ''
+      const progressProjector = new TurnProgressProjector()
+      const progressUpdates: ProgressUpdate[] = []
+      const toolCalls: ToolCall[] = []
+      const toolResults: { toolCallId: string; name: string; result: string; isError?: boolean; protocol?: ToolCall['protocol'] }[] = []
+      let latestProgressContent = ''
+
+      const emitProgress = async (kind: ProgressUpdateKind, content: string, item?: number): Promise<void> => {
+        for (const summary of toProgressSummaries(kind, content)) {
+          if (!summary || summary === latestProgressContent) continue
+          latestProgressContent = summary
+          const progress: ProgressUpdate = {
+            id: uuidv4(),
+            kind,
+            content: summary,
+            ...(item ? { item } : {}),
+            timestamp: Date.now(),
+          }
+          progressUpdates.push(progress)
+          // Persisted as its own row exactly like the desktop run does, so a
+          // refresh after a remotely driven turn still rebuilds the checklist.
+          await storage.conversations.addMessage(threadId, {
+            id: progress.id,
+            conversationId: threadId,
+            role: 'assistant',
+            content: summary,
+            progressKind: kind,
+            ...(item ? { progressItem: item } : {}),
+            agentId: effectiveAgent.id,
+            agentName: effectiveAgent.name,
+            timestamp: progress.timestamp,
+          }).catch(() => undefined)
+          hub.broadcast({
+            topic: 'turn',
+            conversationId: threadId,
+            type: 'turn/progress',
+            data: progress as unknown as Record<string, unknown>,
+            ts: progress.timestamp,
+          })
+        }
+      }
+
       const runnerRun = (async () => {
         for await (const event of runner.run({ messages: history, newMessage: userMessage })) {
           if (event.type === 'text' && event.content) {
-            assistantContent += event.content
-            hub.broadcast({
-              topic: 'turn',
-              conversationId: threadId,
-              type: 'turn/text_delta',
-              data: { content: event.content },
-              ts: Date.now(),
-            })
+            for (const segment of progressProjector.feed(event.content)) {
+              if (segment.type === 'progress') {
+                await emitProgress(segment.kind, segment.content, segment.item)
+                continue
+              }
+              assistantContent += segment.content
+              hub.broadcast({
+                topic: 'turn',
+                conversationId: threadId,
+                type: 'turn/text_delta',
+                data: { content: segment.content },
+                ts: Date.now(),
+              })
+            }
+          } else if (event.type === 'text_reset') {
+            progressProjector.discardPending()
           } else if (event.type === 'tool_call' && event.toolCall) {
+            progressProjector.discardPending()
+            toolCalls.push({ id: event.toolCall.id, name: event.toolCall.name, arguments: { ...event.toolCall.arguments } })
             hub.broadcast({
               topic: 'turn',
               conversationId: threadId,
@@ -278,6 +385,8 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
               ts: Date.now(),
             })
           } else if (event.type === 'tool_result' && event.toolResult) {
+            progressProjector.discardPending()
+            toolResults.push(event.toolResult)
             hub.broadcast({
               topic: 'turn',
               conversationId: threadId,
@@ -291,12 +400,17 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
               ts: Date.now(),
             })
           } else if (event.type === 'done') {
-            return { finishReason: event.finishReason, usage: event.usage }
+            progressProjector.discardPending()
+            if (event.content) {
+              const stripped = stripProgressBlocks(event.content).trim()
+              assistantContent = stripped || unwrapProgressTags(event.content).trim()
+            }
+            return { finishReason: event.finishReason, usage: event.usage, timing: event.timing }
           } else if (event.type === 'error') {
             throw new Error(event.error || 'Agent failed.')
           }
         }
-        return { finishReason: undefined, usage: undefined }
+        return { finishReason: undefined, usage: undefined, timing: undefined }
       })()
 
       const session: TurnSession = {
@@ -309,15 +423,41 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
       // Persist the assistant message when the run completes.
       runnerRun
         .then(async (result) => {
+          const assistantMessageId = uuidv4()
           await storage.conversations.addMessage(threadId, {
-            id: uuidv4(),
+            id: assistantMessageId,
             conversationId: threadId,
             role: 'assistant',
             content: assistantContent,
+            progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
+            toolCalls: toolCalls.length > 0
+              ? toolCalls.map((call) => {
+                  const completed = toolResults.find((candidate) => candidate.toolCallId === call.id)
+                  return completed
+                    ? { ...call, result: completed.result, isError: completed.isError, protocol: completed.protocol }
+                    : call
+                })
+              : undefined,
             agentId: effectiveAgent.id,
             agentName: effectiveAgent.name,
+            providerId: effectiveAgent.providerId,
+            providerName: storage.config.getProvider(effectiveAgent.providerId)?.name || effectiveAgent.providerId,
+            model: effectiveAgent.model,
+            usage: result.usage,
+            timing: result.timing,
+            finishReason: result.finishReason,
             timestamp: Date.now(),
           }).catch(() => undefined)
+          notifyRendererConversationChanged(threadId)
+          s.memoryAgent.enqueue({
+            conversationId: threadId,
+            messageId: assistantMessageId,
+            workspaceId: conversation.workspaceId,
+            workspacePath,
+            userRequest: message,
+            assistantResult: assistantContent,
+            status: 'completed',
+          }, effectiveAgent.providerId, effectiveAgent.model)
           hub.broadcast({
             topic: 'turn',
             conversationId: threadId,
@@ -326,6 +466,7 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
             ts: Date.now(),
           })
           activeTurnsByAppServer.delete(threadId)
+          releaseChatRunOwnership(runner, threadId)
         })
         .catch((err) => {
           hub.broadcast({
@@ -336,6 +477,7 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
             ts: Date.now(),
           })
           activeTurnsByAppServer.delete(threadId)
+          releaseChatRunOwnership(runner, threadId)
         })
 
       return { threadId, startedAt: Date.now(), status: 'running' as const }
@@ -356,8 +498,9 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
   handlers.set(RPC_METHOD.APPROVAL_DECIDE, async (params) => {
     const { approvalId, approved, rememberScope } = (params ?? {}) as { approvalId?: string; approved?: boolean; rememberScope?: 'once' | 'session' }
     if (!approvalId) throw new Error('approvalId is required')
-    const ok = resolvePendingApproval(approvalId, approved === true, approved ? undefined : 'Denied via app-server.')
-    return { ok, approvalId, approved: approved === true, rememberScope: rememberScope || 'once' }
+    const scope = rememberScope === 'session' ? 'session' : 'once'
+    const ok = resolvePendingApproval(approvalId, approved === true, approved ? undefined : 'Denied via app-server.', scope)
+    return { ok, approvalId, approved: approved === true, rememberScope: scope }
   })
 
   return handlers
@@ -373,15 +516,25 @@ function makeErrorEnvelope(req: unknown, code: number, message: string, idOverri
 // -----------------------------------------------------------------------------
 
 let serverRef: ReturnType<typeof http.createServer> | null = null
+let acpGateway: AcpGateway | null = null
 const hub = new SseHub()
 
-export async function startAppServer(chatServices: ChatServices): Promise<ServerStatus> {
+export interface AppServerStartOptions {
+  /** Port to try before falling back to a free one. `adb reverse` needs it stable. */
+  preferredPort?: number | null
+  /** Defaults to `true`; the option exists for joint debugging with a client that cannot send a token yet. */
+  acpRequireAuth?: boolean
+}
+
+export async function startAppServer(chatServices: ChatServices, options: AppServerStartOptions = {}): Promise<ServerStatus> {
   if (serverRef) return { ...status, running: true }
   const bearerToken = randomBytes(24).toString('base64url')
+  const acpRequireAuth = options.acpRequireAuth !== false
   const deps: ServerDeps = { chatServices, hub, bearerToken }
 
-  // Pull a free port ourselves; do not use port 0 because clients want a stable URL.
-  const port = await findFreePort(49152, 60999)
+  // A fixed port first, then any free one: clients want a stable URL and
+  // `adb reverse` cannot follow a port that changes on every start.
+  const port = await resolveListenPort(options.preferredPort)
 
   const handlers = buildMethodHandlers(deps)
 
@@ -449,6 +602,18 @@ export async function startAppServer(chatServices: ChatServices): Promise<Server
     status = { ...status, lastError: err.message }
   })
 
+  acpGateway = registerAcpUpgrade(server, {
+    hub,
+    callMethod: (method, params) => {
+      const handler = handlers.get(method)
+      if (!handler) throw new Error(`Method "${method}" is not supported by this server version.`)
+      return Promise.resolve(handler(params))
+    },
+    bearerToken,
+    requireAuth: acpRequireAuth,
+    agentVersion: app.getVersion(),
+  })
+
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(port, '127.0.0.1', () => resolve())
@@ -465,6 +630,7 @@ export async function startAppServer(chatServices: ChatServices): Promise<Server
     lastError: null,
     loopbackOnly: true,
     connections: 0,
+    acp: { enabled: true, path: ACP_PATH, requireAuth: acpRequireAuth, connections: 0 },
   }
   return { ...status }
 }
@@ -473,24 +639,41 @@ export async function stopAppServer(): Promise<ServerStatus> {
   const server = serverRef
   if (!server) return { ...status, running: false }
   serverRef = null
+  acpGateway?.close()
+  acpGateway = null
   hub.closeAll()
   for (const session of activeTurnsByAppServer.values()) session.abort()
   activeTurnsByAppServer.clear()
   await new Promise<void>((resolve) => server.close(() => resolve()))
-  status = { ...status, running: false, port: null, bearerToken: null, startedAt: null, connections: 0 }
+  status = { ...status, running: false, port: null, bearerToken: null, startedAt: null, connections: 0, acp: undefined }
   return { ...status }
+}
+
+/**
+ * The configured port wins when it is free, because `adb reverse` maps a fixed
+ * number and a random high port would break the phone's saved address on every
+ * restart. A busy or nonsensical preference falls back to the scan.
+ */
+async function resolveListenPort(preferredPort?: number | null): Promise<number> {
+  if (typeof preferredPort === 'number' && Number.isInteger(preferredPort) && preferredPort >= 1024 && preferredPort <= 65535) {
+    if (await isPortFree(preferredPort)) return preferredPort
+  }
+  return findFreePort(49152, 60999)
+}
+
+async function isPortFree(port: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const tester = http.createServer()
+    tester.once('error', () => resolve(false))
+    tester.once('listening', () => tester.close(() => resolve(true)))
+    tester.listen(port, '127.0.0.1')
+  })
 }
 
 async function findFreePort(min: number, max: number): Promise<number> {
   // Try a small range; in practice a collision is extremely unlikely on loopback.
   for (let p = min; p <= max; p++) {
-    const available = await new Promise<boolean>((resolve) => {
-      const tester = http.createServer()
-      tester.once('error', () => resolve(false))
-      tester.once('listening', () => tester.close(() => resolve(true)))
-      tester.listen(p, '127.0.0.1')
-    })
-    if (available) return p
+    if (await isPortFree(p)) return p
   }
   throw new Error('No free loopback port available for the app server.')
 }

@@ -129,32 +129,32 @@ export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
     <div className={cn('tool-call-item max-w-full', className)}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="tool-call-item__trigger flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors"
+        className="tool-call-item__trigger flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-normal text-zinc-500 transition-colors"
       >
         <ChevronRight
-          className={cn('h-3.5 w-3.5 text-zinc-400 transition-transform', expanded && 'rotate-90')}
+          className={cn('h-3 w-3 text-zinc-300 transition-transform', expanded && 'rotate-90')}
         />
-        <span className="text-zinc-500">{getToolIcon(toolCall.name)}</span>
-        <span className="text-sm font-medium text-zinc-700">{label.title}</span>
+        <span className="text-zinc-300">{getToolIcon(toolCall.name)}</span>
+        <span className="text-xs font-normal text-zinc-500">{label.title}</span>
         {label.detail && (
-          <span className="min-w-0 truncate text-xs text-zinc-500" title={label.detail}>
+          <span className="min-w-0 truncate text-xs text-zinc-400" title={label.detail}>
             {label.detail}
           </span>
         )}
         {label.resultCount !== undefined && !isRunning && !toolCall.isError && (
-          <span className="rounded-full bg-zinc-200/70 px-1.5 py-0.5 text-xs text-zinc-600">
-            {label.resultCount} sources
+          <span className="rounded-full bg-zinc-200/60 px-1.5 py-0.5 text-xs text-zinc-500">
+            {label.resultCount} 个来源
           </span>
         )}
         <span className="ml-auto">
           {isRunning ? (
-            <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin" />
+            <Loader2 className="h-3 w-3 text-blue-500 animate-spin" />
           ) : toolCall.isError ? (
-            <XCircle className="h-3.5 w-3.5 text-red-500" />
+            <XCircle className="h-3 w-3 text-red-500" />
           ) : (
             protocolStatus === 'unknown' || protocolStatus === 'dispatched' || protocolStatus === 'applied'
-              ? <Wrench className="h-3.5 w-3.5 text-amber-500" />
-              : <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+              ? <Wrench className="h-3 w-3 text-amber-500" />
+              : <CheckCircle2 className="h-3 w-3 text-green-500" />
           )}
         </span>
       </button>

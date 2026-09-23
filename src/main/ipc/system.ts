@@ -39,6 +39,9 @@ const RENDERER_CONFIG_KEYS = new Set([
   'rightPanelVisible', 'terminalVisible', 'terminalHeight', 'terminalWidth',
   'primaryChatAgentId', 'activeProviderId', 'activeModel', 'environmentRules',
   'automation',
+  // Only a preferred loopback port and a boolean: no token or key material. The
+  // Settings App-Server panel edits it through the same generic config path.
+  'appServer',
 ])
 
 function assertRendererConfigKey(key: string): void {

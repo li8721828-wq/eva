@@ -6,6 +6,7 @@ import { createToolRegistry, type FileService, type TerminalService, type ToolRe
 import type { StorageManager } from '../storage'
 import { McpClientManager } from './mcp-client-manager'
 import { getModelContextWindowTokens } from '../../shared/constants'
+import { MemoryAgentService } from './memory-agent-service'
 
 /**
  * The composition-root dependency set shared by renderer-facing handlers.
@@ -19,6 +20,7 @@ export interface ApplicationServices {
   providerRegistry: ProviderRegistry
   projectIndexService?: ProjectIndexService
   mcpClientManager: McpClientManager
+  memoryAgent: MemoryAgentService
 }
 
 /** Build long-lived application dependencies once, before IPC handlers are registered. */
@@ -26,9 +28,8 @@ export function createApplicationServices(storage: StorageManager, providerRegis
   const fileService = new FileServiceImpl()
   const terminalService = new TerminalServiceImpl()
   const projectIndexService = new ProjectIndexService(storage.projectIndexes, storage.workspaces)
-  const toolRegistry = createToolRegistry(projectIndexService, providerRegistry, storage.personalPreferences)
+  const toolRegistry = createToolRegistry(projectIndexService, providerRegistry, storage.personalPreferences, storage.longTermMemory)
   const mcpClientManager = new McpClientManager(storage.mcpServers)
-
   for (const config of storage.config.getProviders()) {
     if (!config.apiKey) continue
     providerRegistry.register({
@@ -53,5 +54,8 @@ export function createApplicationServices(storage: StorageManager, providerRegis
     })
   }
 
-  return { storage, fileService, terminalService, toolRegistry, providerRegistry, projectIndexService, mcpClientManager }
+  const memoryAgent = new MemoryAgentService(storage.longTermMemory, providerRegistry, storage.personalPreferences, storage.memoryAgentQueue)
+  void memoryAgent.restorePending()
+
+  return { storage, fileService, terminalService, toolRegistry, providerRegistry, projectIndexService, mcpClientManager, memoryAgent }
 }

@@ -2,26 +2,46 @@ import { randomUUID } from 'crypto'
 import type { ServerResponse } from 'http'
 import type { ServerEvent } from './protocol'
 
-interface SseClient {
-  id: string
-  /** Filter: when set, only events with `conversationId === filter` are forwarded. */
+export interface EventFilter {
+  /** When set, only events with `conversationId === filter` are forwarded. */
   conversationId?: string
   topic?: ServerEvent['topic']
-  response: ServerResponse
+}
+
+export type EventSink = (event: ServerEvent) => void
+
+interface HubClient {
+  filter: EventFilter
+  deliver: EventSink
+  close: () => void
 }
 
 /**
- * Bounded fan-out for Server-Sent Events. Each connected HTTP client gets a
- * dedicated entry; broadcast() sends an event to every client whose filter
- * matches. Clients are GC'd when their response closes.
+ * Fan-out for server-originated events. A subscriber is a callback plus a
+ * filter, so the Server-Sent-Events response and the ACP WebSocket can share
+ * one source of truth instead of each re-implementing matching. Each connected
+ * entry is dropped when its transport closes.
  */
 export class SseHub {
-  private clients = new Map<string, SseClient>()
+  private clients = new Map<string, HubClient>()
   private seqByTopic = new Map<ServerEvent['topic'], number>()
 
-  addClient(response: ServerResponse, filter: { conversationId?: string; topic?: ServerEvent['topic'] } = {}): string {
+  /** Attach a plain callback sink. The returned function unsubscribes. */
+  subscribe(sink: EventSink, filter: EventFilter = {}): () => void {
     const id = randomUUID()
-    this.clients.set(id, { id, response, ...filter })
+    this.clients.set(id, { filter, deliver: sink, close: () => undefined })
+    return () => {
+      this.clients.delete(id)
+    }
+  }
+
+  addClient(response: ServerResponse, filter: EventFilter = {}): string {
+    const id = randomUUID()
+    this.clients.set(id, {
+      filter,
+      deliver: (event) => response.write(this.frame(event)),
+      close: () => { try { response.end() } catch { /* already gone */ } },
+    })
 
     response.setHeader('Content-Type', 'text/event-stream')
     response.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -48,20 +68,25 @@ export class SseHub {
     const seq = (this.seqByTopic.get(event.topic) ?? 0) + 1
     this.seqByTopic.set(event.topic, seq)
     const fullEvent: ServerEvent = { ...event, seq }
-    const payload = JSON.stringify(fullEvent)
-    const lines = [`event: ${fullEvent.type}`, `data: ${payload}`, '', '']
-    const frame = lines.join('\n')
     for (const client of this.clients.values()) {
-      if (client.topic && client.topic !== event.topic) continue
-      if (client.conversationId && client.conversationId !== event.conversationId) continue
-      try { client.response.write(frame) } catch { /* connection closed */ }
+      if (!matches(client.filter, fullEvent)) continue
+      try { client.deliver(fullEvent) } catch { /* connection closed */ }
     }
   }
 
   closeAll(): void {
-    for (const client of this.clients.values()) {
-      try { client.response.end() } catch { /* ignore */ }
-    }
+    for (const client of this.clients.values()) client.close()
     this.clients.clear()
   }
+
+  /** One Server-Sent Event frame; the only place SSE framing is spelled out. */
+  private frame(event: ServerEvent): string {
+    return [`event: ${event.type}`, `data: ${JSON.stringify(event)}`, '', ''].join('\n')
+  }
+}
+
+function matches(filter: EventFilter, event: ServerEvent): boolean {
+  if (filter.topic && filter.topic !== event.topic) return false
+  if (filter.conversationId && filter.conversationId !== event.conversationId) return false
+  return true
 }

@@ -3,18 +3,10 @@ import os from 'os'
 import path from 'path'
 import type { FileService, FileEntry } from '../tools'
 import type { FileAccessGrant } from '../../shared/types/file-access'
-import { evaluateSandboxPath, type SandboxContext } from './sandbox'
+import { evaluateSandboxPath } from './sandbox'
+import { currentSandboxScope } from './sandbox/scope'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
-
-// Process-level sandbox context. Set by AgentRunner via setSandboxContext before
-// tool execution begins. The FileService stores this so it can be validated
-// before any write syscall without requiring it to flow through every call site.
-let currentSandboxContext: SandboxContext | null = null
-
-export function setFileServiceSandboxContext(context: SandboxContext | null): void {
-  currentSandboxContext = context
-}
 
 /** Expand the one cross-shell home shorthand before path validation. */
 export function expandHomePath(filePath: string): string {
@@ -94,6 +86,16 @@ function isBinaryBuffer(buffer: Buffer): boolean {
 }
 
 export class FileServiceImpl implements FileService {
+  /**
+   * Canonicalize a path and confirm it stays inside an authorized root.
+   * Traversal callers must re-check every directory they descend into: a walk
+   * that validated only its starting point would follow a junction, symlink, or
+   * mount point out of the workspace.
+   */
+  async resolveAuthorizedPath(filePath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<string> {
+    return normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
+  }
+
   async readBuffer(filePath: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<Buffer> {
     const resolved = await normalizeAndValidate(filePath, workspacePath, grants, false, fullFilesystemAccess)
     const stat = await fs.promises.stat(resolved)
@@ -119,8 +121,9 @@ export class FileServiceImpl implements FileService {
 
   async writeFile(filePath: string, content: string, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<void> {
     let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
-    if (currentSandboxContext) {
-      const decision = evaluateSandboxPath(resolved, 'write', currentSandboxContext)
+    const sandboxScope = currentSandboxScope()
+    if (sandboxScope) {
+      const decision = evaluateSandboxPath(resolved, 'write', sandboxScope)
       if (!decision.allowed) throw new Error(decision.reason)
     }
     const dir = path.dirname(resolved)
@@ -134,8 +137,9 @@ export class FileServiceImpl implements FileService {
   async writeBuffer(filePath: string, content: Buffer, workspacePath: string, grants: FileAccessGrant[] = [], fullFilesystemAccess = false): Promise<void> {
     if (content.length > 32 * 1024 * 1024) throw new Error('Generated workbook exceeds the 32 MB file limit.')
     let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
-    if (currentSandboxContext) {
-      const decision = evaluateSandboxPath(resolved, 'write', currentSandboxContext)
+    const sandboxScope = currentSandboxScope()
+    if (sandboxScope) {
+      const decision = evaluateSandboxPath(resolved, 'write', sandboxScope)
       if (!decision.allowed) throw new Error(decision.reason)
     }
     await fs.promises.mkdir(path.dirname(resolved), { recursive: true })
@@ -196,6 +200,9 @@ export class FileServiceImpl implements FileService {
         const entries = await fs.promises.readdir(dir, { withFileTypes: true })
         for (const entry of entries) {
           if (results.length >= maxResults) return
+          // A link is a name for something else. Listing or reading through it
+          // would expose paths the walk is not authorized to see, so skip it.
+          if (entry.isSymbolicLink()) continue
           const fullPath = path.join(dir, entry.name)
 
           if (entry.name.toLowerCase().includes(lowerPattern)) {
@@ -209,7 +216,15 @@ export class FileServiceImpl implements FileService {
             entry.name !== 'out' &&
             entry.name !== 'dist'
           ) {
-            await search(fullPath)
+            let authorized: string
+            try {
+              // Re-check every directory: a reparse point can report itself as a
+              // directory, and the walk must not leave the authorized roots.
+              authorized = await this.resolveAuthorizedPath(fullPath, workspacePath, grants, fullFilesystemAccess)
+            } catch {
+              continue
+            }
+            await search(authorized)
           }
         }
       } catch {

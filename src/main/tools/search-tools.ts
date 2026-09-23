@@ -2,7 +2,6 @@ import fs from 'fs'
 import path from 'path'
 import readline from 'readline'
 import type { ToolExecutor, ToolContext } from './index'
-import type { FileAccessGrant } from '../../shared/types/file-access'
 
 const CONTEXT_LINES = 2
 const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB per file for search
@@ -33,10 +32,10 @@ const searchCodeTool: ToolExecutor = {
     const filePattern = params.filePattern as string | undefined
     const maxResults = (params.maxResults as number) ?? 50
 
-    const searchDir = resolveAuthorizedSearchPath(searchPath, context)
+    const searchDir = await resolveAuthorizedSearchPath(searchPath, context)
 
     const results: string[] = []
-    await searchInDirectory(searchDir, query, filePattern, maxResults, results, context.workspacePath)
+    await searchInDirectory(searchDir, query, filePattern, maxResults, results, context)
 
     if (results.length === 0) {
       return `No matches found for "${query}"`
@@ -79,10 +78,10 @@ const searchByRegexTool: ToolExecutor = {
       return `Invalid regex pattern: ${(err as Error).message}`
     }
 
-    const searchDir = resolveAuthorizedSearchPath(searchPath, context)
+    const searchDir = await resolveAuthorizedSearchPath(searchPath, context)
 
     const results: string[] = []
-    await searchInDirectoryRegex(searchDir, regex, filePattern, maxResults, results, context.workspacePath)
+    await searchInDirectoryRegex(searchDir, regex, filePattern, maxResults, results, context)
 
     if (results.length === 0) {
       return `No matches found for pattern /${pattern}/${flags}`
@@ -94,28 +93,19 @@ const searchByRegexTool: ToolExecutor = {
   },
 }
 
-function resolveAuthorizedSearchPath(searchPath: string, context: ToolContext): string {
+async function resolveAuthorizedSearchPath(searchPath: string, context: ToolContext): Promise<string> {
   if (!path.isAbsolute(searchPath) && !context.workspacePath && !context.fullFilesystemAccess) {
     throw new Error('No workspace is configured for relative search paths')
   }
 
-  const resolved = path.isAbsolute(searchPath)
-    ? path.normalize(searchPath)
-    : path.resolve(context.workspacePath || '.', searchPath)
-  if (context.fullFilesystemAccess) return resolved
-  const roots: FileAccessGrant[] = [
-    ...(context.workspacePath ? [{ path: context.workspacePath, access: 'read-write' as const }] : []),
-    ...(context.fileAccessGrants || []),
-  ]
-  const isAllowed = roots.some((grant) => {
-    const relative = path.relative(path.resolve(grant.path), resolved)
-    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  })
-
-  if (!isAllowed) {
-    throw new Error(`Access denied: ${searchPath} is not within an authorized folder`)
-  }
-  return resolved
+  // Canonicalize before checking: a lexical prefix test would accept a link or
+  // junction inside the workspace that actually points somewhere else.
+  return context.fileService.resolveAuthorizedPath(
+    searchPath,
+    context.workspacePath,
+    context.fileAccessGrants,
+    context.fullFilesystemAccess,
+  )
 }
 
 async function searchInDirectory(
@@ -124,7 +114,7 @@ async function searchInDirectory(
   filePattern: string | undefined,
   maxResults: number,
   results: string[],
-  workspacePath: string
+  context: ToolContext
 ): Promise<void> {
   if (results.length >= maxResults) return
 
@@ -140,14 +130,27 @@ async function searchInDirectory(
     if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'out' || entry.name === 'dist') {
       continue
     }
+    // Never follow a link: it is a name for a target outside this directory.
+    if (entry.isSymbolicLink()) continue
 
     const fullPath = path.join(dir, entry.name)
 
     if (entry.isDirectory()) {
-      await searchInDirectory(fullPath, query, filePattern, maxResults, results, workspacePath)
+      let authorized: string
+      try {
+        authorized = await context.fileService.resolveAuthorizedPath(
+          fullPath,
+          context.workspacePath,
+          context.fileAccessGrants,
+          context.fullFilesystemAccess,
+        )
+      } catch {
+        continue
+      }
+      await searchInDirectory(authorized, query, filePattern, maxResults, results, context)
     } else if (entry.isFile()) {
       if (filePattern && !entry.name.endsWith(filePattern)) continue
-      await searchInFile(fullPath, query, maxResults, results, workspacePath)
+      await searchInFile(fullPath, query, maxResults, results, context.workspacePath)
     }
   }
 }
@@ -202,7 +205,7 @@ async function searchInDirectoryRegex(
   filePattern: string | undefined,
   maxResults: number,
   results: string[],
-  workspacePath: string
+  context: ToolContext
 ): Promise<void> {
   if (results.length >= maxResults) return
 
@@ -218,14 +221,26 @@ async function searchInDirectoryRegex(
     if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'out' || entry.name === 'dist') {
       continue
     }
+    if (entry.isSymbolicLink()) continue
 
     const fullPath = path.join(dir, entry.name)
 
     if (entry.isDirectory()) {
-      await searchInDirectoryRegex(fullPath, regex, filePattern, maxResults, results, workspacePath)
+      let authorized: string
+      try {
+        authorized = await context.fileService.resolveAuthorizedPath(
+          fullPath,
+          context.workspacePath,
+          context.fileAccessGrants,
+          context.fullFilesystemAccess,
+        )
+      } catch {
+        continue
+      }
+      await searchInDirectoryRegex(authorized, regex, filePattern, maxResults, results, context)
     } else if (entry.isFile()) {
       if (filePattern && !entry.name.endsWith(filePattern)) continue
-      await searchInFileRegex(fullPath, regex, maxResults, results, workspacePath)
+      await searchInFileRegex(fullPath, regex, maxResults, results, context.workspacePath)
     }
   }
 }

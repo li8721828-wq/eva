@@ -5,7 +5,6 @@ function isStandaloneToolCallMessage(message: ChatMessage): boolean {
     && Boolean(message.toolCalls?.length)
     && !message.content.trim()
     && !message.reasoningContent
-    && !message.executionTrace?.length
     && !message.executionTimeline?.length
 }
 
@@ -33,11 +32,17 @@ export function collapseToolHistoryMessages(messages: ChatMessage[]): ChatMessag
   }
 
   for (const message of messages) {
+    // `system` rows are machine context for the next model call, not transcript
+    // content. An interrupted round persists one carrying a `<turn_aborted>`
+    // protocol tag, which rendered as an assistant bubble full of raw markup.
+    if (message.role === 'system') continue
+
     if (message.progressKind) {
       pendingProgress.push({
         id: message.id,
         kind: message.progressKind,
         content: message.content,
+        item: message.progressItem,
         timestamp: message.timestamp,
       })
       continue
@@ -84,6 +89,7 @@ export function collapseToolHistoryMessages(messages: ChatMessage[]): ChatMessag
       role: 'assistant',
       content: progress.content,
       progressKind: progress.kind,
+      progressItem: progress.item,
       timestamp: progress.timestamp,
     })
   }

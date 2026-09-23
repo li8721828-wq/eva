@@ -87,8 +87,10 @@ export function MessageList({ className }: MessageListProps) {
   const isStreaming = Boolean(stream?.isStreaming)
   const streamingContent = stream?.content || ''
   const latestMessage = messages[messages.length - 1]
+  // A round the user stopped keeps its revealed text until the cancelled row is
+  // persisted, so both the live and the stopped copy must yield to the
+  // transcript as soon as it shows the same text.
   const isDuplicateStreamingReply = Boolean(
-    isStreaming &&
     streamingContent &&
     latestMessage?.role === 'assistant' &&
     latestMessage.content === streamingContent
@@ -97,9 +99,12 @@ export function MessageList({ className }: MessageListProps) {
   const streamingAgentId = stream?.agentId
   const streamingAgentName = stream?.agentName
   const streamingToolCalls = stream?.toolCalls || []
-  const streamingExecutionTrace = stream?.executionTrace || []
   const streamingExecutionTimeline = stream?.executionTimeline || []
   const streamingProgressUpdates = stream?.progressUpdates || []
+  // Every terminal path resets the stream, so a settled stream that still holds
+  // answer text is one the user stopped: keep it on screen until the cancelled
+  // reply row arrives. A stop during a tool cycle persists no reply to retire.
+  const holdsStoppedStreamCopy = !isStreaming && Boolean(streamingContent)
   const goalConfirmation = stream?.goalConfirmation
   const toolApproval = stream?.toolApproval
   const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
@@ -205,23 +210,34 @@ export function MessageList({ className }: MessageListProps) {
       setScrollIndicatorVisible(false)
       scrollIndicatorTimerRef.current = null
     }, 900)
-  }, [scrollController])
+  }, [scrollController.setCanJumpToBottom])
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    return scrollController.jumpToBottom(behavior)
-  }, [scrollController])
+    const moved = scrollController.jumpToBottom(behavior)
+    const scrollArea = scrollAreaRef.current
+    if (scrollArea) {
+      setScrollTop((previous) => previous === scrollArea.scrollTop ? previous : scrollArea.scrollTop)
+      if (behavior !== 'auto') {
+        requestAnimationFrame(() => {
+          const current = scrollAreaRef.current
+          if (current) setScrollTop((previous) => previous === current.scrollTop ? previous : current.scrollTop)
+        })
+      }
+    }
+    return moved
+  }, [scrollController.jumpToBottom])
 
   const resumeFollowingLatestMessage = useCallback(() => {
-    scrollController.jumpToBottom('auto')
+    scrollToBottom('auto')
     if (forcedScrollFrameRef.current !== null) cancelAnimationFrame(forcedScrollFrameRef.current)
     forcedScrollFrameRef.current = requestAnimationFrame(() => {
-      scrollController.jumpToBottom('auto')
+      scrollToBottom('auto')
       forcedScrollFrameRef.current = requestAnimationFrame(() => {
-        scrollController.jumpToBottom('auto')
+        scrollToBottom('auto')
         forcedScrollFrameRef.current = null
       })
     })
-  }, [scrollController])
+  }, [scrollToBottom])
 
   // Persist any pending offset on layout cleanup. Layout-effect cleanup
   // runs while the scroll container still exists; passive cleanup would run
@@ -234,19 +250,11 @@ export function MessageList({ className }: MessageListProps) {
         scrollController.flush()
       }
     }
-  }, [scrollController])
+  }, [scrollController.recordOffset, scrollController.flush])
 
   const processScroll = useCallback(() => {
     const scrollArea = scrollAreaRef.current
     if (!scrollArea) return
-
-    // Selecting a conversation causes the browser to emit an initial scroll
-    // event at the top of the reused surface. Do not let that event replace
-    // this conversation's saved position before restoration has completed.
-    if (scrollController.isFollowing() === false && scrollArea.scrollTop < 32) {
-      const wasPendingRestore = document.documentElement.dataset['restoreInFlight'] === '1'
-      if (wasPendingRestore) return
-    }
 
     scrollController.reportScrollPosition(
       scrollArea.scrollTop,
@@ -264,7 +272,11 @@ export function MessageList({ className }: MessageListProps) {
       lastScrollAffordanceUpdateAtRef.current = now
       updateScrollAffordances(scrollArea, true)
     }
-  }, [scrollController, updateScrollAffordances])
+  }, [
+    scrollController.reportScrollPosition,
+    scrollController.reportViewportHeight,
+    updateScrollAffordances,
+  ])
 
   const handleScroll = () => {
     // Native wheel and touchpad scrolling can produce far more events than the
@@ -310,6 +322,12 @@ export function MessageList({ className }: MessageListProps) {
   const conversationUsage = useMemo(() => sumConversationUsage(renderableMessages), [renderableMessages])
   const latestUsageMessageId = useMemo(
     () => [...renderableMessages].reverse().find((message) => message.role === 'assistant' && message.usage)?.id,
+    [renderableMessages]
+  )
+  // Re-running a round replaces everything from its prompt onward, so only the
+  // newest reply can offer it; an older one would delete later turns.
+  const latestReplyMessageId = useMemo(
+    () => [...renderableMessages].reverse().find((message) => message.role === 'assistant')?.id,
     [renderableMessages]
   )
 
@@ -379,7 +397,7 @@ export function MessageList({ className }: MessageListProps) {
             // never put it in the measurement map. Just keep auto-follow
             // glued to its bottom edge.
             if (scrollController.isFollowing() && previousMessageCountRef.current !== 0) {
-              requestAnimationFrame(() => scrollController.jumpToBottom('auto'))
+              requestAnimationFrame(() => scrollToBottom('auto'))
             }
             continue
           }
@@ -400,7 +418,7 @@ export function MessageList({ className }: MessageListProps) {
       observer.disconnect()
       resizeObserverRef.current = null
     }
-  }, [scrollController])
+  }, [scrollController.isFollowing, scrollToBottom])
 
   const attachItemRef = useCallback((id: string, element: HTMLDivElement | null) => {
     const previousElement = itemElementsRef.current.get(id)
@@ -464,8 +482,14 @@ export function MessageList({ className }: MessageListProps) {
       !scrollController.isFollowing()
     ) return
 
-    scrollController.jumpToBottom('auto')
-  }, [currentConversationId, messages, resumeFollowingLatestMessage, scrollController])
+    scrollToBottom('auto')
+  }, [
+    currentConversationId,
+    messages,
+    resumeFollowingLatestMessage,
+    scrollController.isFollowing,
+    scrollToBottom,
+  ])
 
   useLayoutEffect(() => {
     // A message can grow after its first render when Markdown settles or the
@@ -475,22 +499,32 @@ export function MessageList({ className }: MessageListProps) {
     if (
       scrollController.isFollowing()
     ) {
-      scrollController.jumpToBottom('auto')
+      scrollToBottom('auto')
     }
-  }, [currentConversationId, itemLayout.totalHeight, scrollController])
+  }, [currentConversationId, itemLayout.totalHeight, scrollController.isFollowing, scrollToBottom])
 
   useLayoutEffect(() => {
     // Keep the reader pinned after any streamed surface changes, including
     // tool rows and reasoning blocks that grow outside the virtual list.
     if (
       isStreaming &&
-      (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTrace.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
+      (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
       scrollController.isFollowing()
     ) {
-      const frame = requestAnimationFrame(() => scrollController.jumpToBottom('auto'))
+      const frame = requestAnimationFrame(() => scrollToBottom('auto'))
       return () => cancelAnimationFrame(frame)
     }
-  }, [currentConversationId, isStreaming, scrollController, streamingContent, streamingReasoningContent, streamingExecutionTrace.length, streamingExecutionTimeline.length, streamingProgressUpdates.length, streamingToolCalls.length])
+  }, [
+    currentConversationId,
+    isStreaming,
+    scrollController.isFollowing,
+    scrollToBottom,
+    streamingContent,
+    streamingReasoningContent,
+    streamingExecutionTimeline.length,
+    streamingProgressUpdates.length,
+    streamingToolCalls.length,
+  ])
 
   if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !isRequirementRunning) {
     return <div className={cn('relative min-h-0 flex-1', className)} aria-hidden />
@@ -535,6 +569,7 @@ export function MessageList({ className }: MessageListProps) {
           >
             <MessageBubble
               message={item.message}
+              canRegenerate={item.message.id === latestReplyMessageId}
               conversationUsage={item.message.id === latestUsageMessageId ? conversationUsage : undefined}
             />
           </div>
@@ -619,11 +654,11 @@ export function MessageList({ className }: MessageListProps) {
         {/* Render the in-flight Markdown through the same assistant-message surface.
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
-        {isStreaming && !isDuplicateStreamingReply && (
+        {(isStreaming || holdsStoppedStreamCopy) && !isDuplicateStreamingReply && (
           <div ref={attachStreamingRef} data-streaming-item="true" className="pb-9">
             <MessageBubble
-              isStreaming
-              executingTools={streamingToolCalls.length > 0}
+              isStreaming={isStreaming}
+              showActions={false}
               message={{
                 id: `streaming-${currentConversationId || 'message'}`,
                 conversationId: currentConversationId || '',
@@ -633,7 +668,6 @@ export function MessageList({ className }: MessageListProps) {
                 agentName: streamingAgentName,
                 reasoningContent: streamingReasoningContent || undefined,
                 toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
-                executionTrace: streamingExecutionTrace.length > 0 ? streamingExecutionTrace : undefined,
                 executionTimeline: streamingExecutionTimeline.length > 0 ? streamingExecutionTimeline : undefined,
                 progressUpdates: streamingProgressUpdates.length > 0 ? streamingProgressUpdates : undefined,
                 timestamp: Date.now(),
@@ -665,7 +699,7 @@ export function MessageList({ className }: MessageListProps) {
             type="button"
             onClick={(event) => {
               event.stopPropagation()
-              scrollController.jumpToBottom('auto')
+              scrollToBottom('auto')
             }}
             title={jumpToBottomLabel}
             aria-label={jumpToBottomLabel}

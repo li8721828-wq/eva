@@ -11,6 +11,7 @@ const terminalService: TerminalService = {
   resize: vi.fn(),
   destroySession: vi.fn(),
   onOutput: vi.fn(() => () => undefined),
+  checkSandboxCommand: vi.fn(() => null),
 }
 
 function context(content: string): { context: ToolContext; writeFile: ReturnType<typeof vi.fn> } {
@@ -20,6 +21,7 @@ function context(content: string): { context: ToolContext; writeFile: ReturnType
     writeFile,
     listDirectory: vi.fn(),
     searchFiles: vi.fn(),
+    resolveAuthorizedPath: vi.fn(async (filePath: string) => filePath),
     fileExists: vi.fn(),
     getFileInfo: vi.fn(),
   }
@@ -78,7 +80,7 @@ describe('edit_file tool', () => {
 describe('read_file tool', () => {
   const readFile = createFileTools().find((tool) => tool.definition.name === 'read_file')!
 
-  it('uses the only workspace candidate when the requested path is one level off', async () => {
+  it('discloses the substituted path when the requested path is one level off', async () => {
     const { context: toolContext } = context('fn main() {}\n')
     const candidate = 'C:/workspace/src/main.rs'
     const read = vi.fn()
@@ -87,9 +89,32 @@ describe('read_file tool', () => {
     toolContext.fileService.readFile = read
     toolContext.fileService.searchFiles = vi.fn(async () => [candidate])
 
-    await expect(readFile.execute({ path: 'C:/workspace/main.rs' }, toolContext))
-      .resolves.toBe('fn main() {}\n')
+    const result = await readFile.execute({ path: 'C:/workspace/main.rs' }, toolContext)
+
+    expect(result).toContain('C:/workspace/main.rs was not found')
+    expect(result).toContain(candidate)
+    expect(result).toContain('fn main() {}\n')
     expect(read).toHaveBeenNthCalledWith(2, candidate, 'C:/workspace', undefined, undefined)
+  })
+
+  it('returns the content verbatim when the requested path exists', async () => {
+    const { context: toolContext } = context('fn main() {}\n')
+
+    await expect(readFile.execute({ path: 'src/main.rs' }, toolContext)).resolves.toBe('fn main() {}\n')
+  })
+
+  it('keeps the substitution notice above the numbered range', async () => {
+    const { context: toolContext } = context('alpha\nbeta\ngamma\n')
+    const read = vi.fn()
+      .mockRejectedValueOnce(new Error('ENOENT: file not found'))
+      .mockResolvedValueOnce('alpha\nbeta\ngamma\n')
+    toolContext.fileService.readFile = read
+    toolContext.fileService.searchFiles = vi.fn(async () => ['C:/workspace/src/lib.rs'])
+
+    const result = await readFile.execute({ path: 'lib.rs', startLine: 2, endLine: 3 }, toolContext)
+
+    expect(result).toContain('C:/workspace/src/lib.rs')
+    expect(result).toContain('2\tbeta\n3\tgamma')
   })
 
   it('reports all exact basename candidates instead of guessing', async () => {

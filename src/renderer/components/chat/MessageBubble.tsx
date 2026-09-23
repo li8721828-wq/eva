@@ -3,18 +3,20 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
 import 'streamdown/styles.css'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ExecutionTraceEntry, ProgressUpdate, ResponseTiming } from '../../../shared/types'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ResponseTiming, ToolCall } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
-import { ToolCallGroupView, ToolCallView, getToolLabel } from './ToolCallView'
+import { ToolCallGroupView, ToolCallView } from './ToolCallView'
+import { PlanChecklist } from './PlanChecklist'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info, CircleDot, RefreshCw } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
-import { normalizeChatMarkdown } from '@/lib/markdown-display'
+import { normalizeChatMarkdown, normalizeStreamingMarkdown } from '@/lib/markdown-display'
 import { isFilePathLikeCodeSpan } from '@/lib/file-path-chip'
+import { buildProcessFeed, isInternalToolLifecycleUpdate, isStructuredReport, processReportLabel, type ProcessFeed, type ProcessReportEntry } from '@/lib/process-report'
 import { FilePathChip } from './FilePathChip'
 
 function CopyButton({ text }: { text: string }) {
@@ -48,8 +50,13 @@ export interface MessageBubbleProps {
   message: ChatMessage
   className?: string
   isStreaming?: boolean
-  /** True while the stream is actually executing tools; gates the running indicator. */
-  executingTools?: boolean
+  /**
+   * Whether the quote/copy/favorite row is offered. The live copy turns it off:
+   * its id is synthetic, so these actions would address no stored row.
+   */
+  showActions?: boolean
+  /** True only for the newest persisted reply, which is the one that may re-run its round. */
+  canRegenerate?: boolean
   /** Shown only on the newest usage-bearing reply to avoid repeating totals. */
   conversationUsage?: ChatUsage
 }
@@ -177,17 +184,19 @@ function TimingSummary({ timing }: { timing: ResponseTiming }) {
 }
 
 function ReasoningPanel({ content, streaming = false }: { content: string; streaming?: boolean }) {
-  const [open, setOpen] = useState(streaming)
+  // Raw chain-of-thought is a technical detail, never the headline: it starts
+  // folded, keeps a muted treatment, and sits after the work report.
+  const [open, setOpen] = useState(false)
   if (!content) return null
 
   return (
-    <details open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)} className="mb-3 border-y border-violet-100 bg-violet-50/45">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium text-violet-600 hover:bg-violet-50/80">
+    <details open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)} className="group mt-1.5 border-t border-zinc-100 pt-1">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-2 py-1 text-xs font-normal text-zinc-400 hover:bg-zinc-50/70 hover:text-zinc-500">
         <BrainCircuit className="h-3.5 w-3.5" />
-        <span className="flex-1">模型慢思考{streaming ? '中' : ''}</span>
+        <span className="flex-1">模型原始思考{streaming ? '中' : ''}</span>
         <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
       </summary>
-      <div className="max-h-56 overflow-auto border-t border-violet-100 px-3 py-2.5 text-xs leading-5 text-zinc-600 whitespace-pre-wrap">{content}</div>
+      <div className="max-h-56 overflow-auto px-2 py-2 text-xs leading-5 text-zinc-500 whitespace-pre-wrap">{content}</div>
     </details>
   )
 }
@@ -207,13 +216,17 @@ function groupTimelineEntries(entries: ExecutionTimelineEntry[]): TimelineEntryG
   return groups
 }
 
-function TimelineToolGroup({ entries }: { entries: ExecutionTimelineEntry[] }) {
-  const [open, setOpen] = useState(false)
+function TimelineToolGroup({ entries, streaming = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean }) {
+  // A running step is exactly what the user is watching for, so its rows start
+  // expanded and fall back to the summary once the round is done. Tool activity
+  // is background material though: it stays deliberately quieter than the work
+  // report above it.
+  const [open, setOpen] = useState(streaming)
   const toolCalls = entries.flatMap((entry) => entry.toolCall ? [entry.toolCall] : [])
   if (toolCalls.length === 0) return null
   const isRunning = toolCalls.some((toolCall) => !toolCall.result && !toolCall.isError)
   const hasError = toolCalls.some((toolCall) => toolCall.isError)
-  const singleLabel = toolCalls.length === 1 ? getToolLabel(toolCalls[0]) : undefined
+  const singleLabel = toolCalls.length === 1 ? executionToolActivityLabel(toolCalls[0]) : undefined
 
   return (
     <div>
@@ -221,50 +234,23 @@ function TimelineToolGroup({ entries }: { entries: ExecutionTimelineEntry[] }) {
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-zinc-700 transition-colors hover:bg-violet-50/70"
+        className="inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs font-normal text-zinc-500 transition-colors hover:bg-zinc-50"
       >
-        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-zinc-400 transition-transform', open && 'rotate-180')} />
-        <Wrench className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
-        <span className="min-w-0 truncate">{singleLabel ? singleLabel.title : `执行工具 ${toolCalls.length} 次`}</span>
-        {singleLabel?.detail && <span className="min-w-0 truncate text-xs font-normal text-zinc-500">{singleLabel.detail}</span>}
+        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-zinc-300 transition-transform', open && 'rotate-180')} />
+        <Wrench className="h-3.5 w-3.5 shrink-0 text-zinc-300" />
+        <span className="min-w-0 truncate">{singleLabel ? singleLabel.title : `已执行 ${toolCalls.length} 项操作`}</span>
+        {singleLabel?.detail && <span className="min-w-0 truncate text-xs font-normal text-zinc-400">{singleLabel.detail}</span>}
         <span className="shrink-0">
           {isRunning
-            ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
+            ? <Loader2 className="h-3 w-3 animate-spin text-violet-400" />
             : hasError
-              ? <XCircle className="h-3.5 w-3.5 text-red-500" />
-              : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />}
+              ? <XCircle className="h-3 w-3 text-red-400" />
+              : <CheckCircle2 className="h-3 w-3 text-emerald-400" />}
         </span>
       </button>
       {open && (
         <div className="ml-4 mt-0.5 space-y-0.5 border-l border-zinc-100 pl-2">
           {toolCalls.map((toolCall) => <ToolCallView key={toolCall.id} toolCall={toolCall} />)}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TimelineReasoningGroup({ entries, streaming }: { entries: ExecutionTimelineEntry[]; streaming: boolean }) {
-  const [open, setOpen] = useState(streaming)
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-violet-600 transition-colors hover:bg-violet-50/70"
-      >
-        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-violet-400 transition-transform', open && 'rotate-180')} />
-        <BrainCircuit className="h-3.5 w-3.5 shrink-0" />
-        <span className="truncate">{streaming ? '思考中' : entries.length > 1 ? `思考过程 · ${entries.length} 段` : '思考过程'}</span>
-        <span className="ml-auto shrink-0">
-          {streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" /> : null}
-        </span>
-      </button>
-      {open && (
-        <div className="ml-4 mt-1 space-y-1.5 border-l-2 border-violet-100 pl-3">
-          {entries.map((entry) => <div key={entry.id} className="whitespace-pre-wrap text-xs leading-5 text-zinc-500">{entry.content}</div>)}
         </div>
       )}
     </div>
@@ -280,17 +266,15 @@ function TimelineNoteRow({ content }: { content: string }) {
   )
 }
 
-function ExecutionTimelineView({ entries, streaming = false, showReasoning = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean; showReasoning?: boolean }) {
-  const groups = groupTimelineEntries(entries).filter((group) => group.kind === 'tool' || group.kind === 'note' || showReasoning)
+function ExecutionTimelineView({ entries, streaming = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean }) {
+  const groups = groupTimelineEntries(entries).filter((group) => group.kind === 'tool' || group.kind === 'note')
   if (!groups.length) return null
 
   return (
-    <section className="mb-3 space-y-0.5" aria-label="执行过程">
+    <section className="execution-feed__timeline" aria-label="工具活动">
       {groups.map((group) => group.kind === 'tool'
-        ? <TimelineToolGroup key={group.entries[0].id} entries={group.entries} />
-        : group.kind === 'note'
-          ? <TimelineNoteRow key={group.entries[0].id} content={group.entries[0].content || ''} />
-          : <TimelineReasoningGroup key={group.entries[0].id} entries={group.entries} streaming={Boolean(streaming)} />)}
+        ? <TimelineToolGroup key={group.entries[0].id} entries={group.entries} streaming={streaming} />
+        : <TimelineNoteRow key={group.entries[0].id} content={group.entries[0].content || ''} />)}
     </section>
   )
 }
@@ -313,34 +297,6 @@ function ExecutionStatusIndicator() {
   )
 }
 
-function ExecutionTraceView({ entries, streaming = false }: { entries: ExecutionTraceEntry[]; streaming?: boolean }) {
-  const visibleEntries = entries.filter((entry) => entry.title.trim())
-  if (visibleEntries.length === 0) return null
-
-  return (
-    <section className="mb-3 border-l-2 border-violet-100 pl-3" aria-label="执行进度" aria-live={streaming ? 'polite' : undefined}>
-      <div className="space-y-1.5">
-        {visibleEntries.map((entry) => (
-          <div key={entry.id} className="flex min-w-0 items-start gap-2 text-xs leading-5">
-            {entry.status === 'active'
-              ? <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-violet-500" />
-              : entry.status === 'failed'
-                ? <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose-500" />
-                : <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-500" />}
-            <span className={cn(
-              'min-w-0 flex-1',
-              entry.status === 'active' ? 'font-medium text-violet-600' : entry.status === 'failed' ? 'text-rose-600' : 'text-zinc-500',
-            )}>
-              {entry.title}
-              {entry.detail ? <span className="ml-2 text-zinc-400">{entry.detail}</span> : null}
-            </span>
-          </div>
-        ))}
-      </div>
-    </section>
-  )
-}
-
 type ProgressMarkdownOptions = {
   conversationId?: string
   outputFormat: AgentOutputFormat
@@ -352,31 +308,113 @@ type ProgressMarkdownOptions = {
   markdownRenderer: AgentMarkdownRenderer
 }
 
-function isInternalToolLifecycleUpdate(content: string): boolean {
-  return /^(?:Preparing the response and any required tools|Reviewing the tool results|Reviewing progress after \d+ tool cycles|Continuing with an expanded budget of \d+ tool cycles|Synthesizing the available results)\.\.\.$|^(?:当前模型不支持慢思考内容输出，将按普通模式继续执行。|检测到未执行的工具调用格式，正在按标准工具协议重试一次。)$/.test(content.trim())
+function ProgressMarkdown({ content, streaming, markdownOptions }: { content: string; streaming: boolean; markdownOptions: ProgressMarkdownOptions }) {
+  return (
+    <MarkdownMessageContent
+      content={content}
+      isStreaming={streaming}
+      conversationId={markdownOptions.conversationId}
+      outputFormat={markdownOptions.outputFormat}
+      outputStyle={markdownOptions.outputStyle}
+      outputFont={markdownOptions.outputFont}
+      outputColor={markdownOptions.outputColor}
+      outputFontSize={markdownOptions.outputFontSize}
+      outputTextEffect={markdownOptions.outputTextEffect}
+      markdownRenderer={markdownOptions.markdownRenderer}
+    />
+  )
 }
 
-function ProgressUpdatesView({ updates, streaming = false, markdownOptions }: { updates: ProgressUpdate[]; streaming?: boolean; markdownOptions: ProgressMarkdownOptions }) {
-  const visibleUpdates = updates.filter((update) => !isInternalToolLifecycleUpdate(update.content))
-  if (!visibleUpdates.length) return null
+function ProcessReportRow({ entry, streaming, markdownOptions }: { entry: ProcessReportEntry; streaming: boolean; markdownOptions: ProgressMarkdownOptions }) {
+  if (!isStructuredReport(entry.kind)) {
+    // Legacy free-form updates keep their compact row so old conversations
+    // render exactly as before.
+    return (
+      <div className="execution-feed__update">
+        <span className="execution-feed__update-icon" aria-hidden="true">
+          {entry.kind === 'thinking' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : entry.kind === 'issue' ? <XCircle className="h-3.5 w-3.5" /> : <CircleDot className="h-3.5 w-3.5" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <span className="execution-feed__update-label">{processReportLabel(entry)}</span>
+          <ProgressMarkdown content={entry.content} streaming={streaming} markdownOptions={markdownOptions} />
+        </div>
+      </div>
+    )
+  }
+
+  // The work report is the main narrative of the run, so it is typeset like
+  // the answer body while the tool rows around it stay deliberately quieter.
+  return (
+    <div className={cn('execution-feed__report', entry.kind === 'plan' && 'execution-feed__report--plan')}>
+      <span className="execution-feed__report-header">{processReportLabel(entry)}</span>
+      <ProgressMarkdown content={entry.content} streaming={streaming} markdownOptions={markdownOptions} />
+    </div>
+  )
+}
+
+function ProcessReportsView({ feed, streaming = false, markdownOptions }: { feed: ProcessFeed; streaming?: boolean; markdownOptions: ProgressMarkdownOptions }) {
+  if (!feed.plan && feed.entries.length === 0) return null
 
   return (
-    <section className="mb-3 space-y-3" aria-label="处理进展" aria-live={streaming ? 'polite' : undefined}>
-      {visibleUpdates.map((update) => (
-        <MarkdownMessageContent
-          key={update.id}
-          content={update.content}
-          isStreaming={streaming}
-          conversationId={markdownOptions.conversationId}
-          outputFormat={markdownOptions.outputFormat}
-          outputStyle={markdownOptions.outputStyle}
-          outputFont={markdownOptions.outputFont}
-          outputColor={markdownOptions.outputColor}
-          outputFontSize={markdownOptions.outputFontSize}
-          outputTextEffect={markdownOptions.outputTextEffect}
-          markdownRenderer={markdownOptions.markdownRenderer}
+    <section className="execution-feed__reports" aria-label="执行汇报" aria-live={streaming ? 'polite' : undefined}>
+      {feed.checklist ? (
+        <PlanChecklist
+          checklist={feed.checklist}
+          streaming={streaming}
+          className="execution-feed__report execution-feed__report--plan"
+          renderItemText={(text) => <ProgressMarkdown content={text} streaming={streaming} markdownOptions={markdownOptions} />}
         />
-      ))}
+      ) : feed.plan ? <ProcessReportRow entry={feed.plan} streaming={streaming} markdownOptions={markdownOptions} /> : null}
+      {feed.entries.map((entry) => <ProcessReportRow key={entry.id} entry={entry} streaming={streaming} markdownOptions={markdownOptions} />)}
+    </section>
+  )
+}
+
+function executionToolActivityLabel(toolCall: ToolCall): { title: string; detail?: string } {
+  const path = typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : undefined
+  const command = typeof toolCall.arguments.command === 'string'
+    ? toolCall.arguments.command
+    : typeof toolCall.arguments.text === 'string' ? toolCall.arguments.text : undefined
+  if (toolCall.name === 'read_file' || toolCall.name === 'list_directory' || toolCall.name === 'search_files' || toolCall.name === 'search_code') return { title: '已读取文件', detail: path }
+  if (toolCall.name === 'write_file' || toolCall.name === 'edit_file' || toolCall.name === 'apply_patch') return { title: '已编辑文件', detail: path }
+  if (toolCall.name === 'execute_command' || toolCall.name === 'write_terminal') return { title: '已运行命令', detail: command }
+  if (toolCall.name === 'web_search') return { title: '已搜索资料', detail: typeof toolCall.arguments.query === 'string' ? toolCall.arguments.query : undefined }
+  if (toolCall.name === 'read_web_page') return { title: '已读取网页', detail: typeof toolCall.arguments.url === 'string' ? toolCall.arguments.url : undefined }
+  return { title: '已执行操作', detail: toolCall.name }
+}
+
+function ExecutionFeedView({
+  message,
+  streaming = false,
+  shouldShowReasoning,
+  markdownOptions,
+}: {
+  message: ChatMessage
+  streaming?: boolean
+  shouldShowReasoning: boolean
+  markdownOptions: ProgressMarkdownOptions
+}) {
+  const feed = buildProcessFeed(message.progressUpdates || [])
+  const allTimelineEntries = message.executionTimeline || []
+  const timelineEntries = allTimelineEntries.filter((entry) => entry.kind !== 'reasoning')
+  // Raw reasoning travels either as timeline entries or as the message-level
+  // accumulator, depending on when it arrived.
+  const reasoningContent = allTimelineEntries
+    .filter((entry) => entry.kind === 'reasoning')
+    .map((entry) => entry.content || '')
+    .join('\n\n')
+    .trim() || message.reasoningContent || ''
+  const hasReports = Boolean(feed.plan || feed.entries.length)
+  const hasTimeline = timelineEntries.length > 0
+  const hasReasoning = Boolean(shouldShowReasoning && reasoningContent)
+  const hasActivity = hasReports || hasTimeline || hasReasoning
+  if (!hasActivity) return null
+
+  return (
+    <section className="execution-feed" aria-label="工作进展" aria-live={streaming ? 'polite' : undefined}>
+      {hasReports ? <ProcessReportsView feed={feed} streaming={streaming} markdownOptions={markdownOptions} /> : null}
+      {hasTimeline ? <ExecutionTimelineView entries={timelineEntries} streaming={streaming} /> : null}
+      {hasReasoning ? <ReasoningPanel content={reasoningContent} streaming={streaming} /> : null}
     </section>
   )
 }
@@ -431,8 +469,8 @@ function safeStreamdownUrl(url: string): string {
 }
 
 export function MarkdownMessageContent({ content, className, isStreaming = false, conversationId, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced' }: { content: string; className?: string; isStreaming?: boolean; conversationId?: string; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer }) {
-  const markdownContent = normalizeChatMarkdown(content)
-  const markdownClassName = cn('chat-message-markdown max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, isStreaming && 'chat-message-markdown--streaming', className)
+  const markdownContent = isStreaming ? normalizeStreamingMarkdown(content) : normalizeChatMarkdown(content)
+  const markdownClassName = cn('chat-message-markdown max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, className)
 
   // Path-like inline code becomes a clickable chip only once the reply is
   // complete: mid-stream the backtick span is still being auto-closed, so
@@ -458,13 +496,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
           <StreamdownRenderer
             mode={isStreaming ? "streaming" : "static"}
             isAnimating={isStreaming}
-            animated={isStreaming ? {
-              animation: 'inkReveal',
-              duration: 210,
-              easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
-              sep: 'char',
-              stagger: 0,
-            } : false}
+            animated={false}
             parseIncompleteMarkdown
             skipHtml
             urlTransform={safeStreamdownUrl}
@@ -524,19 +556,20 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
   )
 }
 
-export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, conversationUsage }: MessageBubbleProps) {
+export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, showActions = true, canRegenerate = false, conversationUsage }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
+  const regenerateFromMessage = useChatStore((state) => state.regenerateFromMessage)
   const setQuotedMessage = useChatStore((state) => state.setQuotedMessage)
   const [copied, setCopied] = useState(false)
   const actionCopy = language === 'zh'
-    ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成', remove: '删除回复', confirm: '删除这条回复及其后续内容吗？' }
+    ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成' }
     : language === 'ja'
-      ? { copy: 'コピー', copied: 'コピー済み', favorite: 'お気に入り', unfavorite: 'お気に入りを解除', regenerate: '再生成', remove: '返信を削除', confirm: 'この返信と後続の内容を削除しますか？' }
-      : { copy: 'Copy', copied: 'Copied', favorite: 'Favorite', unfavorite: 'Unfavorite', regenerate: 'Regenerate', remove: 'Delete reply', confirm: 'Delete this reply and everything after it?' }
+      ? { copy: 'コピー', copied: 'コピー済み', favorite: 'お気に入り', unfavorite: 'お気に入りを解除', regenerate: '再生成' }
+      : { copy: 'Copy', copied: 'Copied', favorite: 'Favorite', unfavorite: 'Unfavorite', regenerate: 'Regenerate' }
 
   const handleCopyAssistant = async () => {
     await navigator.clipboard.writeText(message.content)
@@ -579,8 +612,8 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
         </div>
         <div className="min-w-0 max-w-[66rem]">
           <div className="chat-message-surface chat-assistant-message py-3 pl-3 pr-5">
-            <ProgressUpdatesView
-              updates={[{ id: message.id, kind: message.progressKind, content: message.content, timestamp: message.timestamp }]}
+            <ProcessReportsView
+              feed={buildProcessFeed([{ id: message.id, kind: message.progressKind, content: message.content, timestamp: message.timestamp }], { numberSteps: false })}
               markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
             />
           </div>
@@ -673,37 +706,28 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
               </Badge>
             </div>
           )}
-          {processOutput !== 'off' && message.progressUpdates?.length ? (
-            <ProgressUpdatesView
-              updates={message.progressUpdates}
-              streaming={isStreaming}
-              markdownOptions={{ conversationId: message.conversationId, outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
-            />
-          ) : null}
-          {processOutput !== 'off' && message.executionTrace?.length ? (
-            <ExecutionTraceView entries={message.executionTrace} streaming={isStreaming} />
-          ) : null}
-          {!message.executionTimeline?.length && shouldShowReasoning ? (
-            <ReasoningPanel content={message.reasoningContent || ''} streaming={isStreaming} />
-          ) : null}
+          <ExecutionFeedView
+            message={message}
+            streaming={isStreaming}
+            shouldShowReasoning={shouldShowReasoning}
+            markdownOptions={{ conversationId: message.conversationId, outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
+          />
           {isStreaming && !message.content.trim() ? <ExecutionStatusIndicator key={message.id} /> : null}
           <MarkdownMessageContent content={message.content} isStreaming={isStreaming} conversationId={message.conversationId} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
-          {message.executionTimeline?.length ? (
-            <ExecutionTimelineView
-              entries={message.executionTimeline}
-              streaming={isStreaming}
-              showReasoning={shouldShowReasoning}
-            />
-          ) : null}
           {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
           {message.timing ? <TimingSummary timing={message.timing} /> : null}
         </div>
 
-        {!isStreaming && !isTool && (
+        {!isStreaming && !isTool && showActions && (
           <div className="message-actions mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
             <button type="button" onClick={quoteCurrentMessage} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title="引用消息" aria-label="引用消息">
               <Quote className="h-3.5 w-3.5" />引用
             </button>
+            {canRegenerate && (
+              <button type="button" onClick={() => void regenerateFromMessage(message.id)} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
+                <RefreshCw className="h-3.5 w-3.5" />{actionCopy.regenerate}
+              </button>
+            )}
             <button type="button" onClick={() => void handleCopyAssistant()} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.copy} aria-label={actionCopy.copy}>
               {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? actionCopy.copied : actionCopy.copy}
             </button>
