@@ -20,16 +20,16 @@ function parsePreferredPort(raw: string): { value: number | null; invalid: boole
   return { value: parsed, invalid: false }
 }
 
+function isLoopbackListenHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase()
+  return normalized === 'localhost' || normalized === '::1' || normalized === '127.0.0.1' || normalized.startsWith('127.')
+}
+
 /**
- * Tiny control plane for the loopback App-Server. The server exposes a
- * JSON-RPC + SSE surface on `127.0.0.1` with a per-session bearer token so
- * tooling on the same machine (editors, IDEs, scripts) can drive Eva
- * without opening the desktop app's UI directly.
- *
- * The same port also carries the ACP (Agent Client Protocol) WebSocket on
- * `/acp`, which is what a phone terminal connects to through `adb reverse`.
- * Because `adb reverse` addresses a fixed port, the panel lets the user pin one
- * instead of following a new random high port after every start.
+ * Control plane for the App-Server. The default is a loopback JSON-RPC + SSE
+ * surface with a per-session bearer token. An explicit non-loopback address
+ * switches the server to HTTPS/WSS so a remote client can drive Eva through a
+ * public endpoint.
  */
 export function AppServerPanel() {
   const { language } = useAppStore()
@@ -38,6 +38,10 @@ export function AppServerPanel() {
   const [config, setConfig] = useState<AppServerConfig>(DEFAULT_APP_SERVER_CONFIG)
   const [portDraft, setPortDraft] = useState('')
   const [portInvalid, setPortInvalid] = useState(false)
+  const [hostDraft, setHostDraft] = useState(DEFAULT_APP_SERVER_CONFIG.listenHost)
+  const [publicBaseUrlDraft, setPublicBaseUrlDraft] = useState(DEFAULT_APP_SERVER_CONFIG.publicBaseUrl)
+  const [tlsCertPathDraft, setTlsCertPathDraft] = useState(DEFAULT_APP_SERVER_CONFIG.tlsCertPath)
+  const [tlsKeyPathDraft, setTlsKeyPathDraft] = useState(DEFAULT_APP_SERVER_CONFIG.tlsKeyPath)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -63,11 +67,22 @@ export function AppServerPanel() {
     try {
       const stored = await window.eva.config.get<Partial<AppServerConfig> | null>('appServer')
       const next: AppServerConfig = {
+        autoStart: typeof stored?.autoStart === 'boolean' ? stored.autoStart : DEFAULT_APP_SERVER_CONFIG.autoStart,
         preferredPort: typeof stored?.preferredPort === 'number' ? stored.preferredPort : DEFAULT_APP_SERVER_CONFIG.preferredPort,
+        listenHost: typeof stored?.listenHost === 'string' && stored.listenHost.trim() ? stored.listenHost : DEFAULT_APP_SERVER_CONFIG.listenHost,
+        publicBaseUrl: typeof stored?.publicBaseUrl === 'string' ? stored.publicBaseUrl : DEFAULT_APP_SERVER_CONFIG.publicBaseUrl,
+        tlsCertPath: typeof stored?.tlsCertPath === 'string' ? stored.tlsCertPath : DEFAULT_APP_SERVER_CONFIG.tlsCertPath,
+        tlsKeyPath: typeof stored?.tlsKeyPath === 'string' ? stored.tlsKeyPath : DEFAULT_APP_SERVER_CONFIG.tlsKeyPath,
         acpRequireAuth: typeof stored?.acpRequireAuth === 'boolean' ? stored.acpRequireAuth : DEFAULT_APP_SERVER_CONFIG.acpRequireAuth,
       }
-      setConfig(next)
-      setPortDraft(next.preferredPort === null ? '' : String(next.preferredPort))
+      const externalConfigured = Boolean(next.publicBaseUrl.trim()) || !isLoopbackListenHost(next.listenHost)
+      const effective = externalConfigured ? { ...next, acpRequireAuth: true } : next
+      setConfig(effective)
+      setPortDraft(effective.preferredPort === null ? '' : String(effective.preferredPort))
+      setHostDraft(effective.listenHost)
+      setPublicBaseUrlDraft(effective.publicBaseUrl)
+      setTlsCertPathDraft(effective.tlsCertPath)
+      setTlsKeyPathDraft(effective.tlsKeyPath)
       setPortInvalid(false)
     } catch (e: any) {
       setError(e?.message ?? String(e))
@@ -102,6 +117,18 @@ export function AppServerPanel() {
     await persist({ ...config, preferredPort: parsed.value })
   }
 
+  const commitHost = async (): Promise<void> => {
+    const nextHost = hostDraft.trim() || DEFAULT_APP_SERVER_CONFIG.listenHost
+    const external = !isLoopbackListenHost(nextHost) || Boolean(config.publicBaseUrl.trim())
+    setHostDraft(nextHost)
+    await persist({ ...config, listenHost: nextHost, ...(external ? { acpRequireAuth: true } : {}) })
+  }
+
+  const commitText = async (key: 'publicBaseUrl' | 'tlsCertPath' | 'tlsKeyPath', value: string): Promise<void> => {
+    const next = { ...config, [key]: value, ...(key === 'publicBaseUrl' && value ? { acpRequireAuth: true } : {}) } as AppServerConfig
+    await persist(next)
+  }
+
   const start = async (): Promise<void> => {
     setBusy(true)
     try {
@@ -132,8 +159,8 @@ export function AppServerPanel() {
     const value = kind === 'token'
       ? status.bearerToken
       : kind === 'acp'
-        ? `ws://${status.host}:${status.port}${status.acp?.path ?? '/acp'}`
-        : `http://127.0.0.1:${status.port}/v1/rpc`
+        ? status.acpUrl ?? `${status.scheme === 'https' ? 'wss' : 'ws'}://${status.host}:${status.port}${status.acp?.path ?? '/acp'}`
+        : status.rpcUrl ?? `${status.scheme}://${status.host}:${status.port}/v1/rpc`
     try {
       await navigator.clipboard.writeText(value)
       setCopied(kind)
@@ -147,9 +174,10 @@ export function AppServerPanel() {
     return <div className="flex items-center gap-2 text-sm text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" />加载 App Server 状态…</div>
   }
 
-  const acpUrl = status.running && status.port
-    ? `ws://${status.host}:${status.port}${status.acp?.path ?? '/acp'}`
-    : null
+  const acpUrl = status.running && status.port ? status.acpUrl : null
+  const remoteConfigured = !isLoopbackListenHost(config.listenHost)
+  const publicConfigured = Boolean(config.publicBaseUrl.trim())
+  const externalConfigured = remoteConfigured || publicConfigured
   const portFellBack = status.running
     && status.port !== null
     && config.preferredPort !== null
@@ -161,8 +189,8 @@ export function AppServerPanel() {
         <div className="flex items-start gap-3">
           <ShieldAlert className="mt-0.5 h-4 w-4 text-amber-600" />
           <div className="text-sm text-zinc-700">
-            <p className="font-semibold text-zinc-800">App Server 仅监听 127.0.0.1，并以 Bearer Token 鉴权</p>
-            <p className="mt-1 text-zinc-600 leading-5">启动后会开放 JSON-RPC over HTTP（<code>/v1/rpc</code>）以及 SSE 事件流（<code>/v1/events</code>）。Token 每次启动都会重新生成；用于本地脚本、编辑器插件或 MCP 客户端连接 Eva。</p>
+            <p className="font-semibold text-zinc-800">{remoteConfigured ? 'App Server 远程 HTTPS 模式' : publicConfigured ? 'App Server 本机 + 公网隧道模式' : 'App Server 本机模式'}</p>
+            <p className="mt-1 text-zinc-600 leading-5">{remoteConfigured ? '远程模式通过 HTTPS/WSS 提供 ACP。公网入口必须配置可验证的 TLS 证书，并始终要求 Bearer Token。' : publicConfigured ? 'Eva 只监听本机 HTTP，由 Cloudflare Tunnel 或其他反向代理提供公网 HTTPS/WSS。Bearer Token 仍然必须开启。' : '默认只监听本机回环地址。填写公网基址后，Cloudflare Tunnel 或其他反向代理可以把手机请求转到这里。'}</p>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-zinc-600">
               <li>线程管理：<code>thread/list</code>、<code>thread/start</code>、<code>thread/get</code></li>
               <li>会话控制：<code>turn/start</code>、<code>turn/interrupt</code></li>
@@ -211,7 +239,7 @@ export function AppServerPanel() {
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Endpoint</p>
             <div className="mt-1 flex items-center justify-between gap-2">
-              <code className="break-all rounded bg-zinc-50 px-2 py-1 text-sm text-zinc-800">http://127.0.0.1:{status.port}/v1/rpc</code>
+              <code className="break-all rounded bg-zinc-50 px-2 py-1 text-sm text-zinc-800">{status.rpcUrl ?? `${status.scheme}://${status.host}:${status.port}/v1/rpc`}</code>
               <button type="button" onClick={() => void copy('url')} className="inline-flex h-7 items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-600 transition-colors hover:bg-zinc-50">
                 <Copy className="h-3 w-3" />{copied === 'url' ? '已复制' : '复制'}
               </button>
@@ -249,7 +277,7 @@ export function AppServerPanel() {
                 <Copy className="h-3 w-3" />{copied === 'acp' ? text.copied : text.copy}
               </button>
             </div>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">{text.adbHint.replace('{port}', String(status.port))}</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">{remoteConfigured ? text.remoteHint : publicConfigured ? text.tunnelHint : text.localHint}</p>
           </div>
           <p className="text-xs text-zinc-600">
             <span className="font-medium text-zinc-700">{text.acpConnections}</span>
@@ -262,7 +290,75 @@ export function AppServerPanel() {
         <div className="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600">{text.acpDisabled}</div>
       )}
 
+      <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-4">
+        <label className="flex cursor-pointer items-center justify-between gap-3 text-sm text-zinc-700">
+          <span>{text.autoStartLabel}</span>
+          <input
+            type="checkbox"
+            checked={config.autoStart}
+            disabled={saving}
+            onChange={(event) => void persist({ ...config, autoStart: event.target.checked })}
+            className="h-4 w-4 accent-violet-600 disabled:opacity-40"
+          />
+        </label>
+        <p className="text-xs leading-5 text-zinc-500">{text.autoStartHint}</p>
+      </div>
+
       <div className="space-y-3 rounded-lg border border-zinc-200 bg-white p-4">
+        <label className="block space-y-1 text-xs text-zinc-500">
+          <span className="text-sm font-medium text-zinc-800">{text.listenHost}</span>
+          <Input
+            type="text"
+            value={hostDraft}
+            disabled={saving}
+            onChange={(event) => setHostDraft(event.target.value)}
+            onBlur={() => void commitHost()}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                event.currentTarget.blur()
+              }
+            }}
+          />
+          <span className="block leading-5">{text.listenHostHint}</span>
+        </label>
+        <label className="block space-y-1 text-xs text-zinc-500">
+          <span className="text-sm font-medium text-zinc-800">{text.publicBaseUrl}</span>
+          <Input
+            type="url"
+            placeholder="https://eva.example.com"
+            value={publicBaseUrlDraft}
+            disabled={saving}
+            onChange={(event) => setPublicBaseUrlDraft(event.target.value)}
+            onBlur={() => void commitText('publicBaseUrl', publicBaseUrlDraft.trim())}
+          />
+          <span className="block leading-5">{text.publicBaseUrlHint}</span>
+        </label>
+        {remoteConfigured && (
+          <>
+            <label className="block space-y-1 text-xs text-zinc-500">
+              <span className="text-sm font-medium text-zinc-800">{text.tlsCertPath}</span>
+              <Input
+                type="text"
+                value={tlsCertPathDraft}
+                disabled={saving}
+                onChange={(event) => setTlsCertPathDraft(event.target.value)}
+                onBlur={() => void commitText('tlsCertPath', tlsCertPathDraft.trim())}
+              />
+            </label>
+            <label className="block space-y-1 text-xs text-zinc-500">
+              <span className="text-sm font-medium text-zinc-800">{text.tlsKeyPath}</span>
+              <Input
+                type="text"
+                value={tlsKeyPathDraft}
+                disabled={saving}
+                onChange={(event) => setTlsKeyPathDraft(event.target.value)}
+                onBlur={() => void commitText('tlsKeyPath', tlsKeyPathDraft.trim())}
+              />
+              <span className="block leading-5">{text.tlsPathHint}</span>
+            </label>
+          </>
+        )}
         <label className="block space-y-1 text-xs text-zinc-500">
           <span className="text-sm font-medium text-zinc-800">{text.preferredPort}</span>
           <Input
@@ -302,7 +398,7 @@ export function AppServerPanel() {
           <input
             type="checkbox"
             checked={config.acpRequireAuth}
-            disabled={saving}
+            disabled={saving || externalConfigured}
             onChange={(event) => void persist({ ...config, acpRequireAuth: event.target.checked })}
             className="h-4 w-4 accent-violet-600 disabled:opacity-40"
           />

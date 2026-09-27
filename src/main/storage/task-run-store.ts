@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { TaskRunSnapshot } from '../../shared/types/task'
+import { writeJsonAtomic } from './atomic-file'
 
 interface TaskRunIndex {
   snapshots: Record<string, TaskRunSnapshot>
@@ -68,8 +69,7 @@ export class TaskRunStore {
   }
 
   private write(index: TaskRunIndex): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-    fs.writeFileSync(this.filePath, JSON.stringify(index, null, 2), 'utf-8')
+    writeJsonAtomic(this.filePath, index)
   }
 
   private enqueue<T>(work: () => T): Promise<T> {

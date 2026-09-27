@@ -10,6 +10,7 @@ import type {
   UpsertLongTermMemoryInput,
 } from '../../shared/types/long-term-memory'
 import { sanitizeUnicode, truncateUnicode } from '../utils/unicode'
+import { writeJsonAtomic } from './atomic-file'
 
 const MAX_ENTRIES = 2_000
 const MAX_CONTEXT_ENTRIES = 12
@@ -254,19 +255,7 @@ export class LongTermMemoryStore {
   }
 
   private write(entries: LongTermMemory[]): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-    const temporaryPath = `${this.filePath}.${uuidv4()}.tmp`
-    fs.writeFileSync(temporaryPath, JSON.stringify(entries, null, 2), 'utf8')
-    try {
-      fs.renameSync(temporaryPath, this.filePath)
-    } catch (error) {
-      try {
-        fs.rmSync(temporaryPath, { force: true })
-      } catch {
-        // Preserve the original rename error; cleanup is best effort.
-      }
-      throw error
-    }
+    writeJsonAtomic(this.filePath, entries)
   }
 
   private enqueue<T>(work: () => T): Promise<T> {

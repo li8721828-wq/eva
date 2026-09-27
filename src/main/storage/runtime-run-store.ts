@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import type { RuntimeRunDescriptor, RuntimeRunStatus } from '../../shared/types/runtime-run'
+import { writeJsonAtomic } from './atomic-file'
 
 const MAX_RUNS = 500
 const ACTIVE = new Set<RuntimeRunStatus>(['queued', 'running', 'paused'])
@@ -83,8 +84,7 @@ export class RuntimeRunStore {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MAX_RUNS)
     index.runs = Object.fromEntries(runs.map((run) => [run.id, run]))
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-    fs.writeFileSync(this.filePath, JSON.stringify(index, null, 2), 'utf-8')
+    writeJsonAtomic(this.filePath, index)
   }
 
   private backupCorruptFile(error: unknown): void {

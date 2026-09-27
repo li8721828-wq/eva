@@ -1,5 +1,42 @@
 # 工程记忆变更记录
 
+## 2026-09-24：整理用户操作文档
+
+- 影响文件：`docs/2026-09-24-ACP公网远程接入说明.md`、新增 `docs/2026-09-24-Eva长时间运行稳定性更新.md`。
+- 变化：补充 Cloudflare Tunnel 的实际配置、`www.broccolitrue.cloud` 示例、502/健康检查方法、手机 ACP 参数，以及今天自动启动、原子状态写入、PTY 超时中断和验证结果。
+- 验证：文档内容与当前 App Server 配置、测试命令和项目工程记忆保持一致；本次仅修改 Markdown 文档。
+
+## 2026-09-24：长运行稳定性第一批——自动启动、退出清理与原子检查点
+
+- 影响文件：新增 `src/main/storage/atomic-file.ts`、`tests/unit/atomic-file.test.ts`；修改 `src/main/storage/{task-run-store,runtime-run-store,runtime-kernel-store,long-term-memory-store,memory-agent-queue-store}.ts`、`src/main/ipc/app-server.ts`、`src/main/index.ts`、`src/shared/types/automation.ts`、`src/renderer/components/settings/AppServerPanel.tsx`、`src/renderer/lib/ui-copy.ts`、`tests/unit/ipc-contract.test.ts`、`docs/project-memory/{ARCHITECTURE,REGRESSION-GUARDS}.md`。
+- 问题：App Server 只能手动启动，Eva 重启后公网入口会消失；主进程退出没有显式关闭 App Server；三类 Agent OS 检查点直接覆盖 JSON，崩溃或断电可能留下截断文件。
+- 变化：新增 `autoStart` 偏好与 Settings 开关；主进程在 IPC 注册完成后用与手动按钮相同的配置读取函数启动 App Server，并在 `before-quit` 关闭它；任务、运行目录、运行内核、长期记忆和记忆队列状态统一改用临时文件 + 重命名写入，并保留 Windows 文件锁重试。
+- 验证：`npm run typecheck` 通过；窄测 `npx vitest run tests/unit/atomic-file.test.ts tests/unit/ipc-contract.test.ts tests/unit/runtime-run-store.test.ts tests/unit/runtime-kernel-store.test.ts tests/unit/storage.test.ts --reporter=dot`（5 文件 / 32 项通过）。
+- 剩余风险：`autoStart` 默认关闭以保留现有行为，用户需在 App Server 设置中开启；ACP 的远程 turn 仍使用进程内 AgentRunner，桌面进程异常退出时只能把运行标为中断，尚未实现远程 turn 的完整断点续跑。
+
+## 2026-09-24：长运行稳定性补丁——PTY 超时实际中断命令
+
+- 影响文件：`src/main/services/terminal-service.ts`、`docs/project-memory/REGRESSION-GUARDS.md`。
+- 问题：PTY 超时路径只移除回调并返回 `exitCode: -1`，共享 shell 中的原命令仍然运行，下一次工具调用可能与它并行写入同一个终端。
+- 变化：超时先发送 Ctrl+C，再清理回调并返回超时结果；PTY 已退出时忽略中断写入错误。
+- 验证：全量测试与类型检查通过；仓库尚未有可注入 node-pty 的独立 PTY 单测，仍需真机长命令验证。
+
+## 2026-09-24：Cloudflare Tunnel 反向代理模式
+
+- 影响文件：`src/main/services/app-server/transport.ts`、`src/main/services/app-server/server.ts`、`src/renderer/components/settings/AppServerPanel.tsx`、`src/renderer/lib/ui-copy.ts`、`tests/unit/app-server-transport.test.ts`、`docs/project-memory/{ARCHITECTURE,REGRESSION-GUARDS}.md`。
+- 问题：Cloudflare Tunnel 已经负责公网 TLS 时，Eva 仍把回环模式当成“只能本机”，不展示公网 WSS 地址，用户容易误填本地证书或把隧道源配置成不存在的 HTTPS 服务。
+- 变化：回环监听现在可填写 `publicBaseUrl`；Eva 继续监听本机 HTTP，但状态对外生成 `https://`/`wss://` 基址，公网基址存在时强制 Bearer Token。直接非回环监听仍要求 Eva 自己读取证书和私钥。
+- 验证：`tests/unit/app-server-transport.test.ts` 覆盖回环隧道地址、HTTPS 校验和本地/公网基址派生；随后全量测试通过。
+- 剩余风险：Cloudflare Tunnel 的源服务仍需指向 Eva 实际固定端口（例如 `http://127.0.0.1:8787`），隧道进程本身需配置为系统服务并自动重启。
+
+## 2026-09-24：ACP 增加可选公网 HTTPS/WSS 入口
+
+- 影响文件：`src/main/services/app-server/server.ts`、新增 `src/main/services/app-server/transport.ts`、`src/main/ipc/app-server.ts`、`src/shared/types/automation.ts`、`src/renderer/components/settings/AppServerPanel.tsx`、`src/renderer/lib/ui-copy.ts`、`scripts/acp-smoke.mjs`、`docs/2026-09-24-ACP公网远程接入说明.md`；新增 `tests/unit/app-server-transport.test.ts`。
+- 问题：ACP 门面已经完成，但 App-Server 固定监听 `127.0.0.1`，手机只能通过 `adb reverse` 或网络代理接入，无法直接使用公网 `wss://` 地址。
+- 变化：默认仍为回环 HTTP；监听地址改为可配置。非回环地址自动启用 HTTPS，要求公网 HTTPS 基址、PEM 证书和私钥，远程模式强制 ACP Bearer Token，并让远程 `/health` 也经过鉴权。状态契约新增 `scheme`、`baseUrl`、`rpcUrl`、`acpUrl`，ACP 地址在本机模式为 `ws://`、远程模式为 `wss://`。Settings 增加监听地址、公网基址、证书和私钥字段；`acp-smoke.mjs` 增加 `--url ws(s)://.../acp`。
+- 验证：`npm run typecheck` 通过；`npx vitest run` 全量 **93 文件 / 650 项通过**；`npm run build` 通过；新增传输配置测试 4 项通过。`npx tsc --noEmit -p tsconfig.web.json` 仍只有既有 `MessageList.tsx` 2 处和 `TaskWorkspacePanel.tsx` 1 处类型错误。
+- 剩余风险：公网可达性仍需要用户配置 DNS、路由器/防火墙端口转发或云反向代理，以及受信任的 TLS 证书；Eva 没有内置公网中继或 NAT 穿透服务。当前远程模式只提供 HTTPS/WSS 传输，不支持明文公网 `ws://`。
+
 ## 2026-09-23：Eva 成为 ACP agent（WebSocket 门面），手机终端可直连驱动一轮对话
 
 - 影响文件：新增 `src/main/services/app-server/rpc-connection.ts`、`src/main/services/app-server/acp/{protocol,event-mapping,connection,index}.ts`、`scripts/acp-smoke.mjs`；改动 `src/main/services/app-server/server.ts`、`protocol.ts`（`TURN_PROGRESS: 'turn/progress'`、`-32002` 等码）、`sse-hub.ts`（`subscribe(handler, {conversationId, topic})` 与 SSE 解耦）、`src/main/services/tool-approval-policy.ts`（`setApprovalRelay` / `rejectAllPendingApprovalsForConversation`）、`src/main/ipc/conversation.ts`（改用投影器，行为不变）、`src/main/ipc/app-server.ts`（`appServer` 配置逐字段合并并透传 `preferredPort`/`acpRequireAuth`）；测试新增 `tests/unit/rpc-connection.test.ts`、`tests/unit/acp-event-mapping.test.ts`、`tests/unit/app-server-acp.test.ts`，扩 `tests/unit/tool-approval-policy.test.ts`。
@@ -15,7 +52,7 @@
   8. `scripts/acp-smoke.mjs`：与手机终端同构的最小 ACP 客户端——`initialize`→`session/new`→一次 `session/prompt`，逐条打印 `session/update`，`--approve` 否则 `reject_once`，任何协议偏差（坏 envelope、缺 sessionId、error 回包、idle 超时）非零退出；token 只从 `--token`/`EVA_ACP_TOKEN` 读且从不打印。
 - 与批准方案的偏差：①未单独建 `acp/plan-projector.ts` 与 `acp/session-registry.ts`，映射收在纯函数 `acp/event-mapping.ts`、会话态收在 `acp/connection.ts`；②`session/new` 用 `permissionLevel:'workspace'` + `workspacePath`，未走 `granted-folders` + `fileAccessGrants`（该档的 grants 由用户在界面勾选，网络侧不自填白名单），`networkPermissionLevel` 只对 HTTP 调用方显式传来的 `granted-folders` 放行；③进度以新事件 `turn/progress` 广播并直接落盘，不推 `CHAT_STREAM`；④落盘 assistant 行含 `toolCalls` 但本仓库无 `role:'tool'` 行，故手机端工具明细在桌面只作展示、不回填模型上下文。
 - 验证：`npm run typecheck` 无错误；`npx tsc -p tsconfig.web.json --noEmit` 仍只有既有 3 处未提交工作报错（`MessageList.tsx:446/457`、`TaskWorkspacePanel.tsx:413`，非本次改动）；`npx vitest run` 全量 **92 文件 / 646 项通过**（exit 0）。窄测 `rpc-connection`(19) / `acp-event-mapping`(36) / `app-server-acp`(18) / `app-server`(4，SSE 封装未改而通过) / `tool-approval-policy`(24)。`app-server-acp.test.ts` 用真实 `http.createServer` + 真实 `ws` 客户端覆盖：握手、未 `initialize` 时的 `-32002`、权限档、MCP 拒绝、流式与 `stopReason`、失败收尾、审批往返（含“抢在登记前回填仍能命中”“relay 优先于 null 窗口”“断线即拒且中断”）、`session/cancel`、只服务 `/acp`、bearer 必检、auth-off 时的 `Origin` 拒绝、binary 忽略、坏帧不断链、fan-out 不串会话。评审轮修掉三处缺陷：`settlePending` 把「带非对象 `error` 的回包」当成功结算（垃圾回包可凭空满足一次审批）；`toolCallTitle` 不读 `query` 且 `??` 链会被空串字段挡住（`web_search`/`search_code` 只显示裸标签）；收尾快照重发一次 overflow thought。注：同日 Settings 一条记录的「91 文件 / 627 项」是当时快照，其时 `app-server-acp.test.ts` 仍未通过，以本条 92/646 为准。
-- 剩余风险：① **真机端到端未做**——`scripts/acp-smoke.mjs` 尚未对运行中的 Eva 跑过（会新建会话并真实消耗一轮模型调用，需用户同意），`adb reverse` + 手机终端联机同待做；②双跑守卫仍有残余窗口：`AgentRunner` 构造之前那段 await（读会话、取 agent 配置）不在同一同步段内，两个并发请求仍可双双通过守卫，只是第二个在登记时会被自己人的槽位挡成一次报错（不再交错写同一份历史，但报错而非排队）；③`session/update` 无重放，断线后终端必须重开 session；④`acpRequireAuth=false` 只应存在于联调期，收尾须恢复默认 true；⑤客户端 `fs/*`、`terminal/*` 明确不做，将来要接“由客户端提供文件”的场景须重估反向调用死锁面。
+- 剩余风险：① **真机端到端已对运行中的 Eva 跑通**（2026-09-24，`npm run dev:debug` 实例、产物含本条改动，App-Server 监听 `127.0.0.1:8787`）：`initialize` 握手→`session/new`→三轮 `session/prompt` 全部 `stopReason=end_turn`、`acp-smoke` 退出码 0；覆盖纯问答、带 `tool_call`/`tool_call_update` 的工具流、以及多步 turn 的 `plan` 快照逐次全量重发（勾选状态推进）并有**两次 `session/request_permission` 经同一条 WS 回填 `allow_once`**（`execute_command`）。删探针数据前读 `message-pages/page-000001.json` 复查落盘：ACP 触发的 assistant 行带 `progressUpdates`（plan×2 + step×2，step 含 `item`）、`toolCalls`×2、`usage`、`timing`、`finishReason`，形状与桌面发起的会话一致（`12e9c2f8`/`5afbfda9` 同样是 `progressKind` 中间行 + 一条带 `progressUpdates` 的收尾行），故「桌面端同一会话刷新后清单仍可重建」成立。把 `acpRequireAuth` 置 false 并重启服务后，**不带 token 直连同样握手成功并 end_turn**，即手机终端当前形态可用。仍待做：`adb reverse tcp:8787 tcp:8787` + 手机 ACP 终端实机联机（PC 侧同构路径已由 `acp-smoke` 覆盖）；②双跑守卫仍有残余窗口：`AgentRunner` 构造之前那段 await（读会话、取 agent 配置）不在同一同步段内，两个并发请求仍可双双通过守卫，只是第二个在登记时会被自己人的槽位挡成一次报错（不再交错写同一份历史，但报错而非排队）；③`session/update` 无重放，断线后终端必须重开 session；④`acpRequireAuth=false` 只应存在于联调期，收尾须恢复默认 true——**当前用户 `config.json` 里它就是 false**（本次为「终端凭据解析还没落地」而改，且重启服务后重新生成了 bearer token），关掉后仅剩的两道闸是 loopback 监听与「带 `Origin` 的升级一律拒绝」；⑤客户端 `fs/*`、`terminal/*` 明确不做，将来要接“由客户端提供文件”的场景须重估反向调用死锁面。
 
 ## 2026-09-23：Settings 暴露并可配置 ACP 入口（固定端口 + 鉴权开关 + 三语文案）
 

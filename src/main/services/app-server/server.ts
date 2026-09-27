@@ -1,4 +1,5 @@
 import http, { type IncomingMessage, type ServerResponse } from 'http'
+import https from 'https'
 import { randomBytes } from 'crypto'
 import { SseHub } from './sse-hub'
 import type { ChatServices } from '../../ipc/conversation'
@@ -20,6 +21,7 @@ import type { AgentConfig } from '../../../shared/types/agent'
 import type { ChatMessage, ChatUsage, ConversationPermissionLevel, ProgressUpdate, ProgressUpdateKind, ResponseTiming, ToolCall } from '../../../shared/types/conversation'
 import { TurnProgressProjector, stripProgressBlocks, toProgressSummaries, unwrapProgressTags } from '../../ipc/progress-protocol'
 import { ConversationLifecycleService } from '../conversation-lifecycle-service'
+import { isLoopbackHost, normalizeListenHost, readRequiredPem, resolveBaseUrl, validateRemoteTransport } from './transport'
 
 // -----------------------------------------------------------------------------
 // ServerStatus singleton holds the runtime state of the HTTP server.
@@ -29,6 +31,10 @@ let status: ServerStatus = {
   running: false,
   host: '127.0.0.1',
   port: null,
+  scheme: 'http',
+  baseUrl: null,
+  rpcUrl: null,
+  acpUrl: null,
   bearerToken: null,
   startedAt: null,
   lastError: null,
@@ -515,36 +521,61 @@ function makeErrorEnvelope(req: unknown, code: number, message: string, idOverri
 // HTTP server lifecycle
 // -----------------------------------------------------------------------------
 
-let serverRef: ReturnType<typeof http.createServer> | null = null
+let serverRef: http.Server | null = null
 let acpGateway: AcpGateway | null = null
 const hub = new SseHub()
 
 export interface AppServerStartOptions {
-  /** Port to try before falling back to a free one. `adb reverse` needs it stable. */
+  /** Port to try before falling back to a free one. Remote clients also benefit from a stable port. */
   preferredPort?: number | null
-  /** Defaults to `true`; the option exists for joint debugging with a client that cannot send a token yet. */
+  /** Interface/address to bind. Non-loopback values require the remote HTTPS profile. */
+  listenHost?: string
+  /** Public HTTPS origin used by remote clients, without the `/acp` suffix. */
+  publicBaseUrl?: string
+  /** PEM files required when `listenHost` is not loopback. */
+  tlsCertPath?: string
+  tlsKeyPath?: string
+  /** Defaults to `true`; remote mode always overrides this to true. */
   acpRequireAuth?: boolean
 }
 
 export async function startAppServer(chatServices: ChatServices, options: AppServerStartOptions = {}): Promise<ServerStatus> {
   if (serverRef) return { ...status, running: true }
   const bearerToken = randomBytes(24).toString('base64url')
-  const acpRequireAuth = options.acpRequireAuth !== false
+  const listenHost = normalizeListenHost(options.listenHost)
+  const loopbackOnly = isLoopbackHost(listenHost)
+  const hasPublicBaseUrl = Boolean(options.publicBaseUrl?.trim())
+  const acpRequireAuth = (!loopbackOnly || hasPublicBaseUrl) ? true : options.acpRequireAuth !== false
+  const scheme = loopbackOnly ? 'http' : 'https'
+  validateRemoteTransport({ loopbackOnly, publicBaseUrl: options.publicBaseUrl, tlsCertPath: options.tlsCertPath, tlsKeyPath: options.tlsKeyPath })
   const deps: ServerDeps = { chatServices, hub, bearerToken }
 
-  // A fixed port first, then any free one: clients want a stable URL and
-  // `adb reverse` cannot follow a port that changes on every start.
-  const port = await resolveListenPort(options.preferredPort)
+  // A fixed port first, then any free one: remote clients and port forwarding
+  // cannot follow a port that changes on every start.
+  const port = await resolveListenPort(options.preferredPort, listenHost)
+  const resolvedBaseUrl = resolveBaseUrl({
+    scheme,
+    host: listenHost,
+    port,
+    publicBaseUrl: options.publicBaseUrl,
+    loopbackOnly,
+  })
+  const advertisedScheme = new URL(resolvedBaseUrl).protocol === 'https:' ? 'wss' : 'ws'
 
   const handlers = buildMethodHandlers(deps)
 
-  const server = http.createServer(async (req, res) => {
+  const requestHandler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       setCors(res)
       if (req.method === 'OPTIONS') { res.statusCode = 204; res.end(); return }
 
-      // Health probe (no auth) so external scripts can check reachability.
+      // Keep the local health probe convenient, but do not expose remote
+      // runtime information without the same bearer token as the RPC door.
       if (req.method === 'GET' && req.url === '/health') {
+        if (!loopbackOnly && !checkAuth(req, bearerToken)) {
+          jsonResponse(res, 401, { error: 'Unauthorized' })
+          return
+        }
         jsonResponse(res, 200, { ok: true, running: status.running, connections: hub.clientCount() })
         return
       }
@@ -596,7 +627,14 @@ export async function startAppServer(chatServices: ChatServices, options: AppSer
     } catch (e: any) {
       jsonResponse(res, 500, { error: e?.message ?? String(e) })
     }
-  })
+  }
+
+  const server = loopbackOnly
+    ? http.createServer(requestHandler)
+    : https.createServer({
+      cert: readRequiredPem(options.tlsCertPath, '证书'),
+      key: readRequiredPem(options.tlsKeyPath, '私钥'),
+    }, requestHandler)
 
   server.on('error', (err) => {
     status = { ...status, lastError: err.message }
@@ -616,19 +654,23 @@ export async function startAppServer(chatServices: ChatServices, options: AppSer
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
-    server.listen(port, '127.0.0.1', () => resolve())
+    server.listen(port, listenHost, () => resolve())
   })
 
   serverRef = server
   status = {
     ...status,
     running: true,
-    host: '127.0.0.1',
+    host: listenHost,
     port,
+    scheme,
+    baseUrl: resolvedBaseUrl,
+    rpcUrl: `${resolvedBaseUrl}/v1/rpc`,
+    acpUrl: `${advertisedScheme}://${resolvedBaseUrl.slice(resolvedBaseUrl.indexOf('://') + 3)}${ACP_PATH}`,
     bearerToken,
     startedAt: Date.now(),
     lastError: null,
-    loopbackOnly: true,
+    loopbackOnly,
     connections: 0,
     acp: { enabled: true, path: ACP_PATH, requireAuth: acpRequireAuth, connections: 0 },
   }
@@ -645,35 +687,48 @@ export async function stopAppServer(): Promise<ServerStatus> {
   for (const session of activeTurnsByAppServer.values()) session.abort()
   activeTurnsByAppServer.clear()
   await new Promise<void>((resolve) => server.close(() => resolve()))
-  status = { ...status, running: false, port: null, bearerToken: null, startedAt: null, connections: 0, acp: undefined }
+  status = {
+    ...status,
+    running: false,
+    port: null,
+    baseUrl: null,
+    rpcUrl: null,
+    acpUrl: null,
+    bearerToken: null,
+    startedAt: null,
+    connections: 0,
+    acp: undefined,
+  }
   return { ...status }
 }
 
 /**
- * The configured port wins when it is free, because `adb reverse` maps a fixed
- * number and a random high port would break the phone's saved address on every
- * restart. A busy or nonsensical preference falls back to the scan.
+ * The configured port wins when it is free, because remote clients and reverse
+ * proxies need a stable endpoint. A busy or nonsensical preference falls back
+ * to the scan.
  */
-async function resolveListenPort(preferredPort?: number | null): Promise<number> {
+async function resolveListenPort(preferredPort: number | null | undefined, host: string): Promise<number> {
   if (typeof preferredPort === 'number' && Number.isInteger(preferredPort) && preferredPort >= 1024 && preferredPort <= 65535) {
-    if (await isPortFree(preferredPort)) return preferredPort
+    if (await isPortFree(preferredPort, host)) return preferredPort
   }
-  return findFreePort(49152, 60999)
+  return findFreePort(49152, 60999, host)
 }
 
-async function isPortFree(port: number): Promise<boolean> {
+async function isPortFree(port: number, host: string): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const tester = http.createServer()
     tester.once('error', () => resolve(false))
     tester.once('listening', () => tester.close(() => resolve(true)))
-    tester.listen(port, '127.0.0.1')
+    tester.listen(port, host)
   })
 }
 
-async function findFreePort(min: number, max: number): Promise<number> {
-  // Try a small range; in practice a collision is extremely unlikely on loopback.
+async function findFreePort(min: number, max: number, host: string): Promise<number> {
+  // Try a small range; a collision is unlikely, but the check uses the same
+  // interface as the real server so a public listener cannot steal a port that
+  // is only free on loopback.
   for (let p = min; p <= max; p++) {
-    if (await isPortFree(p)) return p
+    if (await isPortFree(p, host)) return p
   }
-  throw new Error('No free loopback port available for the app server.')
+  throw new Error('没有可用的 App Server 端口。')
 }

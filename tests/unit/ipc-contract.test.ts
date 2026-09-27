@@ -23,6 +23,10 @@ describe('IPC contract', () => {
       running: true,
       host: '127.0.0.1',
       port: 53120,
+      scheme: 'http',
+      baseUrl: 'http://127.0.0.1:53120',
+      rpcUrl: 'http://127.0.0.1:53120/v1/rpc',
+      acpUrl: 'ws://127.0.0.1:53120/acp',
       bearerToken: 'token',
       startedAt: 1,
       lastError: null,
@@ -35,7 +39,9 @@ describe('IPC contract', () => {
   })
 
   it('keeps ACP bearer authentication on until the user deliberately turns it off', () => {
+    expect(DEFAULT_APP_SERVER_CONFIG.autoStart).toBe(false)
     expect(DEFAULT_APP_SERVER_CONFIG.acpRequireAuth).toBe(true)
     expect(DEFAULT_APP_SERVER_CONFIG.preferredPort).toBeNull()
+    expect(DEFAULT_APP_SERVER_CONFIG.listenHost).toBe('127.0.0.1')
   })
 })

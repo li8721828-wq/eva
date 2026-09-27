@@ -194,6 +194,14 @@ export class TerminalServiceImpl implements TerminalService {
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        // Returning a timeout without interrupting the shared shell leaves the
+        // command running in the background and lets the next command race it.
+        // Ctrl+C is understood by both the Windows console host and POSIX shells.
+        try {
+          session.pty.write('\x03')
+        } catch {
+          // The PTY may have exited between the timer and the interrupt.
+        }
         cleanup()
         resolve({
           stdout: truncateOutput(output),

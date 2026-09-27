@@ -35,7 +35,7 @@ export interface ToolApprovalConfig {
 export interface AppServerAcpStatus {
   /** Whether the `/acp` WebSocket was mounted when this server started. */
   enabled: boolean
-  /** Path on the loopback host; a client connects to `ws://<host>:<port><path>`. */
+  /** ACP path; the full `ws://` or `wss://` URL is exposed as `AppServerStatus.acpUrl`. */
   path: string
   /** False only while debugging a client that cannot send an `Authorization` header yet. */
   requireAuth: boolean
@@ -46,27 +46,38 @@ export interface AppServerStatus {
   running: boolean
   host: string
   port: number | null
+  scheme: 'http' | 'https'
+  baseUrl: string | null
+  rpcUrl: string | null
+  acpUrl: string | null
   bearerToken: string | null
   startedAt: number | null
   lastError: string | null
-  /** Always `true` for the loopback-only profile. */
-  loopbackOnly: true
+  /** True when the server is bound only to a local loopback interface. */
+  loopbackOnly: boolean
   connections: number
   acp?: AppServerAcpStatus
 }
 
 /**
- * Transport preferences for the loopback App-Server. There is deliberately no
- * host field: the server binds `127.0.0.1` and nothing else. A phone reaches it
- * through `adb reverse`, which terminates the connection on this machine, so
- * exposing a port is not a prerequisite for remote clients.
+ * Transport preferences for the App-Server. The default stays loopback-only,
+ * while an explicit non-loopback host enables the remote HTTPS profile.
  */
 export interface AppServerConfig {
+  /** Start the local App-Server automatically when Eva launches. */
+  autoStart: boolean
   /**
    * Port to try before falling back to a free one. `adb reverse` needs a number
    * that survives a restart, which a random high port does not give.
    */
   preferredPort: number | null
+  /** Interface or address to bind. Use `0.0.0.0` for a public reverse-proxy/port-forward setup. */
+  listenHost: string
+  /** Public HTTPS origin used to build the mobile ACP URL, including reverse-proxy/tunnel mode. */
+  publicBaseUrl: string
+  /** PEM certificate and private key paths used by the remote HTTPS profile. */
+  tlsCertPath: string
+  tlsKeyPath: string
   /**
    * Whether the `/acp` WebSocket must carry the bearer token. Turning this off
    * is a debugging convenience for a client that cannot send an `Authorization`
@@ -77,7 +88,12 @@ export interface AppServerConfig {
 }
 
 export const DEFAULT_APP_SERVER_CONFIG: AppServerConfig = {
+  autoStart: false,
   preferredPort: null,
+  listenHost: '127.0.0.1',
+  publicBaseUrl: '',
+  tlsCertPath: '',
+  tlsKeyPath: '',
   acpRequireAuth: true,
 }
 

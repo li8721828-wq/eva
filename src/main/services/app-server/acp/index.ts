@@ -8,8 +8,9 @@ import { createAcpConnection } from './connection'
 import { recordActivity } from '../../activity-log'
 
 /**
- * The `/acp` door: an ACP WebSocket hung off the same loopback HTTP server that
- * already answers `POST /v1/rpc`.
+ * The `/acp` door: an ACP WebSocket hung off the same HTTP or HTTPS server that
+ * already answers `POST /v1/rpc`. The server's transport profile decides
+ * whether clients use local `ws://` or remote `wss://`.
  *
  * The client this is built for speaks JSON-RPC over one WebSocket and nothing
  * else — no stdio, no SSE. One text frame carries one complete JSON-RPC 2.0
@@ -70,10 +71,10 @@ function readRejection(req: IncomingMessage, deps: AcpGatewayDeps): { statusCode
     return { statusCode: 401, reason: 'Missing or wrong bearer token.' }
   }
   // A browser always sends `Origin`; a native client sends none. With the token
-  // check off, that header is the only thing separating the phone on the other
-  // end of `adb reverse` from any web page that can reach this loopback port —
-  // and an agent that runs terminal commands is not something a random page may
-  // drive. This refusal has to ship together with the option to disable auth.
+  // check off, that header is the only thing separating a native client from a
+  // web page that can reach the endpoint, and an agent that runs terminal
+  // commands is not something a random page may drive. Remote mode never turns
+  // this check off because it forces bearer authentication at startup.
   if (!deps.requireAuth && req.headers.origin) {
     return { statusCode: 403, reason: 'Origin-carrying clients need the bearer token.' }
   }

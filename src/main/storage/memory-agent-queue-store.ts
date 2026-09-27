@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { MemoryEvent } from '../../shared/types/long-term-memory'
+import { writeJsonAtomic } from './atomic-file'
 
 export type MemoryAgentQueueStatus = 'pending' | 'processing' | 'failed'
 
@@ -100,18 +101,6 @@ export class MemoryAgentQueueStore {
   }
 
   private write(records: MemoryAgentQueueRecord[]): void {
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-    const temporaryPath = `${this.filePath}.${uuidv4()}.tmp`
-    fs.writeFileSync(temporaryPath, JSON.stringify(records.slice(0, MAX_QUEUE_RECORDS), null, 2), 'utf8')
-    try {
-      fs.renameSync(temporaryPath, this.filePath)
-    } catch (error) {
-      try {
-        fs.rmSync(temporaryPath, { force: true })
-      } catch {
-        // Cleanup is best effort; preserve the original rename error.
-      }
-      throw error
-    }
+    writeJsonAtomic(this.filePath, records.slice(0, MAX_QUEUE_RECORDS))
   }
 }

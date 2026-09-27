@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
+import { writeJsonAtomic } from './atomic-file'
 import type {
   RuntimeKernelAuditRecord,
   RuntimeKernelProcess,
@@ -186,8 +187,7 @@ export class RuntimeKernelStore {
       .sort((left, right) => right.updatedAt - left.updatedAt)
       .slice(0, MAX_PROCESSES)
     state.processes = Object.fromEntries(processes.map((process) => [process.id, process]))
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-    fs.writeFileSync(this.filePath, JSON.stringify(state, null, 2), 'utf-8')
+    writeJsonAtomic(this.filePath, state)
   }
 
   private backupCorruptFile(error: unknown): void {

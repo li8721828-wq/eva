@@ -3,9 +3,10 @@
  * ACP smoke client for a running Eva.
  *
  *   node scripts/acp-smoke.mjs --port 8787 [--cwd D:\work\demo] [--token T] [--approve]
+ *   node scripts/acp-smoke.mjs --url wss://eva.example.com/acp [--cwd D:\work\demo] [--token T] [--approve]
  *
  * It does what the phone terminal does and nothing more: one WebSocket to
- * `ws://127.0.0.1:<port>/acp`, wait for the `initialize` RESULT, open a session,
+ * `ws://127.0.0.1:<port>/acp` (or an explicit `--url`), wait for the `initialize` RESULT, open a session,
  * send one prompt, and print every `session/update` as it arrives until the
  * prompt request itself is answered with a stopReason. `--approve` answers a
  * `session/request_permission` with `allow_once`; without the flag it answers
@@ -17,8 +18,8 @@
  * idle past the deadline) prints why and exits non-zero.
  *
  * The bearer token comes from `--token` or `EVA_ACP_TOKEN` and is never printed.
- * Eva shows both on Settings > App Server; `adb reverse tcp:<port> tcp:<port>`
- * makes the same port reachable from a phone.
+ * Eva shows both on Settings > App Server. A remote HTTPS profile exposes the
+ * `wss://` URL shown there; the token is still required.
  */
 
 import { writeSync } from 'node:fs'
@@ -36,19 +37,22 @@ let idleTimer = null
 const waiters = new Map()
 
 if (args.help) {
-  out('usage: node scripts/acp-smoke.mjs --port N [--host 127.0.0.1] [--cwd PATH] [--token T | EVA_ACP_TOKEN] [--prompt TEXT] [--approve] [--timeout SECONDS]')
+  out('usage: node scripts/acp-smoke.mjs (--port N | --url ws(s)://HOST/acp) [--host 127.0.0.1] [--cwd PATH] [--token T | EVA_ACP_TOKEN] [--prompt TEXT] [--approve] [--timeout SECONDS]')
   process.exit(0)
 }
 
+const explicitUrl = typeof args.url === 'string' ? args.url.trim() : ''
+if (!explicitUrl && args.port === undefined) fail('provide --port N for a local endpoint or --url ws(s)://HOST/acp for a remote endpoint')
+if (explicitUrl && !/^wss?:\/\//i.test(explicitUrl)) fail('--url must use ws:// or wss://')
 const port = Number(args.port)
-if (!Number.isInteger(port) || port < 1 || port > 65_535) fail('missing or invalid --port N (the port Eva shows in Settings > App Server)')
+if (!explicitUrl && (!Number.isInteger(port) || port < 1 || port > 65_535)) fail('missing or invalid --port N (the port Eva shows in Settings > App Server)')
 const host = args.host || '127.0.0.1'
 const token = args.token || process.env.EVA_ACP_TOKEN || ''
 const workspacePath = args.cwd || process.cwd()
 const promptText = args.prompt || '用一句话回答：你好。不要调用任何工具。'
 const autoApprove = Boolean(args.approve)
 const idleMs = Math.max(5, Number(args.timeout || 120)) * 1000
-const url = `ws://${host}:${port}/acp`
+const url = explicitUrl || `ws://${host}:${port}/acp`
 
 const socket = new WebSocket(url, {
   handshakeTimeout: 10_000,
@@ -247,7 +251,7 @@ function parseArgs(argv) {
     parsed[key] = next
     i++
   }
-  const allowed = new Set(['help', 'port', 'host', 'cwd', 'token', 'prompt', 'approve', 'timeout'])
+  const allowed = new Set(['help', 'url', 'port', 'host', 'cwd', 'token', 'prompt', 'approve', 'timeout'])
   for (const key of Object.keys(parsed)) {
     if (!allowed.has(key)) fail(`unknown option --${key} (see --help)`)
   }

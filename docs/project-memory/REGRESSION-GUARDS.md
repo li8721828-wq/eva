@@ -63,6 +63,7 @@
 - 终端命令的沙箱判定必须在“提交命令”这一步完成：`writeInput` 同时被面板原始按键复用，因此判定不能只挂在 `writeInput` 上。
 - `read_file` 使用同名兜底读到别的文件时，工具结果必须显式说明请求路径与实际读取路径，避免模型在被静默替换的文件上继续推理。
 - 出网请求必须带 deadline（含搜索源），`Retry-After` 与指数退避必须夹取上限，不能被远端放大成任意时长的等待。
+- PTY 命令达到超时时必须先向共享 shell 发送中断再返回超时结果；只移除输出回调会留下后台命令，让后续命令与它交错执行。
 - 私网/本机地址判定必须区分域名与 IP 字面量，不能用前缀匹配把公网域名误判为内网地址。
 - 递归遍历（搜索、目录列表）不能只校验起点路径：必须跳过链接项，并对每个要下沉的目录重新做一次授权校验，否则会跟着 junction/符号链接/挂载点离开授权根。
 - 同一会话的审批卡片必须串行展示，前一张结束（批准/拒绝/超时/中断）后才递补下一张；中断或新一轮 `CHAT_SEND` 必须显式释放该会话遗留的审批槽位，不能让它排在一张过期卡片后面。
@@ -85,6 +86,11 @@
 - 协议里的版本等运行期信息必须注入而非在门面内直接取（`agentVersion` 由 `startAppServer` 传 `app.getVersion()`）：`import { app } from 'electron'` 在 node 环境下不抛错但 `app` 为 `undefined`，门面会在单测里崩掉。
 - Settings 的 ACP 面板依赖两处契约同时成立：`IpcContract` 里三个 `APP_SERVER_*` 结果必须是携带 `acp` 的 `AppServerStatus`（内联缺 `acp` 会让界面永远不显示 `ws://…/acp`），且 `appServer` 必须留在 `RENDERER_CONFIG_KEYS` 白名单内（否则面板一读就抛「not available to the renderer」，端口只能手改 `config.json`）。
 - 「ACP 需要 Bearer token」勾选关闭时，那段说明「带 `Origin` 头的升级仍被拒绝、仅用于调试还不能发 `Authorization` 的客户端」的告警必须一并可见：只有开关没有告警，用户会在不知道自己临时撤掉了唯一围栏的情况下把门打开。端口与鉴权偏好在下次 `startAppServer` 才生效，文案不得暗示即时生效。
+- App-Server 的默认监听地址必须保持 `127.0.0.1`；只有用户显式填写非回环地址时才进入远程模式。远程模式缺少 `https://` 公网基址、证书或私钥时必须拒绝启动，不能退回明文 `ws://`。
+- 远程模式必须强制 ACP Bearer Token；`/health` 也不能在远程监听时绕过鉴权泄露运行状态。ACP 状态中的 `acpUrl` 必须使用 `wss://`，本机模式才使用 `ws://`。
+- 回环监听配合 `publicBaseUrl` 时视为公网隧道模式：证书由反向代理终止，Eva 不读取本地 TLS 文件；但对外生成的 ACP 地址必须是 `wss://`，并且不能允许关闭 Bearer Token。
+- App-Server 的手动启动与 `autoStart` 启动必须共用同一个持久化配置读取函数；桌面退出时必须调用 `stopAppServer`，避免远程端口、ACP 连接和在途 turn 残留。
+- `TaskRunStore`、`RuntimeRunStore`、`RuntimeKernelStore`、`LongTermMemoryStore`、`MemoryAgentQueueStore` 的状态写入必须走临时文件 + 重命名的原子路径；禁止恢复直接使用 `writeFileSync` 覆盖正式 JSON 文件。
 
 ## 记忆系统
 

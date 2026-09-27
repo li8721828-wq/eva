@@ -1,6 +1,8 @@
 import { app, BrowserWindow, dialog } from 'electron'
 import { createApplicationMenu, createMainWindow } from './window'
 import { registerAllIpcHandlers } from './ipc'
+import { startConfiguredAppServer } from './ipc/app-server'
+import { stopAppServer } from './services/app-server'
 import { recoverQueuedTasks } from './ipc/task'
 import { initializeStorage, getStorage } from './storage'
 import { initializeSandbox } from './services/sandbox'
@@ -87,6 +89,12 @@ async function initializeApplication(): Promise<void> {
     return
   }
 
+  if (getStorage().config.get('appServer').autoStart) {
+    void startConfiguredAppServer(services).catch((error) => {
+      console.warn('[App Server] automatic startup failed:', error)
+    })
+  }
+
   void services.mcpClientManager.start(services.toolRegistry)
 
   const qqRemoteBridge = new QqRemoteBridge({
@@ -130,5 +138,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   // MCP stdio transports own child processes and must be closed with the app.
   void applicationServices?.mcpClientManager.dispose()
+  void stopAppServer()
   mainWindow = null
 })
