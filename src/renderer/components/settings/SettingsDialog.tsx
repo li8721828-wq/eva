@@ -103,6 +103,7 @@ export function SettingsDialog() {
   const [apiKey, setApiKey] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [pricingGroup, setPricingGroup] = useState('')
+  const [modelName, setModelName] = useState(activeModel || '')
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>(activeModel ? [activeModel] : [])
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
   const [saving, setSaving] = useState(false)
@@ -145,7 +146,7 @@ export function SettingsDialog() {
     type: providerType,
     apiKey: apiKey.trim(),
     baseUrl: baseUrl.trim() || undefined,
-    defaultModel: selectedModelIds[0] || '',
+    defaultModel: modelName.trim() || selectedModelIds[0] || '',
   })
 
   const validateProviderConfig = (): string | null => {
@@ -180,6 +181,7 @@ export function SettingsDialog() {
         ? [{ id: provider.defaultModel, name: provider.defaultModel }]
         : []
     setAvailableModels(savedModels)
+    setModelName(provider.defaultModel || savedModels[0]?.id || '')
     setSelectedModelIds(savedModels.map((model) => model.id))
     setModelSearch('')
     setModelsMessage(null)
@@ -195,6 +197,7 @@ export function SettingsDialog() {
     setApiKey('')
     setBaseUrl('')
     setPricingGroup('')
+    setModelName('')
     setSelectedModelIds([])
     setAvailableModels([])
     setModelSearch('')
@@ -843,7 +846,7 @@ export function SettingsDialog() {
                 <DialogClose onClose={() => setProviderEditorOpen(false)} />
                 <DialogHeader>
                   <DialogTitle>{providerName === 'New connection' ? 'Add model connection' : `Edit ${providerName}`}</DialogTitle>
-                  <DialogDescription>Configure this connection, fetch its available models, then save it for chat and agents.</DialogDescription>
+                  <DialogDescription>Configure this connection. Fetching models is optional when the gateway does not expose a model list.</DialogDescription>
                 </DialogHeader>
 
                 <div className="settings-dialog__provider-editor-form">
@@ -866,6 +869,7 @@ export function SettingsDialog() {
                     const nextProvider = event.target.value as ProviderType
                     setProviderType(nextProvider)
                     invalidateModels()
+                    setModelName('')
                     setTestResult(null)
                   }}
                   options={PROVIDER_OPTIONS}
@@ -951,6 +955,16 @@ export function SettingsDialog() {
                     </Button>
                   </div>
                 </div>
+                <div className="mb-3">
+                  <label className="text-sm font-medium text-zinc-700">Model name <span className="text-xs font-normal text-zinc-400">(required)</span></label>
+                  <Input
+                    value={modelName}
+                    onChange={(event) => setModelName(event.target.value)}
+                    placeholder="e.g. gpt-4o-mini or provider-specific-model"
+                    aria-label="Model name"
+                  />
+                  <p className="mt-1 text-xs text-zinc-400">Enter the exact model ID. Fetch Models is optional for gateways without a model-list endpoint.</p>
+                </div>
                 {availableModels.length > 0 ? (
                   <div className="settings-dialog__model-picker">
                     <Input
@@ -993,7 +1007,7 @@ export function SettingsDialog() {
                   </div>
                 ) : (
                   <div className="settings-dialog__models-empty">
-                    {modelsMessage || 'Fetch models using the API key and base URL above, then select the models for this connection.'}
+                    {modelsMessage || 'No fetched models. The model name above will be saved as the connection model.'}
                   </div>
                 )}
                 </div>

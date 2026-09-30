@@ -271,10 +271,10 @@ function ExecutionTimelineView({ entries, streaming = false }: { entries: Execut
   if (!groups.length) return null
 
   return (
-    <section className="execution-feed__timeline" aria-label="工具活动">
+    <section className="execution-feed__timeline" aria-label="执行活动">
       {groups.map((group) => group.kind === 'tool'
         ? <TimelineToolGroup key={group.entries[0].id} entries={group.entries} streaming={streaming} />
-        : <TimelineNoteRow key={group.entries[0].id} content={group.entries[0].content || ''} />)}
+        : group.entries.map((entry) => <TimelineNoteRow key={entry.id} content={entry.content || ''} />))}
     </section>
   )
 }

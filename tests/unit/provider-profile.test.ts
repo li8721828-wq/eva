@@ -5,4 +5,11 @@ describe('provider profile helpers', () => {
   const base = { id: 'p', name: 'Provider', type: 'openai' as const, apiKey: 'key', defaultModel: 'm', isEnabled: true, selectedModelIds: ['m'], availableModels: [{ id: 'm', name: 'Model' }] }
   it('validates a saved provider profile', () => expect(providerValidationError(base, true)).toBeNull())
   it('builds only selected provider models', () => expect(buildProviderProfile(base).models).toEqual([{ id: 'm', name: 'Model' }]))
+  it('keeps a manually entered model when the provider has no model list', () => {
+    const profile = buildProviderProfile({ ...base, defaultModel: 'gateway/model-x', selectedModelIds: [], availableModels: [] })
+    expect(profile).toMatchObject({
+      defaultModel: 'gateway/model-x',
+      models: [{ id: 'gateway/model-x', name: 'gateway/model-x' }],
+    })
+  })
 })

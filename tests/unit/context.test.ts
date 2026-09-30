@@ -266,6 +266,24 @@ describe('ContextManager', () => {
       expect(prompt).not.toContain('{{default_platform_rules}}')
     })
 
+    it('pins the readability baseline that every agent shares', () => {
+      const agent: AgentConfig = {
+        id: 'readability-agent', name: 'Readability Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+
+      const prompt = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+
+      expect(prompt).toContain('open with the outcome')
+      expect(prompt).toContain('Being readable and being concise are different things, and readable matters more')
+      expect(prompt).toContain('write in complete sentences')
+      expect(prompt).toContain('never as decoration')
+      expect(prompt).toContain('leave a blank line before any list')
+      expect(prompt).toContain('End-of-turn discipline')
+      expect(prompt).toContain('do that work now with the available tools')
+    })
+
     it('asks for a plan plus numbered step reports when detailed process output is on', () => {
       const agent: AgentConfig = {
         id: 'detailed-agent', name: 'Detailed Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',
@@ -280,6 +298,12 @@ describe('ContextManager', () => {
       expect(prompt).toContain('Every line becomes one entry of the user-visible checklist')
       expect(prompt).toContain('it replaces the checklist')
       expect(prompt).toContain('Do not number the steps yourself')
+      expect(prompt).toContain('A plan is a commitment to the checklist')
+      expect(prompt).toContain('never exempts the <eva-progress> reporting rules')
+      expect(prompt).toContain('at least three genuinely distinct steps')
+      expect(prompt).toContain('skip the plan block entirely')
+      expect(prompt).toContain('Tick each line as soon as it is finished')
+      expect(prompt).toContain('never as a second draft')
       expect(prompt).not.toContain('at most three')
     })
 

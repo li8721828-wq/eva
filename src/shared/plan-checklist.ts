@@ -25,6 +25,13 @@ export interface PlanChecklist {
   revised: boolean
   /** Step reports that arrived with no unticked line left to consume. */
   overflowStepCount: number
+  /**
+   * Step reports seen since the current plan block, ticked or overflow. A
+   * finished round at zero means the model published a plan and then never
+   * reported against it — which is missing evidence, not proven absence of
+   * work, and a host must not render it as "0/N done".
+   */
+  stepReportCount: number
 }
 
 const PLAN_LINE_MARKER_PATTERN = /^\s*(?:[-*·]|\d+[.)、]|[（(]\d+[)）])[ \t]*/
@@ -50,6 +57,7 @@ export function buildPlanChecklist(updates: ProgressUpdate[]): PlanChecklist | u
   let sawPlan = false
   let revised = false
   let overflowStepCount = 0
+  let stepReportCount = 0
 
   for (const update of updates) {
     if (update.kind === 'plan') {
@@ -58,9 +66,11 @@ export function buildPlanChecklist(updates: ProgressUpdate[]): PlanChecklist | u
       if (sawPlan) revised = true
       sawPlan = true
       items = lines.map((text, index) => ({ index: index + 1, text, done: false }))
+      stepReportCount = 0
       continue
     }
     if (update.kind !== 'step' || !items.length) continue
+    stepReportCount += 1
     const named = update.item && update.item >= 1 && update.item <= items.length ? items[update.item - 1] : undefined
     const target = named && !named.done ? named : items.find((item) => !item.done)
     if (!target) {
@@ -71,5 +81,5 @@ export function buildPlanChecklist(updates: ProgressUpdate[]): PlanChecklist | u
     target.completedByStepId = update.id
   }
 
-  return sawPlan ? { items, revised, overflowStepCount } : undefined
+  return sawPlan ? { items, revised, overflowStepCount, stepReportCount } : undefined
 }

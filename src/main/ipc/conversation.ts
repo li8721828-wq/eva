@@ -41,6 +41,7 @@ import { activeRunRegistry } from '../services/run-registry'
 import { SymposiumExecutionService } from '../services/symposium-execution-service'
 import { TaskRunLifecycleService } from '../services/task-run-lifecycle-service'
 import type { MemoryAgentService } from '../services/memory-agent-service'
+import { toPublicExecutionNote } from './public-execution-trace'
 
 export interface ChatServices {
   storage: StorageManager
@@ -1212,6 +1213,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         // 6. Execute the ReAct loop and stream events
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
         const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean; protocol?: import('../../shared/types/execution-protocol').ExecutionEnvelope }> = []
+        let lastPublicExecutionNote = ''
         let assistantContent = ''
         let assistantReasoningContent = ''
         let assistantUsage: ChatUsage | undefined
@@ -1334,6 +1336,19 @@ export function registerConversationHandlers(services?: ChatServices): void {
               send({ ...agentEvent, discardProvisionalText: true })
             }
             continue
+          }
+          if (agentEvent.type === 'thinking') {
+            // Keep public execution status separate from private model
+            // reasoning. Only the allow-listed lifecycle vocabulary is shown,
+            // and repeated provider notices are collapsed into one row.
+            if (processOutput !== 'off') {
+              const publicNote = toPublicExecutionNote(agentEvent.content, allToolResults.length > 0)
+              if (publicNote && publicNote !== lastPublicExecutionNote) {
+                lastPublicExecutionNote = publicNote
+                executionTimeline.push({ id: uuidv4(), kind: 'note', content: publicNote, timestamp: Date.now() })
+                emitExecutionTimeline()
+              }
+            }
           }
           if (agentEvent.type === 'reasoning' && agentEvent.content) {
             assistantReasoningContent += agentEvent.content

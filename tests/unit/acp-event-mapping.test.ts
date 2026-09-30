@@ -44,6 +44,7 @@ const checklist = (items: PlanChecklist['items'], overflowStepCount = 0): PlanCh
   items,
   revised: false,
   overflowStepCount,
+  stepReportCount: items.filter((entry) => entry.done).length + overflowStepCount,
 })
 
 const item = (index: number, text: string, done: boolean): PlanChecklist['items'][number] => ({ index, text, done })

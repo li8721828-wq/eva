@@ -1,5 +1,55 @@
 # 工程记忆变更记录
 
+## 2026-09-29：补充今日更新成果物
+
+- 新增：`docs/2026-09-29-今日更新说明.md`、`docs/2026-09-29-模型连接与公开执行轨迹-开发记录.md`。
+- 内容：前者面向使用者说明手动模型名配置和公开执行轨迹的使用方式；后者记录实现边界、桌面与 ACP 数据流、回归约束、验证结果和剩余风险。
+- 验证：文档内容已与当前 `SettingsDialog`、Provider profile、桌面执行时间线和 app-server/ACP 实现保持一致。
+
+## 2026-09-29：模型连接支持手动填写模型名
+
+- 影响文件：`src/renderer/components/settings/SettingsDialog.tsx`、`src/renderer/lib/provider-profile.ts`、`tests/unit/provider-profile.test.ts`。
+- 问题：连接保存前的模型名只来自 `Fetch Models` 返回并勾选的列表；不提供模型列表接口的中转站无法选择模型，也就无法保存连接。
+- 变化：模型配置面板新增必填 `Model name` 输入框；Fetch Models 改为可选发现功能。手动填写的模型名作为 `defaultModel` 保存，并在没有返回列表或未勾选该项时补进 `models`，因此聊天模型选择、Agent 模型访问和模型池都能使用。切换连接/供应商时会同步重置或回填该字段，避免沿用上一连接的模型。
+- 验证：`npx vitest run tests/unit/provider-profile.test.ts tests/unit/config-store.test.ts tests/unit/providers.test.ts`（3 文件 / 38 项通过）；全量 `npx vitest run`（95 文件 / 660 项通过）；`npm run typecheck` 通过；web 类型检查未出现新增错误，仍只有既有的 `MessageList.tsx` 2 处和 `TaskWorkspacePanel.tsx` 1 处。
+- 剩余风险：模型名由中转站约定，Eva 只保存并透传字符串，不会在保存时验证该模型是否真实存在；可用性仍需通过连接测试或实际请求确认。
+
+## 2026-09-29：公开执行轨迹稳定化——阶段事件持久化与连续备注展示
+
+- 影响文件：`src/main/ipc/public-execution-trace.ts`（新增）、`src/main/ipc/conversation.ts`、`src/main/services/app-server/server.ts`、`src/renderer/components/chat/MessageBubble.tsx`、`tests/unit/public-execution-trace.test.ts`、`tests/unit/chat-stream-store.test.ts`。
+- 问题：AgentRunner 已经发出“判断是否调用工具、查看工具结果、汇总结果”等真实生命周期事件，但桌面流式 store 对 `thinking` 事件只设置 `isStreaming`、丢弃内容；因此用户看到工具行时仍无法稳定看到「判断 → 工具 → 结果 → 再判断」的公开链路。连续的时间线备注还会被 renderer 合并后只显示第一条。
+- 变化：①桌面主进程和 app-server/ACP 仅把 allow-list 内的 runner 生命周期标记转换成固定中文公开备注，不转发任意模型思考文本；按本轮去重，桌面写入 `executionTimeline`，ACP 写入同源的 `turn/progress`，因此两条入口都能看到稳定阶段。②`processOutput: off` 不新增公开备注，保留既有隐私/显示偏好。③时间线组件对同一组中的每条备注逐条渲染，不再吞掉连续阶段。
+- 验证：窄测 `npx vitest run tests/unit/public-execution-trace.test.ts tests/unit/chat-stream-store.test.ts`（2 文件 / 30 项通过）；全量 `npx vitest run`（95 文件 / 659 项通过）；`npm run typecheck` 通过。`npx tsc --noEmit -p tsconfig.web.json` 仍只有既有 3 处类型错误（`MessageList.tsx:446/457`、`TaskWorkspacePanel.tsx:413`），未由本次改动引入。
+- 剩余风险：公开阶段是 runner 已知生命周期的摘要，不是模型私有推理；未命中的新 provider 文案会继续隐藏，若未来新增稳定阶段需显式加入 allow-list 与单测。
+
+## 2026-09-28：回复质量第一批 —— 可读优先、收尾纪律、计划门槛（对标三家一手资料）
+
+- 影响文件：`src/main/agent-engine/context.ts`（`buildOutputPresentationGuidance` 的 `base`、`detailed` 分支、新增收尾纪律一条）、`src/main/agent-engine/agent-runner.ts`（工具结束后的无工具最终汇总提示）、`tests/unit/context.test.ts`、`docs/project-memory/REGRESSION-GUARDS.md`。
+- 问题：用户要求 Eva 的回复「像 Codex / Claude Code / DeepSeek Harness 那样有条理」。我第一轮先凭印象给了四条建议，随后被一手资料**推翻两条**，所以本条把证据出处一并记录，避免以后再按印象改提示词。实查到的三家来源：
+  - openai/codex @ main（HEAD `1cc7e236`，五个文件均过 blob SHA 校验）：`codex-rs/models-manager/prompt.md`、`codex-rs/models-manager/models.json`、`codex-rs/core/gpt_5_2_prompt.md`、`codex-rs/core/gpt-5.2-codex_prompt.md`、`codex-rs/core/templates/model_instructions/gpt-5.2-codex_instructions_template.md`。**常被引用的 `codex-rs/core/prompts/base_instructions/default.md` 不存在**；`developers.openai.com/codex/cli/` 与 `platform.openai.com/docs/codex` 抓取 403。
+  - Claude Code：本机安装二进制即一手来源，`D:\npm_global\node_modules\@anthropic-ai\claude-code` v2.1.220（BUILD_TIME 2026-07-24、GIT_SHA `4073f595…`）；官方文档域名已 301 到 `code.claude.com`；第三方 prompt 合集的文件名标的是模型而不是 CC 版本。
+  - deepseek-ai/deepseek-harness @ `master` `21638c56…`（2026-09-27）：`packages/todo/tool-todo/src/index.ts`、`packages/client/ui-chat/src/client/conversation-nodes/turn-process.ts`、`packages/bundle/*/cordis.patch.yml`。
+- 变化：
+  1. `base` 重写：开头即结论（第一句回答「发生了什么 / 查到了什么」，理由与细节在后，按可评估性排序而非按时间叙述）；**可读与简短是两回事且可读更重要，缩短靠取舍不靠压成碎片、缩写、`A -> B -> 失败` 箭头链，留下的内容写完整句**；标题/列表/表格只在承载真实结构时出现；一段一个意思、列表前留空行、表格只装可枚举的短事实；简单问题用散文回答。删掉原先把「findings / changes / verification / risks / next steps」列为默认小节的那句——它正是样板段落的来源。
+  2. 新增「End-of-turn discipline」：做完之后提后续选项可以，动手前征求许可不行；收尾段落若是计划、开放问句、下一步清单或「我接下来会…」式承诺，而现有工具当场就能做完，必须先做完再收尾。
+  3. `detailed` 档计划块**加门槛**：至少三个彼此独立、用户值得跟踪的步骤才开 `plan`，一两步或琐碎任务直接作答（三家一致：Codex「最容易的 25% 不用计划工具」、Claude Code「只有一个琐碎任务时别用」、dsh「trivial 单步任务跳过」）；同日「计划即承诺」那条保留不变。
+  4. 步骤即时勾选（不得攒到末尾一次倾倒），并规定**没有任何 step 消费之前不得重发计划**——那是改口不是改版，会当场作废用户正在看的清单并把界面切成「已调整」。这两条直接来自实测到的 `e7f7ee14`：4 行计划刚发出就被 3 行计划顶掉。
+  5. `agent-runner.ts` 的无工具最终汇总提示同步补上「靠取舍缩短、保留完整句与连贯散文、不要电报体碎片」——用户实际读到的那一版由这条指令产出，只写在系统提示词里会被它覆盖。
+- 验证：窄测 `npx vitest run tests/unit/context.test.ts tests/unit/process-report.test.ts tests/unit/acp-event-mapping.test.ts tests/unit/app-server-acp.test.ts` → 4 文件 / **101 项通过**；新增用例 `pins the readability baseline that every agent shares`，并在 detailed 用例钉住 `at least three genuinely distinct steps`、`skip the plan block entirely`、`Tick each line as soon as it is finished`、`never as a second draft`；`npm run typecheck` exit 0；`npx tsc --noEmit -p tsconfig.web.json` 仍只有既有 3 处（`MessageList.tsx:446/457`、`TaskWorkspacePanel.tsx:413`，渲染层本次未改）；全量 `npx vitest run` → **94 文件 / 654 项通过**，exit 0。
+- 剩余风险：①措辞类改动只能靠概率收敛，没有硬保证；真正的判定要等真机跑同类任务对比，本次未做（用户实例是普通 `npm run dev`，注入新提示词需重启为 `npm run dev:debug`，未经同意不重启）。②`agent-runner.ts` 那条最终汇总提示**没有任何测试覆盖**（仓库无该常量的断言，构造 `AgentRunner` 成本高），它与 `base` 的一致性目前只靠人工维护——这正是本仓库缺「提示词快照门禁」的实例（dsh 把模型可见文本 pin 成 `snapshots/**/system-prompt.expected.md`，改文案 CI 就红）。③计划门槛的「三个步骤」阈值写死在提示词里，两步但每步都不轻的边界仍由模型自行取舍。④第一轮那两条被证据否决的建议（「固定小节骨架」「结尾禁掉方向菜单」）**未落地**，后来者不要按那个方向改。⑤已核实但尚未落地的两项：`path:line` 可点锚点（`isFilePathLikeCodeSpan` 的 `PATH_SHAPE` 不接受 `:`，markdown 链接走 `target="_blank"`，需改渲染层，且「跳到第 N 行」要先查 `setCurrentFile` 是否支持）；过程/正文分界改由 harness 派生而非依赖模型自觉写 `<eva-progress>`（dsh 的 `answerAnchorSeq: answer.finalNode.seq`），属架构级改动，需用户先定产品取向。
+
+## 2026-09-28：计划清单卡在 0/N —— 提示词自相矛盾 + 界面「未逐项汇报」兜底
+
+- 影响文件：`src/shared/plan-checklist.ts`、`src/renderer/components/chat/PlanChecklist.tsx`、`src/main/agent-engine/context.ts`、`tests/unit/process-report.test.ts`、`tests/unit/context.test.ts`、`tests/unit/acp-event-mapping.test.ts`、`docs/project-memory/REGRESSION-GUARDS.md`。
+- 问题：用户截图反馈「执行完了一个小计划并没有打勾，旁边的任务清单也是这样」，气泡与便签同时停在 `0/3`。排查结论：派生与解析链路无罪——把该轮落盘的 `progressUpdates` 行喂进 `buildPlanChecklist` 能正常推进，`TurnProgressProjector` 的 `item` 属性也照常命中。真实原因是模型发布了 `plan` 后**一条 `step` 都没发**：`context.ts:423` 的自适应回复约束写着「不要添加执行更新、发现、验证、风险和下一步，除非确实相关」，与 `detailed` 分支紧邻的「先出计划、再逐条 `step` 汇报」互相矛盾，模型按前者收声，于是一张清单永远 0 勾。
+- 变化：
+  1. `context.ts:423` 把该约束显式限定为「针对回复本身的段落，永不豁免下方 `<eva-progress>` 汇报规则」；`detailed` 分支新增一条「计划即承诺」：开了计划就要逐行汇报，调研与解释类工作同样算步骤（读相关文件、形成结论即是步骤），不打算逐行汇报就不要以计划开场。
+  2. `PlanChecklist` 新增必填字段 `stepReportCount`——自当前 `plan` 块以来收到的 `step` 汇报数（越界计入 `overflowStepCount` 的同样计数），遇到新的 `plan` 块重置为 0（编号从那里重新开始）。
+  3. `PlanChecklist.tsx` 在 `!streaming && stepReportCount === 0` 时把计数位从 `0/N` 改为「未逐项汇报」，条目保持未勾。复用既有 `.plan-checklist__count` 样式，无新增 CSS。
+  4. 明确**不**做「按工具调用数自动打勾」：那是把执行证据伪造进清单，违反本文件「计划打勾必须有可指向的依据」与用户既定的反硬编码偏好。缺证据就如实显示缺证据。
+- 验证：窄测 `npx vitest run tests/unit/process-report.test.ts tests/unit/context.test.ts tests/unit/acp-event-mapping.test.ts tests/unit/app-server-acp.test.ts` → 4 文件 / 100 项通过；新增 2 条派生用例（仅有 plan 时 `stepReportCount === 0` 且全未勾、发一条 step 后为 1；计划改版把计数重置为 0）与 2 条提示词断言（含「A plan is a commitment to the checklist」「never exempts the <eva-progress> reporting rules」）；`npm run typecheck` exit 0；`npx tsc --noEmit -p tsconfig.web.json` 仍只有既有 3 处（`MessageList.tsx:446/457`、`TaskWorkspacePanel.tsx:413`），无新增；全量 `npx vitest run` → **94 文件 / 653 项通过**，exit 0。
+- 剩余风险：①提示词是概率性约束，模型仍可能以计划开场却不逐行汇报——此时界面显示「未逐项汇报」而不是假的进度；②本条改动未做运行中 Eva 的实测（用户当前实例是普通 `npm run dev`，注入新提示词需重启为 `npm run dev:debug`，未经同意不重启）；③ACP 侧 `plan` 快照仍只按 `done` 派生条目状态，未把 `stepReportCount === 0` 传给终端，手机端暂时看不到「未逐项汇报」这一区分；④旧开放问题仍在：计划清单是否应从气泡移入任务便签（移除点 `MessageBubble.tsx:360-367`）。
+
 ## 2026-09-24：整理用户操作文档
 
 - 影响文件：`docs/2026-09-24-ACP公网远程接入说明.md`、新增 `docs/2026-09-24-Eva长时间运行稳定性更新.md`。

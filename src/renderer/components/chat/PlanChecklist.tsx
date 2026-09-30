@@ -27,12 +27,15 @@ export function PlanChecklist({
   // Only a running round has a "now" item; a finished one is either all ticked
   // or stopped, and an invented spinner would claim work that already ended.
   const activeIndex = streaming ? checklist.items.find((item) => !item.done)?.index : undefined
+  // A finished round whose plan was never reported against has no evidence
+  // either way. "0/3" would assert that nothing got done; say what is missing.
+  const unreported = !streaming && checklist.stepReportCount === 0
 
   return (
     <section className={cn('plan-checklist', className)} aria-label="执行计划">
       <header className="plan-checklist__header">
         <span className="plan-checklist__title">执行计划{checklist.revised ? '（已调整）' : ''}</span>
-        <span className="plan-checklist__count tabular-nums">{doneCount}/{checklist.items.length}</span>
+        <span className="plan-checklist__count">{unreported ? '未逐项汇报' : <span className="tabular-nums">{doneCount}/{checklist.items.length}</span>}</span>
       </header>
       <ol className="plan-checklist__items">
         {checklist.items.map((item) => (

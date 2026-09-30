@@ -212,6 +212,41 @@ describe('chat stream state', () => {
     })
   })
 
+  it('keeps every public execution note in order through completion', () => {
+    useChatStore.setState({ loadConversations: async () => {} })
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'execution_timeline',
+      conversationId: 'foreground',
+      executionTimeline: [
+        { id: 'note-1', kind: 'note', timestamp: 1, content: '正在判断是否需要调用工具。' },
+        { id: 'note-2', kind: 'note', timestamp: 2, content: '正在汇总已验证的结果。' },
+      ],
+    })
+    store.appendStreamEvent({ type: 'done', conversationId: 'foreground', content: '已完成。' })
+
+    expect(useChatStore.getState().messages[0]).toMatchObject({
+      executionTimeline: [
+        expect.objectContaining({ id: 'note-1', kind: 'note' }),
+        expect.objectContaining({ id: 'note-2', kind: 'note' }),
+      ],
+    })
+  })
+
+  it('does not promote raw thinking events into the public timeline', () => {
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'thinking',
+      conversationId: 'foreground',
+      content: 'I will privately compare several possible approaches.',
+    })
+
+    expect(useChatStore.getState().streamingByConversation.foreground).toMatchObject({
+      isStreaming: true,
+      executionTimeline: [],
+    })
+  })
+
   it('keeps accumulated progress visible after response text begins streaming', () => {
     const store = useChatStore.getState()
     store.appendStreamEvent({

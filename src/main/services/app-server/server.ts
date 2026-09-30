@@ -20,6 +20,7 @@ import { notifyRendererConversationChanged } from '../conversation-notify'
 import type { AgentConfig } from '../../../shared/types/agent'
 import type { ChatMessage, ChatUsage, ConversationPermissionLevel, ProgressUpdate, ProgressUpdateKind, ResponseTiming, ToolCall } from '../../../shared/types/conversation'
 import { TurnProgressProjector, stripProgressBlocks, toProgressSummaries, unwrapProgressTags } from '../../ipc/progress-protocol'
+import { toPublicExecutionNote } from '../../ipc/public-execution-trace'
 import { ConversationLifecycleService } from '../conversation-lifecycle-service'
 import { isLoopbackHost, normalizeListenHost, readRequiredPem, resolveBaseUrl, validateRemoteTransport } from './transport'
 
@@ -324,6 +325,8 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
       const progressUpdates: ProgressUpdate[] = []
       const toolCalls: ToolCall[] = []
       const toolResults: { toolCallId: string; name: string; result: string; isError?: boolean; protocol?: ToolCall['protocol'] }[] = []
+      const processOutput = effectiveAgent.processOutput || (effectiveAgent.showThinking ? 'detailed' : 'compact')
+      let lastPublicExecutionNote = ''
       let latestProgressContent = ''
 
       const emitProgress = async (kind: ProgressUpdateKind, content: string, item?: number): Promise<void> => {
@@ -380,6 +383,17 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
             }
           } else if (event.type === 'text_reset') {
             progressProjector.discardPending()
+          } else if (event.type === 'thinking') {
+            // The app-server/ACP path has no renderer timeline. Reuse the same
+            // allow-listed public vocabulary as desktop chat, while keeping
+            // raw model/provider thinking out of the network stream.
+            if (processOutput !== 'off') {
+              const publicNote = toPublicExecutionNote(event.content, toolResults.length > 0)
+              if (publicNote && publicNote !== lastPublicExecutionNote) {
+                lastPublicExecutionNote = publicNote
+                await emitProgress('thinking', publicNote)
+              }
+            }
           } else if (event.type === 'tool_call' && event.toolCall) {
             progressProjector.discardPending()
             toolCalls.push({ id: event.toolCall.id, name: event.toolCall.name, arguments: { ...event.toolCall.arguments } })

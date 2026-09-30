@@ -122,6 +122,25 @@ describe('buildPlanChecklist', () => {
     expect(checklist.items.map((item) => item.done)).toEqual([true, true, true])
   })
 
+  it('separates an unreported plan from an unfinished one so a host never shows 0/N as a fact', () => {
+    const unreported = buildPlanChecklist([PLAN])!
+    expect(unreported.stepReportCount).toBe(0)
+    expect(unreported.items.map((item) => item.done)).toEqual([false, false, false])
+
+    expect(buildPlanChecklist([PLAN, update('s1', 'step', '确认完成')])!.stepReportCount).toBe(1)
+  })
+
+  it('restarts the report count on a plan revision, since numbering restarts from it', () => {
+    const checklist = buildPlanChecklist([
+      PLAN,
+      update('s1', 'step', '确认完成', 1),
+      update('p2', 'plan', '改为只补测试\n跳过重构'),
+    ])!
+
+    expect(checklist.revised).toBe(true)
+    expect(checklist.stepReportCount).toBe(0)
+  })
+
   it('restarts the list on a plan revision', () => {
     const revisedPlan = update('p2', 'plan', '改为只补测试\n跳过重构')
     const checklist = buildPlanChecklist([

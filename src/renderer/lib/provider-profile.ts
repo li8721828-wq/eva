@@ -4,11 +4,16 @@ export function providerValidationError(config: ProviderTestConfig, requireModel
   if (!config.name) return 'Enter a name for this saved connection.'
   if (!config.apiKey) return 'Enter an API key before saving.'
   if (config.type === 'custom' && !config.baseUrl) return 'Enter a base URL for a custom provider.'
-  if (requireModel && !config.defaultModel) return 'Select at least one model for this connection.'
+  if (requireModel && !config.defaultModel.trim()) return 'Enter a model name for this connection.'
   return null
 }
 
 export function buildProviderProfile(input: ProviderTestConfig & { pricingGroup?: string; isEnabled: boolean; selectedModelIds: string[]; availableModels: ProviderModelOption[] }): ProviderConfigEntry {
+  const defaultModel = input.defaultModel.trim()
+  const selectedModels = input.availableModels.filter((model) => input.selectedModelIds.includes(model.id))
+  const models = defaultModel && !selectedModels.some((model) => model.id === defaultModel)
+    ? [{ id: defaultModel, name: defaultModel }, ...selectedModels]
+    : selectedModels
   return {
     id: input.id,
     name: input.name,
@@ -17,7 +22,7 @@ export function buildProviderProfile(input: ProviderTestConfig & { pricingGroup?
     baseUrl: input.baseUrl,
     pricingGroup: input.pricingGroup?.trim() || undefined,
     isEnabled: input.isEnabled,
-    defaultModel: input.defaultModel,
-    models: input.availableModels.filter((model) => input.selectedModelIds.includes(model.id)),
+    defaultModel,
+    models,
   }
 }
