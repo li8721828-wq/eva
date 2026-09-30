@@ -995,6 +995,61 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.find((event) => event.type === 'done')?.content).toBe('Normal response.')
   })
 
+  it('keeps detailed process output stepwise and does not request provider CoT', async () => {
+    const registry = new ToolRegistry()
+    const executedPaths: string[] = []
+    registry.register({
+      definition: { name: 'read_file', description: 'Read a file.', parameters: { type: 'object' } },
+      execute: async (params) => {
+        executedPaths.push(String(params.path))
+        return `Contents of ${String(params.path)}`
+      },
+    })
+    const calls: Array<{ reasoning?: unknown; messages?: Array<{ role: string; content?: string }>; tools?: unknown[] }> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider',
+      name: 'Test provider',
+      type: 'custom' as const,
+      supportsReasoning: () => true,
+      chat: (params: { reasoning?: unknown; messages?: Array<{ role: string; content?: string }>; tools?: unknown[] }) => {
+        calls.push(params)
+        request += 1
+        return request === 1
+          ? chunks({
+              content: '',
+              finishReason: 'tool_calls',
+              toolCalls: [
+                { index: 0, id: 'read-a', name: 'read_file', arguments: '{"path":"a.md"}' },
+                { index: 1, id: 'read-b', name: 'read_file', arguments: '{"path":"b.md"}' },
+              ],
+            })
+          : chunks({ content: '已完成。', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, processOutput: 'detailed', showThinking: true, tools: ['read_file'] },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '逐步读取文件', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(executedPaths).toEqual(['a.md'])
+    expect(calls[0]?.reasoning).toBeUndefined()
+    expect(calls[1]?.messages?.some((message) => message.content?.includes('other requested operations were not executed'))).toBe(true)
+    expect(events.some((event) => event.type === 'thinking' && event.content?.includes('详细步骤模式'))).toBe(true)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('已完成。')
+  })
+
   it('retries once when a provider returns reasoning without a final answer', async () => {
     let request = 0
     const provider = {

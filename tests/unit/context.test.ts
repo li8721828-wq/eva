@@ -304,6 +304,9 @@ describe('ContextManager', () => {
       expect(prompt).toContain('skip the plan block entirely')
       expect(prompt).toContain('Tick each line as soon as it is finished')
       expect(prompt).toContain('never as a second draft')
+      expect(prompt).toContain('request at most one tool operation')
+      expect(prompt).toContain('Do not batch even independent read-only calls')
+      expect(prompt).not.toContain('genuine slow-reasoning content')
       expect(prompt).not.toContain('at most three')
     })
 

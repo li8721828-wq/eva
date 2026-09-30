@@ -219,7 +219,9 @@ function normalizeAgent(value: unknown): AgentConfig {
     processOutput: raw.processOutput === 'off' || raw.processOutput === 'compact' || raw.processOutput === 'detailed'
       ? raw.processOutput
       : raw.showThinking ? 'detailed' : 'compact',
-    showThinking: raw.processOutput === 'detailed' || (!raw.processOutput && Boolean(raw.showThinking)),
+    // `detailed` is the public step view. Provider-private reasoning is a
+    // legacy opt-in only when no process mode was persisted.
+    showThinking: raw.processOutput ? false : Boolean(raw.showThinking),
     model: typeof raw.model === 'string' ? raw.model : 'gpt-4o',
     providerId: typeof raw.providerId === 'string' ? raw.providerId : 'openai',
     modelCandidates: Array.isArray(raw.modelCandidates) ? raw.modelCandidates : [],

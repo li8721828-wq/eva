@@ -6,7 +6,7 @@ import { buildPlanChecklist, type PlanChecklist } from '../../shared/plan-checkl
  * results...") are lifecycle chatter, not a work report. They stay out of the
  * process feed.
  */
-const INTERNAL_TOOL_LIFECYCLE_PATTERN = /^(?:Preparing the response and any required tools|Reviewing the tool results|Reviewing progress after \d+ tool cycles|Continuing with an expanded budget of \d+ tool cycles|Synthesizing the available results)\.\.\.$|^(?:当前模型不支持慢思考内容输出，将按普通模式继续执行。|检测到未执行的工具调用格式，正在按标准工具协议重试一次。)$/
+const INTERNAL_TOOL_LIFECYCLE_PATTERN = /^(?:Preparing the response and any required tools|Reviewing the tool results|Reviewing progress after \d+ tool cycles|Continuing with an expanded budget of \d+ tool cycles|Synthesizing the available results)\.\.\.$|^(?:当前模型不支持慢思考内容输出，将按普通模式继续执行。|检测到未执行的工具调用格式，正在按标准工具协议重试一次。|详细步骤模式：本轮只执行一个工具操作，结果返回后重新判断。)$/
 
 export function isInternalToolLifecycleUpdate(content: string): boolean {
   return INTERNAL_TOOL_LIFECYCLE_PATTERN.test(content.trim())

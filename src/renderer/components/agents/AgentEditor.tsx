@@ -131,7 +131,9 @@ export function AgentEditor({
       role,
       systemPrompt,
       processOutput,
-      showThinking: processOutput === 'detailed',
+      // Detailed output is public step reporting, not provider-private
+      // chain-of-thought. Keep the legacy field off for newly saved agents.
+      showThinking: false,
       outputFormat,
       outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '',
       outputStyle,

@@ -13,6 +13,7 @@ export function toPublicExecutionNote(content: string | undefined, hasCompletedT
     return hasCompletedTool ? '正在根据工具结果判断下一步。' : '正在判断是否需要调用工具。'
   }
   if (value === 'Reviewing the tool results...') return '已收到工具结果，正在判断下一步。'
+  if (value === '详细步骤模式：本轮只执行一个工具操作，结果返回后重新判断。') return '本轮只执行一个工具操作，结果返回后重新判断。'
   if (value === 'Reviewing whether the request is complete...') return '正在检查当前任务是否完成。'
   if (/^Reviewing progress after \d+ tool cycles\.\.\.$/.test(value)) return '正在复核当前进度。'
   if (/^Continuing with an expanded budget of \d+ tool cycles\.$/.test(value)) return '正在继续完成尚未解决的步骤。'

@@ -190,6 +190,7 @@ describe('isInternalToolLifecycleUpdate', () => {
   it('recognizes runner lifecycle chatter but not real reports', () => {
     expect(isInternalToolLifecycleUpdate('Reviewing the tool results...')).toBe(true)
     expect(isInternalToolLifecycleUpdate('Continuing with an expanded budget of 30 tool cycles...')).toBe(true)
+    expect(isInternalToolLifecycleUpdate('详细步骤模式：本轮只执行一个工具操作，结果返回后重新判断。')).toBe(true)
     expect(isInternalToolLifecycleUpdate('修复完成，测试通过。')).toBe(false)
   })
 })

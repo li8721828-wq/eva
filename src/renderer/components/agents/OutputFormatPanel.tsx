@@ -131,7 +131,7 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <ChoiceRow selected={processOutput === 'off'} icon={CircleSlash} label="关闭" description="只保留最终回复与执行动效。" onClick={() => onProcessOutputChange('off')} />
         <ChoiceRow selected={processOutput === 'compact'} icon={Gauge} label="简洁" description="仅在阶段变化时显示短进度。" onClick={() => onProcessOutputChange('compact')} />
-        <ChoiceRow selected={processOutput === 'detailed'} icon={BrainCircuit} label="详细" description="支持时请求并显示模型慢思考。" onClick={() => onProcessOutputChange('detailed')} />
+        <ChoiceRow selected={processOutput === 'detailed'} icon={BrainCircuit} label="逐步" description="按判断、单个操作、结果和下一步逐段展示，不展开模型私有思考。" onClick={() => onProcessOutputChange('detailed')} />
       </div>
     </section>
   </div>

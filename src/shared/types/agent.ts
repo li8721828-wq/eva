@@ -52,9 +52,9 @@ export interface AgentConfig {
   allowEmojiSymbols?: boolean
   /** Visual renderer for final Markdown responses. */
   markdownRenderer?: AgentMarkdownRenderer
-  /** Request and display provider-supplied slow reasoning when supported. */
+  /** Legacy opt-in for provider reasoning when no public process mode is set. */
   showThinking?: boolean
-  /** User-facing execution visibility. Detailed mode also requests slow reasoning. */
+  /** User-facing execution visibility; detailed mode is a public step view. */
   processOutput?: AgentProcessOutput
   model: string
   providerId: string

@@ -591,7 +591,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     ? agents.find((agent) => agent.id === message.agentId)
     : undefined
   const processOutput = outputAgent?.processOutput || (outputAgent?.showThinking ? 'detailed' : 'compact')
-  const shouldShowReasoning = processOutput === 'detailed'
+  // Provider reasoning is private chain-of-thought, not verified execution
+  // evidence. Public progress and real tool rows are rendered separately.
+  const shouldShowReasoning = false
   const outputStyle = outputAgent?.outputStyle || 'balanced'
   const outputFormat = outputAgent?.outputFormat || 'default'
   const outputFont = outputAgent?.outputFont || 'system'

@@ -263,7 +263,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   const handleSaveOutput = useCallback(async () => {
     if (!editingAgent) return
     try {
-      const updates = { processOutput, showThinking: processOutput === 'detailed', outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, allowEmojiSymbols, markdownRenderer }
+      const updates = { processOutput, showThinking: false, outputFormat, outputFormatInstructions: outputFormat === 'custom' ? outputFormatInstructions.trim() : '', outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, allowEmojiSymbols, markdownRenderer }
       await updateAgent(editingAgent.id, updates)
       setEditingAgent({ ...editingAgent, ...updates })
       setView('details')

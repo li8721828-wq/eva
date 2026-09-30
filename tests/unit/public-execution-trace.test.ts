@@ -5,6 +5,7 @@ describe('public execution trace mapping', () => {
   it('exposes stable lifecycle labels without forwarding raw runner text', () => {
     expect(toPublicExecutionNote('Preparing the response and any required tools...', false)).toBe('正在判断是否需要调用工具。')
     expect(toPublicExecutionNote('Reviewing the tool results...', true)).toBe('已收到工具结果，正在判断下一步。')
+    expect(toPublicExecutionNote('详细步骤模式：本轮只执行一个工具操作，结果返回后重新判断。', true)).toBe('本轮只执行一个工具操作，结果返回后重新判断。')
     expect(toPublicExecutionNote('Synthesizing the available results...', true)).toBe('正在汇总已验证的结果。')
   })
 

@@ -103,9 +103,7 @@ export function registerAgentHandlers(toolRegistry?: ToolRegistry): void {
         processOutput: data.processOutput === 'off' || data.processOutput === 'compact' || data.processOutput === 'detailed'
           ? data.processOutput
           : data.showThinking ? 'detailed' : 'compact',
-        showThinking: data.processOutput
-          ? data.processOutput === 'detailed'
-          : Boolean(data.showThinking),
+        showThinking: data.processOutput ? false : Boolean(data.showThinking),
         model: data.model || 'gpt-4o',
         providerId: data.providerId || 'openai',
         modelCandidates: data.modelCandidates || [],
@@ -126,7 +124,7 @@ export function registerAgentHandlers(toolRegistry?: ToolRegistry): void {
         ? data.processOutput
         : data.showThinking === undefined ? undefined : data.showThinking ? 'detailed' : 'compact'
       const updates = processOutput
-        ? { ...data, processOutput, showThinking: processOutput === 'detailed' }
+        ? { ...data, processOutput, showThinking: false }
         : data
       const agent = await getStorage().agents.updateAgent(id, updates)
       void recordActivity({ category: 'system', action: 'agent.updated', status: 'success', summary: `Updated Agent "${agent.name}".` })

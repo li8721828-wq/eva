@@ -328,6 +328,11 @@ export class AgentRunner {
       void ensureProviderPricing(this.config.provider.id).catch(() => undefined)
       const { agentConfig, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
       const configuredMaxIterations = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
+      // Detailed process output is a user-facing step mode. It must not turn
+      // provider-private slow reasoning into the main visible activity, and
+      // it executes one tool operation per model turn so the next decision is
+      // made from the fresh result.
+      const stepwiseProcessMode = agentConfig.processOutput === 'detailed'
       const adaptiveToolBudget = this.config.adaptiveToolBudget
       const maxIter = adaptiveToolBudget
         ? Math.max(1, Math.min(configuredMaxIterations, adaptiveToolBudget.maxIterations))
@@ -348,7 +353,7 @@ export class AgentRunner {
       let nextBudgetCheck = adaptiveToolBudget
         ? Math.max(1, Math.min(toolCycleLimit, adaptiveToolBudget.initialIterations))
         : toolCycleLimit
-      if (agentConfig.showThinking && !this.config.provider.supportsReasoning(agentConfig.model)) {
+      if (this.shouldRequestProviderReasoning(agentConfig) && !this.config.provider.supportsReasoning(agentConfig.model)) {
         yield { type: 'thinking', content: '当前模型不支持慢思考内容输出，将按普通模式继续执行。' }
       }
 
@@ -493,6 +498,15 @@ export class AgentRunner {
           seenToolCallSignatures.add(signature)
           return true
         })
+
+        const requestedToolCallCount = response.toolCalls.length
+        if (stepwiseProcessMode && requestedToolCallCount > 1) {
+          // Do not execute a whole model batch before the model sees any
+          // observation. The remaining calls are intentionally reconsidered
+          // after the first result, which preserves a visible ReAct rhythm.
+          response.toolCalls = response.toolCalls.slice(0, 1)
+          yield { type: 'thinking', content: '详细步骤模式：本轮只执行一个工具操作，结果返回后重新判断。' }
+        }
 
         const hasToolCalls = response.toolCalls.length > 0
 
@@ -801,6 +815,12 @@ export class AgentRunner {
 
         // Append assistant tool_calls + tool results to message history
         messages = this.appendToolMessages(messages, response.toolCalls, toolResults, response.reasoningContent)
+        if (stepwiseProcessMode && requestedToolCallCount > response.toolCalls.length) {
+          messages.push({
+            role: 'user',
+            content: 'Detailed step mode: only the first tool operation from the previous response was executed. The other requested operations were not executed. Use this result to decide the next single operation; do not assume the remaining operations are complete.',
+          })
+        }
         const completedPageRead = response.toolCalls.some((toolCall) => toolCall.name === 'read_web_page' && !toolResults.get(toolCall.id)?.isError)
         const returnedReadableSearchResult = response.toolCalls.some((toolCall) => {
           const result = toolResults.get(toolCall.id)
@@ -1254,7 +1274,7 @@ export class AgentRunner {
           stream: true,
           reasoning: options?.disableReasoning
             ? { enabled: false }
-            : agentConfig.showThinking && provider.supportsReasoning(agentConfig.model)
+            : this.shouldRequestProviderReasoning(agentConfig) && provider.supportsReasoning(agentConfig.model)
               ? { enabled: true, budgetTokens: 1024 }
               : undefined,
         },
@@ -1275,7 +1295,7 @@ export class AgentRunner {
 
         if (chunk.reasoningContent) {
           reasoningCharacters += chunk.reasoningContent.length
-          if (agentConfig.showThinking) {
+          if (this.shouldRequestProviderReasoning(agentConfig)) {
             reasoningContent += chunk.reasoningContent
             yield { type: 'reasoning', content: chunk.reasoningContent }
           }
@@ -1395,6 +1415,15 @@ export class AgentRunner {
       textToolCallEnvelope,
       protocolTextDetected,
     }
+  }
+
+  /**
+   * Detailed process output is deliberately separate from provider CoT.
+   * Tests and legacy callers without a process mode may still opt into the
+   * old reasoning stream explicitly; persisted UI modes never do so.
+   */
+  private shouldRequestProviderReasoning(agentConfig: AgentConfig): boolean {
+    return Boolean(agentConfig.showThinking && !agentConfig.processOutput)
   }
 
   private buildModelCapabilityPolicy(profile: ReturnType<typeof inferModelCapabilities>, hasTools: boolean): string {
