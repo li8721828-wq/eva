@@ -4,8 +4,8 @@
 
 - 影响文件：`src/main/agent-engine/agent-runner.ts`、`src/main/agent-engine/context.ts`、`src/main/ipc/agent.ts`、`src/main/ipc/public-execution-trace.ts`、`src/main/storage/agent-store.ts`、`src/renderer/components/agents/{AgentEditor,AgentManagementWorkspace,OutputFormatPanel}.tsx`、`src/renderer/components/chat/MessageBubble.tsx`、`src/renderer/lib/process-report.ts`、`src/shared/types/agent.ts`、`docs/2026-08-27-对话输出与界面体验更新.md`，以及相关单测。
 - 问题：详细过程模式同时打开供应商 slow reasoning，界面容易长时间显示“模型原始思考中”；模型一次返回多个工具调用时，独立读取会批量并行，用户看不到清晰的“判断 → 一个操作 → 结果 → 再判断”节奏。
-- 变化：①详细模式现在只表示公开步骤视图，不再请求或渲染 provider 私有 chain-of-thought；②详细模式每个模型回合最多执行一个工具调用，额外调用不会静默执行，下一轮会收到明确的“未执行”提示并重新判断；③设置文案改为“逐步”，旧 `showThinking` 仅保留给没有 `processOutput` 的 legacy 直接调用；④公开轨迹新增单步执行阶段映射。
-- 验证：窄测 `npx vitest run tests/unit/agent-runner-adaptive-budget.test.ts tests/unit/context.test.ts tests/unit/public-execution-trace.test.ts`（3 文件 / 70 项通过）；全量 `npx vitest run`（95 文件 / 661 项通过）；`npm run typecheck` 通过。`npx tsc --noEmit -p tsconfig.web.json` 仍只有既有 3 处 renderer 类型错误（`MessageList.tsx` 2 处、`TaskWorkspacePanel.tsx` 1 处）。
+- 变化：①详细模式现在只表示公开步骤视图，不再请求或渲染 provider 私有 chain-of-thought；对可能默认开启思考的中转站显式下发 `reasoning: { enabled: false }`；②详细模式每个模型回合最多执行一个工具调用，额外调用不会静默执行，下一轮会收到明确的“未执行”提示并重新判断；③设置文案改为“逐步”，旧 `showThinking` 仅保留给没有 `processOutput` 的 legacy 直接调用；④公开轨迹新增单步执行阶段映射。
+- 验证：窄测 `npx vitest run tests/unit/agent-runner-adaptive-budget.test.ts tests/unit/context.test.ts tests/unit/public-execution-trace.test.ts`（3 文件 / 70 项通过）；全量 `npx vitest run`（95 文件 / 661 项通过）；`npm run typecheck` 通过。`npx tsc --noEmit -p tsconfig.web.json` 仍只有既有 3 处 renderer 类型错误（`MessageList.tsx` 2 处、`TaskWorkspacePanel.tsx` 1 处）。随后补充了显式关闭 reasoning 的窄测（3 文件 / 100 项通过），全量复跑仍为 95 文件 / 661 项通过。
 - 剩余风险：严格单步模式会牺牲独立只读调用的并行速度；模型仍可能不发送 `<eva-progress>` 计划/步骤标签，但真实工具调用和固定公开阶段不会被伪造为模型思考。
 
 ## 2026-09-29：补充今日更新成果物

@@ -1044,7 +1044,7 @@ describe('AgentRunner adaptive tool budget', () => {
     })) events.push(event)
 
     expect(executedPaths).toEqual(['a.md'])
-    expect(calls[0]?.reasoning).toBeUndefined()
+    expect(calls[0]?.reasoning).toEqual({ enabled: false })
     expect(calls[1]?.messages?.some((message) => message.content?.includes('other requested operations were not executed'))).toBe(true)
     expect(events.some((event) => event.type === 'thinking' && event.content?.includes('详细步骤模式'))).toBe(true)
     expect(events.find((event) => event.type === 'done')?.content).toBe('已完成。')

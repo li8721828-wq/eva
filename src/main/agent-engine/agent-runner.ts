@@ -1272,9 +1272,9 @@ export class AgentRunner {
             ? REASONING_AGENT_RESPONSE_TOKENS
             : DEFAULT_AGENT_RESPONSE_TOKENS,
           stream: true,
-          reasoning: options?.disableReasoning
+          reasoning: options?.disableReasoning || !this.shouldRequestProviderReasoning(agentConfig)
             ? { enabled: false }
-            : this.shouldRequestProviderReasoning(agentConfig) && provider.supportsReasoning(agentConfig.model)
+            : provider.supportsReasoning(agentConfig.model)
               ? { enabled: true, budgetTokens: 1024 }
               : undefined,
         },
