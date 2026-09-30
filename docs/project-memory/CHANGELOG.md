@@ -1,5 +1,11 @@
 # 工程记忆变更记录
 
+## 2026-09-30：补充逐步执行成果物文档
+
+- 新增：`docs/2026-09-30-今日更新说明.md`、`docs/2026-09-30-逐步执行与模型思考模式-开发记录.md`。
+- 内容：前者说明“逐步”模式的启用方式、桌面与手机 ACP 的可见行为和速度取舍；后者记录连续思考的根因、单工具调度、显式关闭 reasoning、渲染边界、验证结果和剩余风险。
+- 验证：文档内容已与 `857b35a` 中的 AgentRunner、Agent 配置、公开执行轨迹和测试结果保持一致。
+
 ## 2026-09-30：详细过程改为严格逐步执行，停止长段私有思考展示
 
 - 影响文件：`src/main/agent-engine/agent-runner.ts`、`src/main/agent-engine/context.ts`、`src/main/ipc/agent.ts`、`src/main/ipc/public-execution-trace.ts`、`src/main/storage/agent-store.ts`、`src/renderer/components/agents/{AgentEditor,AgentManagementWorkspace,OutputFormatPanel}.tsx`、`src/renderer/components/chat/MessageBubble.tsx`、`src/renderer/lib/process-report.ts`、`src/shared/types/agent.ts`、`docs/2026-08-27-对话输出与界面体验更新.md`，以及相关单测。
