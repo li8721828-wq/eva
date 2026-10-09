@@ -1,5 +1,18 @@
 # 工程记忆变更记录
 
+## 2026-10-09：流式贴底锁死 —— 自动跟随改由用户手势解除
+
+- 影响文件：新增 `src/renderer/lib/scroll-follow.ts`、`tests/unit/scroll-follow.test.ts`；修改 `src/renderer/hooks/use-scroll-restoration.ts`、`src/renderer/components/chat/MessageList.tsx`、`docs/project-memory/REGRESSION-GUARDS.md`。
+- 问题：用户反馈「回复的时候定位一直在最下面，我想往上看看也不能」。「是否跟随最新消息」原先只由位置派生（`reportScrollPosition` 里 `followRef.current = (scrollHeight - offset - clientHeight) <= 72`），而 `MessageList` 有四处自动贴底（ResizeObserver 监听流式气泡、消息数增长、`itemLayout.totalHeight` 变化、逐字揭示的 rAF），逐字队列 42ms/24 字使贴底约每秒发生 24 次。真实原因是帧内顺序：浏览器先应用滚轮位移，**再跑我们的贴底回调把 scrollTop 写回底部**，最后才派发 `scroll` 事件——事件报告的是最终位置，于是距离判定永远算出「已在底部」，用户手势被当场抹除；小于 72px 的上滚（触控板、慢滚）更是连翻转标志位都不可能。旁证：`MessageList.tsx` 的 `lastScrollTopRef` 是为方向判定声明的，却从未被读写。
+- 变化：
+  1. 抽出纯模块 `scroll-follow.ts`：`resolveFollowing()` 按固定优先级判定——`userIntent === 'up'` 直接解除（修好 bug 的关键）；上报位置与我们自己写入的一致时视为程序化回显，只是底部内容长高，不得解除；已在跟随或用户向下滚时按 `followThreshold` 判距离；否则要求 `reengageThreshold`（24px）迟滞，接管后必须真回到下边缘才重新武装，免得停在底线上方 40px 也被下一次贴底拽走。`didUserMoveScrollTop()` 用负数哨兵区分「本容器还没被我们滚过」。
+  2. `use-scroll-restoration.ts` 记录 `lastWrittenTopRef`（`jumpToBottom` 与 `restore.apply()` 都写），新增 `notifyUserIntent()`，并在既有 `attach(element)` 里随容器挂/卸 `wheel`/`touchstart`/`touchmove`（passive，元素身份变化先卸旧、卸载时清理）。**嵌套滚动保护**：`isNestedScroll()` 从事件目标向容器方向查找，途中只要有可滚元素（流式气泡内工具活动区是 `max-height` + `overscroll-behavior: contain`）就不算正文接管，否则用户翻看过程输出会让跟随静默停止。接管期间 `readerTookOverRef` 让 `restore` 残余的 rAF/320ms/640ms 重挂帧放弃把用户拽回保存位置（切会话后的第二条同症状路径）。
+  3. `MessageList.tsx` 新增 `pinToBottom()`，由 commit 排入 rAF 的贴底（ResizeObserver 与逐字揭示两处）在**执行时刻**复检 `isFollowing()`，关掉「提交时判定、执行时已被抹除」的竞态；仍统一走 `scrollToBottom`，不在新代码里直接 `element.scrollTo`，以维持 `REGRESSION-GUARDS` 的「贴底必须同步虚拟列表 `scrollTop` 状态」。`resumeFollowingLatestMessage` 保持强制语义（用户刚发消息本就该跳到最后一条）。
+  4. 消掉两处既有类型错误并删死代码：`restore(currentConversationId, true)` 多传的第二参数 hook 从未接受（TS2554），所谓「重新开启跟随」一直静默丢弃 → 删除参数并改正失实注释；`useRef<HTMLDivElement>(null)` 改 `| null` 消掉 TS2540；删除 `lastScrollTopRef`、`initialScrollOffset`、`useScrollOffsetsFor` 整条死链（持久化偏移本就归 hook 所有）。
+- 验证：窄测 `npx vitest run tests/unit/scroll-follow.test.ts tests/unit/stream-reveal-queue.test.ts tests/unit/chat-stream-store.test.ts` → 3 文件 / **51 项通过**；`npm run typecheck` exit 0；`npx tsc --noEmit -p tsconfig.web.json` 只剩既有 1 处（`TaskWorkspacePanel.tsx:413`，本次未碰），原 `MessageList.tsx:446/457` 两处已消；全量 `npx vitest run` → **96 文件 / 673 项通过**，exit 0。新增用例里有一条抓到了第一版的真错：`scrollTop 0` 与哨兵 `-1` 只差 1px，会被误认成程序化回显，因此补了负数哨兵分支。
+- 剩余风险：①**未在运行中的 Eva 实测**。用户实例是普通 `npm run dev`，渲染层改动能经 `electron-vite` HMR 推过去、不需重启，但「流式过程中向上滚确实停住、回到底部又恢复跟随」还没有亲眼验证；决定性证据需要他同意重启为 `npm run dev:debug` 走 9222 CDP，分别派发 `WheelEvent` 与纯程序化 `scrollTop` 改动来分离验证两条路径。②监听只覆盖滚轮与触摸：拖动原生滚动条、PageUp/Home 只能靠「上报位置 ≠ 写入位置 ＋ 距离」兜住，逻辑成立但未实测。③`reengageThreshold = 24` 是估值，需按真机手感校准。④`isNestedScroll` 只要遇到可滚祖先就忽略该手势；若将来正文里出现没有 `overscroll-behavior: contain` 的嵌套滚动区会漏判（此时靠距离路径兜底）。⑤监听接线本身无测试：vitest 是 `environment: 'node'` 且 `include` 只收 `.ts`，仓库无 jsdom/@testing-library，本次不新增依赖，故只把判定逻辑抽成纯函数覆盖。
+- 日期说明：本条按系统当前日期记录。本机时钟曾出现明显跳变（一度慢约 10 天后校准），因此不要仅凭条目日期推断改动先后。
+
 ## 2026-09-30：补充逐步执行成果物文档
 
 - 新增：`docs/2026-09-30-今日更新说明.md`、`docs/2026-09-30-逐步执行与模型思考模式-开发记录.md`。

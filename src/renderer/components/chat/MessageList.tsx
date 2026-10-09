@@ -112,13 +112,11 @@ export function MessageList({ className }: MessageListProps) {
   const rightPanelVisible = useAppStore((s) => s.rightPanelVisible)
   const language = useAppStore((s) => s.language)
   const isTeamRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
-  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null)
   const previousMessageCountRef = useRef(messages.length)
   const lastScrollAffordanceUpdateAtRef = useRef(0)
   const scrollFrameRef = useRef<number | null>(null)
   const forcedScrollFrameRef = useRef<number | null>(null)
-  const initialScrollOffset = useScrollOffsetsFor(currentConversationId ?? '')
-  const lastScrollTopRef = useRef(initialScrollOffset)
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
   const [scrollTop, setScrollTop] = useState(0)
   const [measuredHeights, setMeasuredHeights] = useState<Record<string, number>>({})
@@ -226,6 +224,15 @@ export function MessageList({ className }: MessageListProps) {
     }
     return moved
   }, [scrollController.jumpToBottom])
+
+  // A pin scheduled during React's commit runs in a later frame, and the reader
+  // can take over in between. Re-checking at execution time is what lets an
+  // upward gesture win against the ~24 auto-scrolls a second that streamed text
+  // otherwise triggers.
+  const pinToBottom = useCallback(() => {
+    if (!scrollController.isFollowing()) return
+    scrollToBottom('auto')
+  }, [scrollController.isFollowing, scrollToBottom])
 
   const resumeFollowingLatestMessage = useCallback(() => {
     scrollToBottom('auto')
@@ -397,7 +404,7 @@ export function MessageList({ className }: MessageListProps) {
             // never put it in the measurement map. Just keep auto-follow
             // glued to its bottom edge.
             if (scrollController.isFollowing() && previousMessageCountRef.current !== 0) {
-              requestAnimationFrame(() => scrollToBottom('auto'))
+              requestAnimationFrame(pinToBottom)
             }
             continue
           }
@@ -418,7 +425,7 @@ export function MessageList({ className }: MessageListProps) {
       observer.disconnect()
       resizeObserverRef.current = null
     }
-  }, [scrollController.isFollowing, scrollToBottom])
+  }, [scrollController.isFollowing, pinToBottom])
 
   const attachItemRef = useCallback((id: string, element: HTMLDivElement | null) => {
     const previousElement = itemElementsRef.current.get(id)
@@ -452,9 +459,11 @@ export function MessageList({ className }: MessageListProps) {
   // being paged-in does not snap the reader back to the top.
   useLayoutEffect(() => {
     if (isConversationLoading) return
-    // Re-engage auto-follow so sending a new message always jumps to the latest
-    // reply even if the previous session was left scrolled up.
-    const teardown = scrollController.restore(currentConversationId, true)
+    // Restoration derives the initial follow state from the restored position.
+    // Sending a new message re-engages follow through
+    // `resumeFollowingLatestMessage`, so a reader who was left scrolled up is
+    // not silently dragged back while merely reopening a conversation.
+    const teardown = scrollController.restore(currentConversationId)
     previousMessageCountRef.current = messages.length
     return teardown
   }, [currentConversationId, isConversationLoading, scrollController.restore])
@@ -511,14 +520,14 @@ export function MessageList({ className }: MessageListProps) {
       (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
       scrollController.isFollowing()
     ) {
-      const frame = requestAnimationFrame(() => scrollToBottom('auto'))
+      const frame = requestAnimationFrame(pinToBottom)
       return () => cancelAnimationFrame(frame)
     }
   }, [
     currentConversationId,
     isStreaming,
     scrollController.isFollowing,
-    scrollToBottom,
+    pinToBottom,
     streamingContent,
     streamingReasoningContent,
     streamingExecutionTimeline.length,
@@ -711,24 +720,4 @@ export function MessageList({ className }: MessageListProps) {
       </div>
     </div>
   )
-}
-
-/**
- * Read-only accessor for the saved offset cache. Used as a stable seed for
- * `lastScrollTopRef` so the very first paint of a conversation starts at the
- * previously persisted position rather than 0.
- */
-function useScrollOffsetsFor(conversationId: string): number {
-  return useMemo(() => {
-    if (typeof window === 'undefined') return 0
-    try {
-      const raw = window.localStorage.getItem(CONVERSATION_SCROLL_STORAGE_KEY)
-      if (!raw) return 0
-      const parsed = JSON.parse(raw) as Record<string, unknown>
-      const value = parsed[conversationId]
-      return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0
-    } catch {
-      return 0
-    }
-  }, [conversationId])
 }

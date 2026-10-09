@@ -4,6 +4,8 @@
 
 - 流式执行时，上一轮消息不能从数据集合中消失；如果暂时不在视口，必须只是虚拟列表的可视性结果。
 - `jumpToBottom()` 改变真实滚动容器后，必须同步更新 `MessageList` 使用的 `scrollTop` 状态，否则会出现空白占位和历史消息暂时消失。
+- 「是否跟随最新消息」只能由用户自己的手势解除或重新武装（`resolveFollowing` + `notifyUserIntent`），不得只按 `scrollTop` 距离判定：同一帧内浏览器先应用滚轮位移、再跑我们的贴底回调、最后才派发 `scroll` 事件，纯距离判定读到的永远是「已在底部」，用户往上翻页会被 24Hz 的逐字贴底抹掉。由 commit 排入 rAF 的贴底必须在执行时复检 `isFollowing()`。
+- 落在嵌套滚动区（如流式气泡内 `max-height` + `overscroll-behavior: contain` 的工具活动区）里的滚轮不算正文接管：它不会移动正文 scrollTop，误判会让自动跟随在用户只是翻看过程输出时静默停止。
 - `refreshConversation()` 不能用执行中的不完整快照覆盖 renderer 尚未持久化的消息；pending message 合并逻辑必须保留本地消息。
 - 上一轮回复被持久化后仍在逐字显示的残留文本，必须在该会话开始新一轮前被丢弃；新一轮气泡里不能出现上一轮从单词中间截断的片段。
 - `done` 事件必须能识别它对应的持久化 assistant 行（携带 messageId）：该行已在屏幕上时只收尾不重复追加，属于更早一轮的 `done` 不得打断正在流式的新一轮。
