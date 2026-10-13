@@ -891,13 +891,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
 
         if (finalContent || stream.toolCalls.length > 0) {
+          // Status notes ("正在汇总…") exist only while the round is running;
+          // the main process drops them too, so this fallback copy must not be
+          // the path that writes them into the transcript.
+          const transcriptTimeline = stream.executionTimeline.filter((entry) => entry.kind !== 'note')
           const assistantMessage: ChatMessage = {
             id: event.messageId || generateId(),
             conversationId,
             role: 'assistant',
             content: finalContent,
             reasoningContent: stream.reasoningContent || undefined,
-            executionTimeline: stream.executionTimeline.length > 0 ? stream.executionTimeline : undefined,
+            executionTimeline: transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
             progressUpdates: stream.progressUpdates.length > 0 ? stream.progressUpdates : undefined,
             toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,
             usage: event.usage,

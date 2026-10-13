@@ -212,24 +212,39 @@ describe('chat stream state', () => {
     })
   })
 
-  it('keeps every public execution note in order through completion', () => {
+  it('keeps every public execution note in order while the round runs', () => {
     useChatStore.setState({ loadConversations: async () => {} })
     const store = useChatStore.getState()
     store.appendStreamEvent({
       type: 'execution_timeline',
       conversationId: 'foreground',
       executionTimeline: [
-        { id: 'note-1', kind: 'note', timestamp: 1, content: '正在判断是否需要调用工具。' },
+        { id: 'note-1', kind: 'note', timestamp: 1, content: '已收到工具结果，正在判断下一步。' },
         { id: 'note-2', kind: 'note', timestamp: 2, content: '正在汇总已验证的结果。' },
+      ],
+    })
+
+    expect(useChatStore.getState().streamingByConversation.foreground.executionTimeline).toMatchObject([
+      expect.objectContaining({ id: 'note-1', kind: 'note' }),
+      expect.objectContaining({ id: 'note-2', kind: 'note' }),
+    ])
+  })
+
+  it('drops live status notes from the finished transcript and keeps tool evidence', () => {
+    useChatStore.setState({ loadConversations: async () => {} })
+    const store = useChatStore.getState()
+    store.appendStreamEvent({
+      type: 'execution_timeline',
+      conversationId: 'foreground',
+      executionTimeline: [
+        { id: 'tool-1', kind: 'tool', timestamp: 1, toolCall: { id: 'call-1', name: 'read_file', arguments: { path: 'src/main.rs' } } },
+        { id: 'note-1', kind: 'note', timestamp: 2, content: '正在汇总已验证的结果。' },
       ],
     })
     store.appendStreamEvent({ type: 'done', conversationId: 'foreground', content: '已完成。' })
 
     expect(useChatStore.getState().messages[0]).toMatchObject({
-      executionTimeline: [
-        expect.objectContaining({ id: 'note-1', kind: 'note' }),
-        expect.objectContaining({ id: 'note-2', kind: 'note' }),
-      ],
+      executionTimeline: [expect.objectContaining({ id: 'tool-1', kind: 'tool' })],
     })
   })
 

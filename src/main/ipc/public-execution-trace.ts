@@ -4,14 +4,15 @@
  * The runner's `thinking` events are useful for orchestration, but their raw
  * text is not execution evidence and may contain provider-specific wording.
  * Only known lifecycle markers are promoted to the public timeline.
+ *
+ * The first model call's marker is deliberately excluded: before any tool runs
+ * it claims a decision is underway, and on a turn that uses no tools it stays
+ * above the finished reply as the only row, saying nothing happened.
  */
-export function toPublicExecutionNote(content: string | undefined, hasCompletedTool: boolean): string | null {
+export function toPublicExecutionNote(content: string | undefined): string | null {
   const value = content?.trim()
   if (!value) return null
 
-  if (value === 'Preparing the response and any required tools...') {
-    return hasCompletedTool ? '正在根据工具结果判断下一步。' : '正在判断是否需要调用工具。'
-  }
   if (value === 'Reviewing the tool results...') return '已收到工具结果，正在判断下一步。'
   if (value === '详细步骤模式：本轮只执行一个工具操作，结果返回后重新判断。') return '本轮只执行一个工具操作，结果返回后重新判断。'
   if (value === 'Reviewing whether the request is complete...') return '正在检查当前任务是否完成。'

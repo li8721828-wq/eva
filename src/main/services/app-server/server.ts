@@ -329,7 +329,17 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
       let lastPublicExecutionNote = ''
       let latestProgressContent = ''
 
-      const emitProgress = async (kind: ProgressUpdateKind, content: string, item?: number): Promise<void> => {
+      /**
+       * `transient` marks a lifecycle status note: the client sees it while the
+       * round runs, but it never becomes transcript content. A settled round
+       * must not carry a row claiming work is still underway.
+       */
+      const emitProgress = async (
+        kind: ProgressUpdateKind,
+        content: string,
+        item?: number,
+        options: { transient?: boolean } = {},
+      ): Promise<void> => {
         for (const summary of toProgressSummaries(kind, content)) {
           if (!summary || summary === latestProgressContent) continue
           latestProgressContent = summary
@@ -340,20 +350,22 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
             ...(item ? { item } : {}),
             timestamp: Date.now(),
           }
-          progressUpdates.push(progress)
-          // Persisted as its own row exactly like the desktop run does, so a
-          // refresh after a remotely driven turn still rebuilds the checklist.
-          await storage.conversations.addMessage(threadId, {
-            id: progress.id,
-            conversationId: threadId,
-            role: 'assistant',
-            content: summary,
-            progressKind: kind,
-            ...(item ? { progressItem: item } : {}),
-            agentId: effectiveAgent.id,
-            agentName: effectiveAgent.name,
-            timestamp: progress.timestamp,
-          }).catch(() => undefined)
+          if (!options.transient) {
+            progressUpdates.push(progress)
+            // Persisted as its own row exactly like the desktop run does, so a
+            // refresh after a remotely driven turn still rebuilds the checklist.
+            await storage.conversations.addMessage(threadId, {
+              id: progress.id,
+              conversationId: threadId,
+              role: 'assistant',
+              content: summary,
+              progressKind: kind,
+              ...(item ? { progressItem: item } : {}),
+              agentId: effectiveAgent.id,
+              agentName: effectiveAgent.name,
+              timestamp: progress.timestamp,
+            }).catch(() => undefined)
+          }
           hub.broadcast({
             topic: 'turn',
             conversationId: threadId,
@@ -388,10 +400,10 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
             // allow-listed public vocabulary as desktop chat, while keeping
             // raw model/provider thinking out of the network stream.
             if (processOutput !== 'off') {
-              const publicNote = toPublicExecutionNote(event.content, toolResults.length > 0)
+              const publicNote = toPublicExecutionNote(event.content)
               if (publicNote && publicNote !== lastPublicExecutionNote) {
                 lastPublicExecutionNote = publicNote
-                await emitProgress('thinking', publicNote)
+                await emitProgress('thinking', publicNote, undefined, { transient: true })
               }
             }
           } else if (event.type === 'tool_call' && event.toolCall) {

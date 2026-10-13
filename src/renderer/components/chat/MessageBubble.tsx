@@ -332,7 +332,7 @@ function ProcessReportRow({ entry, streaming, markdownOptions }: { entry: Proces
     return (
       <div className="execution-feed__update">
         <span className="execution-feed__update-icon" aria-hidden="true">
-          {entry.kind === 'thinking' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : entry.kind === 'issue' ? <XCircle className="h-3.5 w-3.5" /> : <CircleDot className="h-3.5 w-3.5" />}
+          {entry.kind === 'thinking' && streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : entry.kind === 'issue' ? <XCircle className="h-3.5 w-3.5" /> : <CircleDot className="h-3.5 w-3.5" />}
         </span>
         <div className="min-w-0 flex-1">
           <span className="execution-feed__update-label">{processReportLabel(entry)}</span>
@@ -396,7 +396,12 @@ function ExecutionFeedView({
 }) {
   const feed = buildProcessFeed(message.progressUpdates || [])
   const allTimelineEntries = message.executionTimeline || []
-  const timelineEntries = allTimelineEntries.filter((entry) => entry.kind !== 'reasoning')
+  // Status notes ("正在汇总已验证的结果。") are live progress. Once the round has
+  // settled they claim work that already ended, so a finished bubble keeps only
+  // tool evidence — including rows persisted before they stopped being written.
+  const timelineEntries = allTimelineEntries
+    .filter((entry) => entry.kind !== 'reasoning')
+    .filter((entry) => streaming || entry.kind !== 'note')
   // Raw reasoning travels either as timeline entries or as the message-level
   // accumulator, depending on when it arrived.
   const reasoningContent = allTimelineEntries

@@ -1342,7 +1342,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             // reasoning. Only the allow-listed lifecycle vocabulary is shown,
             // and repeated provider notices are collapsed into one row.
             if (processOutput !== 'off') {
-              const publicNote = toPublicExecutionNote(agentEvent.content, allToolResults.length > 0)
+              const publicNote = toPublicExecutionNote(agentEvent.content)
               if (publicNote && publicNote !== lastPublicExecutionNote) {
                 lastPublicExecutionNote = publicNote
                 executionTimeline.push({ id: uuidv4(), kind: 'note', content: publicNote, timestamp: Date.now() })
@@ -1483,6 +1483,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
           runError,
           userAborted: stoppedByUser,
         })
+        // Lifecycle notes ("正在汇总已验证的结果。") are live progress only: once
+        // the answer is out they claim work that already ended, so they are
+        // streamed but never written into the transcript.
+        const transcriptTimeline = executionTimeline.filter((entry) => entry.kind !== 'note')
 
         const assistantChatMessage: ChatMessage = {
           id: assistantMessageId,
@@ -1490,7 +1494,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           role: 'assistant',
           content: persistedContent,
           reasoningContent: assistantReasoningContent || undefined,
-          executionTimeline: executionTimeline.length > 0 ? executionTimeline : undefined,
+          executionTimeline: transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
           progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
