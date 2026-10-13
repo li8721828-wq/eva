@@ -10,6 +10,9 @@ export interface SelectProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonE
   menuClassName?: string
   optionClassName?: string
   selectedOptionClassName?: string
+  triggerIcon?: React.ReactNode
+  /** Fixed menu width in px. The menu then anchors its right edge to the trigger, because a narrow icon trigger has no width worth matching. */
+  menuWidth?: number
 }
 
 interface MenuPosition {
@@ -20,7 +23,7 @@ interface MenuPosition {
 }
 
 const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
-  ({ className, value, onChange, options, disabled, onKeyDown, menuClassName, optionClassName, selectedOptionClassName, ...props }, forwardedRef) => {
+  ({ className, value, onChange, options, disabled, onKeyDown, menuClassName, optionClassName, selectedOptionClassName, triggerIcon, menuWidth, ...props }, forwardedRef) => {
     const triggerRef = useRef<HTMLButtonElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
     const [open, setOpen] = useState(false)
@@ -34,13 +37,14 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
       if (!rect) return
       const menuHeight = Math.min(options.length * 36 + 12, 240)
       const openUpward = rect.bottom + menuHeight > window.innerHeight && rect.top > menuHeight
+      const width = menuWidth ?? rect.width
       setPosition({
-        left: rect.left,
+        left: menuWidth ? rect.right - width : rect.left,
         top: openUpward ? rect.top - 4 : rect.bottom + 4,
-        width: rect.width,
+        width,
         openUpward,
       })
-    }, [options.length])
+    }, [options.length, menuWidth])
 
     useEffect(() => {
       if (!open) return
@@ -99,14 +103,19 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           onKeyDown={handleKeyDown}
           className={cn(
             'eva-focus-float flex h-9 w-full items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-3 py-1 text-left text-sm text-zinc-900 shadow-sm transition-[border-color,box-shadow] hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50',
+            triggerIcon && 'justify-center px-0',
             className
           )}
           aria-expanded={open}
           aria-haspopup="listbox"
           {...props}
         >
-          <span className="min-w-0 flex-1 truncate">{selected?.label || value}</span>
-          <ChevronDown className={cn('h-4 w-4 shrink-0 text-zinc-500 transition-transform', open && 'rotate-180')} />
+          {triggerIcon || (
+            <>
+              <span className="min-w-0 flex-1 truncate">{selected?.label || value}</span>
+              <ChevronDown className={cn('h-4 w-4 shrink-0 text-zinc-500 transition-transform', open && 'rotate-180')} />
+            </>
+          )}
         </button>
 
         {open && position && createPortal(

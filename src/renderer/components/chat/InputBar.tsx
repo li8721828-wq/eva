@@ -8,7 +8,8 @@ import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, ClipboardList, FileText, FolderOpen, Quote, Send, Settings2, Square, X } from 'lucide-react'
+import { Bot, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Square, X } from 'lucide-react'
+import { uiCopy } from '@/lib/ui-copy'
 import type { ConversationPermissionLevel } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useShallow } from 'zustand/react/shallow'
@@ -62,13 +63,14 @@ export function InputBar({ className }: InputBarProps) {
   })))
   const activeStream = useChatStore((state) => currentConversationId ? state.streamingByConversation[currentConversationId] : undefined)
   const isStreaming = Boolean(activeStream?.isStreaming)
-  const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode } = useAppStore(useShallow((state) => ({
+  const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode, language } = useAppStore(useShallow((state) => ({
     activeProviderId: state.activeProviderId,
     activeModel: state.activeModel,
     settingsOpen: state.settingsOpen,
     setActiveProvider: state.setActiveProvider,
     setActiveModel: state.setActiveModel,
     workMode: state.workMode,
+    language: state.language,
   })))
   const isTaskRunning = useTaskStore((state) => Boolean(currentConversationId && state.expertTasks[currentConversationId]?.isRunning))
   const isSymposiumRunning = useSymposiumStore((state) => Boolean(currentConversationId && state.runtimes[currentConversationId]?.status === 'running'))
@@ -77,7 +79,6 @@ export function InputBar({ className }: InputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [isDraggingAttachments, setIsDraggingAttachments] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
-  const [isConversationSettingsOpen, setIsConversationSettingsOpen] = useState(false)
   const [caretPosition, setCaretPosition] = useState(0)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const [activeCommandIndex, setActiveCommandIndex] = useState(0)
@@ -88,6 +89,15 @@ export function InputBar({ className }: InputBarProps) {
   const isSymposiumConversation = Boolean(currentConversation?.symposium)
   const symposiumMentionOptions = currentConversation?.symposium?.participants || []
   const permissionLevel: ConversationPermissionLevel = currentConversation?.permissionLevel || (currentConversation?.accessScope === 'full' ? 'full-access' : 'workspace')
+  const composerCopy = uiCopy[language].composer
+  const permissionOptions = [
+    { value: 'workspace', label: composerCopy.permissionWorkspace, icon: FolderLock },
+    { value: 'granted-folders', label: composerCopy.permissionGrantedFolders, icon: FolderKey },
+    { value: 'full-access', label: composerCopy.permissionFullAccess, icon: HardDrive },
+  ]
+  const currentPermission = permissionOptions.find((option) => option.value === permissionLevel) || permissionOptions[0]
+  const PermissionIcon = currentPermission.icon
+  const permissionTitle = `${composerCopy.filePermission} · ${currentPermission.label}\n${composerCopy.filePermissionHint}`
   const {
     attachmentError,
     setAttachmentError,
@@ -753,47 +763,21 @@ export function InputBar({ className }: InputBarProps) {
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {!isSymposiumConversation && (
-                <div className="relative">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
-                    onClick={() => setIsConversationSettingsOpen((open) => !open)}
-                    disabled={isSymposiumRunning}
-                    title="Conversation settings"
-                    aria-label="Conversation settings"
-                    aria-expanded={isConversationSettingsOpen}
-                  >
-                    <Settings2 className="h-3.5 w-3.5" />
-                  </Button>
-                  {isConversationSettingsOpen && (
-                    <div className="absolute bottom-[calc(100%+8px)] right-0 z-30 w-64 rounded-xl border border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 p-3 shadow-[0_18px_38px_-28px_rgba(39,42,58,0.4),0_6px_14px_-10px_rgba(39,42,58,0.1)] backdrop-blur-md">
-                      <div className="mb-2.5">
-                        <p className="text-xs font-semibold text-zinc-700">Conversation access</p>
-                        <p className="mt-0.5 text-xs leading-4 text-zinc-500">Choose what this conversation may access.</p>
-                      </div>
-                      <Select
-                        value={permissionLevel}
-                        onChange={(event) => {
-                          void handlePermissionChange(event.target.value as ConversationPermissionLevel)
-                          setIsConversationSettingsOpen(false)
-                        }}
-                        options={[
-                          { value: 'workspace', label: 'Workspace only' },
-                          { value: 'granted-folders', label: 'Authorized folders' },
-                          { value: 'full-access', label: 'Full filesystem access' },
-                        ]}
-                        className="h-8 border-[rgba(99,102,115,0.13)] bg-white/70 px-2.5 text-xs font-medium text-zinc-600 shadow-none hover:border-[rgba(99,102,115,0.2)] hover:bg-white focus-visible:border-[rgba(99,102,115,0.22)] focus-visible:shadow-[0_5px_14px_-12px_rgba(39,42,58,0.32)]"
-                        menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95"
-                        optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
-                        selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
-                        aria-label="Conversation file permission"
-                      />
-                    </div>
-                  )}
-                </div>
+                <Select
+                  value={permissionLevel}
+                  onChange={(event) => void handlePermissionChange(event.target.value as ConversationPermissionLevel)}
+                  options={permissionOptions}
+                  triggerIcon={<PermissionIcon className={cn('h-3.5 w-3.5', permissionLevel === 'full-access' ? 'text-amber-600' : 'text-zinc-500')} />}
+                  menuWidth={176}
+                  className="h-7 w-7 rounded-md border border-transparent bg-transparent text-zinc-500 shadow-none hover:bg-zinc-100 hover:text-zinc-800 focus-visible:ring-0"
+                  menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 shadow-[0_16px_36px_-26px_rgba(39,42,58,0.38),0_5px_12px_-10px_rgba(39,42,58,0.1)]"
+                  optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
+                  selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
+                  aria-label="Conversation file permission"
+                  title={permissionTitle}
+                />
               )}
-              <span className="shrink-0 text-zinc-400">Shift+Enter for a new line</span>
+              <span className="shrink-0 text-zinc-400">{composerCopy.shiftEnterHint}</span>
             </div>
           </div>
 
