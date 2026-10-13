@@ -244,7 +244,7 @@ export function PluginCenter() {
         </div>
       )}
 
-      <section className="flex flex-wrap items-center justify-between gap-4 border-y border-zinc-200 py-4" aria-label="Web search service">
+      <section className="eva-lift eva-panel flex flex-wrap items-center justify-between gap-4 px-5 py-4" aria-label="Web search service">
         <div>
           <p className="text-sm font-semibold text-zinc-900">Web search service</p>
           <p className="mt-1 text-xs leading-5 text-zinc-500">Agent permission is configured in Agents. Choose one provider here to decide where permitted web searches are sent.</p>
@@ -272,7 +272,7 @@ export function PluginCenter() {
           ) : (
             <div className="settings-dialog__plugin-list">
               {installed.map((plugin) => (
-                <article key={plugin.id} className="settings-dialog__plugin-card">
+                <article key={plugin.id} className="eva-lift settings-dialog__plugin-card">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-sm font-semibold text-zinc-900">{plugin.name}</h4>
@@ -341,7 +341,7 @@ export function PluginCenter() {
                   ))}
                 </div>
                 {plugin.id === 'searxng-search' ? (
-                  <section className="mt-6 border-t border-zinc-200 pt-5" aria-label="Eva Local Search">
+                  <section className="mt-12" aria-label="Eva Local Search">
                     <div className="flex flex-wrap items-start justify-between gap-4">
                       <div className="flex min-w-0 gap-3">
                         <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600"><Server className="h-4 w-4" /></span>
@@ -372,7 +372,7 @@ export function PluginCenter() {
                   </section>
                 ) : null}
                 {plugin.id === 'tavily-search' || plugin.id === 'brave-search' ? (
-                  <section className="mt-6 border-t border-zinc-200 pt-5" aria-label="Test search connection">
+                  <section className="mt-12" aria-label="Test search connection">
                     <div className="flex items-center justify-between gap-4">
                       <div>
                         <h5 className="text-sm font-semibold text-zinc-900">Test connection</h5>
@@ -399,7 +399,7 @@ export function PluginCenter() {
             {marketplace.map((plugin) => {
               const installedPlugin = plugin.installedPlugin
               return (
-                <article key={plugin.id} className="settings-dialog__marketplace-card">
+                <article key={plugin.id} className="eva-lift settings-dialog__marketplace-card">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2"><h4 className="text-sm font-semibold text-zinc-900">{plugin.name}</h4>{plugin.verified && <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-label="Verified" />}</div>

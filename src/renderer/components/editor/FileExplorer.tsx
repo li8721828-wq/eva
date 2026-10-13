@@ -173,9 +173,9 @@ export function FileExplorer({ onFileSelect, className }: FileExplorerProps) {
   }
 
   return (
-    <div className={cn('flex flex-col h-full bg-white', className)}>
+    <div className={cn('flex h-full flex-col', className)}>
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-200 px-3 py-2">
+      <div className="flex items-center justify-between border-b border-zinc-100 px-3 py-2">
         <div className="flex items-center gap-1" role="tablist" aria-label="Explorer view">
           <button type="button" role="tab" aria-selected={view === 'files'} onClick={() => setView('files')} className={cn('rounded-md px-2 py-1 text-xs font-medium transition-colors', view === 'files' ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-400 hover:text-zinc-700')}>Files</button>
           <button type="button" role="tab" aria-selected={view === 'code'} onClick={() => setView('code')} className={cn('rounded-md px-2 py-1 text-xs font-medium transition-colors', view === 'code' ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-400 hover:text-zinc-700')}>Code</button>

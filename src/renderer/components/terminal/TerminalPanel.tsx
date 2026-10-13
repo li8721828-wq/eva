@@ -300,7 +300,7 @@ export function TerminalPanel({ className, height }: TerminalPanelProps) {
   }
 
   return (
-    <div className={cn('flex h-64 flex-col border-t border-zinc-200 bg-white', className)} style={height ? { height } : undefined}>
+    <div className={cn('flex h-64 flex-col border-t border-zinc-100 bg-white', className)} style={height ? { height } : undefined}>
       <div className="flex min-h-12 items-center justify-between border-b border-zinc-200 px-4">
         <div className="flex min-w-0 items-center gap-1 overflow-x-auto">
           {visibleTabs.length === 0 && <span className="flex h-8 items-center gap-1.5 px-1 text-sm text-zinc-400"><Terminal className="h-3.5 w-3.5" />No terminal</span>}

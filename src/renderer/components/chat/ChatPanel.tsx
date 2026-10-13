@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/Badge'
 import { MessageList } from './MessageList'
 import { InputBar } from './InputBar'
 import { TeamCollaborationPanel } from './TeamCollaborationPanel'
-import { Bot, AlertCircle, ShieldAlert, Terminal, X, UsersRound, Square, GitBranch, ShieldCheck, Pin } from 'lucide-react'
+import { Bot, AlertCircle, ShieldAlert, Terminal, PanelRight, PanelRightClose, X, UsersRound, Square, GitBranch, ShieldCheck, Pin } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
@@ -31,7 +31,7 @@ const QQ_CONNECTION_PRESENTATION: Record<QqRemoteStatus['state'], { label: strin
 export function ChatPanel({ className }: ChatPanelProps) {
   const { conversations, currentConversationId, error, setError, setConversationGitBranch, setConversationSymposium } = useChatStore()
   const { agents } = useAgentStore()
-  const { workMode, terminalVisible, toggleTerminal } = useAppStore()
+  const { workMode, terminalVisible, toggleTerminal, rightPanelVisible, toggleRightPanel } = useAppStore()
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
   const { currentPlan, isRunning: isTaskRunning, recoveryStatus, summary: expertSummary } = expertTask
 
@@ -204,6 +204,18 @@ export function ChatPanel({ className }: ChatPanelProps) {
               aria-label={terminalVisible ? 'Hide terminal' : 'Open terminal for this conversation workspace'}
             >
               <Terminal className="h-4 w-4" />
+            </Button>
+          )}
+          {!terminalVisible && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={toggleRightPanel}
+              title={rightPanelVisible ? 'Hide task workspace' : 'Show task workspace'}
+              aria-label={rightPanelVisible ? 'Hide task workspace' : 'Show task workspace'}
+            >
+              {rightPanelVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRight className="h-4 w-4" />}
             </Button>
           )}
           {currentConversation && (

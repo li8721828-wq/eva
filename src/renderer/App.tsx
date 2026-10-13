@@ -16,7 +16,7 @@ import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
 import { AppTitlebar } from '@/components/layout/AppTitlebar'
 import { Button } from '@/components/ui/Button'
-import { PanelRightClose, PanelRight, Loader2 } from 'lucide-react'
+import { PanelRightClose, Loader2 } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 
 // Lazy-loaded heavy components
@@ -45,10 +45,10 @@ function ResizeHandle({ target, onPointerDown }: { target: ResizeTarget; onPoint
           : 'relative z-10 mx-auto h-3 w-12 shrink-0 cursor-row-resize touch-none after:absolute after:-inset-x-3 after:-inset-y-2'
         : target === 'right-panel'
         ? 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-violet-200/60 active:bg-violet-400 after:absolute after:-inset-x-2 after:-inset-y-2'
-        : 'relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-zinc-100 transition-colors hover:bg-violet-300 active:bg-violet-500 after:absolute after:-inset-x-2 after:-inset-y-2'}
+        : 'relative z-10 w-1 shrink-0 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-violet-200/70 active:bg-violet-400 after:absolute after:-inset-x-2 after:-inset-y-2'}
     >
       {target === 'task-note' && <span className="task-workspace-resize-grip" />}
-      {target === 'terminal-height' && <span className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-zinc-200 transition-colors group-hover:bg-violet-300 group-active:bg-violet-500" />}
+      {target === 'terminal-height' && <span className="pointer-events-none absolute left-1/2 top-1/2 h-0.5 w-8 -translate-x-1/2 -translate-y-1/2 rounded-full bg-zinc-200/70 transition-colors group-hover:bg-violet-300 group-active:bg-violet-500" />}
     </div>
   )
 }
@@ -273,14 +273,7 @@ const App: React.FC = () => {
             {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
           </div>
 
-          {/* Right Panel Toggle */}
-          {currentView === 'chat' && !rightPanelVisible && !terminalVisible && (
-            <div className="flex flex-col items-center border-l border-indigo-100 bg-white/70 py-2 px-1 backdrop-blur-sm">
-              <Button variant="ghost" size="icon" onClick={toggleRightPanel} title="Show task workspace" aria-label="Toggle task workspace">
-                <PanelRight className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
+          {/* The task workspace toggle lives in the chat header; a closed rail leaves no strip behind. */}
 
           {/* Right utility rail switches between task workspace and terminal. */}
           {showRightPanel && (
@@ -290,7 +283,7 @@ const App: React.FC = () => {
               {terminalVisible ? (
                 <>
                   <Suspense fallback={<LazyFallback className="h-56" />}>
-                    <TerminalPanel height={terminalHeight} className="shrink-0 border border-zinc-200" />
+                    <TerminalPanel height={terminalHeight} className="shrink-0" />
                   </Suspense>
                   <ResizeHandle target="terminal-height" onPointerDown={startResize} />
                 </>

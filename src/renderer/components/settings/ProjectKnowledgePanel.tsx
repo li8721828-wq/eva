@@ -120,7 +120,7 @@ export function ProjectKnowledgePanel() {
 
   return (
     <section className="mx-auto w-full max-w-6xl space-y-5" aria-label="项目长期记忆">
-      <header className="flex flex-col gap-4 border-b border-[var(--ui-border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><BookOpen className="h-4 w-4 text-violet-600" />项目长期记忆</h2>
           <p className="mt-1 text-sm leading-6 text-zinc-500">这里显示当前项目作用域的统一长期记忆，包括项目事实、决策、问题和约束。</p>
@@ -152,10 +152,10 @@ export function ProjectKnowledgePanel() {
 
       {loading && <div className="flex items-center justify-center gap-2 py-12 text-sm text-zinc-500"><RefreshCw className="h-4 w-4 animate-spin" />正在加载项目长期记忆...</div>}
 
-      {!loading && visibleMemories.length > 0 && <div className="space-y-3">
-        <div className="flex items-center justify-between text-xs text-zinc-400"><span>显示 {visibleMemories.length} 条记忆</span><span>仅展示当前项目作用域</span></div>
+      {!loading && visibleMemories.length > 0 && <div className="eva-lift eva-panel divide-y divide-zinc-100">
+        <div className="flex items-center justify-between px-4 py-2.5 text-xs text-zinc-400"><span>显示 {visibleMemories.length} 条记忆</span><span>仅展示当前项目作用域</span></div>
         {visibleMemories.map((memory) => (
-          <article key={memory.id} className="rounded-md border border-zinc-200 bg-white px-4 py-4 shadow-[0_8px_24px_-22px_rgba(79,70,229,0.6)]">
+          <article key={memory.id} className="px-4 py-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500"><span className="text-violet-600">{kindLabels[memory.kind]}</span><span className={`rounded-full border px-2 py-0.5 ${statusTone[memory.status]}`}>{statusLabels[memory.status]}</span><span>{new Date(memory.updatedAt).toLocaleString()}</span></div>

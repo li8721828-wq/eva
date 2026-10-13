@@ -181,7 +181,7 @@ export function ProjectNavigator({ workspace, conversation, onFileSelect, onMult
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-2 px-3 pb-2 pt-3">
         <div className="relative min-w-0 flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />

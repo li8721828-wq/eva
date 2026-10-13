@@ -29,12 +29,12 @@ export function McpPanel() {
   }
 
   return (
-    <section className="mx-auto w-full max-w-5xl space-y-5">
+    <section className="w-full space-y-5">
       <div>
         <h2 className="text-base font-semibold text-zinc-900">Model Context Protocol</h2>
         <p className="mt-1 text-sm leading-6 text-zinc-500">Connect external MCP servers. Their tools are available only to agents with MCP access enabled.</p>
       </div>
-      <div className="rounded-lg border border-zinc-200 bg-white p-4">
+      <div className="eva-lift eva-panel p-4">
         <div className="mb-4 flex items-center gap-2 text-sm font-medium text-zinc-800"><Plus className="h-4 w-4 text-violet-500" /> Add server</div>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1 text-xs text-zinc-500"><span>Server ID</span><Input value={form.id} onChange={(event) => update('id', event.target.value)} placeholder="filesystem" /></label>
@@ -49,9 +49,9 @@ export function McpPanel() {
         </div>
         <div className="mt-4 flex items-center justify-between gap-3"><span className="text-xs text-zinc-500">Credentials and custom headers can be added through the saved configuration.</span><Button onClick={() => void save()} disabled={saving}>{saving ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}Save server</Button></div>
       </div>
-      <div className="space-y-2">
+      <div className={servers.length === 0 ? 'space-y-2' : 'eva-lift eva-panel divide-y divide-zinc-100'}>
         {servers.length === 0 ? <div className="rounded-lg border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">No MCP servers configured.</div> : servers.map((server) => (
-          <div key={server.id} className="flex items-center gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3">
+          <div key={server.id} className="flex items-center gap-3 px-4 py-3">
             <Server className="h-4 w-4 shrink-0 text-violet-500" />
             <div className="min-w-0 flex-1"><div className="flex items-center gap-2 text-sm font-medium text-zinc-800"><span className="truncate">{server.name}</span>{server.status === 'connected' ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : server.status === 'error' ? <XCircle className="h-3.5 w-3.5 text-red-500" /> : null}</div><div className="mt-0.5 truncate text-xs text-zinc-500">{server.transport} · {server.status} · {server.toolCount} tools{server.error ? ` · ${server.error}` : ''}</div></div>
             <label className="flex items-center gap-1.5 text-xs text-zinc-500"><input type="checkbox" checked={server.enabled} onChange={(event) => void window.eva.mcp.setEnabled(server.id, event.target.checked).then(setServers)} className="h-3.5 w-3.5 accent-violet-600" />Enabled</label>

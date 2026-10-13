@@ -184,8 +184,8 @@ export function AppServerPanel() {
     && status.port !== config.preferredPort
 
   return (
-    <div className="space-y-4">
-      <div className="rounded-lg border border-zinc-200 bg-white p-4">
+    <div className="space-y-5">
+      <div className="eva-lift eva-panel p-4">
         <div className="flex items-start gap-3">
           <ShieldAlert className="mt-0.5 h-4 w-4 text-amber-600" />
           <div className="text-sm text-zinc-700">
@@ -201,7 +201,7 @@ export function AppServerPanel() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-zinc-200 bg-white p-4">
+      <div className="eva-lift eva-panel p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <p className="text-sm font-semibold text-zinc-800">{status.running ? '正在运行' : '未运行'}</p>
@@ -235,7 +235,7 @@ export function AppServerPanel() {
       </div>
 
       {status.running && status.port && status.bearerToken && (
-        <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-4">
+        <div className="eva-lift eva-panel space-y-2 p-4">
           <div>
             <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">Endpoint</p>
             <div className="mt-1 flex items-center justify-between gap-2">
@@ -259,7 +259,7 @@ export function AppServerPanel() {
       )}
 
       {status.running && status.acp?.enabled && acpUrl && (
-        <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-4">
+        <div className="eva-lift eva-panel space-y-2 p-4">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1 text-sm text-zinc-700">
               <p className="font-semibold text-zinc-800">{text.acpHeading}</p>
@@ -287,10 +287,10 @@ export function AppServerPanel() {
       )}
 
       {status.running && !status.acp?.enabled && (
-        <div className="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600">{text.acpDisabled}</div>
+        <div className="eva-lift eva-panel p-4 text-sm text-zinc-600">{text.acpDisabled}</div>
       )}
 
-      <div className="space-y-2 rounded-lg border border-zinc-200 bg-white p-4">
+      <div className="eva-lift eva-panel space-y-2 p-4">
         <label className="flex cursor-pointer items-center justify-between gap-3 text-sm text-zinc-700">
           <span>{text.autoStartLabel}</span>
           <input
@@ -304,13 +304,14 @@ export function AppServerPanel() {
         <p className="text-xs leading-5 text-zinc-500">{text.autoStartHint}</p>
       </div>
 
-      <div className="space-y-3 rounded-lg border border-zinc-200 bg-white p-4">
+      <div className="eva-lift eva-panel space-y-3 p-4">
         <label className="block space-y-1 text-xs text-zinc-500">
           <span className="text-sm font-medium text-zinc-800">{text.listenHost}</span>
           <Input
             type="text"
             value={hostDraft}
             disabled={saving}
+            className="max-w-[16rem]"
             onChange={(event) => setHostDraft(event.target.value)}
             onBlur={() => void commitHost()}
             onKeyDown={(event) => {

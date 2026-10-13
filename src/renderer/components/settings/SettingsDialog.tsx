@@ -603,32 +603,36 @@ export function SettingsDialog() {
 
   return (
     <section className="settings-page" aria-label="Settings">
-      <header className="settings-page__header">
-        <div className="settings-help-trigger">
-          <h1 className="settings-page__title">{copy.title}</h1>
-          <p className="settings-page__description settings-help">{copy.description}</p>
-        </div>
-        <Button variant="ghost" size="icon" className="settings-page__back" onClick={() => setSettingsOpen(false)} title="Back to workspace" aria-label="Back to workspace">
-          <ArrowLeft className="h-4 w-4" />
-        </Button>
-      </header>
-
       <Tabs defaultValue="general" className="settings-dialog__tabs">
-        <TabsList className="settings-dialog__tabs-list">
-          <TabsTrigger value="general">{copy.general}</TabsTrigger>
-          <TabsTrigger value="models">{copy.models}</TabsTrigger>
-          <TabsTrigger value="cost">{copy.cost}</TabsTrigger>
-          <TabsTrigger value="introspection">系统自省</TabsTrigger>
-          <TabsTrigger value="agents">{copy.agents}</TabsTrigger>
-          <TabsTrigger value="plugins">{copy.plugins}</TabsTrigger>
-          <TabsTrigger value="memory">记忆系统</TabsTrigger>
-          <TabsTrigger value="qq">{copy.qq}</TabsTrigger>
-          <TabsTrigger value="app-server">App Server</TabsTrigger>
-        </TabsList>
+        <div className="settings-page__masthead-band">
+          <div className="settings-page__masthead">
+            <header className="settings-page__header">
+              <div className="settings-help-trigger">
+                <h1 className="settings-page__title">{copy.title}</h1>
+                <p className="settings-page__description settings-help">{copy.description}</p>
+              </div>
+              <Button variant="ghost" size="icon" className="settings-page__back" onClick={() => setSettingsOpen(false)} title="Back to workspace" aria-label="Back to workspace">
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            </header>
+
+            <TabsList className="settings-dialog__tabs-list">
+              <TabsTrigger value="general">{copy.general}</TabsTrigger>
+              <TabsTrigger value="models">{copy.models}</TabsTrigger>
+              <TabsTrigger value="cost">{copy.cost}</TabsTrigger>
+              <TabsTrigger value="introspection">系统自省</TabsTrigger>
+              <TabsTrigger value="agents">{copy.agents}</TabsTrigger>
+              <TabsTrigger value="plugins">{copy.plugins}</TabsTrigger>
+              <TabsTrigger value="memory">记忆系统</TabsTrigger>
+              <TabsTrigger value="qq">{copy.qq}</TabsTrigger>
+              <TabsTrigger value="app-server">App Server</TabsTrigger>
+            </TabsList>
+          </div>
+        </div>
 
         <TabsContent value="general" className="settings-dialog__content">
           <div className="settings-dialog__general-layout">
-            <div className="settings-dialog__card settings-dialog__field">
+            <div className="eva-lift settings-dialog__card settings-dialog__field">
               <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                 <Languages className="h-4 w-4 text-zinc-500" />
                 {copy.language}
@@ -645,7 +649,7 @@ export function SettingsDialog() {
               <p className="settings-help text-xs leading-5 text-zinc-500">{copy.languageDescription}</p>
             </div>
 
-            <div className="settings-dialog__card settings-dialog__field">
+            <div className="eva-lift settings-dialog__card settings-dialog__field">
               <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                 <Eye className="h-4 w-4 text-zinc-500" />
                 主题皮肤
@@ -662,7 +666,7 @@ export function SettingsDialog() {
               <p className="settings-help text-xs leading-5 text-zinc-500">主题会同步调整界面层级、状态色、边框、阴影与动效。</p>
             </div>
 
-            <div className="settings-dialog__card settings-dialog__field">
+            <div className="eva-lift settings-dialog__card settings-dialog__field">
               <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
                 <FolderOpen className="h-4 w-4 text-zinc-500" />
                 {copy.workspace}
@@ -791,7 +795,7 @@ export function SettingsDialog() {
 
         <TabsContent value="models" className="settings-dialog__content">
           <div className="settings-dialog__model-layout">
-            <div className="settings-dialog__card settings-dialog__model-card settings-dialog__model-card--flat">
+            <div className="eva-lift settings-dialog__card settings-dialog__model-card">
               <section className="settings-dialog__provider-library" aria-label="Saved model connections">
                 <div className="settings-dialog__provider-library-header">
                   <div>
@@ -1060,7 +1064,7 @@ export function SettingsDialog() {
               {HIDDEN_CAPABILITIES.map((capability) => {
                 const config = automation[capability.id]
                 return (
-                  <article key={capability.id} className="flex min-h-[270px] flex-col rounded-lg border border-zinc-200 bg-white p-5">
+                  <article key={capability.id} className="eva-lift eva-panel flex min-h-[270px] flex-col p-5">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <h3 className="text-sm font-semibold text-zinc-900">{capability.name}</h3>
@@ -1091,7 +1095,7 @@ export function SettingsDialog() {
             </div>
 
             {/* Tool approval */}
-            <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-5">
+            <section className="eva-lift eva-panel mt-6 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h3 className="text-sm font-semibold text-zinc-900">{automationCopy.approval.title}</h3>
@@ -1122,7 +1126,7 @@ export function SettingsDialog() {
             </section>
 
             {/* Sandbox */}
-            <section className="mt-6 rounded-lg border border-zinc-200 bg-white p-5">
+            <section className="eva-lift eva-panel mt-6 p-5">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <h3 className="text-sm font-semibold text-zinc-900">{automationCopy.sandbox.title}</h3>
@@ -1197,7 +1201,7 @@ export function SettingsDialog() {
 
         <TabsContent value="qq" className="settings-dialog__content">
           <div className="settings-dialog__model-layout">
-            <div className="settings-dialog__card settings-dialog__model-card">
+            <div className="eva-lift settings-dialog__card settings-dialog__model-card">
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2 text-sm font-medium text-zinc-800">

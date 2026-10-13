@@ -82,7 +82,7 @@ export function PersonalPreferencePanel() {
         <p className="mt-1 text-sm leading-6 text-zinc-500">Eva 使用模型分析交互证据，逐步提炼长期偏好，不保存对话流水账。</p>
       </div>
 
-      <div className="rounded-lg border border-violet-100 bg-violet-50/40 p-4">
+      <div className="eva-lift rounded-lg border border-violet-100 bg-violet-50/40 p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><h3 className="text-sm font-semibold text-zinc-900">迁移偏好配置</h3><p className="mt-1 max-w-2xl text-xs leading-5 text-zinc-500">导出文件只包含偏好项；不包含对话、证据摘要、系统开关、API Key、工作区或执行记录。</p></div>
           <Button variant="outline" size="sm" disabled={busyAction !== null} onClick={() => void exportProfile()}><Download className="mr-1.5 h-3.5 w-3.5" />{busyAction === 'export' ? '正在导出...' : '导出偏好'}</Button>
@@ -93,13 +93,13 @@ export function PersonalPreferencePanel() {
         </div>
       </div>
 
-      <div className="divide-y divide-zinc-100 rounded-lg border border-zinc-200 bg-white">
+      <div className="eva-lift eva-panel divide-y divide-zinc-100">
         <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">学习个人偏好</span><span className="mt-0.5 block text-xs text-zinc-500">分析反馈、修正、接受和重复行为后再逐步确认</span></span><input type="checkbox" checked={settings.learningEnabled} onChange={(event) => void updateSetting('learningEnabled', event.target.checked)} className="h-4 w-4 accent-violet-600" /></label>
         <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">注入上下文</span><span className="mt-0.5 block text-xs text-zinc-500">将与当前请求相关的偏好作为软参考提供给模型</span></span><input type="checkbox" checked={settings.injectionEnabled} onChange={(event) => void updateSetting('injectionEnabled', event.target.checked)} className="h-4 w-4 accent-violet-600" /></label>
       </div>
 
-      {preferences.length === 0 ? <div className="rounded-lg border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">还没有已确认的个人偏好。</div> : <div className="space-y-2">{preferences.map((preference) => (
-        <article key={preference.id} className="flex items-start gap-3 rounded-lg border border-zinc-200 bg-white px-4 py-3">
+      {preferences.length === 0 ? <div className="rounded-lg border border-dashed border-zinc-300 p-8 text-center text-sm text-zinc-500">还没有已确认的个人偏好。</div> : <div className="eva-lift eva-panel divide-y divide-zinc-100">{preferences.map((preference) => (
+        <article key={preference.id} className="flex items-start gap-3 px-4 py-3">
           <div className="mt-0.5 shrink-0 text-zinc-400">{preference.polarity === 'prefer' ? <Check className="h-4 w-4 text-emerald-500" /> : <Pause className="h-4 w-4 text-amber-500" />}</div>
           <div className="min-w-0 flex-1"><div className="mb-1 flex items-center gap-2 text-xs text-zinc-400"><span>{categoryLabels[preference.category]}</span><span>·</span><span>{preference.durability === 'established' ? '已建立' : '观察中'}</span><span>·</span><span>{preference.evidenceCount} 条证据</span><span>·</span><span>{Math.round(preference.confidence * 100)}%</span></div><p className="text-sm leading-5 text-zinc-800">{preference.polarity === 'avoid' ? '避免：' : '偏好：'}{preference.statement}</p>{preference.evidenceSummary && <p className="mt-1 text-xs leading-5 text-zinc-500">依据：{preference.evidenceSummary}</p>}</div>
           <Button variant="ghost" size="icon" title="删除偏好" aria-label="删除偏好" onClick={() => void remove(preference.id)}><Trash2 className="h-4 w-4 text-zinc-400" /></Button>

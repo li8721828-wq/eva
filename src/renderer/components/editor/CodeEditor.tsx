@@ -37,9 +37,9 @@ export function CodeEditor({ filePath, content = '', language, className }: Code
   }
 
   return (
-    <div className={cn('flex flex-col h-full bg-white', className)}>
+    <div className={cn('flex h-full flex-col', className)}>
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+      <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">
           <FileCode className="h-4 w-4 text-zinc-400 shrink-0" />
           <span className="text-sm text-zinc-700 truncate">{filePath || 'Untitled'}</span>

@@ -4,6 +4,12 @@
    MiSans / HarmonyOS Sans SC 在已安装的机器上自动生效，未安装则回退系统字体。 */
 @theme {
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "MiSans", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  /* Pointers only: @theme inlines a literal shadow into the utility, which would
+     defeat the dark/starlight overrides. Keep every value in :root. */
+  --shadow-float: var(--ui-shadow-float);
+  --shadow-float-focus: var(--ui-shadow-float-focus);
+  --shadow-control: var(--ui-shadow-control);
+  --shadow-popover: var(--ui-shadow-popover);
 }
 
 @keyframes eva-focus-float {
@@ -69,8 +75,16 @@
   --ui-border-strong: #d5dae6;
   --ui-surface: rgba(255, 255, 255, 0.94);
   --ui-surface-muted: #f8f9fc;
-  --ui-shadow-panel: 0 8px 24px -22px rgba(39, 48, 84, 0.42);
-  --ui-shadow-popover: 0 16px 32px -24px rgba(39, 48, 84, 0.38), 0 4px 10px -8px rgba(39, 48, 84, 0.14);
+  /* The composer's recipe, decomposed: ambient glow, contact shadow, and a lit
+     top lip. Surfaces reference these instead of a border to look raised. */
+  --ui-shadow-float: 0 0 30px -10px rgba(53, 62, 104, 0.22), 0 0 12px -4px rgba(53, 62, 104, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  --ui-shadow-float-focus: 0 0 34px -9px rgba(109, 83, 190, 0.28), 0 0 14px -4px rgba(53, 62, 104, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.98);
+  --ui-shadow-control: 0 0 18px -9px rgba(53, 62, 104, 0.18), 0 2px 5px -3px rgba(53, 62, 104, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  --ui-shadow-panel: var(--ui-shadow-float);
+  --ui-shadow-popover: 0 0 34px -12px rgba(53, 62, 104, 0.26), 0 14px 28px -16px rgba(53, 62, 104, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.96);
+  /* The agent grid's hover projection, hoisted so any framed card can answer the cursor
+     with the same depth cue instead of copying the literal. */
+  --ui-shadow-lift: 0 22px 34px -23px rgba(68, 52, 137, 0.34), 0 7px 12px -9px rgba(68, 52, 137, 0.1), 8px 4px 24px -19px rgba(124, 58, 237, 0.24), -8px -2px 22px -19px rgba(167, 139, 250, 0.2), 0 0 18px -10px rgba(139, 92, 246, 0.22);
 }
 
 html, body, #root {
@@ -139,15 +153,17 @@ html, body, #root {
   overflow: hidden;
   width: 100%;
   aspect-ratio: 1 / 1.618;
-  border: 1px solid rgba(211, 219, 242, 0.92);
+  border: 1px solid transparent;
   border-radius: var(--ui-radius-lg);
   background: var(--ui-surface);
   box-shadow: var(--ui-shadow-panel);
+  transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
 }
 
 .task-workspace-note__resize-edge {
   position: absolute;
   z-index: 20;
+  transition: box-shadow 200ms ease, background-color 200ms ease;
 }
 
 .task-workspace-note__resize-edge--bottom {
@@ -164,6 +180,12 @@ html, body, #root {
   left: 0;
   width: 8px;
   cursor: col-resize;
+}
+
+.task-workspace-note__resize-edge:hover,
+.task-workspace-note__resize-edge:focus-visible {
+  box-shadow: inset 0 0 0 1px rgba(216, 180, 254, 0.55);
+  outline: none;
 }
 
 .task-workspace-note__header {
@@ -267,10 +289,11 @@ html, body, #root {
 
 /* Shared surfaces: panels frame workflows; repeated items stay open and flat. */
 .eva-panel {
-  border: 1px solid var(--ui-border);
+  border: 1px solid transparent;
   border-radius: var(--ui-radius-lg);
   background: var(--ui-surface);
   box-shadow: var(--ui-shadow-panel);
+  transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
 }
 
 .eva-panel--muted {
@@ -319,6 +342,22 @@ html, body, #root {
   border-color: rgba(215, 221, 237, 0.98);
   box-shadow: 0 5px 10px -8px rgba(68, 52, 137, 0.32), inset 0 1px 2px rgba(68, 52, 137, 0.08);
   transition-duration: 70ms;
+}
+
+/* Hover-only depth for framed cards: at rest the card stays flush with the document, and the
+   cursor is what lifts it. Same response as .agent-card — transform plus the lifted projection,
+   no border change, so tone-coloured tiles keep their own edge. Scoped to the settings pages
+   because some of these panels are reused in the right rail, where surfaces already float.
+   `.eva-panel.eva-lift:hover` is one specificity step above the framing rule that pins
+   `box-shadow: none`, so the lift does not depend on declaration order in this file. */
+:root .settings-page .eva-lift {
+  transition: transform 180ms cubic-bezier(0.22, 1.22, 0.36, 1), box-shadow 180ms ease;
+}
+
+:root .settings-page .eva-lift:hover,
+:root .settings-page .eva-panel.eva-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ui-shadow-lift);
 }
 
 .eva-divider { border-color: var(--ui-border); }
@@ -392,10 +431,11 @@ html, body, #root {
 .cost-panel,
 .cost-metric {
   overflow: hidden;
-  border: 1px solid rgba(218, 225, 241, 0.94);
+  border: 1px solid transparent;
   border-radius: var(--ui-radius-lg);
   background: var(--ui-surface);
   box-shadow: var(--ui-shadow-panel);
+  transition: border-color 200ms ease, box-shadow 200ms ease, background-color 200ms ease;
 }
 
 .cost-panel--trend {
@@ -1366,7 +1406,9 @@ html, body, #root {
 
   .agent-card,
   .agent-card:hover,
-  .agent-card:active { transform: none; transition: none; }
+  .agent-card:active,
+  .eva-lift,
+  .eva-lift:hover { transform: none; transition: none; }
 }
 
 /* The classic renderer deliberately owns document typography. It mirrors the
@@ -1930,6 +1972,12 @@ a.tool-call-source__title:hover {
 
 /* Settings is a workspace page, not a modal, so long configuration flows have room to breathe. */
 .settings-page {
+  --settings-gutter: clamp(20px, 2.2vw, 32px);
+  /* Mirrors ::-webkit-scrollbar. .settings-dialog__content keeps
+     scrollbar-gutter: stable, which eats this much out of its content box on the
+     inline-end side; subtracting it there gives the scrolling cards and the
+     page header band the same left/right inset, so card edges never drift. */
+  --settings-scrollbar-width: 6px;
   min-width: 0;
   min-height: 0;
   flex: 1;
@@ -1938,15 +1986,24 @@ a.tool-call-source__title:hover {
   background: var(--bg-main);
 }
 
+.settings-page__masthead-band {
+  flex-shrink: 0;
+}
+
+/* Page chrome sits flush: one seam under the tab row, not a slab of its own. */
+.settings-page__masthead {
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-surface);
+  box-shadow: 0 8px 18px -22px rgba(34, 43, 88, 0.55);
+}
+
 .settings-page__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 72px;
-  padding: 12px 28px;
-  border-bottom: 1px solid #dce3f3;
-  background: var(--ui-surface);
-  box-shadow: var(--ui-shadow-panel);
+  gap: 16px;
+  min-height: 64px;
+  padding: 12px var(--settings-gutter);
 }
 
 .settings-page__back {
@@ -2002,7 +2059,10 @@ a.tool-call-source__title:hover {
   --ui-border-strong: #3e4a5f;
   --ui-surface: rgba(25, 30, 41, .94);
   --ui-surface-muted: #171c25;
-  --ui-shadow-panel: 0 14px 36px -28px rgba(0, 0, 0, .8);
+  --ui-shadow-float: 0 14px 36px -28px rgba(0, 0, 0, .8);
+  --ui-shadow-float-focus: 0 14px 36px -28px rgba(0, 0, 0, .8);
+  --ui-shadow-control: 0 14px 36px -28px rgba(0, 0, 0, .8);
+  --ui-shadow-panel: var(--ui-shadow-float);
   --ui-shadow-popover: 0 22px 46px -26px rgba(0, 0, 0, .9);
   --theme-focus: #a9b5ff;
   --theme-overlay: rgba(15, 18, 24, .78);
@@ -2042,7 +2102,10 @@ a.tool-call-source__title:hover {
   --ui-border-strong: #38546c;
   --ui-surface: rgba(18, 32, 49, .94);
   --ui-surface-muted: #102033;
-  --ui-shadow-panel: 0 18px 38px -30px rgba(0, 0, 0, .9);
+  --ui-shadow-float: 0 18px 38px -30px rgba(0, 0, 0, .9);
+  --ui-shadow-float-focus: 0 18px 38px -30px rgba(0, 0, 0, .9);
+  --ui-shadow-control: 0 18px 38px -30px rgba(0, 0, 0, .9);
+  --ui-shadow-panel: var(--ui-shadow-float);
   --ui-shadow-popover: 0 24px 50px -28px rgba(0, 0, 0, .95);
   --theme-focus: #9ed6ed;
   --theme-overlay: rgba(9, 17, 28, .74);
@@ -2097,8 +2160,8 @@ a.tool-call-source__title:hover {
 :root[data-theme='starlight'] .eva-panel,
 :root[data-theme='dark'] .task-workspace-note,
 :root[data-theme='starlight'] .task-workspace-note,
-:root[data-theme='dark'] .settings-page__header,
-:root[data-theme='starlight'] .settings-page__header {
+:root[data-theme='dark'] .settings-page__masthead,
+:root[data-theme='starlight'] .settings-page__masthead {
   background: var(--theme-surface-raised);
   border-color: var(--ui-border);
   color: var(--text-primary);
@@ -2208,9 +2271,10 @@ a.tool-call-source__title:hover {
 .settings-dialog__tabs-list {
   flex-shrink: 0;
   gap: 4px;
-  padding: 0 28px;
-  border-bottom: 1px solid rgba(220, 226, 242, 0.82);
-  background: var(--ui-surface);
+  padding: 6px var(--settings-gutter);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-dialog__tabs-list [role="tab"] {
@@ -2225,10 +2289,30 @@ a.tool-call-source__title:hover {
 .settings-dialog__content {
   flex: 1;
   overflow-y: auto;
-  /* Keep the scrollbar in a dedicated gutter rather than against the content cards. */
+  /* Cards sit --settings-gutter from both edges; the scrollbar lives in that
+     right gutter, so the scrolling column and the masthead share one box. */
   scrollbar-gutter: stable;
-  padding: 32px calc(clamp(28px, 5vw, 72px) + 14px) 40px clamp(28px, 5vw, 72px) !important;
+  padding: 12px calc(var(--settings-gutter) - var(--settings-scrollbar-width)) 40px var(--settings-gutter) !important;
   background: transparent;
+}
+
+/* One box for the whole settings column: centring would add its own inset and re-open
+   the gap between the sidebar and the content, so the column stays left-aligned and only
+   gets a reading measure — an uncapped form stretches labels and controls apart. */
+.settings-dialog__content > * {
+  width: 100%;
+  max-width: min(100%, 72rem);
+  margin-inline: 0;
+}
+
+.settings-dialog__content--agents > * {
+  padding-inline: var(--settings-gutter);
+}
+
+.cost-center--embedded .cost-content {
+  max-width: none;
+  margin-inline: 0;
+  padding-inline: 0;
 }
 
 .settings-dialog__content--agents {
@@ -2236,42 +2320,75 @@ a.tool-call-source__title:hover {
   background: linear-gradient(132deg, rgba(246, 248, 255, 0.94), rgba(251, 253, 255, 0.96) 48%, rgba(246, 251, 252, 0.94));
 }
 
-.settings-page .settings-dialog__card {
-  padding: 0;
+/* Settings groups are framed, not lifted: a hairline outline plus the theme surface gives
+   a section a body, while the shadow stays off so nothing reads as an object on the desk.
+   Padding is left to the markup so each group keeps the rhythm of its own rows. */
+.settings-dialog__card {
+  padding: 16px;
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: none;
+}
+
+/* `:root` + `:not(.agent-card)` outranks the dark/starlight `.eva-panel` background
+   override without touching the agent cards' own hover-depth recipe. */
+:root .settings-page .eva-panel:not(.agent-card) {
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-lg);
+  background: var(--ui-surface);
+  box-shadow: none;
+}
+
+/* A group inside a group is a section of that group, never a second frame. The extra
+   class makes this outrank the rule above, so nesting needs no per-site opt-out. */
+:root .settings-page .eva-panel .eva-panel:not(.agent-card),
+:root .settings-page .settings-dialog__card .eva-panel:not(.agent-card) {
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
+/* The cost tab is the same document while embedded; the standalone Cost Center stays a dashboard. */
+:root .settings-page .cost-panel,
+:root .settings-page .cost-metric {
+  border: 1px solid var(--ui-border);
+  background-color: var(--ui-surface);
+  box-shadow: none;
+}
+
+/* The cost dashboard is one component used both as a standalone page and inside settings, so it
+   cannot take the .eva-lift hook without lifting the standalone page too — same response, scoped. */
+:root .settings-page .cost-panel,
+:root .settings-page .cost-metric {
+  transition: transform 180ms cubic-bezier(0.22, 1.22, 0.36, 1), box-shadow 180ms ease, border-color 200ms ease, background-color 200ms ease;
+}
+
+:root .settings-page .cost-panel:hover,
+:root .settings-page .cost-metric:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ui-shadow-lift);
+}
+
 .settings-dialog__model-layout {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  width: min(100%, 1060px);
-  margin: 0 auto;
+  gap: 12px;
+  width: 100%;
 }
 
 .settings-dialog__general-layout {
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  width: min(100%, 1060px);
-  margin: 0 auto;
+  gap: 12px;
+  width: 100%;
 }
 
 .settings-dialog__model-card {
   display: flex;
   flex-direction: column;
   gap: 20px;
-}
-
-.settings-dialog__model-card--flat {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
 }
 
 .settings-dialog__field {
@@ -2726,11 +2843,11 @@ a.tool-call-source__title:hover {
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
-  padding: 18px 20px;
-  border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-lg);
-  background: var(--ui-surface);
-  box-shadow: var(--ui-shadow-panel);
+  padding: 20px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .settings-dialog__plugin-tabs {
@@ -2758,8 +2875,10 @@ a.tool-call-source__title:hover {
   gap: 16px;
   padding: 16px;
   border: 1px solid var(--ui-border);
-  border-radius: var(--ui-radius-md);
-  background: var(--ui-surface);
+  border-radius: var(--ui-radius-lg);
+  background-color: var(--ui-surface);
+  box-shadow: none;
+  transition: border-color 200ms ease, background-color 200ms ease;
 }
 
 .settings-dialog__marketplace-card {
@@ -2897,7 +3016,7 @@ a.tool-call-source__title:hover {
 
   .settings-dialog__tabs-list {
     gap: 0;
-    padding: 0 12px;
+    padding: 6px 8px;
   }
 
   .settings-dialog__tabs-list [role="tab"] {
@@ -2905,15 +3024,11 @@ a.tool-call-source__title:hover {
   }
 
   .settings-dialog__content {
-    padding: 20px 32px 20px 20px !important;
+    padding: 8px calc(var(--settings-gutter) - var(--settings-scrollbar-width)) 24px var(--settings-gutter) !important;
   }
 
-  .settings-page .settings-dialog__card {
-    padding: 0;
-  }
-
-  .settings-dialog__model-card--flat {
-    padding: 0;
+  .settings-dialog__card {
+    padding: 14px;
   }
 
   .settings-dialog__model-label-row {
