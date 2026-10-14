@@ -53,6 +53,7 @@ const READ_ONLY_TOOLS = new Set([
   'read_terminal',
   'inspect_runtime',
   'diagnose_runtime',
+  'load_skill',
 ])
 
 function errorEnvelope(toolName: string, message: string, retryable = false): ExecutionEnvelope {

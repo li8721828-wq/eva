@@ -110,7 +110,7 @@ const MAX_EMPTY_RESPONSE_RETRIES = 1
 const MAX_NORMAL_TOOL_CYCLES = 4
 const DEFAULT_AGENT_RESPONSE_TOKENS = 4_096
 const REASONING_AGENT_RESPONSE_TOKENS = 8_192
-const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal'])
+const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal', 'load_skill'])
 /** Identity of one concrete tool invocation, used to detect repeated batches and calls. */
 function toolCallSignature(name: string, toolArguments: Record<string, unknown>): string {
   return `${name}:${JSON.stringify(toolArguments)}`

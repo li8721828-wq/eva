@@ -71,6 +71,12 @@ export const IPC = {
   MCP_TOGGLE: 'mcp:toggle',
   MCP_RECONNECT: 'mcp:reconnect',
 
+  // File-based skill packs discovered from disk
+  SKILL_LIST: 'skill:list',
+  SKILL_TOGGLE: 'skill:toggle',
+  SKILL_RESCAN: 'skill:rescan',
+  SKILL_OPEN_FOLDER: 'skill:open-folder',
+
   // Personal preference learning and context injection
   PREFERENCE_LIST: 'preference:list',
   PREFERENCE_SETTINGS_GET: 'preference:settings-get',

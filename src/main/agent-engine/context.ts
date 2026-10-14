@@ -5,6 +5,7 @@ import { CONTEXT_WINDOW_TOKENS } from '../../shared/constants'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { EnvironmentRulesConfig } from '../../shared/types/environment-rules'
 import { buildSharedEnvironmentPrompt } from '../services/environment-profile-service'
+import { buildSkillCatalogLines, SKILL_CATALOG_HEADER, SKILL_CATALOG_MAX_TOKENS, SKILL_CATALOG_NOTE_RESERVE_TOKENS } from '../services/skill-service'
 import { sanitizeUnicode, truncateUnicode, truncateUnicodeEnd } from '../utils/unicode'
 
 const COMPRESSED_HISTORY_MAX_CHARS = 8_000
@@ -487,6 +488,21 @@ export class ContextManager {
     if (sharedEnvironment) {
       parts.push('')
       parts.push(sharedEnvironment)
+    }
+
+    const skillLines = buildSkillCatalogLines(workspacePath)
+    if (skillLines.length) {
+      // Only the catalog stub stays resident; load_skill fetches a body when the model needs one.
+      const catalog = [...SKILL_CATALOG_HEADER]
+      // Hold back room for the omission note so the segment never exceeds its published budget.
+      const budget = SKILL_CATALOG_MAX_TOKENS - SKILL_CATALOG_NOTE_RESERVE_TOKENS
+      for (const line of skillLines) {
+        if (this.estimateTokens([...catalog, line].join('\n')) > budget) break
+        catalog.push(line)
+      }
+      const omitted = skillLines.length - (catalog.length - SKILL_CATALOG_HEADER.length)
+      if (omitted > 0) catalog.push(`- (+${omitted} more skills available by exact name)`)
+      parts.push('', catalog.join('\n'))
     }
 
     if (tools.length > 0) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildProviderProfile, providerValidationError } from '../../src/renderer/lib/provider-profile'
+import { buildProviderProfile, computeModelStamp, providerValidationError } from '../../src/renderer/lib/provider-profile'
 
 describe('provider profile helpers', () => {
   const base = { id: 'p', name: 'Provider', type: 'openai' as const, apiKey: 'key', defaultModel: 'm', isEnabled: true, selectedModelIds: ['m'], availableModels: [{ id: 'm', name: 'Model' }] }
@@ -11,5 +11,20 @@ describe('provider profile helpers', () => {
       defaultModel: 'gateway/model-x',
       models: [{ id: 'gateway/model-x', name: 'gateway/model-x' }],
     })
+  })
+
+  const credentials = { type: 'openai' as const, apiKey: 'sk-live-abcdef123456', baseUrl: 'https://api.openai.com/v1' }
+  it('stamps the credentials a model list was fetched with', () => {
+    expect(computeModelStamp(credentials)).toBe(computeModelStamp({ ...credentials }))
+    expect(computeModelStamp({ ...credentials, apiKey: 'sk-live-abcdef123457' })).not.toBe(computeModelStamp(credentials))
+    expect(computeModelStamp({ ...credentials, baseUrl: 'https://other.example.com/v1' })).not.toBe(computeModelStamp(credentials))
+    expect(computeModelStamp({ ...credentials, baseUrl: '  https://api.openai.com/v1  ' })).toBe(computeModelStamp(credentials))
+    expect(computeModelStamp({ ...credentials, baseUrl: undefined })).not.toBe(computeModelStamp(credentials))
+  })
+  it('never repeats the API key in the model stamp', () => {
+    const stamp = computeModelStamp(credentials)
+    expect(stamp).not.toContain(credentials.apiKey)
+    expect(stamp).not.toContain('abcdef123456')
+    expect(stamp).toMatch(/^[0-9a-f]{8}$/)
   })
 })

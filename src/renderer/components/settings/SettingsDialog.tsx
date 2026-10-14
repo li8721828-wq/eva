@@ -41,6 +41,7 @@ import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
 import { inferModelCapabilities } from '../../../shared/model-capabilities'
 import { PluginCenter } from './PluginCenter'
 import { McpPanel } from './McpPanel'
+import { SkillPanel } from './SkillPanel'
 import { LongTermMemoryPanel } from './LongTermMemoryPanel'
 import { AppServerPanel } from './AppServerPanel'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
@@ -48,7 +49,7 @@ import { CostCenter } from '@/components/cost/CostCenter'
 import { ModelPoolPanel } from './ModelPoolPanel'
 import { RuntimeIntrospectionPanel } from './RuntimeIntrospectionPanel'
 import { uiCopy } from '@/lib/ui-copy'
-import { buildProviderProfile, providerValidationError } from '@/lib/provider-profile'
+import { buildProviderProfile, computeModelStamp, providerValidationError } from '@/lib/provider-profile'
 
 type ProviderType = ProviderConfigEntry['type']
 
@@ -114,6 +115,8 @@ export function SettingsDialog() {
   const [loadingModels, setLoadingModels] = useState(false)
   const [probingModelId, setProbingModelId] = useState<string | null>(null)
   const [modelsMessage, setModelsMessage] = useState<string | null>(null)
+  /** Digest of the credentials a successful fetch used. Null means the list's origin is unknown. */
+  const [modelsStamp, setModelsStamp] = useState<string | null>(null)
   const [qqConfig, setQqConfig] = useState<QqRemoteConfig>(EMPTY_QQ_CONFIG)
   const [qqSecret, setQqSecret] = useState('')
   const [showQqSecret, setShowQqSecret] = useState(false)
@@ -165,7 +168,11 @@ export function SettingsDialog() {
     setModelsMessage(null)
     setSelectedModelIds([])
     setModelSearch('')
+    setModelsStamp(null)
   }
+
+  const currentModelStamp = computeModelStamp(getProviderTestConfig())
+  const modelsAreStale = availableModels.length > 0 && modelsStamp !== null && modelsStamp !== currentModelStamp
 
   const applyProviderProfile = (provider: ProviderConfigEntry, openEditor = true) => {
     setEditingProviderId(provider.id)
@@ -185,6 +192,7 @@ export function SettingsDialog() {
     setSelectedModelIds(savedModels.map((model) => model.id))
     setModelSearch('')
     setModelsMessage(null)
+    setModelsStamp(null)
     setTestResult(null)
     if (openEditor) setProviderEditorOpen(true)
   }
@@ -202,6 +210,7 @@ export function SettingsDialog() {
     setAvailableModels([])
     setModelSearch('')
     setModelsMessage(null)
+    setModelsStamp(null)
     setTestResult(null)
     setProviderEditorOpen(openEditor)
   }
@@ -467,9 +476,7 @@ export function SettingsDialog() {
     try {
       const result = await window.eva.provider.listModels(config)
       if (!result.success) {
-        setAvailableModels([])
-        setSelectedModelIds([])
-        setModelSearch('')
+        // A failed refresh must not destroy the list, the ticks or the probe results the user already has.
         setModelsMessage(result.message || 'Failed to fetch models.')
         return
       }
@@ -477,9 +484,8 @@ export function SettingsDialog() {
       setAvailableModels(result.models)
       setSelectedModelIds((current) => current.filter((id) => result.models.some((model) => model.id === id)))
       setModelSearch('')
+      setModelsStamp(computeModelStamp(config))
     } catch (error) {
-      setAvailableModels([])
-      setSelectedModelIds([])
       setModelsMessage('Failed to fetch models.')
     } finally {
       setLoadingModels(false)
@@ -846,7 +852,7 @@ export function SettingsDialog() {
 
               <ModelPoolPanel providers={savedProviders} />
 
-              {providerEditorOpen && <Dialog open={providerEditorOpen} onOpenChange={setProviderEditorOpen} className="settings-dialog__provider-editor max-w-2xl">
+              {providerEditorOpen && <Dialog open={providerEditorOpen} onOpenChange={setProviderEditorOpen} className="settings-dialog__provider-editor">
                 <DialogClose onClose={() => setProviderEditorOpen(false)} />
                 <DialogHeader>
                   <DialogTitle>{providerName === 'New connection' ? 'Add model connection' : `Edit ${providerName}`}</DialogTitle>
@@ -854,82 +860,75 @@ export function SettingsDialog() {
                 </DialogHeader>
 
                 <div className="settings-dialog__provider-editor-form">
-
-                  <div className="settings-dialog__provider-profile-row">
-                    <div className="settings-dialog__field flex-1">
+                  <div className="settings-dialog__field-row">
+                    <div className="settings-dialog__field">
                       <label className="text-sm font-medium text-zinc-700">Connection name</label>
                       <Input value={providerName} onChange={(event) => setProviderName(event.target.value)} placeholder="e.g. DeepSeek personal" />
+                    </div>
+                    <div className="settings-dialog__field">
+                      <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                        <Server className="h-4 w-4 text-zinc-500" />
+                        Provider type
+                      </label>
+                      <Select
+                        value={providerType}
+                        onChange={(event) => {
+                          const nextProvider = event.target.value as ProviderType
+                          setProviderType(nextProvider)
+                          invalidateModels()
+                          setModelName('')
+                          setTestResult(null)
+                        }}
+                        options={PROVIDER_OPTIONS}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-dialog__field-row">
+                    <div className="settings-dialog__field">
+                      <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                        <Key className="h-4 w-4 text-zinc-500" />
+                        API Key
+                      </label>
+                      <div className="relative">
+                        <Input
+                          type={showApiKey ? 'text' : 'password'}
+                          value={apiKey}
+                          onChange={(event) => setApiKey(event.target.value)}
+                          placeholder="sk-..."
+                          className="pr-9"
+                          autoComplete="off"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey((visible) => !visible)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 transition-colors hover:text-zinc-600"
+                          aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
+                        >
+                          {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="settings-dialog__field">
+                      <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
+                        <Link className="h-4 w-4 text-zinc-500" />
+                        Base URL
+                        <span className="text-xs font-normal text-zinc-400">
+                          {providerType === 'custom' ? '(required)' : '(optional)'}
+                        </span>
+                      </label>
+                      <Input
+                        value={baseUrl}
+                        onChange={(event) => setBaseUrl(event.target.value)}
+                        placeholder={providerType === 'custom' ? 'https://api.example.com/v1' : 'https://api.openai.com/v1'}
+                      />
                     </div>
                   </div>
 
                 <div className="settings-dialog__field">
-                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
-                  <Server className="h-4 w-4 text-zinc-500" />
-                  Provider type
-                </label>
-                <Select
-                  value={providerType}
-                  onChange={(event) => {
-                    const nextProvider = event.target.value as ProviderType
-                    setProviderType(nextProvider)
-                    invalidateModels()
-                    setModelName('')
-                    setTestResult(null)
-                  }}
-                  options={PROVIDER_OPTIONS}
-                />
-                </div>
-
-                <div className="settings-dialog__field">
-                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
-                  <Key className="h-4 w-4 text-zinc-500" />
-                  API Key
-                </label>
-                <div className="relative">
-                  <Input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(event) => {
-                      setApiKey(event.target.value)
-                      invalidateModels()
-                    }}
-                    placeholder="sk-..."
-                    className="pr-9"
-                    autoComplete="off"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((visible) => !visible)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 transition-colors hover:text-zinc-600"
-                    aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
-                  >
-                    {showApiKey ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                  </button>
-                </div>
-                </div>
-
-                <div className="settings-dialog__field">
-                <label className="text-sm font-medium text-zinc-700 flex items-center gap-2">
-                  <Link className="h-4 w-4 text-zinc-500" />
-                  Base URL
-                  <span className="text-xs font-normal text-zinc-400">
-                    {providerType === 'custom' ? '(required)' : '(optional)'}
-                  </span>
-                </label>
-                <Input
-                  value={baseUrl}
-                  onChange={(event) => {
-                    setBaseUrl(event.target.value)
-                    invalidateModels()
-                  }}
-                  placeholder={providerType === 'custom' ? 'https://api.example.com/v1' : 'https://api.openai.com/v1'}
-                />
-                </div>
-
-                <div className="settings-dialog__field">
                   <label className="text-sm font-medium text-zinc-700">Supplier pricing group <span className="text-xs font-normal text-zinc-400">(optional)</span></label>
                   <Input value={pricingGroup} onChange={(event) => setPricingGroup(event.target.value)} placeholder="e.g. default, group name from the supplier" />
-                  <p className="mt-1 text-xs text-zinc-400">Used only when this supplier routes the same model through different price groups. The Cost center never guesses a group.</p>
+                  <p className="text-xs text-zinc-400">Used only when this supplier routes the same model through different price groups. The Cost center never guesses a group.</p>
                 </div>
 
                 <div className="settings-dialog__field settings-dialog__field--models">
@@ -959,7 +958,7 @@ export function SettingsDialog() {
                     </Button>
                   </div>
                 </div>
-                <div className="mb-3">
+                <div className="settings-dialog__field">
                   <label className="text-sm font-medium text-zinc-700">Model name <span className="text-xs font-normal text-zinc-400">(required)</span></label>
                   <Input
                     value={modelName}
@@ -967,10 +966,16 @@ export function SettingsDialog() {
                     placeholder="e.g. gpt-4o-mini or provider-specific-model"
                     aria-label="Model name"
                   />
-                  <p className="mt-1 text-xs text-zinc-400">Enter the exact model ID. Fetch Models is optional for gateways without a model-list endpoint.</p>
+                  <p className="text-xs text-zinc-400">Enter the exact model ID. Fetch Models is optional for gateways without a model-list endpoint.</p>
                 </div>
                 {availableModels.length > 0 ? (
                   <div className="settings-dialog__model-picker">
+                    {(modelsMessage || modelsAreStale) && (
+                      <div className="settings-dialog__models-notice" role="status">
+                        {modelsMessage && <span>{modelsMessage}</span>}
+                        {modelsAreStale && <span>Credentials changed since this list was fetched. Fetch Models again to match the current key and base URL.</span>}
+                      </div>
+                    )}
                     <Input
                       value={modelSearch}
                       onChange={(event) => setModelSearch(event.target.value)}
@@ -985,19 +990,21 @@ export function SettingsDialog() {
                             checked={selectedModelIds.includes(model.id)}
                             onChange={() => toggleModelSelection(model.id)}
                           />
-                          <span className="min-w-0 flex-1 truncate">{model.name}</span>
-                          {model.capabilities && <span className={`settings-dialog__model-capability ${model.capabilities.supportsTools === false ? 'is-error' : model.capabilities.probeStatus === 'supported' ? 'is-success' : ''}`}>{model.capabilities.probeStatus === 'supported' ? '工具已验证' : model.capabilities.supportsTools === false ? '不支持工具' : '未探测'}</span>}
-                          <select
-                            className="settings-dialog__model-context"
-                            aria-label={`Context window for ${model.name || model.id}`}
-                            value={model.capabilities?.contextWindowTokens || inferModelCapabilities(providerType, model.id).contextWindowTokens}
-                            onChange={(event) => handleContextWindowChange(model.id, event.target.value)}
-                          >
-                            {getModelContextWindowOptions(model.id, model.capabilities?.contextWindowTokens).map((tokens) => (
-                              <option key={tokens} value={tokens}>{tokens >= 1_000_000 ? `${tokens / 1_000_000}M` : `${Math.round(tokens / 1000)}K`}</option>
-                            ))}
-                          </select>
-                          <button type="button" className="settings-dialog__model-probe" onClick={(event) => { event.preventDefault(); void handleProbeModel(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>{probingModelId === model.id ? '探测中…' : '探测能力'}</button>
+                          <span className="truncate">{model.name}</span>
+                          <span className="settings-dialog__model-meta">
+                            {model.capabilities && <span className={`settings-dialog__model-capability ${model.capabilities.supportsTools === false ? 'is-error' : model.capabilities.probeStatus === 'supported' ? 'is-success' : ''}`}>{model.capabilities.probeStatus === 'supported' ? '工具已验证' : model.capabilities.supportsTools === false ? '不支持工具' : '未探测'}</span>}
+                            <select
+                              className="settings-dialog__model-context"
+                              aria-label={`Context window for ${model.name || model.id}`}
+                              value={model.capabilities?.contextWindowTokens || inferModelCapabilities(providerType, model.id).contextWindowTokens}
+                              onChange={(event) => handleContextWindowChange(model.id, event.target.value)}
+                            >
+                              {getModelContextWindowOptions(model.id, model.capabilities?.contextWindowTokens).map((tokens) => (
+                                <option key={tokens} value={tokens}>{tokens >= 1_000_000 ? `${tokens / 1_000_000}M` : `${Math.round(tokens / 1000)}K`}</option>
+                              ))}
+                            </select>
+                            <button type="button" className="settings-dialog__model-probe" onClick={(event) => { event.preventDefault(); void handleProbeModel(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>{probingModelId === model.id ? '探测中…' : '探测能力'}</button>
+                          </span>
                         </label>
                       )) : (
                         <div className="settings-dialog__model-no-results">No matching models.</div>
@@ -1188,6 +1195,9 @@ export function SettingsDialog() {
           </section>
           <section className="mx-auto mt-8 w-full max-w-6xl border-t border-zinc-200/80 pt-8">
             <McpPanel />
+          </section>
+          <section className="mx-auto mt-8 w-full max-w-6xl border-t border-zinc-200/80 pt-8">
+            <SkillPanel />
           </section>
         </TabsContent>
 

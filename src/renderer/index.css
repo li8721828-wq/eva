@@ -2446,7 +2446,7 @@ a.tool-call-source__title:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 13px;
 }
 
 .settings-dialog__model-label-actions {
@@ -2632,10 +2632,6 @@ a.tool-call-source__title:hover {
   background: #fef2f2;
 }
 
-.settings-dialog__provider-profile-row {
-  width: 100%;
-}
-
 .settings-dialog__fetch-models {
   flex-shrink: 0;
   gap: 6px;
@@ -2653,27 +2649,42 @@ a.tool-call-source__title:hover {
 }
 
 .settings-dialog__model-picker {
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
   gap: 8px;
 }
 
 .settings-dialog__model-options {
   display: grid;
-  max-height: 190px;
+  /* Sized so the Models block stands in golden proportion to the identity fields above it. */
+  max-height: 220px;
+  flex: 1 1 auto;
+  /* Rows keep their natural height when the list is shorter than its slot. */
+  align-content: start;
   overflow-y: auto;
   border-top: 1px solid var(--ui-border);
   border-bottom: 1px solid var(--ui-border);
 }
 
 .settings-dialog__model-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1.618fr) minmax(0, 1fr);
   align-items: center;
-  gap: 10px;
+  gap: 13px;
   min-height: 38px;
   padding: 0 10px;
   color: #3f3f46;
   font-size: 0.8125rem;
   cursor: pointer;
+}
+
+.settings-dialog__model-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .settings-dialog__model-option + .settings-dialog__model-option {
@@ -2763,20 +2774,62 @@ a.tool-call-source__title:hover {
 .settings-dialog__provider-editor {
   width: min(100%, 46rem);
   max-width: none;
+  /* The frame follows its content and only clamps at the cap: an unpopulated model list keeps
+     the dialog compact, while a fetched list is allowed to grow the dialog up to 56rem. */
+  max-height: min(56rem, calc(100vh - 2rem));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-dialog__provider-editor > :not(.settings-dialog__provider-editor-form) {
+  flex: 0 0 auto;
 }
 
 .settings-dialog__provider-editor-form {
-  display: grid;
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
+  /* Spacing scale inside this form: 8 within a field, 13 within a row, 21 between groups. */
+  gap: 21px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* A stable gutter keeps every field at the same width when the list grows past the frame. */
+  scrollbar-gutter: stable;
+  /* The focus-float sweep paints up to ~24px outside the field, and a scroll container clips its
+     children's shadows at its own edge — fields sit flush with it, so the left glow was cut to
+     white. Bleed 1.5rem (exactly the dialog's own p-6 padding) with matching negative margins:
+     the clip region widens to the full dialog padding while every field stays in place. */
+  padding-inline: 1.5rem;
+  margin-inline: -1.5rem;
 }
 
-.settings-dialog__provider-editor .settings-dialog__field {
-  gap: 7px;
+/* Fields keep their natural height even when the frame clamps below the content height. */
+.settings-dialog__provider-editor-form > * {
+  flex: 0 0 auto;
+}
+
+/* Two fields share one row, split by the golden ratio: the identity value gets the wide column. */
+.settings-dialog__field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.618fr) minmax(0, 1fr);
+  gap: 13px;
 }
 
 .settings-dialog__provider-editor .settings-dialog__field--models {
-  gap: 10px;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 13px;
   padding-top: 2px;
+}
+
+.settings-dialog__models-notice {
+  display: grid;
+  gap: 6px;
+  color: #71717a;
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .settings-dialog__provider-editor .settings-dialog__models-empty {

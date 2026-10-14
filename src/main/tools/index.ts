@@ -14,6 +14,7 @@ import { createRuntimeDiagnosticTools } from './runtime-diagnostic-tools'
 import { createRuntimeProposalTools } from './runtime-proposal-tools'
 import { createPersonalPreferenceTools } from './personal-preference-tools'
 import { createSpreadsheetTools } from './spreadsheet-tools'
+import { createSkillTools } from './skill-tools'
 import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
 import type { LongTermMemoryStore } from '../storage/long-term-memory-store'
 import type { ProjectIndexService } from '../services/project-index-service'
@@ -180,6 +181,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createRuntimeDiagnosticTools(registry)) registry.register(tool)
   for (const tool of createRuntimeProposalTools(registry)) registry.register(tool)
   for (const tool of createSpreadsheetTools()) registry.register(tool)
+  for (const tool of createSkillTools()) registry.register(tool)
   if (personalPreferenceStore) {
     for (const tool of createPersonalPreferenceTools(personalPreferenceStore, longTermMemory)) registry.register(tool)
   }

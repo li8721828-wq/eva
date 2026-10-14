@@ -1,4 +1,5 @@
 import React, { useEffect, useCallback, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 import { X } from 'lucide-react'
 
@@ -79,7 +80,9 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
 
   if (!open) return null
 
-  return (
+  // Portaled to <body> on purpose: a transformed ancestor (.eva-lift:hover, .agent-card) would
+  // otherwise become the containing block of this fixed wrapper and swallow the dim overlay.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="fixed inset-0 bg-black/30" onClick={() => onOpenChange(false)} />
       <div
@@ -91,7 +94,8 @@ function Dialog({ open, onOpenChange, children, className }: DialogProps) {
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 

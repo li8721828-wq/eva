@@ -25,6 +25,7 @@ import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
 import type { McpServerConfig, McpServerState } from '../shared/types/mcp'
+import type { SkillInventory, SkillRootKind } from '../shared/types/skill'
 import type { PersonalPreference, PersonalPreferenceImportOptions, PersonalPreferenceImportResult, PersonalPreferenceSettings } from '../shared/types/personal-preferences'
 import type { ContractArgs, ContractChannel, ContractResult } from '../shared/ipc-contract'
 
@@ -286,6 +287,13 @@ export interface EvaAPI {
     remove(id: string): Promise<McpServerState[]>
     setEnabled(id: string, enabled: boolean): Promise<McpServerState[]>
     reconnect(id?: string): Promise<McpServerState[]>
+  }
+
+  skills: {
+    list(workspacePath?: string): Promise<SkillInventory>
+    setEnabled(name: string, enabled: boolean, workspacePath?: string): Promise<SkillInventory>
+    rescan(workspacePath?: string): Promise<SkillInventory>
+    openFolder(kind: SkillRootKind, workspacePath?: string): Promise<string>
   }
 
   personalPreferences: {
@@ -594,6 +602,13 @@ const evaAPI: EvaAPI = {
     remove: (id) => ipcRenderer.invoke(IPC.MCP_DELETE, id),
     setEnabled: (id, enabled) => ipcRenderer.invoke(IPC.MCP_TOGGLE, id, enabled),
     reconnect: (id) => ipcRenderer.invoke(IPC.MCP_RECONNECT, id),
+  },
+
+  skills: {
+    list: (workspacePath) => ipcRenderer.invoke(IPC.SKILL_LIST, workspacePath),
+    setEnabled: (name, enabled, workspacePath) => ipcRenderer.invoke(IPC.SKILL_TOGGLE, name, enabled, workspacePath),
+    rescan: (workspacePath) => ipcRenderer.invoke(IPC.SKILL_RESCAN, workspacePath),
+    openFolder: (kind, workspacePath) => ipcRenderer.invoke(IPC.SKILL_OPEN_FOLDER, kind, workspacePath),
   },
 
   personalPreferences: {

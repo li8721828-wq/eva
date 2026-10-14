@@ -18,6 +18,7 @@ import { registerAppServerHandlers } from './app-server'
 import { registerSandboxHandlers } from './sandbox'
 import { registerProjectKnowledgeHandlers } from './project-knowledge'
 import { registerLongTermMemoryHandlers } from './long-term-memory'
+import { registerSkillHandlers } from './skill'
 
 export type Services = ApplicationServices
 
@@ -62,4 +63,5 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerSandboxHandlers()
   registerProjectKnowledgeHandlers()
   registerLongTermMemoryHandlers()
+  registerSkillHandlers()
 }

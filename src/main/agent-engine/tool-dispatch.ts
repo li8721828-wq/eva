@@ -60,6 +60,7 @@ export const PARALLEL_SAFE_DISPATCH_TOOLS = new Set([
   'read_terminal',
   'inspect_runtime',
   'diagnose_runtime',
+  'load_skill',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -419,7 +419,7 @@ export function registerSystemHandlers(
           messages: [{ role: 'user', content: 'Call the eva_capability_probe tool exactly once with {"ok":true}. Do not provide a prose answer.' }],
           tools: [probeTool],
           stream: false,
-          maxTokens: 64,
+          maxTokens: 512,
           temperature: 0,
         }, controller.signal)) {
           if (chunk.toolCalls?.some((call) => call.name === probeTool.name)) hasStructuredCall = true

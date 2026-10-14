@@ -15,7 +15,7 @@ export function expandHomePath(filePath: string): string {
   return filePath
 }
 
-function isWithinRoot(candidate: string, root: string): boolean {
+export function isWithinRoot(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate)
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
 }

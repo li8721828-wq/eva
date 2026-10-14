@@ -27,6 +27,7 @@ const READ_ONLY_TOOLS = new Set([
   'project_index_status',
   'inspect_runtime',
   'diagnose_runtime',
+  'load_skill',
   'delegate_to_team',
   'delegate_to_model_pool',
   'run_task',
