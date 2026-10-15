@@ -57,6 +57,18 @@ export function inferModelCapabilities(
   }
 }
 
+/**
+ * Whether this exact route may receive image content parts. A declared or
+ * probed value is authoritative and the identifier only prefills it, so a
+ * gateway's vision model never has to win a name match to be used as one.
+ * The Anthropic API family has always accepted images and needs no declaration
+ * to send one.
+ */
+export function supportsImageInput(profile: ModelCapabilityProfile): boolean {
+  if (profile.providerType === 'anthropic') return true
+  return profile.supportsVision === true
+}
+
 export function describeModelCapabilityProfile(profile: ModelCapabilityProfile): string {
   const support = (value?: boolean) => value === undefined ? 'unknown' : value ? 'yes' : 'no'
   return [

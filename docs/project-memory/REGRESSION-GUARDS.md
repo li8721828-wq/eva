@@ -134,6 +134,14 @@
 - App-Server 的手动启动与 `autoStart` 启动必须共用同一个持久化配置读取函数；桌面退出时必须调用 `stopAppServer`，避免远程端口、ACP 连接和在途 turn 残留。
 - `TaskRunStore`、`RuntimeRunStore`、`RuntimeKernelStore`、`LongTermMemoryStore`、`MemoryAgentQueueStore` 的状态写入必须走临时文件 + 重命名的原子路径；禁止恢复直接使用 `writeFileSync` 覆盖正式 JSON 文件。
 
+## 模型能力判定
+
+- **能不能收图由这条路由自己决定，不由模型名字决定**：唯一的判据是 `supportsImageInput(profile)`（`src/shared/model-capabilities.ts`），profile 一律取 `providerRegistry.getModelCapabilities(providerId, model)`，回退 `inferModelCapabilities`。禁止在任何调用点重新写一份模型名白名单——曾有 `conversation.ts` 与 `agent-runner.ts` 各存一份 OpenAI 名字正则，要求 `provider.type` 必须是 openai/anthropic，于是**任何**第三方网关的视觉模型（`deepseek-v4-flash-vision-exp` 等）永远读不了图，且两条路会给出相反答案。守测：`tests/unit/image-input-gate.test.ts` 断言这两个文件里不再出现 `gpt-4o` 与 `this.supportsVisionInput(`。
+- **`VISION_PATTERN` 只是预填，声明永远覆盖它**：`inferModelCapabilities(..., declared)` 的 `declared?.supportsVision ??` 语义不得反过来写。名字正则不能当闸门这一点是用户明确要求（「不是应该这个模型可以识别图片就识别吗，而不是根据一份硬编码的文件来判断」）。
+- **anthropic 家族免声明放行**是刻意的例外（`VISION_PATTERN` 认不出 `claude-opus-4-6-thinking` 这类 id，去掉豁免会打断已在用的 Claude 连接）。它是按 provider 家族而非模型判定，新增豁免必须以「该 API 家族一直接受 image 部件」为条件，不能拿它当「猜名字」的旁路。
+- **主模型判 false 时才走视觉池代看**，且代看注入的是文字描述：`imageContext` 非空时 `runnerMessage.images` 必须剥掉（`conversation.ts`），不得让同一张图既由池子模型描述又原样发给不支持图的主模型。历史轮同理，`primarySupportsVision` 为 false 时 `runnerHistory` 里带图的旧消息必须整个剥掉 `images`。
+- **判 false 且池子里没有 Vision/Image 路由时宁可拒绝也不静默丢图**：拒绝文案必须是中文并给出可操作路径（挂池或换主模型），且不得声称「该模型不支持图片」为事实断言之外的能力结论——它只表示这条路由的档案未确认可收图。
+
 ## 技能（Skill）系统
 
 - **`load_skill` 永远不接受路径参数**，只接受 `{name, file?}`，`file` 也只能是该技能目录内的相对文件名。这是整条通道的支点：一旦给它一个能填路径的参数，一个「只读指令包」就变成任意读文件入口。护栏在 `tests/unit/skill-tool.test.ts`（注入 `path` 之类多余参数必须被忽略、`'../outside.md'` 必须被拒）。

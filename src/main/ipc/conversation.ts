@@ -33,6 +33,7 @@ import { generateConversationTitle, refreshLegacyConversationTitles } from '../s
 import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
 import { ModelRouter } from '../services/model-router'
 import type { ModelPoolEntry } from '../../shared/types/model-pool'
+import { inferModelCapabilities, supportsImageInput } from '../../shared/model-capabilities'
 import type { ActivePlan } from '../../shared/types/active-plan'
 import { ConversationLifecycleService, type CreateConversationInput, type UpdateConversationInput } from '../services/conversation-lifecycle-service'
 import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
@@ -254,9 +255,19 @@ function persistableImages(images: ChatImageAttachment[] | undefined): ChatImage
   return images?.map(({ dataUrl: _dataUrl, ...image }) => image)
 }
 
-function primaryModelSupportsVision(agent: AgentConfig, provider: import('../providers/base-provider').LLMProvider): boolean {
-  if (provider.type === 'anthropic') return true
-  return provider.type === 'openai' && /(?:gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4-mini)/i.test(agent.model)
+/**
+ * Image input is a property of the exact route, so it is read from the same
+ * capability profile the settings probe writes. Only a route that is known not
+ * to take images gets routed through the visual pool instead.
+ */
+function primaryModelSupportsVision(
+  services: ChatServices,
+  agent: AgentConfig,
+  provider: import('../providers/base-provider').LLMProvider,
+): boolean {
+  const profile = services.providerRegistry.getModelCapabilities(provider.id, agent.model)
+    || inferModelCapabilities(provider.type, agent.model)
+  return supportsImageInput(profile)
 }
 
 async function analyzeImagesWithAuthorizedPool(
@@ -281,7 +292,7 @@ async function analyzeImagesWithAuthorizedPool(
     }
   }
   if (!candidates.length) {
-    throw new Error('The selected primary model does not support image input. Assign this agent a model pool with a Vision or Image route in Agent > Model access, or select a vision-capable primary model.')
+    throw new Error(`主模型 ${agent.model} 这条连接未确认支持图片输入，且该智能体没有可用的视觉模型池。请在 智能体 > 模型访问 里为该智能体挂一个包含 Vision 或 Image 路由的模型池，或改用支持图片的主模型。`)
   }
 
   const errors: string[] = []
@@ -851,7 +862,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const userMessageId = payload.messageId?.trim() || uuidv4()
         const referenceImages = loadReferenceImages(payload.images, true)
         const documentContext = await buildDocumentAttachmentContext(payload.attachments)
-        const imageContext = referenceImages?.length && !primaryModelSupportsVision(effectiveAgentConfig, provider)
+        const imageContext = referenceImages?.length && !primaryModelSupportsVision(services, effectiveAgentConfig, provider)
           ? await analyzeImagesWithAuthorizedPool(services, effectiveAgentConfig, message, referenceImages)
           : ''
         const userChatMessage: ChatMessage = {
@@ -1299,7 +1310,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
         }
 
-        const primarySupportsVision = primaryModelSupportsVision(effectiveAgentConfig, provider)
+        const primarySupportsVision = primaryModelSupportsVision(services, effectiveAgentConfig, provider)
         const runnerHistory = primarySupportsVision ? historyMessages : historyMessages.map((history) => history.images?.length ? { ...history, images: undefined } : history)
         const runnerMessage = imageContext ? { ...userChatMessage, images: undefined } : userChatMessage
         for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage })) {

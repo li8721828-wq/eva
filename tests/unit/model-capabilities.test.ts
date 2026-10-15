@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferModelCapabilities } from '../../src/shared/model-capabilities'
+import { inferModelCapabilities, supportsImageInput } from '../../src/shared/model-capabilities'
 
 describe('model capability profiles', () => {
   it('identifies DeepSeek reasoning and large context routes', () => {
@@ -52,5 +52,26 @@ describe('model capability profiles', () => {
       contextWindowTokens: 256_000,
     })
     expect(profile.contextWindowTokens).toBe(256_000)
+  })
+})
+
+describe('image input gate', () => {
+  it('accepts images on a route the profile marks as visual', () => {
+    expect(supportsImageInput(inferModelCapabilities('deepseek', 'deepseek-v4-flash-vision-exp'))).toBe(true)
+    expect(supportsImageInput(inferModelCapabilities('openai', 'gpt-4o'))).toBe(true)
+  })
+
+  it('keeps a text-only checkpoint out of image turns', () => {
+    expect(supportsImageInput(inferModelCapabilities('deepseek', 'deepseek-v4-flash'))).toBe(false)
+    expect(supportsImageInput(inferModelCapabilities('custom', 'gateway-model'))).toBe(false)
+  })
+
+  it('lets a declared value decide instead of the model name', () => {
+    expect(supportsImageInput(inferModelCapabilities('openai', 'gpt-4o', { supportsVision: false }))).toBe(false)
+    expect(supportsImageInput(inferModelCapabilities('custom', 'gateway-model', { supportsVision: true }))).toBe(true)
+  })
+
+  it('trusts the Anthropic family without requiring a declaration', () => {
+    expect(supportsImageInput(inferModelCapabilities('anthropic', 'claude-opus-4-6-thinking'))).toBe(true)
   })
 })

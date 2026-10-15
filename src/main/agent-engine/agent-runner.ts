@@ -17,7 +17,7 @@ import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../servi
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
 import { classifyError, InvalidRequestError } from '../providers/errors'
-import { describeModelCapabilityProfile, inferModelCapabilities } from '../../shared/model-capabilities'
+import { describeModelCapabilityProfile, inferModelCapabilities, supportsImageInput } from '../../shared/model-capabilities'
 import { randomUUID } from 'crypto'
 import type { AgentRunEventStore } from '../storage/agent-run-event-store'
 import type { AutomationConfig } from '../../shared/types/automation'
@@ -386,7 +386,7 @@ export class AgentRunner {
       // Internal callers should pass ChatMessage, but normalize defensively so
       // a malformed legacy caller can never send a role-less API message.
       const allHistory = [...params.messages, userMessage]
-      const primarySupportsVision = this.supportsVisionInput()
+      const primarySupportsVision = supportsImageInput(modelCapabilities)
       // Text-only OpenAI-compatible endpoints reject multimodal content with
       // an opaque deserialization error. Strip image payloads at the final
       // runner boundary even when a legacy/history path still contains them.
@@ -673,7 +673,7 @@ export class AgentRunner {
             workspacePath,
             fileAccessGrants,
             fullFilesystemAccess,
-            supportsVisionInput: this.supportsVisionInput(),
+            supportsVisionInput: primarySupportsVision,
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
             allowedModelPoolIds: agentConfig.modelPoolIds,
@@ -768,7 +768,7 @@ export class AgentRunner {
             workspacePath,
             fileAccessGrants,
             fullFilesystemAccess,
-            supportsVisionInput: this.supportsVisionInput(),
+            supportsVisionInput: primarySupportsVision,
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
             allowedModelPoolIds: agentConfig.modelPoolIds,
@@ -855,7 +855,7 @@ export class AgentRunner {
         if (integrityReminder) messages.push({ role: 'user', content: integrityReminder })
 
         const visualToolImages = await this.loadToolImages(response.toolCalls, toolResults, ['browser_control'])
-        if (visualToolImages.length > 0 && this.supportsVisionInput()) {
+        if (visualToolImages.length > 0 && primarySupportsVision) {
           messages.push({
             role: 'user',
             content: 'Browser control supplied visual evidence. First decide whether the requested visible outcome occurred. If it did not, identify one corrective next action and observe again after it. Use the returned visualObservationId with browser_control click_at, type_at, scroll_at, or press_key; do not reuse stale observations.',
@@ -1035,7 +1035,7 @@ export class AgentRunner {
             workspacePath,
             fileAccessGrants,
             fullFilesystemAccess,
-            supportsVisionInput: this.supportsVisionInput(),
+            supportsVisionInput: primarySupportsVision,
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
             allowedModelPoolIds: agentConfig.modelPoolIds,
@@ -1817,12 +1817,6 @@ export class AgentRunner {
     }
 
     return undefined
-  }
-
-  private supportsVisionInput(): boolean {
-    if (this.config.provider.type === 'anthropic') return true
-    if (this.config.provider.type !== 'openai') return false
-    return /(?:gpt-4o|gpt-4\.1|gpt-5|o1|o3|o4-mini)/i.test(this.config.agentConfig.model)
   }
 
   private buildModelPoolContext(
