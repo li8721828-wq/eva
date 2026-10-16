@@ -19,6 +19,7 @@ import { recordActivity } from '../services/activity-log'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import { SpecService } from '../services/spec-service'
 import { clearSessionApprovals, createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../services/tool-approval-policy'
+import { cancelAllPendingAskUsersForConversation, createLocalAskUser, resolvePendingAskUser } from '../services/ask-user-policy'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
@@ -31,6 +32,7 @@ import { TurnProgressProjector, isAnswerLikeContent, stripProgressBlocks, toProg
 import { registerBackgroundGoalController, type BackgroundGoalAction, type BackgroundGoalControlResult } from '../services/background-goal-control'
 import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
 import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
+import { buildSelectedSkillContext } from '../services/skill-service'
 import { ModelRouter } from '../services/model-router'
 import type { ModelPoolEntry } from '../../shared/types/model-pool'
 import { inferModelCapabilities, supportsImageInput } from '../../shared/model-capabilities'
@@ -631,7 +633,7 @@ async function getConversationAccess(conversation?: Conversation): Promise<{ fil
 }
 
 /** Only project-bound conversations may carry a project workspace path. */
-function conversationWorkspacePath(conversation: Conversation, fallback = ''): string {
+export function conversationWorkspacePath(conversation: Conversation, fallback = ''): string {
   return conversation.workspaceId ? (conversation.workspacePath || fallback) : ''
 }
 
@@ -747,7 +749,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.on(
     IPC.CHAT_SEND,
-    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[]; quotedMessage?: ChatMessageReference; messageId?: string }) => {
+    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[]; quotedMessage?: ChatMessageReference; messageId?: string; skillName?: string }) => {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
@@ -762,6 +764,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       // The prior turn may be waiting on an approval card. Release it so this
       // request's own approvals are not queued behind a stale card.
       rejectAllPendingApprovalsForConversation(conversationId, 'A newer chat request superseded this approval request.')
+      cancelAllPendingAskUsersForConversation(conversationId, '用户改发了新消息')
       resolvePendingGoalConfirmation(conversationId, false)
       let runner: AgentRunner | null = null
       let runtimeProcessId: string | null = null
@@ -865,6 +868,23 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const imageContext = referenceImages?.length && !primaryModelSupportsVision(services, effectiveAgentConfig, provider)
           ? await analyzeImagesWithAuthorizedPool(services, effectiveAgentConfig, message, referenceImages)
           : ''
+        // A skill the user picked belongs to this request only: resolve it here so an
+        // unreadable or since-disabled pack fails the send instead of silently dropping,
+        // and keep the body off the persisted row below so later turns inherit nothing.
+        const skillName = payload.skillName?.trim() || ''
+        let skillContext = ''
+        if (skillName) {
+          try {
+            skillContext = await buildSelectedSkillContext(
+              conversationWorkspacePath(conversation, getStorage().config.get('workspacePath')),
+              skillName,
+            )
+          } catch (error) {
+            send({ type: 'error', error: `Skill "${skillName}" could not be loaded: ${error instanceof Error ? error.message : String(error)}` })
+            send({ type: 'done', content: '' })
+            return
+          }
+        }
         const userChatMessage: ChatMessage = {
           id: userMessageId,
           conversationId,
@@ -874,6 +894,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           attachments: payload.attachments,
           images: referenceImages,
           quotedMessage: payload.quotedMessage,
+          attachedSkillName: skillName || undefined,
           timestamp: Date.now(),
         }
         await convStore.addMessage(conversationId, { ...userChatMessage, images: persistableImages(referenceImages) })
@@ -920,6 +941,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
                   workspaceId: conversation.workspaceId,
                   window: win,
                   config: { ...automation.toolApproval, policy: 'safe' },
+                }),
+                requestUserChoice: createLocalAskUser({
+                  conversationId,
+                  workspaceId: conversation.workspaceId,
+                  window: win,
                 }),
               })
               let output = ''
@@ -1194,6 +1220,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
             window: win,
             config: automation.toolApproval,
           }),
+          requestUserChoice: createLocalAskUser({
+            conversationId,
+            workspaceId: conversation.workspaceId,
+            window: win,
+          }),
         })
         // The user can cancel while configuration and history are loading,
         // before this runner has been registered in `activeRunners`.
@@ -1312,7 +1343,17 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
         const primarySupportsVision = primaryModelSupportsVision(services, effectiveAgentConfig, provider)
         const runnerHistory = primarySupportsVision ? historyMessages : historyMessages.map((history) => history.images?.length ? { ...history, images: undefined } : history)
-        const runnerMessage = imageContext ? { ...userChatMessage, images: undefined } : userChatMessage
+        // The runner copy diverges from the persisted row: the skill body joins it here and
+        // nowhere else, so this request is the only one that ever sees those instructions.
+        const runnerMessage: ChatMessage = {
+          ...userChatMessage,
+          ...(imageContext ? { images: undefined } : {}),
+          ...(skillContext ? {
+            attachmentContext: userChatMessage.attachmentContext
+              ? `${userChatMessage.attachmentContext}\n\n${skillContext}`
+              : skillContext,
+          } : {}),
+        }
         for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage })) {
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
@@ -1651,6 +1692,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
       activeChatRunTokens.delete(conversationId)
       resolvePendingGoalConfirmation(conversationId, false)
       rejectAllPendingApprovalsForConversation(conversationId, 'The user cancelled the chat.')
+      cancelAllPendingAskUsersForConversation(conversationId, '用户停止了本次回答')
       activeRunners.get(conversationId)?.abort()
       activeTaskRunners.get(conversationId)?.abort()
       activeBackgroundGoalPlanners.get(conversationId)?.abort()
@@ -1710,6 +1752,27 @@ export function registerConversationHandlers(services?: ChatServices): void {
         conversationId,
       })
       return true
+    }
+  )
+
+  ipcMain.handle(
+    IPC.CHAT_ASK_USER_DECIDE,
+    async (_event, payload: { conversationId?: string; askId?: string; optionId?: string }): Promise<boolean> => {
+      const askId = typeof payload?.askId === 'string' ? payload.askId : ''
+      const optionId = typeof payload?.optionId === 'string' ? payload.optionId : ''
+      const conversationId = typeof payload?.conversationId === 'string' ? payload.conversationId : ''
+      if (!askId || !optionId) return false
+      const handled = resolvePendingAskUser(askId, optionId, conversationId)
+      if (handled) {
+        void recordActivity({
+          category: 'agent',
+          action: 'chat.ask_user_answered',
+          status: 'success',
+          summary: '用户在选择卡片上作出了选择。',
+          conversationId,
+        })
+      }
+      return handled
     }
   )
 

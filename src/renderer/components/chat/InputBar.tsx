@@ -8,12 +8,12 @@ import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Square, X } from 'lucide-react'
+import { Bot, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Sparkles, Square, X } from 'lucide-react'
 import { uiCopy } from '@/lib/ui-copy'
 import type { ConversationPermissionLevel } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useShallow } from 'zustand/react/shallow'
-import { CHAT_SLASH_COMMANDS, activeSlashCommand, type ChatSlashCommand } from '@/lib/chat-commands'
+import { activeSlashCommand, buildSlashPopoverItems, type ChatSlashCommand, type SlashPopoverItem } from '@/lib/chat-commands'
 import { useChatAttachments } from '@/hooks/use-chat-attachments'
 
 export interface InputBarProps {
@@ -40,7 +40,7 @@ function getConnectionDisplayName(provider: ProviderConfigEntry): string {
 }
 
 export function InputBar({ className }: InputBarProps) {
-  const { conversations, createConversation, currentConversationId, inputText, quotedMessage, referenceImages, documentAttachments, setConversationPermissions, setInputText, setQuotedMessage, setReferenceImages, setDocumentAttachments, sendMessage, abortStream, addMessage, setError, startRequirementProgress, updateRequirementProgress, finishRequirementProgress } = useChatStore(useShallow((state) => ({
+  const { conversations, createConversation, currentConversationId, inputText, quotedMessage, referenceImages, documentAttachments, attachedSkill, setConversationPermissions, setInputText, setQuotedMessage, setReferenceImages, setDocumentAttachments, setAttachedSkill, sendMessage, abortStream, addMessage, setError, startRequirementProgress, updateRequirementProgress, finishRequirementProgress } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
     createConversation: state.createConversation,
     currentConversationId: state.currentConversationId,
@@ -48,11 +48,13 @@ export function InputBar({ className }: InputBarProps) {
     quotedMessage: state.quotedMessage,
     referenceImages: state.referenceImages,
     documentAttachments: state.documentAttachments,
+    attachedSkill: state.attachedSkill,
     setConversationPermissions: state.setConversationPermissions,
     setInputText: state.setInputText,
     setQuotedMessage: state.setQuotedMessage,
     setReferenceImages: state.setReferenceImages,
     setDocumentAttachments: state.setDocumentAttachments,
+    setAttachedSkill: state.setAttachedSkill,
     sendMessage: state.sendMessage,
     abortStream: state.abortStream,
     addMessage: state.addMessage,
@@ -77,11 +79,13 @@ export function InputBar({ className }: InputBarProps) {
   const startExpertTask = useTaskStore((state) => state.startExpertTask)
   const abortExpertTask = useTaskStore((state) => state.abortExpertTask)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const slashPopoverRef = useRef<HTMLDivElement>(null)
   const [isDraggingAttachments, setIsDraggingAttachments] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [caretPosition, setCaretPosition] = useState(0)
   const [activeMentionIndex, setActiveMentionIndex] = useState(0)
   const [activeCommandIndex, setActiveCommandIndex] = useState(0)
+  const [skillChoices, setSkillChoices] = useState<{ name: string; description: string }[]>([])
   const isRequirementSubmitting = useChatStore((state) => Boolean(
     currentConversationId && state.requirementProgressByConversation[currentConversationId]
   ))
@@ -134,10 +138,11 @@ export function InputBar({ className }: InputBarProps) {
     return activeSlashCommand(inputText, isSymposiumConversation)
   }, [inputText, isSymposiumConversation])
 
-  const filteredSlashCommands = useMemo(() => {
-    if (slashCommand === null) return []
-    return CHAT_SLASH_COMMANDS.filter((item) => item.command.startsWith(slashCommand))
-  }, [slashCommand])
+  const popoverItems = useMemo<SlashPopoverItem[]>(
+    () => (slashCommand === null ? [] : buildSlashPopoverItems(slashCommand, skillChoices)),
+    [skillChoices, slashCommand],
+  )
+  const firstSkillPopoverIndex = popoverItems.findIndex((item) => item.kind === 'skill')
 
   const selectedSlashCommand = useMemo(() => {
     const match = inputText.match(/^\/(?:requirement(?:-modeling)?|spec|dsl|coding)(?=\s|$)/i)
@@ -150,7 +155,25 @@ export function InputBar({ className }: InputBarProps) {
 
   useEffect(() => {
     setActiveCommandIndex(0)
-  }, [slashCommand])
+  }, [slashCommand, popoverItems.length])
+
+  useEffect(() => {
+    slashPopoverRef.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: 'nearest' })
+  }, [activeCommandIndex, popoverItems.length])
+
+  useEffect(() => {
+    if (slashCommand === null) return
+    let cancelled = false
+    void window.eva.skills.listForConversation(currentConversationId || undefined)
+      .then((inventory) => {
+        if (!cancelled) setSkillChoices(inventory.skills.map((skill) => ({ description: skill.description, name: skill.name })))
+      })
+      .catch((error) => {
+        console.error('Failed to list skills for the composer:', error)
+        if (!cancelled) setSkillChoices([])
+      })
+    return () => { cancelled = true }
+  }, [currentConversationId, slashCommand])
 
   useEffect(() => {
     if (!selectedSlashCommand || (inputText !== selectedSlashCommand && inputText !== `${selectedSlashCommand} `)) return
@@ -224,6 +247,7 @@ export function InputBar({ className }: InputBarProps) {
         await window.eva.symposium.continue({ conversationId: currentConversation.id, content: inputText.trim() })
         setInputText('')
         setQuotedMessage(null)
+        setAttachedSkill(null)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'Could not continue the Symposium.')
       }
@@ -243,6 +267,7 @@ export function InputBar({ className }: InputBarProps) {
         addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/coding', timestamp: Date.now() })
         setInputText('')
         setQuotedMessage(null)
+        setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, 'Preparing deterministic code generation from the persisted DSL')
         const runId = await latestRequirementRunId(conversation.id, ['ready-for-implementation'])
@@ -269,6 +294,7 @@ export function InputBar({ className }: InputBarProps) {
         addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/dsl', timestamp: Date.now() })
         setInputText('')
         setQuotedMessage(null)
+        setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取已完成的最终实施规格')
         const runId = await latestRequirementRunId(conversation.id, ['ready-for-implementation'])
@@ -295,6 +321,7 @@ export function InputBar({ className }: InputBarProps) {
         addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/spec', timestamp: Date.now() })
         setInputText('')
         setQuotedMessage(null)
+        setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取需求建模成果并核对代码证据')
         const runId = await latestRequirementRunId(conversation.id, ['ready-for-specification', 'ready-for-implementation'])
@@ -327,6 +354,7 @@ export function InputBar({ className }: InputBarProps) {
         })
         setInputText('')
         setQuotedMessage(null)
+        setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取已确认需求并选择建模标准')
         await window.eva.requirements.model({ conversationId: conversation.id })
@@ -359,6 +387,7 @@ export function InputBar({ className }: InputBarProps) {
         })
         setInputText('')
         setQuotedMessage(null)
+        setAttachedSkill(null)
         setDocumentAttachments([])
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取需求输入和附件')
@@ -391,6 +420,7 @@ export function InputBar({ className }: InputBarProps) {
       setInputText('')
       setQuotedMessage(null)
       setReferenceImages([])
+      setAttachedSkill(null)
       await startExpertTask(goal, conversation.id)
     } else {
       await sendMessage()
@@ -398,7 +428,7 @@ export function InputBar({ className }: InputBarProps) {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-  }, [addMessage, createConversation, currentConversation, currentConversationId, documentAttachments, finishRequirementProgress, inputText, isRequirementSubmitting, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setDocumentAttachments, setError, setInputText, setQuotedMessage, setReferenceImages, startExpertTask, startRequirementProgress, workMode])
+  }, [addMessage, createConversation, currentConversation, currentConversationId, documentAttachments, finishRequirementProgress, inputText, isRequirementSubmitting, isStreaming, isSymposiumRunning, isTaskRunning, referenceImages.length, sendMessage, setAttachedSkill, setDocumentAttachments, setError, setInputText, setQuotedMessage, setReferenceImages, startExpertTask, startRequirementProgress, workMode])
 
   const insertSymposiumMention = useCallback((participant: typeof symposiumMentionOptions[number]) => {
     if (!symposiumMention) return
@@ -414,20 +444,22 @@ export function InputBar({ className }: InputBarProps) {
   }, [inputText, setInputText, symposiumMention, symposiumMentionOptions])
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (filteredSlashCommands.length > 0) {
+    if (popoverItems.length > 0) {
       if (e.key === 'ArrowDown') {
         e.preventDefault()
-        setActiveCommandIndex((index) => (index + 1) % filteredSlashCommands.length)
+        setActiveCommandIndex((index) => (index + 1) % popoverItems.length)
         return
       }
       if (e.key === 'ArrowUp') {
         e.preventDefault()
-        setActiveCommandIndex((index) => (index - 1 + filteredSlashCommands.length) % filteredSlashCommands.length)
+        setActiveCommandIndex((index) => (index - 1 + popoverItems.length) % popoverItems.length)
         return
       }
       if (e.key === 'Tab' || e.key === 'Enter') {
         e.preventDefault()
-        insertSlashCommand((filteredSlashCommands[activeCommandIndex] || filteredSlashCommands[0]).command)
+        const item = popoverItems[activeCommandIndex] || popoverItems[0]
+        if (item.kind === 'skill') attachSkill(item.name, item.description)
+        else insertSlashCommand(item.name as ChatSlashCommand)
         return
       }
     }
@@ -447,6 +479,11 @@ export function InputBar({ className }: InputBarProps) {
         insertSymposiumMention(filteredSymposiumMentionOptions[activeMentionIndex] || filteredSymposiumMentionOptions[0])
         return
       }
+    }
+    if (e.key === 'Backspace' && inputText === '' && attachedSkill) {
+      e.preventDefault()
+      setAttachedSkill(null)
+      return
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -486,6 +523,9 @@ export function InputBar({ className }: InputBarProps) {
       void selection.then((paths) => addDocumentPaths(paths, command === 'folder' ? 'folder' : 'file')).catch(() => setAttachmentError('Could not select attachments.'))
       return
     }
+    // Requirement commands never build a chat turn, so a picked skill would be silently
+    // ignored. Dropping it here keeps the chip honest about what the next send carries.
+    setAttachedSkill(null)
     const nextInput = `/${command}${COMMAND_INPUT_SEPARATOR}`
     setInputText(nextInput)
     setCaretPosition(nextInput.length)
@@ -493,7 +533,16 @@ export function InputBar({ className }: InputBarProps) {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(nextInput.length, nextInput.length)
     })
-  }, [addDocumentPaths, setInputText])
+  }, [addDocumentPaths, setAttachedSkill, setInputText])
+
+  const attachSkill = useCallback((name: string, description: string) => {
+    setAttachedSkill({ name, description })
+    // The token never reaches inputText: the highlight overlay renders from it, and anything
+    // left there would travel into the message body.
+    setInputText('')
+    setCaretPosition(0)
+    requestAnimationFrame(() => textareaRef.current?.focus())
+  }, [setAttachedSkill, setInputText])
 
   const saveModelSelection = async (providerId: string, model: string) => {
     if (providerId === activeProviderId && model === activeModel) return
@@ -590,6 +639,16 @@ export function InputBar({ className }: InputBarProps) {
               ))}
             </div>
           )}
+          {attachedSkill && (
+            <div className="flex flex-wrap gap-2 rounded-t-[7px] border-b border-zinc-100 bg-white px-4 py-3">
+              <span className="inline-flex max-w-full items-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-2.5 py-1.5 text-xs text-zinc-700" title={attachedSkill.description}>
+                <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-600" />
+                <span className="truncate">{composerCopy.skillChip.replace('{name}', attachedSkill.name)}</span>
+                <span className="shrink-0 text-zinc-400">{composerCopy.skillChipHint}</span>
+                <button type="button" onClick={() => setAttachedSkill(null)} className="-mr-1 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700" title={`Remove ${attachedSkill.name}`} aria-label={`Remove ${attachedSkill.name}`}><X className="h-3 w-3" /></button>
+              </span>
+            </div>
+          )}
             <div className="flex min-h-16 items-end gap-3 rounded-t-[7px] bg-white px-4 py-3">
             <div className="relative min-h-[32px] flex-1">
               {selectedSlashCommand && (
@@ -643,29 +702,41 @@ export function InputBar({ className }: InputBarProps) {
             )}
           </div>
 
-          {filteredSlashCommands.length > 0 && !isSymposiumRunning && (
-            <div className="absolute bottom-[calc(100%+8px)] left-12 z-30 w-[min(440px,calc(100%-3rem))] overflow-hidden rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
-              <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-zinc-500">
-                <ClipboardList className="h-3.5 w-3.5 text-violet-500" />
-                对话命令
-              </div>
-              {filteredSlashCommands.map((item, index) => (
-                <button
-                  key={item.command}
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => insertSlashCommand(item.command)}
-                  className={cn(
-                    'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
-                    index === activeCommandIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50',
+          {popoverItems.length > 0 && !isSymposiumRunning && (
+            <div ref={slashPopoverRef} className="absolute bottom-[calc(100%+8px)] left-12 z-30 max-h-[min(60vh,520px)] w-[min(440px,calc(100%-3rem))] overflow-y-auto rounded-lg border border-zinc-200 bg-white py-1 shadow-lg shadow-zinc-900/10">
+              {popoverItems.some((item) => item.kind === 'command') && (
+                <div className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-zinc-500">
+                  <ClipboardList className="h-3.5 w-3.5 text-violet-500" />
+                  {composerCopy.slashCommandGroup}
+                </div>
+              )}
+              {popoverItems.map((item, index) => (
+                <React.Fragment key={`${item.kind}:${item.name}`}>
+                  {index === firstSkillPopoverIndex && (
+                    <div className="mt-1 flex items-center gap-2 border-t border-zinc-100 px-3 py-2 text-xs font-medium text-zinc-500">
+                      <Sparkles className="h-3.5 w-3.5 text-violet-500" />
+                      {composerCopy.slashSkillGroup}
+                    </div>
                   )}
-                >
-                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700"><ClipboardList className="h-3.5 w-3.5" /></span>
-                  <span className="min-w-0 flex-1"><span className="block font-mono text-sm font-medium">{item.label}</span><span className="block truncate text-xs text-zinc-500">{item.description}</span></span>
-                  <span className="shrink-0 text-xs text-zinc-400">Enter</span>
-                </button>
+                  <button
+                    type="button"
+                    data-active={index === activeCommandIndex ? 'true' : undefined}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => (item.kind === 'skill' ? attachSkill(item.name, item.description) : insertSlashCommand(item.name as ChatSlashCommand))}
+                    className={cn(
+                      'flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors',
+                      index === activeCommandIndex ? 'bg-violet-50 text-zinc-900' : 'text-zinc-700 hover:bg-zinc-50',
+                    )}
+                  >
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700">
+                      {item.kind === 'skill' ? <Sparkles className="h-3.5 w-3.5" /> : <ClipboardList className="h-3.5 w-3.5" />}
+                    </span>
+                    <span className="min-w-0 flex-1"><span className="block font-mono text-sm font-medium">{item.label}</span><span className="block truncate text-xs text-zinc-500">{item.description}</span></span>
+                    <span className="shrink-0 text-xs text-zinc-400">Enter</span>
+                  </button>
+                </React.Fragment>
               ))}
-              <div className="border-t border-zinc-100 px-3 py-1.5 text-xs text-zinc-400">方向键选择，Enter 或 Tab 填入命令。</div>
+              <div className="border-t border-zinc-100 px-3 py-1.5 text-xs text-zinc-400">{composerCopy.slashFooter}</div>
             </div>
           )}
 

@@ -89,6 +89,7 @@ function isToolAllowed(name: string, agentTools: string[]): boolean {
     || (name.startsWith('mcp__') && agentTools.includes('mcp:*'))
     || name === 'manage_personal_preferences'
     || name === 'spreadsheet'
+    || name === 'ask_user'
 }
 
 function isExactWritePathAllowed(requestedPath: unknown, workspacePath: string, allowedWritePaths?: string[]): boolean {

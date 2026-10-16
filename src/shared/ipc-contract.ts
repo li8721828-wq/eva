@@ -23,6 +23,10 @@ export interface IpcContract {
     args: [payload: { conversationId: string; approvalId: string; approved: boolean; rememberScope?: 'once' | 'session' }]
     result: boolean
   }
+  [IPC.CHAT_ASK_USER_DECIDE]: {
+    args: [payload: { conversationId: string; askId: string; optionId: string }]
+    result: boolean
+  }
   [IPC.REQUIREMENT_RUN_LIST]: { args: [conversationId?: string]; result: RequirementRun[] }
   [IPC.REQUIREMENT_RUN_SUBMIT]: { args: [input: SubmitRequirementInput]; result: RequirementRun }
   [IPC.REQUIREMENT_CLARIFICATION_ANSWER]: { args: [input: SubmitClarificationAnswersInput]; result: RequirementRun }

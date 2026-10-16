@@ -6,6 +6,7 @@ import { app } from 'electron'
 import type { SkillDiagnostic, SkillInventory, SkillRecord, SkillRootKind, SkillRoots } from '../../shared/types/skill'
 import { parseSkillMarkdown } from '../tools/skill-frontmatter'
 import { getStorage } from '../storage'
+import { writeTextAtomic } from '../storage/atomic-file'
 import { isWithinRoot } from './file-service'
 
 /** Budget for the resident skill catalog. It is an engineering limit, not a user preference. */
@@ -150,27 +151,51 @@ function readSkill(
     return { error: code === 'ENOENT' ? `This folder has no ${SKILL_FILE_NAME}.` : `${SKILL_FILE_NAME} could not be read.` }
   }
 
+  const checked = checkSkillMarkdown(raw, folderName)
+  if (!checked.ok) return { error: checked.error }
+
+  return {
+    skill: {
+      name: checked.name,
+      description: checked.description,
+      root: kind,
+      dirPath,
+      skillFilePath,
+      enabled: !disabled.has(checked.name.toLowerCase()),
+    },
+  }
+}
+
+/**
+ * The one set of rules a `SKILL.md` must satisfy to be a catalog entry. Discovery
+ * reports these as a diagnostic and `writeSkillFile` refuses the write, so a skill
+ * the model just created can never be a file that the next scan rejects.
+ */
+function checkSkillMarkdown(
+  raw: string,
+  folderName: string,
+): { ok: true; name: string; description: string; body: string } | { ok: false; error: string } {
   const parsed = parseSkillMarkdown(raw)
-  if (!parsed.ok) return { error: parsed.error }
+  if (!parsed.ok) return { ok: false, error: parsed.error }
 
   const name = (parsed.frontmatter.name || '').trim()
-  if (!name) return { error: 'The frontmatter has no "name".' }
+  if (!name) return { ok: false, error: 'The frontmatter has no "name".' }
   if (!SKILL_NAME_PATTERN.test(name)) {
-    return { error: `Skill name "${name}" must be lower-case and may only use letters, digits, dot, dash, or underscore.` }
+    return { ok: false, error: `Skill name "${name}" must be lower-case and may only use letters, digits, dot, dash, or underscore.` }
   }
-  if (name !== folderName) return { error: `The frontmatter name "${name}" must match its folder name "${folderName}".` }
+  if (name !== folderName) return { ok: false, error: `The frontmatter name "${name}" must match its folder name "${folderName}".` }
 
   const description = (parsed.frontmatter.description || '').replace(/\s+/g, ' ').trim()
-  if (!description) return { error: 'The frontmatter has no "description".' }
+  if (!description) return { ok: false, error: 'The frontmatter has no "description".' }
   if (description.length > MAX_DESCRIPTION_CHARS) {
-    return { error: `The description is ${description.length} characters; keep it under ${MAX_DESCRIPTION_CHARS} so the catalog stays short.` }
+    return { ok: false, error: `The description is ${description.length} characters; keep it under ${MAX_DESCRIPTION_CHARS} so the catalog stays short.` }
   }
-  if (!parsed.body) return { error: `The skill has no instructions after the frontmatter.` }
+  if (!parsed.body) return { ok: false, error: `The skill has no instructions after the frontmatter.` }
   if (parsed.body.length > MAX_SKILL_BODY_CHARS) {
-    return { error: `The instructions are ${parsed.body.length} characters; the limit is ${MAX_SKILL_BODY_CHARS}.` }
+    return { ok: false, error: `The instructions are ${parsed.body.length} characters; the limit is ${MAX_SKILL_BODY_CHARS}.` }
   }
 
-  return { skill: { name, description, root: kind, dirPath, skillFilePath, enabled: !disabled.has(name.toLowerCase()) } }
+  return { ok: true, name, description, body: parsed.body }
 }
 
 /**
@@ -211,6 +236,128 @@ export async function loadSkill(workspacePath: string | undefined, requestedName
     '--- Instructions ---',
     parsed.body,
   ].join('\n\n')
+}
+
+/**
+ * Frame a skill the user picked explicitly for one request. `loadSkill` stays the only
+ * route to a body, so this inherits its name lookup and every containment guard. The
+ * caller injects the result into this turn's runner copy only — it is never persisted.
+ */
+export async function buildSelectedSkillContext(workspacePath: string | undefined, requestedName: string): Promise<string> {
+  const name = requestedName.trim()
+  if (!name) throw new Error('A skill name is required.')
+  const body = await loadSkill(workspacePath, name)
+  return [
+    `--- Skill selected by the user: ${name} ---`,
+    'The user explicitly chose this skill for the current request, so follow these instructions while answering it. Skills never execute code.',
+    body,
+    '--- End skill ---',
+  ].join('\n\n')
+}
+
+export interface SkillFileWriteRequest {
+  /** Skill folder name, which is also the frontmatter name of its `SKILL.md`. */
+  name: string
+  /** Text file addressed relative to the skill folder. Defaults to `SKILL.md`. */
+  file?: string
+  content: string
+  /** Which installed-skills folder to write under. Defaults to the machine-wide one. */
+  scope?: 'global' | 'project'
+  overwrite?: boolean
+}
+
+/**
+ * Write one text file into a registered skills folder so a skill can be authored
+ * from a conversation. There is deliberately no path argument: a target is always
+ * `<skills root>/<name>/<relative file>`, which keeps the machine-wide skills
+ * directory out of the workspace file sandbox while still making it writable.
+ */
+export async function writeSkillFile(workspacePath: string | undefined, request: SkillFileWriteRequest): Promise<string> {
+  const name = request.name.trim()
+  if (!name) throw new Error('name is required and must be the skill folder name.')
+  if (!SKILL_NAME_PATTERN.test(name)) {
+    throw new Error(`Skill name "${name}" must be lower-case and may only use letters, digits, dot, dash, or underscore.`)
+  }
+  const requestedFile = request.file?.trim() || SKILL_FILE_NAME
+  const relativeParts = splitSkillRelativePath(requestedFile)
+  const scope = request.scope ?? 'global'
+
+  const roots = resolveSkillRoots(workspacePath)
+  if (scope === 'project' && !roots.project) {
+    throw new Error('This conversation has no workspace, so there is no project skill folder. Write with scope "global" instead.')
+  }
+  const root = scope === 'project' ? roots.project as string : roots.global
+
+  await fsp.mkdir(root, { recursive: true })
+  const realRoot = await fsp.realpath(root)
+  const skillDir = path.join(realRoot, name)
+  if (await exists(skillDir)) {
+    const resolved = await fsp.realpath(skillDir)
+    if (!isWithinRoot(resolved, realRoot) || resolved === realRoot) {
+      throw new Error(`The skill folder "${name}" points outside ${realRoot}.`)
+    }
+  } else {
+    await fsp.mkdir(skillDir, { recursive: true })
+  }
+  const realSkillDir = await fsp.realpath(skillDir)
+
+  const parentDir = path.join(realSkillDir, ...relativeParts.slice(0, -1))
+  await fsp.mkdir(parentDir, { recursive: true })
+  const realParent = await fsp.realpath(parentDir)
+  const filePath = path.join(realParent, relativeParts[relativeParts.length - 1])
+  if (!isWithinRoot(filePath, realSkillDir) || filePath === realSkillDir) {
+    throw new Error(`"${requestedFile}" resolves outside the skill folder ${realSkillDir}.`)
+  }
+
+  if (filePath === path.join(realSkillDir, SKILL_FILE_NAME)) {
+    const checked = checkSkillMarkdown(request.content, name)
+    if (!checked.ok) throw new Error(`${SKILL_FILE_NAME} was not written: ${checked.error}`)
+  } else {
+    const buffer = Buffer.from(request.content, 'utf8')
+    if (buffer.includes(0)) throw new Error(`"${requestedFile}" is not text; a skill can only hold text files.`)
+    if (buffer.length > MAX_SKILL_FILE_BYTES) {
+      throw new Error(`"${requestedFile}" is ${buffer.length} bytes; a bundled skill file must stay under ${MAX_SKILL_FILE_BYTES} so load_skill can read it back.`)
+    }
+  }
+
+  const previous = await fsp.readFile(filePath, 'utf8').catch(() => undefined)
+  if (previous !== undefined && previous !== request.content && !request.overwrite) {
+    throw new Error(`${requestedFile} already exists in skill "${name}". Pass overwrite true to replace it.`)
+  }
+  if (previous === request.content) {
+    invalidateSkillCache()
+    return `Skill file unchanged: ${filePath}`
+  }
+
+  writeTextAtomic(filePath, request.content)
+  // The catalog and the composer read the same cache the settings page rescans.
+  invalidateSkillCache()
+
+  const summary = previous === undefined ? 'Created' : 'Replaced'
+  const catalogNote = filePath === path.join(realSkillDir, SKILL_FILE_NAME)
+    ? 'It is listed under Available Skills from the next request.'
+    : await exists(path.join(realSkillDir, SKILL_FILE_NAME))
+      ? `Skill "${name}" is unchanged in the catalog; read this file back with load_skill using name "${name}" and file "${requestedFile}".`
+      : `This folder has no ${SKILL_FILE_NAME} yet, so it will not appear under Available Skills until you write one.`
+  return `${summary} ${filePath}\n${catalogNote}`
+}
+
+/** Split a skill-relative path, rejecting anything that is not inside the folder. */
+function splitSkillRelativePath(requested: string): string[] {
+  const unified = requested.replace(/\\/g, '/').trim()
+  if (!unified) throw new Error('file must name a text file inside the skill folder, for example "references/schema.md".')
+  if (unified.startsWith('/') || unified.startsWith('~') || /^[a-zA-Z]:/.test(unified)) {
+    throw new Error(`"${requested}" is an absolute path. Skill files are addressed relative to the skill folder.`)
+  }
+  const parts = unified.split('/').filter((part) => part.length > 0 && part !== '.')
+  if (!parts.length || parts.some((part) => part === '..' || part.includes(':'))) {
+    throw new Error(`"${requested}" tries to leave the skill folder.`)
+  }
+  return parts
+}
+
+async function exists(target: string): Promise<boolean> {
+  return fsp.stat(target).then(() => true, () => false)
 }
 
 async function readBundledFile(dirPath: string, skillName: string, requestedFile: string): Promise<string> {

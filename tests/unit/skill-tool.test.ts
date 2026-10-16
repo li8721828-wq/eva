@@ -18,7 +18,7 @@ vi.mock('../../src/main/storage', () => ({
 
 import type { ToolContext } from '../../src/main/tools'
 import { createSkillTools } from '../../src/main/tools/skill-tools'
-import { invalidateSkillCache, loadSkill } from '../../src/main/services/skill-service'
+import { invalidateSkillCache, loadSkill, scanSkillInventory } from '../../src/main/services/skill-service'
 
 const tempDirs: string[] = []
 
@@ -185,5 +185,36 @@ describe('the load_skill tool definition', () => {
     expect(header).toContain('global skill, folder:')
     expect(header).toContain('Global body.')
     expect(bundled).toContain('global reference')
+  })
+})
+
+describe('the write_skill_file tool definition', () => {
+  const tool = createSkillTools().find((candidate) => candidate.definition.name === 'write_skill_file')!
+
+  it('takes a skill name and content, with the rest optional', () => {
+    expect(Object.keys(tool.definition.parameters.properties)).toEqual(['name', 'file', 'content', 'scope', 'overwrite'])
+    expect(tool.definition.parameters.required).toEqual(['name', 'content'])
+  })
+
+  it('writes outside the workspace sandbox and the catalog picks it up', async () => {
+    const workspace = makeTempDir('eva-skill-tool-ws-')
+
+    const result = await tool.execute({
+      name: 'from-tool',
+      content: '---\nname: from-tool\ndescription: Authored by the tool.\n---\n\nDo the thing.\n',
+    }, toolContext(workspace))
+
+    expect(result).toContain(path.join(state.userDataDir, 'skills', 'from-tool', 'SKILL.md'))
+    expect(scanSkillInventory(workspace).skills.map((skill) => skill.name)).toContain('from-tool')
+  })
+
+  it('refuses content that is not text and a scope it does not know', async () => {
+    const workspace = makeTempDir('eva-skill-tool-ws-')
+
+    await expect(tool.execute({ name: 'from-tool' }, toolContext(workspace)))
+      .rejects.toThrow('content is required')
+    await expect(tool.execute({ name: 'from-tool', content: 'body', scope: 'machine' }, toolContext(workspace)))
+      .rejects.toThrow('scope must be "global" or "project"')
+    expect(fs.existsSync(path.join(state.userDataDir, 'skills', 'from-tool'))).toBe(false)
   })
 })

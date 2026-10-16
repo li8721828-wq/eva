@@ -27,6 +27,8 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'project_search', label: 'Project metadata', description: 'Query persisted symbols, imports, terms, API, data, and configuration metadata.', category: 'Search', risk: 'read' },
   { id: 'project_index_status', label: 'Project index status', description: 'Show persisted metadata coverage and synchronization status.', category: 'Search', risk: 'read' },
   { id: 'load_skill', label: 'Load skill', description: 'Read the full instructions of a skill folder the user installed under Available Skills, by exact name. Skills are Markdown plus bundled text files; nothing is executed.', category: 'Search', risk: 'read' },
+  { id: 'write_skill_file', label: 'Write skill file', description: 'Create or update a text file inside an installed-skills folder so Eva can author a skill. Limited to those folders; nothing is executed.', category: 'Files', risk: 'write' },
+  { id: 'ask_user', label: 'Ask the user to choose', description: 'Show one question with a few clickable options and wait for the choice inside the same turn. Always available on surfaces a human can answer from; never shown where nobody is.', category: 'Integrations', risk: 'read' },
   { id: 'web_search', label: 'Web search', description: 'Allow this agent to query the active search service. Requires a configured Brave, Tavily, or SearXNG provider.', category: 'Internet', risk: 'network' },
   { id: 'read_web_page', label: 'Read web page', description: 'Read a public HTTP(S) webpage. Local and private network addresses are blocked.', category: 'Internet', risk: 'network' },
   { id: 'open_terminal', label: 'Open controlled terminal', description: 'Open the current conversation\'s built-in terminal in Eva.', category: 'Execution', risk: 'system' },
@@ -39,4 +41,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 32
+export const TOOL_CATALOG_VERSION = 33

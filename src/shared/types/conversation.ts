@@ -94,6 +94,12 @@ export interface ChatMessage {
   favorited?: boolean
   /** A user-selected prior message that should be supplied as focused context. */
   quotedMessage?: ChatMessageReference
+  /**
+   * The skill the user picked explicitly for this one message. Only the name is
+   * stored: the instructions go to the model through this turn's runner copy and
+   * are never persisted, so later turns cannot accumulate stale skill text.
+   */
+  attachedSkillName?: string
   timestamp: number
 }
 
@@ -259,13 +265,32 @@ export interface ToolApprovalRequest {
   requestedAt: number
 }
 
+export interface AskUserOption {
+  id: string
+  /** The whole button: the card adds no label of its own beside it. */
+  label: string
+  /** Hover-only elaboration, kept out of the visible layout on purpose. */
+  detail?: string
+}
+
+/**
+ * A decision the Agent needs before it can continue. One question, a handful of
+ * mutually exclusive options, and the click answers it inside the same turn.
+ */
+export interface AskUserRequest {
+  id: string
+  question: string
+  options: AskUserOption[]
+  requestedAt: number
+}
+
 export interface ChatStreamEvent {
   /** The conversation that owns this stream event. */
   conversationId?: string
   /** The Agent actually selected for this response by the main process. */
   agentId?: string
   agentName?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'done' | 'error'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'ask_user_request' | 'done' | 'error'
   messageId?: string
   content?: string
   /** True only when provisional text was protocol markup and must be discarded. */
@@ -283,6 +308,7 @@ export interface ChatStreamEvent {
   progressItem?: number
   goalConfirmation?: GoalConfirmationRequest
   toolApproval?: ToolApprovalRequest
+  askUser?: AskUserRequest
   error?: string
   finishReason?: string
   usage?: ChatUsage

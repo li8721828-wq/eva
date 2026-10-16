@@ -15,6 +15,8 @@ import { createRuntimeProposalTools } from './runtime-proposal-tools'
 import { createPersonalPreferenceTools } from './personal-preference-tools'
 import { createSpreadsheetTools } from './spreadsheet-tools'
 import { createSkillTools } from './skill-tools'
+import { createAskUserTools } from './ask-user-tools'
+import type { AskUserOutcome, AskUserPrompt } from '../services/ask-user-policy'
 import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
 import type { LongTermMemoryStore } from '../storage/long-term-memory-store'
 import type { ProjectIndexService } from '../services/project-index-service'
@@ -33,6 +35,11 @@ export interface ToolContext {
   visualAttachments?: ToolResultImage[]
   /** Bounded text context from the owning Agent's current run. */
   agentContext?: string
+  /**
+   * Present only on a surface a human can answer from. `ask_user` refuses rather
+   * than hanging when it is missing.
+   */
+  requestUserChoice?: (prompt: AskUserPrompt) => Promise<AskUserOutcome>
 }
 
 export interface ToolResultImage {
@@ -182,6 +189,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createRuntimeProposalTools(registry)) registry.register(tool)
   for (const tool of createSpreadsheetTools()) registry.register(tool)
   for (const tool of createSkillTools()) registry.register(tool)
+  for (const tool of createAskUserTools()) registry.register(tool)
   if (personalPreferenceStore) {
     for (const tool of createPersonalPreferenceTools(personalPreferenceStore, longTermMemory)) registry.register(tool)
   }

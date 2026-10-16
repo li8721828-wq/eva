@@ -77,7 +77,7 @@ export const BUILT_IN_AGENTS: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'
     systemPrompt: '',
     model: 'gpt-4o',
     providerId: 'openai',
-    tools: ['inspect_runtime', 'diagnose_runtime', 'create_runtime_proposal', 'manage_personal_preferences', 'spreadsheet', 'read_file', 'edit_file', 'write_file', 'list_directory', 'search_files', 'search_code', 'search_by_regex', 'open_terminal', 'read_terminal', 'write_terminal', 'execute_command', 'close_terminal', 'browser_control', 'project_search', 'project_index_status', 'load_skill', 'web_search', 'read_web_page', 'delegate_to_model_pool'],
+    tools: ['inspect_runtime', 'diagnose_runtime', 'create_runtime_proposal', 'manage_personal_preferences', 'spreadsheet', 'read_file', 'edit_file', 'write_file', 'list_directory', 'search_files', 'search_code', 'search_by_regex', 'open_terminal', 'read_terminal', 'write_terminal', 'execute_command', 'close_terminal', 'browser_control', 'project_search', 'project_index_status', 'load_skill', 'write_skill_file', 'web_search', 'read_web_page', 'delegate_to_model_pool'],
     maxIterations: 100,
     temperature: 0.7,
     isBuiltIn: true,

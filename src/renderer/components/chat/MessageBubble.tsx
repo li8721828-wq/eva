@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView, ToolCallView } from './ToolCallView'
 import { PlanChecklist } from './PlanChecklist'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info, CircleDot, RefreshCw } from 'lucide-react'
+import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info, CircleDot, RefreshCw, Sparkles } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
@@ -644,6 +644,12 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
               </Badge>
             )}
             {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
+            {message.attachedSkillName ? (
+              <div className="mb-2 inline-flex max-w-full items-center gap-1.5 self-start rounded-md border border-violet-200 bg-violet-50 px-2 py-1 text-xs leading-5 text-violet-700">
+                <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate">本次选用技能 {message.attachedSkillName}</span>
+              </div>
+            ) : null}
             <div
               className="chat-user-message__content cursor-text select-text whitespace-pre-wrap"
               style={{ userSelect: 'text', WebkitUserSelect: 'text' }}

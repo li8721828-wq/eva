@@ -5,6 +5,7 @@ import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
 import { GoalConfirmationCard } from './GoalConfirmationCard'
 import { ToolApprovalCard } from './ToolApprovalCard'
+import { AskUserCard } from './AskUserCard'
 import { RequirementClarificationCard } from './RequirementClarificationCard'
 import { CheckCircle2, ChevronsDown, CircleAlert, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -79,6 +80,7 @@ export function MessageList({ className }: MessageListProps) {
   const requirementProgressByConversation = useChatStore((s) => s.requirementProgressByConversation)
   const decideGoalConfirmation = useChatStore((s) => s.decideGoalConfirmation)
   const decideToolApproval = useChatStore((s) => s.decideToolApproval)
+  const decideAskUser = useChatStore((s) => s.decideAskUser)
   const refreshConversation = useChatStore((s) => s.refreshConversation)
   const startRequirementProgress = useChatStore((s) => s.startRequirementProgress)
   const finishRequirementProgress = useChatStore((s) => s.finishRequirementProgress)
@@ -107,6 +109,7 @@ export function MessageList({ className }: MessageListProps) {
   const holdsStoppedStreamCopy = !isStreaming && Boolean(streamingContent)
   const goalConfirmation = stream?.goalConfirmation
   const toolApproval = stream?.toolApproval
+  const askUser = stream?.askUser
   const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
   const isRequirementRunning = Boolean(requirementProgress)
   const rightPanelVisible = useAppStore((s) => s.rightPanelVisible)
@@ -657,6 +660,13 @@ export function MessageList({ className }: MessageListProps) {
           <ToolApprovalCard
             request={toolApproval}
             onDecide={(approved, rememberScope) => void decideToolApproval(currentConversationId, toolApproval.id, approved, rememberScope)}
+          />
+        )}
+
+        {askUser && currentConversationId && (
+          <AskUserCard
+            request={askUser}
+            onDecide={(optionId) => void decideAskUser(currentConversationId, askUser.id, optionId)}
           />
         )}
 

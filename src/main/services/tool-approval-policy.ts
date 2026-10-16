@@ -28,6 +28,7 @@ const READ_ONLY_TOOLS = new Set([
   'inspect_runtime',
   'diagnose_runtime',
   'load_skill',
+  'ask_user',
   'delegate_to_team',
   'delegate_to_model_pool',
   'run_task',
@@ -41,6 +42,7 @@ const WORKSPACE_WRITE_TOOLS = new Set([
   'write_file',
   'edit_file',
   'spreadsheet',
+  'write_skill_file',
 ])
 
 const TERMINAL_COMMAND_TOOLS = new Set([
@@ -99,6 +101,12 @@ export function requiresApproval(
 }
 
 function buildSummary(toolName: string, args: Record<string, unknown>, category: ApprovalCategory): { summary: string; detail?: string } {
+  if (toolName === 'write_skill_file') {
+    const name = String(args.name || '(missing name)')
+    const file = String(args.file || 'SKILL.md')
+    const scope = args.scope === 'project' ? 'project skills' : 'installed skills'
+    return { summary: `Write skill file ${name}/${file}`, detail: `Target folder: ${scope}. Replaces an existing file only when the tool asks to.` }
+  }
   if (category === 'workspace-write' && (toolName === 'write_file' || toolName === 'edit_file')) {
     const target = String(args.path || '(missing path)')
     return { summary: `${toolName === 'write_file' ? 'Write' : 'Edit'} ${target}`, detail: `Workspace: ${args.workspacePath || '(default)'}` }

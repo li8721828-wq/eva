@@ -73,6 +73,7 @@ export const IPC = {
 
   // File-based skill packs discovered from disk
   SKILL_LIST: 'skill:list',
+  SKILL_INVENTORY_FOR_CONVERSATION: 'skill:inventory-for-conversation',
   SKILL_TOGGLE: 'skill:toggle',
   SKILL_RESCAN: 'skill:rescan',
   SKILL_OPEN_FOLDER: 'skill:open-folder',
@@ -105,6 +106,7 @@ export const IPC = {
   CHAT_ABORT: 'chat:abort',
   CHAT_GOAL_CONFIRMATION_DECIDE: 'chat:goal-confirmation-decide',
   CHAT_TOOL_APPROVAL_DECIDE: 'chat:tool-approval:decide',
+  CHAT_ASK_USER_DECIDE: 'chat:ask-user:decide',
 
   // Shared multi-agent discussion
   SYMPOSIUM_START: 'symposium:start',

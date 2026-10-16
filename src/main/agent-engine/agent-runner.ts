@@ -5,6 +5,7 @@ import type { ToolExecutor, ToolContext, ToolRegistry, FileService, TerminalServ
 import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ChatMessage, ChatUsage, ModelCallTiming, ResponseTiming, ToolCallTiming } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
+import type { AskUserOutcome, AskUserPrompt } from '../services/ask-user-policy'
 import { ContextManager } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel } from './tool-result-context'
@@ -40,6 +41,11 @@ export interface AgentRunnerConfig {
   /** Automation settings: tool approval policy and sandbox config. */
   automation?: AutomationConfig
   requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
+  /**
+   * How `ask_user` reaches a human. Absent on surfaces with nobody to answer
+   * (background tasks, remote channels), which is also what hides the tool.
+   */
+  requestUserChoice?: (prompt: AskUserPrompt) => Promise<AskUserOutcome>
   /** Optional exact paths an otherwise permitted file-editing call may modify. */
   allowedWritePaths?: string[]
   /** Internal orchestration capability available in Auto conversations. */
@@ -372,6 +378,9 @@ export class AgentRunner {
         ...(hasSpreadsheetAttachment ? spreadsheetDefinition : []),
         ...toolRegistry.getDefinitionsByNames([...configuredToolNames, ...mcpToolNames]),
         ...(toolRegistry.has('manage_personal_preferences') && !agentConfig.tools.includes('manage_personal_preferences') ? toolRegistry.getDefinitionsByNames(['manage_personal_preferences']) : []),
+        // Asking is not a capability grant: any run with a human on the other end
+        // can ask, and a run without one never sees the tool at all.
+        ...(this.config.requestUserChoice && toolRegistry.has('ask_user') ? toolRegistry.getDefinitionsByNames(['ask_user']) : []),
         ...(!hasSpreadsheetAttachment && toolRegistry.has('spreadsheet') ? spreadsheetDefinition : []),
         ...(poolTool ? [poolTool] : []),
         ...(this.config.delegateToTeam ? [TEAM_DELEGATION_TOOL] : []),
@@ -674,6 +683,7 @@ export class AgentRunner {
             fileAccessGrants,
             fullFilesystemAccess,
             supportsVisionInput: primarySupportsVision,
+            requestUserChoice: this.config.requestUserChoice,
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
             allowedModelPoolIds: agentConfig.modelPoolIds,
@@ -769,6 +779,7 @@ export class AgentRunner {
             fileAccessGrants,
             fullFilesystemAccess,
             supportsVisionInput: primarySupportsVision,
+            requestUserChoice: this.config.requestUserChoice,
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
             allowedModelPoolIds: agentConfig.modelPoolIds,
@@ -1036,6 +1047,7 @@ export class AgentRunner {
             fileAccessGrants,
             fullFilesystemAccess,
             supportsVisionInput: primarySupportsVision,
+            requestUserChoice: this.config.requestUserChoice,
             fileService: this.config.fileService,
             terminalService: this.config.terminalService,
             allowedModelPoolIds: agentConfig.modelPoolIds,

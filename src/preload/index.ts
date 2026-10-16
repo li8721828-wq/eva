@@ -75,11 +75,12 @@ export interface EvaAPI {
 
   // 聊天
   chat: {
-    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[], quotedMessage?: ChatMessageReference, messageId?: string): Promise<void>
+    send(conversationId: string, message: string, agentId?: string, images?: ChatImageAttachment[], attachments?: ChatDocumentAttachment[], quotedMessage?: ChatMessageReference, messageId?: string, skillName?: string): Promise<void>
     onStream(callback: EventCallback<ChatStreamEvent>): Unsubscribe
     abort(conversationId: string): Promise<void>
     decideGoalConfirmation(conversationId: string, confirmationId: string, approved: boolean): Promise<boolean>
     decideToolApproval(conversationId: string, approvalId: string, approved: boolean, rememberScope?: 'once' | 'session'): Promise<boolean>
+    decideAskUser(conversationId: string, askId: string, optionId: string): Promise<boolean>
   }
 
   // 智能体管理
@@ -291,6 +292,7 @@ export interface EvaAPI {
 
   skills: {
     list(workspacePath?: string): Promise<SkillInventory>
+    listForConversation(conversationId?: string): Promise<SkillInventory>
     setEnabled(name: string, enabled: boolean, workspacePath?: string): Promise<SkillInventory>
     rescan(workspacePath?: string): Promise<SkillInventory>
     openFolder(kind: SkillRootKind, workspacePath?: string): Promise<string>
@@ -354,8 +356,8 @@ const evaAPI: EvaAPI = {
 
   // 聊天
   chat: {
-    send: (conversationId, message, agentId, images, attachments, quotedMessage, messageId) => {
-      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments, quotedMessage, messageId })
+    send: (conversationId, message, agentId, images, attachments, quotedMessage, messageId, skillName) => {
+      ipcRenderer.send(IPC.CHAT_SEND, { conversationId, message, agentId, images, attachments, quotedMessage, messageId, skillName })
       return Promise.resolve()
     },
     onStream: (callback) => onStream(IPC.CHAT_STREAM, callback),
@@ -365,6 +367,7 @@ const evaAPI: EvaAPI = {
     },
     decideGoalConfirmation: (conversationId, confirmationId, approved) => ipcRenderer.invoke(IPC.CHAT_GOAL_CONFIRMATION_DECIDE, { conversationId, confirmationId, approved }),
     decideToolApproval: (conversationId, approvalId, approved, rememberScope) => invokeContract(IPC.CHAT_TOOL_APPROVAL_DECIDE, { conversationId, approvalId, approved, rememberScope }),
+    decideAskUser: (conversationId, askId, optionId) => invokeContract(IPC.CHAT_ASK_USER_DECIDE, { conversationId, askId, optionId }),
   },
 
   // 智能体管理
@@ -606,6 +609,7 @@ const evaAPI: EvaAPI = {
 
   skills: {
     list: (workspacePath) => ipcRenderer.invoke(IPC.SKILL_LIST, workspacePath),
+    listForConversation: (conversationId) => ipcRenderer.invoke(IPC.SKILL_INVENTORY_FOR_CONVERSATION, conversationId),
     setEnabled: (name, enabled, workspacePath) => ipcRenderer.invoke(IPC.SKILL_TOGGLE, name, enabled, workspacePath),
     rescan: (workspacePath) => ipcRenderer.invoke(IPC.SKILL_RESCAN, workspacePath),
     openFolder: (kind, workspacePath) => ipcRenderer.invoke(IPC.SKILL_OPEN_FOLDER, kind, workspacePath),

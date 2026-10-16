@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentSymposium, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, FileAccessGrant, GoalConfirmationRequest, ProgressUpdate, ToolApprovalRequest, ToolCall, ChatStreamEvent } from '../../shared/types'
+import type { AgentSymposium, AskUserRequest, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, Conversation, ConversationPermissionLevel, ExecutionTimelineEntry, FileAccessGrant, GoalConfirmationRequest, ProgressUpdate, ToolApprovalRequest, ToolCall, ChatStreamEvent } from '../../shared/types'
 import type { RequirementProgress } from '../../shared/types/requirement-engineering'
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
@@ -16,6 +16,7 @@ export interface ConversationStreamState {
   progressUpdates: ProgressUpdate[]
   goalConfirmation?: GoalConfirmationRequest
   toolApproval?: ToolApprovalRequest
+  askUser?: AskUserRequest
   startedAt: number | null
 }
 
@@ -63,6 +64,8 @@ interface ChatState {
   quotedMessage: ChatMessageReference | null
   referenceImages: ChatImageAttachment[]
   documentAttachments: ChatDocumentAttachment[]
+  /** The skill picked from the `/` menu for the next message only. Renderer-local draft state. */
+  attachedSkill: { name: string; description: string } | null
   error: string | null
 
   // Data setters
@@ -74,6 +77,7 @@ interface ChatState {
   setQuotedMessage: (message: ChatMessageReference | null) => void
   setReferenceImages: (images: ChatImageAttachment[]) => void
   setDocumentAttachments: (attachments: ChatDocumentAttachment[]) => void
+  setAttachedSkill: (skill: { name: string; description: string } | null) => void
   setError: (error: string | null) => void
   startRequirementProgress: (conversationId: string, message: string) => void
   updateRequirementProgress: (progress: RequirementProgress) => void
@@ -98,6 +102,7 @@ interface ChatState {
   abortStream: () => void
   decideGoalConfirmation: (conversationId: string, confirmationId: string, approved: boolean) => Promise<void>
   decideToolApproval: (conversationId: string, approvalId: string, approved: boolean, rememberScope?: 'once' | 'session') => Promise<void>
+  decideAskUser: (conversationId: string, askId: string, optionId: string) => Promise<void>
   appendStreamEvent: (event: ChatStreamEvent) => void
   clearCurrentChat: () => void
 }
@@ -144,16 +149,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   quotedMessage: null,
   referenceImages: [],
   documentAttachments: [],
+  attachedSkill: null,
   error: null,
 
   setConversations: (conversations) => set({ conversations }),
-  setCurrentConversationId: (id) => set({ currentConversationId: id }),
+  // A picked skill belongs to the conversation whose workspace listed it, so switching
+  // conversations must drop it rather than carry a name the new workspace may not have.
+  setCurrentConversationId: (id) => set({ currentConversationId: id, attachedSkill: null }),
   setMessages: (messages) => set({ messages }),
   addMessage: (message) => set((s) => ({ messages: [...s.messages, message] })),
   setInputText: (text) => set({ inputText: text }),
   setQuotedMessage: (message) => set({ quotedMessage: message }),
   setReferenceImages: (images) => set({ referenceImages: images }),
   setDocumentAttachments: (attachments) => set({ documentAttachments: attachments }),
+  setAttachedSkill: (skill) => set({ attachedSkill: skill }),
   setError: (error) => set({ error }),
   startRequirementProgress: (conversationId, message) => {
     const progress: RequirementProgress = { conversationId, stage: 'source', message, phase: 'started' }
@@ -481,7 +490,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (agentId) => {
-    const { inputText, quotedMessage, referenceImages, documentAttachments, currentConversationId } = get()
+    const { inputText, quotedMessage, referenceImages, documentAttachments, attachedSkill, currentConversationId } = get()
     if ((!inputText.trim() && referenceImages.length === 0 && documentAttachments.length === 0) || (currentConversationId && get().streamingByConversation[currentConversationId]?.isStreaming)) return
     if (sendStartInFlight) return
     sendStartInFlight = true
@@ -548,6 +557,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         quotedMessage: quotedMessage || undefined,
         attachments: documentAttachments,
         images: referenceImages,
+        attachedSkillName: attachedSkill?.name,
         timestamp: Date.now(),
       }
 
@@ -561,6 +571,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         quotedMessage: null,
         referenceImages: [],
         documentAttachments: [],
+        attachedSkill: null,
         streamingByConversation: {
           ...s.streamingByConversation,
           [convId!]: { isStreaming: true, content: '', reasoningContent: '', toolCalls: [], executionTimeline: [], progressUpdates: [], startedAt: Date.now() },
@@ -569,7 +580,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }))
 
       try {
-        await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined, userMessage.id)
+        await window.eva.chat.send(convId, messageContent, requestedAgentId, referenceImages, documentAttachments, quotedMessage || undefined, userMessage.id, attachedSkill?.name)
       } catch (err) {
         console.error('Failed to send message:', err)
         set((s) => ({
@@ -605,6 +616,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           isStreaming: false,
           goalConfirmation: undefined,
           toolApproval: undefined,
+          askUser: undefined,
         },
       },
     }))
@@ -641,6 +653,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
           [conversationId]: {
             ...stream,
             toolApproval: undefined,
+          },
+        },
+      }
+    })
+  },
+
+  decideAskUser: async (conversationId, askId, optionId) => {
+    await window.eva.chat.decideAskUser(conversationId, askId, optionId)
+    // A card the runtime no longer holds (timed out, superseded) is dead either
+    // way: drop it so it cannot sit there unclickable.
+    set((state) => {
+      const stream = state.streamingByConversation[conversationId]
+      if (!stream || stream.askUser?.id !== askId) return state
+      return {
+        streamingByConversation: {
+          ...state.streamingByConversation,
+          [conversationId]: {
+            ...stream,
+            askUser: undefined,
           },
         },
       }
@@ -739,9 +770,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       case 'tool_approval_request': {
         if (!event.toolApproval) break
         set((s) => {
-          const existingStream = s.streamingByConversation[conversationId]
-          if (existingStream && !existingStream.isStreaming) return s
-          const stream = existingStream || createIdleStream()
+          // No streaming check here: the round that produced the tool call writes
+          // its own assistant row and settles the stream before dispatch waits for
+          // the click, so isStreaming is already false when this lands. Keeping a
+          // guard here would hide the only card the call can be approved from and
+          // let it auto-deny at 60s — the same defect `ask_user_request` had.
+          const stream = s.streamingByConversation[conversationId] || createIdleStream()
           return {
             streamingByConversation: {
               ...s.streamingByConversation,
@@ -750,6 +784,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 ...agentIdentity,
                 isStreaming: true,
                 toolApproval: event.toolApproval,
+              },
+            },
+          }
+        })
+        break
+      }
+
+      case 'ask_user_request': {
+        if (!event.askUser) break
+        set((s) => {
+          // No streaming check here: a tool-calling round settles its own stream
+          // before the tool runs, so the flag is already false at this point.
+          // Main only sends this event while a turn is genuinely waiting on the
+          // human, and dropping it would strand that turn until the wait times out.
+          const stream = s.streamingByConversation[conversationId] || createIdleStream()
+          return {
+            streamingByConversation: {
+              ...s.streamingByConversation,
+              [conversationId]: {
+                ...stream,
+                ...agentIdentity,
+                isStreaming: true,
+                askUser: event.askUser,
               },
             },
           }

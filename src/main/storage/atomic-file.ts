@@ -8,9 +8,17 @@ import { v4 as uuidv4 } from 'uuid'
  * hold the destination after a write.
  */
 export function writeJsonAtomic(filePath: string, data: unknown): void {
+  writeTextAtomic(filePath, JSON.stringify(data, null, 2))
+}
+
+/**
+ * Same guarantee for a plain text document, where a torn write is worse than a
+ * torn state file: a half-written `SKILL.md` reads back as an invalid skill.
+ */
+export function writeTextAtomic(filePath: string, text: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   const tmpPath = `${filePath}.${uuidv4()}.tmp`
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
+  fs.writeFileSync(tmpPath, text, 'utf-8')
   try {
     renameWithRetry(tmpPath, filePath)
   } catch (error) {

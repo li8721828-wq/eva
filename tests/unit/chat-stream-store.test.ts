@@ -563,11 +563,32 @@ describe('chat stream state', () => {
 
     // Only the retried round is removed, so the retry replays the same request.
     expect(deleteFrom).toHaveBeenCalledWith('foreground', 'failed-prompt')
-    expect(send).toHaveBeenCalledWith('foreground', '分析这份规格', undefined, [], [attachment], undefined, expect.any(String))
+    expect(send).toHaveBeenCalledWith('foreground', '分析这份规格', undefined, [], [attachment], undefined, expect.any(String), undefined)
     const messageIds = useChatStore.getState().messages.map((message) => message.id)
     expect(messageIds[0]).toBe('older-answer')
     expect(messageIds).not.toContain('failed-prompt')
     expect(messageIds).not.toContain('failed-answer')
+  })
+
+  it('carries the picked skill on the one request it was chosen for', async () => {
+    const send = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('window', { eva: { chat: { send } } })
+    useChatStore.setState({
+      conversations: [],
+      messages: [],
+      documentAttachments: [],
+      referenceImages: [],
+      inputText: '总结这周的改动',
+      attachedSkill: { name: 'weekly-report', description: 'Summarizes the week.' },
+    })
+
+    await useChatStore.getState().sendMessage()
+
+    expect(send.mock.calls[0][7]).toBe('weekly-report')
+    // The transcript row names the skill so the user can see what this round carried.
+    expect(useChatStore.getState().messages[0]).toMatchObject({ attachedSkillName: 'weekly-report' })
+    // Nothing is remembered for the next message.
+    expect(useChatStore.getState().attachedSkill).toBeNull()
   })
 })
 
@@ -606,5 +627,110 @@ describe('streamed text visibility', () => {
   it('skips pacing before the first character arrives', () => {
     useChatStore.setState({ streamingByConversation: { foreground: streamingForeground('', 1) } })
     expect(isStreamedTextRendered(useChatStore.getState(), 'foreground')).toBe(false)
+  })
+})
+
+describe('ask_user card state', () => {
+  const askUser = {
+    id: 'ask-1',
+    question: '这版先做哪个方向？',
+    options: [{ id: 'opt_1', label: '只做列表页' }, { id: 'opt_2', label: '列表页 + 详情页' }],
+    requestedAt: 1,
+  }
+
+  beforeEach(() => {
+    useChatStore.setState({
+      currentConversationId: 'foreground',
+      messages: [],
+      pendingMessageIds: {},
+      streamingByConversation: {},
+      error: null,
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('holds the card on the conversation that asked', () => {
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_request', conversationId: 'foreground', askUser })
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream?.askUser).toEqual(askUser)
+    expect(stream?.isStreaming).toBe(true)
+  })
+
+  it('accepts a card that arrives after the calling round settled', () => {
+    // A tool-calling round writes its own assistant row and settles the stream
+    // before the tool executes, so isStreaming is already false when ask_user
+    // lands. Dropping it here would strand the turn until the wait times out.
+    useChatStore.setState({
+      streamingByConversation: { foreground: { ...streamingForeground('done', 1), isStreaming: false } },
+    })
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_request', conversationId: 'foreground', askUser })
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream.askUser).toEqual(askUser)
+    expect(stream.isStreaming).toBe(true)
+  })
+
+  it('clears the card once the answer is handed to the runtime', async () => {
+    const decideAskUser = vi.fn(async () => true)
+    vi.stubGlobal('window', { eva: { chat: { decideAskUser } } })
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_request', conversationId: 'foreground', askUser })
+
+    await useChatStore.getState().decideAskUser('foreground', 'ask-1', 'opt_2')
+    expect(decideAskUser).toHaveBeenCalledWith('foreground', 'ask-1', 'opt_2')
+    expect(useChatStore.getState().streamingByConversation.foreground.askUser).toBeUndefined()
+  })
+
+  it('still clears a dead card when the answer arrives too late', async () => {
+    const decideAskUser = vi.fn(async () => false)
+    vi.stubGlobal('window', { eva: { chat: { decideAskUser } } })
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_request', conversationId: 'foreground', askUser })
+
+    await useChatStore.getState().decideAskUser('foreground', 'ask-1', 'opt_2')
+    expect(useChatStore.getState().streamingByConversation.foreground.askUser).toBeUndefined()
+  })
+})
+
+describe('tool approval card state', () => {
+  const approval = {
+    id: 'appr-1',
+    toolCallId: 'call-1',
+    toolName: 'write_skill_file',
+    arguments: { name: 'probe-skill-write' },
+    workspacePath: 'D:/workspace',
+    category: 'workspace-write' as const,
+    summary: 'Write skill file probe-skill-write/SKILL.md',
+    requestedAt: 1,
+  }
+
+  beforeEach(() => {
+    useChatStore.setState({
+      currentConversationId: 'foreground',
+      messages: [],
+      pendingMessageIds: {},
+      streamingByConversation: {},
+      error: null,
+    })
+  })
+
+  it('holds the card on the conversation that asked', () => {
+    useChatStore.getState().appendStreamEvent({ type: 'tool_approval_request', conversationId: 'foreground', toolApproval: approval })
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream?.toolApproval).toEqual(approval)
+    expect(stream?.isStreaming).toBe(true)
+  })
+
+  it('accepts a card that arrives after the calling round settled', () => {
+    // Same shape as the ask_user case: the round that produced the tool call has
+    // already settled its stream, so a streaming check here drops the only card
+    // the user could answer from, and the call auto-denies at 60s.
+    useChatStore.setState({
+      streamingByConversation: { foreground: { ...streamingForeground('done', 1), isStreaming: false } },
+    })
+    useChatStore.getState().appendStreamEvent({ type: 'tool_approval_request', conversationId: 'foreground', toolApproval: approval })
+    const stream = useChatStore.getState().streamingByConversation.foreground
+    expect(stream.toolApproval).toEqual(approval)
+    expect(stream.isStreaming).toBe(true)
   })
 })

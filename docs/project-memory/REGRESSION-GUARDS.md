@@ -109,6 +109,7 @@
 - 私网/本机地址判定必须区分域名与 IP 字面量，不能用前缀匹配把公网域名误判为内网地址。
 - 递归遍历（搜索、目录列表）不能只校验起点路径：必须跳过链接项，并对每个要下沉的目录重新做一次授权校验，否则会跟着 junction/符号链接/挂载点离开授权根。
 - 同一会话的审批卡片必须串行展示，前一张结束（批准/拒绝/超时/中断）后才递补下一张；中断或新一轮 `CHAT_SEND` 必须显式释放该会话遗留的审批槽位，不能让它排在一张过期卡片后面。
+- **`tool_approval_request` 到达时不许再看 `isStreaming`**（`use-chat-store.ts:770` 该分支必须无条件收卡）：与 `ask_user_request` 是同一条缺陷、同一个原因——带工具的轮次会先把中间那一轮的流收尾（`isStreaming` 已是 false）才去 await 用户点击，用「回合是否还在流」当闸门会把唯一能批准这张卡的界面藏掉，调用只能等 60 秒自动拒绝。10-16 真机跑 `write_skill_file` 抓到的正是这条：事件确实到达渲染层，但 `hasSummaryText` 为 false、没有「允许（本次）」按钮。守测：`tests/unit/chat-stream-store.test.ts` 的「accepts a card that arrives after the calling round settled」。审批与选择类 live 事件分支一律不加该守卫，只有该清卡的两处例外（abort、decide 即使 `accepted=false` 也清）。
 - “本会话内都允许”必须真的免询问：豁免按“会话 + `ApprovalCategory`”记账，只在批准时写入，且只覆盖卡片展示给用户的那个类别（换类别要重新问）。`rememberScope` 不能只写进活动日志；会话删除时必须清理（`clearSessionApprovals`），换会话不得继承。
 - 会话文件权限（`ConversationPermissionLevel`，含 `full-access`）只放大文件系统范围，不等于免审批：是否弹窗只由 `automation.toolApproval.policy` 决定，Settings 自动化页必须保留该开关（含 `off`）。
 - `automation` 装配时嵌套对象（`toolApproval`/`sandbox`）必须逐字段合并：存储里的半截对象不能顶掉默认值（例如 `toolApproval` 少了 `timeoutMs` 会退化成 `undefined`，审批计时随之失效）。
@@ -134,6 +135,17 @@
 - App-Server 的手动启动与 `autoStart` 启动必须共用同一个持久化配置读取函数；桌面退出时必须调用 `stopAppServer`，避免远程端口、ACP 连接和在途 turn 残留。
 - `TaskRunStore`、`RuntimeRunStore`、`RuntimeKernelStore`、`LongTermMemoryStore`、`MemoryAgentQueueStore` 的状态写入必须走临时文件 + 重命名的原子路径；禁止恢复直接使用 `writeFileSync` 覆盖正式 JSON 文件。
 
+## 用户选择卡片（`ask_user`）
+
+- **没有可回答者的运行必须报错，不许挂起**：`ask_user` 的 `execute()` 在 `context.requestUserChoice` 缺失时直接抛「请改用正文文字提问」；工具定义也只在通道存在时才暴露（`agent-runner.ts` 里 `this.config.requestUserChoice && toolRegistry.has('ask_user')`）。恢复「先挂 Promise、等一个永远不会来的点击」会让整轮卡到 5 分钟超时，比模型自己打字提问更糟。守测：`tests/unit/ask-user-tool.test.ts`。
+- **每会话同时只允许一张卡**（`presentAskUser` 队列）。并行工具批次里若让后到的卡直接覆盖渲染层状态，先到的那张就再也点不到，只能等超时。
+- **decide 必须校验 `conversationId` 归属**：`resolvePendingAskUser(askId, optionId, conversationId)` 三者相符才落地。审批的 decide 只按 id 落地，这条更严是刻意的——卡片带着会话身份，跨窗口的答案不该解开另一会话的挂起轮。
+- **新发送与 abort 必须连同挂起的 `ask_user` 一起作废**，位置就在既有的 `rejectAllPendingApprovalsForConversation` 旁边（`conversation.ts` 两处）。漏掉会让上一轮的问题卡停在无人认领的状态。
+- **`ask_user_request` 到达时不许再看 `isStreaming`**：渲染层该分支必须无条件收卡。带工具的轮次会先把中间那一轮的流收尾（`isStreaming` 已是 false）再去执行工具，用「回合是否还在流」当闸门会把卡片事件丢掉，主进程则白等到 5 分钟超时——这正是 10-15 真机抓到的第二个缺陷，`tests/unit/chat-stream-store.test.ts` 的「accepts a card that arrives after the calling round settled」就是钉这条的。该清卡的两处仍在：abort 清、`decideAskUser` 即使收到 `accepted=false`（超时/已被取代）也清；留一张点不动的死卡等于告诉用户这功能坏了。
+- **`ask_user` 必须留在 `isToolAllowed()` 的隐式放行组**（`tool-dispatcher.ts`，与 `manage_personal_preferences`/`spreadsheet` 同列）。`agent-runner` 的暴露只解决「模型看不看得到这个工具」，dispatcher 还有一道逐智能体 `agentConfig.tools` 白名单；只在其中一处放行会得到「工具在列表里、调用后回 `not permitted for this agent`」，10-15 真机第一个缺陷即此。提问不是能力授权：有人的运行都能问，没人的运行连工具都看不到（由 `requestUserChoice` 是否存在决定），所以不许改成往各智能体勾选清单里补名字。
+- **卡片零 chrome 是他的界面规矩，不是审美偏好**：问题即标题，选项即控件；不许加「请选择：」这类可见标签、不许把选项包进弹层、不许加确认按钮（一卡一问，点一下即答案），选项 `detail` 只进 hover 的 `title`。因此这张卡没有任何需要进 `ui-copy` 的自造文案——加文案前先确认它是不是又长出多余的一层。
+- **不许用关键词/正则从正文里猜「这是在提问」来生成卡片**。出卡与否由模型调工具决定；渲染层解析编号列表会把普通回答变成假控件。
+
 ## 模型能力判定
 
 - **能不能收图由这条路由自己决定，不由模型名字决定**：唯一的判据是 `supportsImageInput(profile)`（`src/shared/model-capabilities.ts`），profile 一律取 `providerRegistry.getModelCapabilities(providerId, model)`，回退 `inferModelCapabilities`。禁止在任何调用点重新写一份模型名白名单——曾有 `conversation.ts` 与 `agent-runner.ts` 各存一份 OpenAI 名字正则，要求 `provider.type` 必须是 openai/anthropic，于是**任何**第三方网关的视觉模型（`deepseek-v4-flash-vision-exp` 等）永远读不了图，且两条路会给出相反答案。守测：`tests/unit/image-input-gate.test.ts` 断言这两个文件里不再出现 `gpt-4o` 与 `this.supportsVisionInput(`。
@@ -146,11 +158,14 @@
 
 - **`load_skill` 永远不接受路径参数**，只接受 `{name, file?}`，`file` 也只能是该技能目录内的相对文件名。这是整条通道的支点：一旦给它一个能填路径的参数，一个「只读指令包」就变成任意读文件入口。护栏在 `tests/unit/skill-tool.test.ts`（注入 `path` 之类多余参数必须被忽略、`'../outside.md'` 必须被拒）。
 - **技能根必须 `fs.realpath` 后再限定作用域**：扫描时对每个根与目录解析真实位置，加载时把 `file` 目标解析成 realpath 并用 `isWithinRoot`（`services/file-service.ts`）校验落在**该技能目录**内（win32 上大小写不敏感）。不得为了让全局技能可读就往 `fileAccessGrants` 里合成 `userData/skills`——那等于让 `read_file` 顺着 `..` 摸到 `config.json` 与全部会话文件。工具内部直接用 `fs` 是允许的（本仓既有做法：`tools/browser-control-tools.ts`、`search-tools.ts`、`project-index-tools.ts`、`web-tools.ts`），前提是作用域来自已枚举出的技能目录而不是外部入参。
-- **两段式披露不得合并成一段**：常驻进 system prompt 的只有 `--- Available Skills ---` 的名字 + 一行描述，正文只能通过 `load_skill` 进**工具结果**。把正文拼进系统提示词会让所有技能无条件占预算，也破坏「只在命中时载入」的设计；已知后果是工具结果滑出近期窗口会被 `OLD_TOOL_RESULT_MAX_CHARS` 压缩，靠目录常驻 + 重新加载幂等且便宜兜住，不要为此把正文改成常驻。提示词还要保留「Skills never execute code / 不得声称用过未取回的技能」那句约束，否则模型会把目录里的一行描述当成已执行证据。
+- **两段式披露不得合并成一段**：常驻进 system prompt 的只有 `--- Available Skills ---` 的名字 + 一行描述。正文只有两条合法入口：模型自行 `load_skill` 进**工具结果**，或用户从输入框 `/` 面板显式选中某个技能后**只注入本轮的 runner 副本**（见下一条）。被护栏挡住的是「把**所有技能**的正文拼进系统提示词」——那会让它们无条件占预算，也破坏「只在命中时载入」的设计；已知后果是工具结果滑出近期窗口会被 `OLD_TOOL_RESULT_MAX_CHARS` 压缩，靠目录常驻 + 重新加载幂等且便宜兜住，不要为此把正文改成常驻。提示词还要保留「Skills never execute code / 不得声称用过未取回的技能」那句约束，否则模型会把目录里的一行描述当成已执行证据。
+- **用户选中的技能正文只进 `runnerMessage`**：落盘的那条用户消息只带 `attachedSkillName`（名字，供转录显示），`convStore.addMessage` 的 payload 永不含正文。「只作用于下一条消息」因此是结构性保证而不是约定：把正文写进 `conversation.ts` 里那个 `userChatMessage` 会让它以 `PRIOR_ATTACHMENT_CONTEXT_MAX_CHARS = 2_000` 的压缩形态污染之后每一轮。正文必须经 `buildSelectedSkillContext` → `loadSkill` 取得（同一份名字查找、realpath 与 frontmatter 护栏），不得新造第二条正文来源，也不得新增把正文交给渲染进程的 IPC；技能取不到时必须让本轮发送失败并回一条 `error` 事件，不许静默降级成「没带技能也发出去」。护栏在 `tests/unit/skill-turn-injection.test.ts`。
 - **目录段的 token 上限必须是真上限**：预算 `SKILL_CATALOG_MAX_TOKENS = 600`，逐行**整行**贪心累加、绝不半行截断（算法与环境规则共用 `ContextManager.estimateTokens`，不得写第三份）。省略行「(+N more skills available by exact name)」必须算在预算**内**——`SKILL_CATALOG_NOTE_RESERVE_TOKENS` 就是为此预留；曾把它加在循环之外，30 个长描述技能实测产出 612 > 600。
 - **同一份磁盘状态必须产出逐字相同的目录**：技能按 name `localeCompare` 排序。提示词前缀不稳定会让供应商 prompt cache 失效（`context.ts:482-485` 的 `Current date` 同款约束）；`tests/unit/skill-catalog-prompt.test.ts` 断言两次构建字节相同。
 - **扫描保持同步 + 60s TTL，不上 `fs.watch`**：`buildSystemPrompt` 与上游 `buildMessages` 是同步的，改异步要牵动 6 处调用点并让 app-server/ACP、Goal、Symposium 各传输路径重新对齐；对任意用户目录挂监听是主进程泄漏源。根不存在必须 `catch` 成空清单而不抛（`ipc/agent.ts` 会传占位串、非绝对 `workspacePath` 走同一条路）。开关与「重新扫描」必须显式失效缓存。
 - **非法 `SKILL.md` 只能降级成诊断，不得让扫描抛错**：缺围栏、缺 `name`/`description`、`name` 与目录名不符、非 slug 名字、description 超 180、正文超 `MAX_SKILL_BODY_CHARS`、文件读不出——都要出现在 `SkillInventory.diagnostics` 并由设置页红字写出原因。一个写坏的技能不能拖垮整个会话的提示词构建。
+- **写技能文件只有 `write_skill_file` 一条通道，它的围栏是「已注册技能根」而不是 `FileService` 沙箱**：全局根 `%APPDATA%\eva\skills`（`app.getPath('userData')`）在项目之外，`write_file`/`edit_file`/`read_file`/`list_directory` 到那里必然 `Access denied: … is not within an authorized folder`，这是设计而不是配置问题——**禁止**为了让技能可写而把 `userData` 或其父目录塞进 `fileAccessGrants`（同上一条理由：`read_file` 会顺着 `..` 摸到 `config.json` 与全部会话文件）。`writeSkillFile()`（`services/skill-service.ts:275`）自带 realpath + `isWithinRoot`，作用域逐字复用扫描器那一套：目标只能是 `<根>/<name>[/<file>]`，`name` 必须过 `SKILL_NAME_PATTERN`，`file` 不许绝对路径 / `~` / 盘符 / `..`（`splitSkillRelativePath` `:346`）；写 `SKILL.md` 时必须先过 `checkSkillMarkdown`（`:174`，与 `readSkill` 共用同一个函数，保证**写得出的一定扫得到**，非法时整条拒绝且不留半个文件）；落盘走 `writeTextAtomic`（`storage/atomic-file.ts:18`，半份 `SKILL.md` 会被读成一个非法技能）；写完必须 `invalidateSkillCache()`，否则模型按返回路径复核时仍要等满 60 秒缓存。返回文本要写出实际绝对路径与「已进目录」还是「目录仍缺 SKILL.md」，否则模型会把「写成功」误报成「已收录」。守测：`tests/unit/skill-write.test.ts`、`tests/unit/skill-tool.test.ts`。
+- **技能正文点名的工具必须是那条路径上真能用的工具**：`skill-creator` 曾指示模型用 `list_directory` + `write_file` 落盘到全局技能根，两个工具都受沙箱约束，于是每一条「新建技能」请求都在第一步 `Access denied` 并停住——用户看到的就是「列了计划，执行一步就不走」。已安装技能正文（`%APPDATA%\eva\skills/*/SKILL.md`、`<workspace>/.eva/skills/*/SKILL.md`）属于本仓可执行事实的一部分：改动沙箱边界或新增专用通道时必须同步修订正文，并把「不能用 X」的原因写进去，否则模型会把它当成自己的配置问题反复重试而不是汇报受阻。
 - 只认「目录 + 目录内 `SKILL.md`」；根下的散 `.md` 一律忽略。同名时**项目覆盖全局**，目录里不得出现两行。技能不与 MCP prompts 互导（今天 MCP prompts 根本没被暴露，`mcp-client-manager.ts` 只有 `listTools`/`callTool`），也不复用环境规则或长期记忆的召回通道；`ProjectKnowledgeStore.buildContext` 现存唯一调用者是它自己的单测，不得为技能系统复活它，否则会形成第二条注入路径。
 
 ## 记忆系统

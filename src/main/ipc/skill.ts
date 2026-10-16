@@ -5,6 +5,7 @@ import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { SkillInventory, SkillRootKind } from '../../shared/types/skill'
 import { getStorage } from '../storage'
+import { conversationWorkspacePath } from './conversation'
 import { invalidateSkillCache, resolveSkillRoots, scanSkillInventory } from '../services/skill-service'
 import { recordActivity } from '../services/activity-log'
 
@@ -15,6 +16,17 @@ import { recordActivity } from '../services/activity-log'
 export function registerSkillHandlers(): void {
   ipcMain.handle(IPC.SKILL_LIST, async (_event, workspacePath?: string): Promise<SkillInventory> =>
     scanSkillInventory(workspacePath))
+
+  // The composer lists skills for the conversation it types into, and only the main
+  // process may resolve which workspace that conversation belongs to.
+  ipcMain.handle(IPC.SKILL_INVENTORY_FOR_CONVERSATION, async (_event, conversationId?: string): Promise<SkillInventory> => {
+    const id = typeof conversationId === 'string' ? conversationId.trim() : ''
+    const conversation = id ? await getStorage().conversations.getConversation(id) : null
+    const inventory = scanSkillInventory(conversation
+      ? conversationWorkspacePath(conversation, getStorage().config.get('workspacePath'))
+      : undefined)
+    return { ...inventory, skills: inventory.skills.filter((skill) => skill.enabled) }
+  })
 
   ipcMain.handle(IPC.SKILL_RESCAN, async (_event, workspacePath?: string): Promise<SkillInventory> => {
     invalidateSkillCache()
