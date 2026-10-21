@@ -18,9 +18,9 @@ import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from '../services/activity-log'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import { SpecService } from '../services/spec-service'
-import { clearSessionApprovals, createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../services/tool-approval-policy'
+import { clearSessionApprovals, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../services/tool-approval-policy'
+import { createLocalExecutionPolicy, resolveExecutionAutomation } from '../services/execution-policy'
 import { cancelAllPendingAskUsersForConversation, createLocalAskUser, resolvePendingAskUser } from '../services/ask-user-policy'
-import type { AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import type { GoalProgress, TaskCheckpoint, TaskPlan, TaskRunSnapshot, TeamEvent } from '../../shared/types/task'
@@ -43,6 +43,7 @@ import { resolveAssistantTurnContent } from '../services/assistant-turn-content'
 import { activeRunRegistry } from '../services/run-registry'
 import { SymposiumExecutionService } from '../services/symposium-execution-service'
 import { TaskRunLifecycleService } from '../services/task-run-lifecycle-service'
+import { PurposeService } from '../services/purpose-service'
 import type { MemoryAgentService } from '../services/memory-agent-service'
 import { toPublicExecutionNote } from './public-execution-trace'
 
@@ -429,7 +430,7 @@ async function runInternalTeamDelegation(
     workspaceId: conversation.workspaceId,
     workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
   }, goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
-  const teamDurableMemory = durableMemory
+  const teamDurableMemory = [durableMemory, await new PurposeService(getStorage()).context(conversation.id)].filter(Boolean).join('\n\n')
   const workerContexts = new Map<string, string>()
   const workerTurnMessages = new Map<string, string>()
   const createWorkerConversation = async (subtask: import('../../shared/types/task').SubTask, worker: AgentConfig): Promise<string> => {
@@ -531,6 +532,7 @@ async function runInternalTeamDelegation(
     }
   }
   const orchestrator = new TeamOrchestrator({
+    ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversationId: conversation.id, workspaceId: conversation.workspaceId, window: win }),
     conversationId: conversation.id,
     leader,
     workers,
@@ -803,6 +805,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             : `conversation:${conversationId}`
         const durableMemory = [
           memory,
+          await new PurposeService(getStorage()).context(conversationId),
           getStorage().personalPreferences.buildCapabilityContext(),
           activePlanContext(await getStorage().activePlans.getActive(activePlanScope)),
         ]
@@ -904,20 +907,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         // 5. Create AgentRunner
         const workspaceAccess = await getConversationAccess(conversation)
         const storedAutomation = getStorage().config.get('automation')
-        const automation: AutomationConfig = {
-          ...DEFAULT_AUTOMATION_CONFIG,
-          ...storedAutomation,
-          team: { ...DEFAULT_AUTOMATION_CONFIG.team, ...storedAutomation?.team },
-          task: { ...DEFAULT_AUTOMATION_CONFIG.task, ...storedAutomation?.task },
-          goal: { ...DEFAULT_AUTOMATION_CONFIG.goal, ...storedAutomation?.goal },
-          plan: { ...DEFAULT_AUTOMATION_CONFIG.plan, ...storedAutomation?.plan },
-          spec: { ...DEFAULT_AUTOMATION_CONFIG.spec, ...storedAutomation?.spec },
-          // Both of these are nested objects; a shallow spread would drop the
-          // shipped defaults for any key the stored entry omits (e.g. a
-          // `toolApproval` saved without `timeoutMs` would lose it).
-          toolApproval: { ...DEFAULT_AUTOMATION_CONFIG.toolApproval, ...storedAutomation?.toolApproval },
-          sandbox: { ...DEFAULT_AUTOMATION_CONFIG.sandbox, ...storedAutomation?.sandbox },
-        }
+        const automation = resolveExecutionAutomation(storedAutomation)
         const runnerWorkspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const runTask = automation.task.enabled && automation.task.autoInvoke
           ? async (task: string): Promise<string> => {
@@ -936,11 +926,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 terminalService: services.terminalService,
                 modelPools: getStorage().config.get('modelPools'),
                 providerRegistry: services.providerRegistry,
-                requestToolApproval: createLocalToolApproval({
+                ...createLocalExecutionPolicy(automation, {
                   conversationId,
                   workspaceId: conversation.workspaceId,
                   window: win,
-                  config: { ...automation.toolApproval, policy: 'safe' },
                 }),
                 requestUserChoice: createLocalAskUser({
                   conversationId,
@@ -1015,6 +1004,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 : automation.goal.timeoutMinutes
               const timeout = configuredTimeoutMinutes * 60 * 1000
               const planner = new GoalPlanner({
+                ...createLocalExecutionPolicy(automation, { conversationId, workspaceId: conversation.workspaceId, window: win }),
                 conversationId,
                 agentConfig: effectiveAgentConfig,
                 provider,
@@ -1214,11 +1204,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
           manageGoal,
           createExecutionPlan,
           applySpecTemplate,
-          requestToolApproval: createLocalToolApproval({
+          ...createLocalExecutionPolicy(automation, {
             conversationId,
             workspaceId: conversation.workspaceId,
             window: win,
-            config: automation.toolApproval,
           }),
           requestUserChoice: createLocalAskUser({
             conversationId,
@@ -1583,6 +1572,13 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const turnStatus = stoppedByUser
           ? 'cancelled'
           : latestConversation?.executionStatus === 'cancelled' ? 'cancelled' : runError ? 'failed' : 'completed'
+        try {
+          await new PurposeService(getStorage()).recordExecution(conversationId, assistantMessageId, turnStatus, toolCallsForMessage, effectiveAgentConfig.model)
+        } catch (error) {
+          console.warn('Purpose execution recording failed:', error)
+          // The chat remains saved; surface the missing project record explicitly.
+          send({ type: 'error', error: `Purpose record could not be saved: ${error instanceof Error ? error.message : String(error)}` })
+        }
         await getStorage().runtimeMemory.recordConversationTurn({
           conversationId,
           workspaceId: conversation.workspaceId,

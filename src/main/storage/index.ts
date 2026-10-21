@@ -22,6 +22,7 @@ import { ProjectKnowledgeStore } from './project-knowledge-store'
 import { LongTermMemoryStore } from './long-term-memory-store'
 import { MemoryAgentQueueStore } from './memory-agent-queue-store'
 import { SkillStore } from './skill-store'
+import { PurposeStore } from './purpose-store'
 import type { LongTermMemoryEvidence } from '../../shared/types/long-term-memory'
 
 export class StorageManager {
@@ -46,6 +47,7 @@ export class StorageManager {
   longTermMemory: LongTermMemoryStore
   memoryAgentQueue: MemoryAgentQueueStore
   skills: SkillStore
+  purposes: PurposeStore
 
   private userDataPath: string
 
@@ -74,6 +76,7 @@ export class StorageManager {
     this.longTermMemory = new LongTermMemoryStore(this.userDataPath)
     this.memoryAgentQueue = new MemoryAgentQueueStore(this.userDataPath)
     this.skills = new SkillStore()
+    this.purposes = new PurposeStore()
   }
 
   async initialize(): Promise<void> {

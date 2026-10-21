@@ -25,6 +25,7 @@ import type { AutomationConfig } from '../../shared/types/automation'
 import { resolveSandboxPolicy } from '../services/sandbox/policy'
 import { openSandboxScope, closeSandboxScope } from '../services/sandbox/scope'
 import { ToolDispatcher } from '../services/tool-dispatcher'
+import { executionApproval } from '../services/execution-policy'
 
 export interface AgentRunnerConfig {
   conversationId?: string
@@ -75,6 +76,7 @@ export interface AdaptiveToolBudget {
 }
 
 export interface ToolApprovalRequest {
+  signal?: AbortSignal
   toolCall: {
     id: string
     name: string
@@ -288,7 +290,7 @@ export class AgentRunner {
     this.toolDispatcher = new ToolDispatcher({
       toolRegistry: config.toolRegistry,
       agentTools: config.agentConfig.tools,
-      requestToolApproval: config.requestToolApproval,
+      requestToolApproval: executionApproval(config),
       allowedWritePaths: config.allowedWritePaths,
     })
   }
@@ -1698,6 +1700,7 @@ export class AgentRunner {
     }
 
     return this.toolDispatcher.dispatch({
+      signal: this.abortController?.signal,
       id: toolCall.id,
       name: toolCall.name,
       arguments: toolCall.arguments,

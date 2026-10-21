@@ -1,3 +1,4 @@
+import { agentDescription, agentDisplayName } from '@/lib/agent-presentation'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentConfig } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
@@ -26,16 +27,6 @@ function agentToolsLabel(toolId: string) {
   return TOOL_CATALOG.find((tool) => tool.id === toolId)?.label ?? toolId.replace(/_/g, ' ')
 }
 
-function agentDisplayName(agent: AgentConfig, copy: typeof uiCopy.en.agents) {
-  if (!agent.isBuiltIn) return agent.name
-  const names: Record<string, string> = {
-    'Coding Assistant': copy.codingAssistant,
-    'Code Reviewer': copy.codeReviewer,
-    'Research Analyst': copy.researchAnalyst,
-    'Team Leader': copy.teamLeader,
-  }
-  return names[agent.name] ?? agent.name
-}
 
 function roleLabel(role: AgentConfig['role'], copy: typeof uiCopy.en.agents) {
   const labels: Record<AgentConfig['role'], string> = {
@@ -50,6 +41,7 @@ function roleLabel(role: AgentConfig['role'], copy: typeof uiCopy.en.agents) {
 }
 
 function AgentCard({ agent, isPrimaryChatAgent, onOpen, copy }: { agent: AgentConfig; isPrimaryChatAgent: boolean; onOpen: () => void; copy: typeof uiCopy.en.agents }) {
+  const language = useAppStore(state => state.language)
   const candidates = agent.modelCandidates?.length ? agent.modelCandidates : [{ providerId: agent.providerId, model: agent.model }]
   const tools = Array.isArray(agent.tools) ? agent.tools : []
   const previewTools = tools.slice(0, 3)
@@ -73,9 +65,9 @@ function AgentCard({ agent, isPrimaryChatAgent, onOpen, copy }: { agent: AgentCo
       </div>
 
       <div className="mt-4 min-w-0">
-        <h3 className="truncate text-base font-semibold text-zinc-900 group-hover:text-violet-800">{agentDisplayName(agent, copy)}</h3>
+        <h3 className="truncate text-base font-semibold text-zinc-900 group-hover:text-violet-800">{agentDisplayName(agent, language)}</h3>
         <p className="mt-1 text-xs font-medium uppercase tracking-[0.1em] text-violet-600">{roleLabel(agent.role, copy)}</p>
-        <p className="mt-2 line-clamp-2 min-h-[40px] text-sm leading-5 text-zinc-500">{agent.description || copy.noDescription}</p>
+        <p className="mt-2 line-clamp-2 min-h-[40px] text-sm leading-5 text-zinc-500">{agentDescription(agent, language) || copy.noDescription}</p>
       </div>
 
       <div className="mt-auto border-t border-zinc-100 pt-3">
@@ -308,11 +300,11 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
               </span>
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 id="dialog-title" className="text-lg font-semibold text-zinc-900">{agentDisplayName(detailAgent, copy)}</h2>
+                  <h2 id="dialog-title" className="text-lg font-semibold text-zinc-900">{agentDisplayName(detailAgent, language)}</h2>
                   <span className="rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">{roleLabel(detailAgent.role, copy)}</span>
                   {detailIsPrimaryChatAgent && <span className="rounded bg-violet-100 px-2 py-0.5 text-[11px] font-medium text-violet-700">{copy.primaryChatAgentBadge}</span>}
                 </div>
-                <p className="mt-1 text-sm leading-6 text-zinc-500">{detailAgent.description || copy.noDescription}</p>
+                <p className="mt-1 text-sm leading-6 text-zinc-500">{agentDescription(detailAgent, language) || copy.noDescription}</p>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -392,7 +384,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     if (view === 'tools' && editingAgent) {
       return (
         <div className="px-6 py-6 sm:px-8">
-          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
+          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, language)}</button>
           <ToolAccessPanel tools={toolSelection} onChange={setToolSelection} />
           <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveTools()}>{copy.saveTools}</Button></div>
         </div>
@@ -402,7 +394,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     if (view === 'models' && editingAgent) {
       return (
         <div className="px-6 py-6 sm:px-8">
-          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
+          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, language)}</button>
           <ModelAccessPanel candidates={modelSelection} providers={savedProviders} pools={modelPools} poolIds={selectedPoolIds} onPoolChange={setSelectedPoolIds} onChange={setModelSelection} />
           <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveModels()}>{copy.saveModels}</Button></div>
         </div>
@@ -412,7 +404,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
     if (view === 'output' && editingAgent) {
       return (
         <div className="px-6 py-6 sm:px-8">
-          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, copy)}</button>
+          <button type="button" onClick={() => setView('details')} className="mb-5 inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-900"><ChevronLeft className="h-4 w-4" />{copy.back} {agentDisplayName(editingAgent, language)}</button>
           <OutputFormatPanel outputFormat={outputFormat} outputFormatInstructions={outputFormatInstructions} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} allowEmojiSymbols={allowEmojiSymbols} markdownRenderer={markdownRenderer} processOutput={processOutput} onOutputFormatChange={setOutputFormat} onOutputFormatInstructionsChange={setOutputFormatInstructions} onOutputStyleChange={setOutputStyle} onOutputFontChange={setOutputFont} onOutputColorChange={setOutputColor} onOutputFontSizeChange={setOutputFontSize} onOutputTextEffectChange={setOutputTextEffect} onAllowEmojiSymbolsChange={setAllowEmojiSymbols} onMarkdownRendererChange={setMarkdownRenderer} onProcessOutputChange={setProcessOutput} />
           <div className="mt-7 flex justify-end gap-2"><Button variant="outline" onClick={() => setView('details')}>{copy.cancel}</Button><Button onClick={() => void handleSaveOutput()}>{copy.save}</Button></div>
         </div>
@@ -443,10 +435,10 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
   }
 
   if (screen === 'agent') {
-    const title = editingAgent ? agentDisplayName(editingAgent, copy) : copy.create
+    const title = editingAgent ? agentDisplayName(editingAgent, language) : copy.create
     return (
       <div ref={workspaceRef} className={cn('min-h-[580px] bg-transparent', className)}>
-        <div className="mx-auto w-full max-w-6xl px-6 py-8 sm:px-10 sm:py-10">
+        <div className="w-full min-w-0">
           <button
             type="button"
             onClick={handleAgentPageBack}
@@ -465,12 +457,11 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
 
   return (
     <div ref={workspaceRef} className={cn('min-h-[580px] bg-transparent', className)}>
-      <div className="mx-auto w-full max-w-6xl px-6 py-8 sm:px-10 sm:py-10">
-        <header className="flex flex-col gap-5 border-b border-[var(--ui-border)] pb-7 lg:flex-row lg:items-end lg:justify-between">
+      <div className="w-full min-w-0">
+        <header className="settings-section-heading flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[0.12em] text-violet-600">{copy.workspace}</p>
-            <h2 className="mt-2 text-xl font-semibold text-zinc-900">{copy.heading}</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">{copy.description}</p>
+            <h2 className="text-base font-semibold text-zinc-900">{copy.workspace}</h2>
+            <p className="mt-1 max-w-2xl text-sm leading-6 text-zinc-500">{copy.description}</p>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             <div className="relative min-w-0 sm:w-60"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" /><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.search} className="pl-9" /></div>
@@ -481,7 +472,7 @@ export function AgentManagementWorkspace({ className }: AgentManagementWorkspace
         <section className="flex min-h-16 items-center justify-between gap-4 border-b border-[var(--ui-border)] py-4">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-600"><Bot className="h-4 w-4" /></span>
-            <div className="min-w-0"><p className="text-xs font-medium text-zinc-500">{copy.primaryChatAgent}</p><p className="truncate text-sm font-semibold text-zinc-800">{primaryChatAgent ? agentDisplayName(primaryChatAgent, copy) : copy.noMatch}</p></div>
+            <div className="min-w-0"><p className="text-xs font-medium text-zinc-500">{copy.primaryChatAgent}</p><p className="truncate text-sm font-semibold text-zinc-800">{primaryChatAgent ? agentDisplayName(primaryChatAgent, language) : copy.noMatch}</p></div>
           </div>
           {primaryChatAgent && <Button variant="outline" size="sm" onClick={() => openDetails(primaryChatAgent)}>{copy.managePrimaryChatAgent}</Button>}
         </section>

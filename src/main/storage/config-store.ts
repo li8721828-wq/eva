@@ -209,6 +209,14 @@ export class ConfigStore {
     this.store.set(config)
   }
 
+  selectModel(providerId: string, model: string): void {
+    if (typeof providerId !== 'string' || typeof model !== 'string' || Boolean(providerId.trim()) !== Boolean(model.trim())) {
+      throw new Error('A connection and model are required.')
+    }
+    // One electron-store write: the pair must never be partially persisted.
+    this.store.set({ activeProviderId: providerId, activeModel: model })
+  }
+
   // Provider configuration management
   getProviders(): ProviderConfigEntry[] {
     return this.store.get('providers').map((provider) => ({

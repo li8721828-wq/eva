@@ -69,4 +69,27 @@ describe('ConfigStore startup recovery', () => {
     expect(store.get('workspacePath')).toBe('')
     expect(store.get('theme')).toBe('dark')
   })
+
+  it('persists a model selection in one write and leaves both keys intact on failure', () => {
+    const store = new ConfigStore()
+    const underlying = (store as any).store
+    const write = vi.spyOn(underlying, 'set')
+    store.selectModel('connection-b', 'model-b')
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(write).toHaveBeenCalledWith({ activeProviderId: 'connection-b', activeModel: 'model-b' })
+    write.mockImplementationOnce(() => { throw new Error('disk full') })
+    expect(() => store.selectModel('connection-c', 'model-c')).toThrow('disk full')
+    const saved = JSON.parse(fs.readFileSync(path.join(state.userDataDir, 'config.json'), 'utf8'))
+    expect(saved).toMatchObject({ activeProviderId: 'connection-b', activeModel: 'model-b' })
+  })
+
+  it('allows clearing the pair but rejects partial or invalid selections', () => {
+    const store = new ConfigStore()
+    expect(() => store.selectModel('connection', '')).toThrow()
+    expect(() => store.selectModel('', 'model')).toThrow()
+    expect(() => store.selectModel(null as any, 'model')).toThrow()
+    store.selectModel('', '')
+    expect(store.get('activeProviderId')).toBe('')
+    expect(store.get('activeModel')).toBe('')
+  })
 })

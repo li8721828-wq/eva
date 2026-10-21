@@ -57,6 +57,13 @@ package-output/
 # Eva Blender Connector runtime scripts and generated review renders
 .eva/
 
+# Portable project purposes; runtime scripts, locks and temporary writes stay private.
+!/.eva/
+/.eva/*
+!/.eva/purposes/
+/.eva/purposes/*
+!/.eva/purposes/*.json
+
 # Local Blender task artifacts
 *.blend
 *.blend1

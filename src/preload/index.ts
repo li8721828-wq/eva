@@ -28,6 +28,7 @@ import type { McpServerConfig, McpServerState } from '../shared/types/mcp'
 import type { SkillInventory, SkillRootKind } from '../shared/types/skill'
 import type { PersonalPreference, PersonalPreferenceImportOptions, PersonalPreferenceImportResult, PersonalPreferenceSettings } from '../shared/types/personal-preferences'
 import type { ContractArgs, ContractChannel, ContractResult } from '../shared/ipc-contract'
+import type { PurposeAPI } from '../shared/types/purpose'
 
 // GoalEvent type - defined locally to avoid importing from main process
 type GoalEvent = unknown
@@ -53,6 +54,7 @@ function invokeContract<K extends ContractChannel>(channel: K, ...args: Contract
 }
 
 export interface EvaAPI {
+  purpose: PurposeAPI
   windowControls: {
     minimize(): Promise<void>
     toggleMaximize(): Promise<void>
@@ -202,6 +204,7 @@ export interface EvaAPI {
   config: {
     get<T = unknown>(key: string): Promise<T>
     set(key: string, value: unknown): Promise<void>
+    selectModel(providerId: string, model: string): Promise<void>
     getAll(): Promise<Record<string, unknown>>
   }
 
@@ -325,6 +328,18 @@ export interface EvaAPI {
 }
 
 const evaAPI: EvaAPI = {
+  purpose: {
+    generateDraft: (input) => invokeContract(IPC.PURPOSE_DRAFT_GENERATE, input),
+    cancelDraft: (requestId) => invokeContract(IPC.PURPOSE_DRAFT_CANCEL, requestId),
+    list: (workspaceId) => invokeContract(IPC.PURPOSE_LIST, workspaceId),
+    create: (workspaceId, input) => invokeContract(IPC.PURPOSE_CREATE, workspaceId, input),
+    update: (ref, input) => invokeContract(IPC.PURPOSE_UPDATE, ref, input),
+    note: (ref, revision, kind, content) => invokeContract(IPC.PURPOSE_NOTE, ref, revision, kind, content),
+    handoff: (input) => invokeContract(IPC.PURPOSE_HANDOFF, input),
+    preflight: (ref) => invokeContract(IPC.PURPOSE_PREFLIGHT, ref),
+    continue: (input) => invokeContract(IPC.PURPOSE_CONTINUE, input),
+    attach: (ref, conversationId) => invokeContract(IPC.PURPOSE_ATTACH, ref, conversationId),
+  },
   windowControls: {
     minimize: () => {
       ipcRenderer.send(IPC.WINDOW_MINIMIZE)
@@ -519,6 +534,7 @@ const evaAPI: EvaAPI = {
   config: {
     get: <T = unknown>(key: string) => invokeContract(IPC.CONFIG_GET, key) as Promise<T>,
     set: (key, value) => invokeContract(IPC.CONFIG_SET, key, value),
+    selectModel: (providerId, model) => invokeContract(IPC.CONFIG_SELECT_MODEL, providerId, model),
     getAll: () => invokeContract(IPC.CONFIG_GET_ALL),
   },
 

@@ -18,6 +18,16 @@ export const IPC = {
   RUNTIME_KERNEL_SNAPSHOT: 'runtime-kernel:snapshot',
   RUNTIME_KERNEL_AUDIT_LIST: 'runtime-kernel:audit-list',
   ACTIVE_PLAN_GET: 'active-plan:get',
+  PURPOSE_LIST: 'purpose:list',
+  PURPOSE_DRAFT_GENERATE: 'purpose:draft-generate',
+  PURPOSE_DRAFT_CANCEL: 'purpose:draft-cancel',
+  PURPOSE_CREATE: 'purpose:create',
+  PURPOSE_UPDATE: 'purpose:update',
+  PURPOSE_NOTE: 'purpose:note',
+  PURPOSE_HANDOFF: 'purpose:handoff',
+  PURPOSE_PREFLIGHT: 'purpose:preflight',
+  PURPOSE_CONTINUE: 'purpose:continue',
+  PURPOSE_ATTACH: 'purpose:attach',
 
   // Runtime evolution proposals (proposal-only; never execute a change)
   RUNTIME_PROPOSAL_LIST: 'runtime-proposal:list',
@@ -171,6 +181,7 @@ export const IPC = {
   // 配置
   CONFIG_GET: 'config:get',
   CONFIG_SET: 'config:set',
+  CONFIG_SELECT_MODEL: 'config:select-model',
   CONFIG_GET_ALL: 'config:get-all',
   NETWORK_GET_CONFIG: 'network:get-config',
   NETWORK_SAVE_CONFIG: 'network:save-config',

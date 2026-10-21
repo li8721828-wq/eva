@@ -9,6 +9,7 @@ export interface ToolCatalogEntry {
 }
 
 export const TOOL_CATALOG: ToolCatalogEntry[] = [
+  { id: 'record_purpose_progress', label: 'Record purpose progress', description: 'Record public progress, evidence references, blockers, and next actions in the linked project purpose. Acceptance remains a human decision.', category: 'Files', risk: 'write' },
   { id: 'mcp:*', label: 'MCP connected tools', description: 'Allow this agent to discover and use tools from enabled Model Context Protocol servers.', category: 'Integrations', risk: 'network' },
   { id: 'create_runtime_proposal', label: 'Create runtime evolution proposal', description: 'Save an evidence-backed proposal for human review. It never performs the proposed change.', category: 'Integrations', risk: 'write' },
   { id: 'diagnose_runtime', label: 'Diagnose Eva runtime', description: 'Analyze redacted runtime evidence and return read-only findings with recommendations.', category: 'Integrations', risk: 'read' },
@@ -41,4 +42,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 33
+export const TOOL_CATALOG_VERSION = 34

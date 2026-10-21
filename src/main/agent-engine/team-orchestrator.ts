@@ -5,6 +5,7 @@ import type { DynamicAgentProfile, TaskPlan, SubTask, TeamEvent, TaskStatus } fr
 import type { ChatMessage } from '../../shared/types/conversation'
 import type { ChatMessageInput } from '../../shared/types/provider'
 import { AgentRunner } from './agent-runner'
+import type { ExecutionPolicy } from '../services/execution-policy'
 import { ContextManager } from './context'
 import { v4 as uuidv4 } from 'uuid'
 import type { FileAccessGrant } from '../../shared/types/file-access'
@@ -43,7 +44,7 @@ export function validateTextArtifact(filePath: string, content: string, needsSou
   return failures
 }
 
-export interface TeamOrchestratorConfig {
+export interface TeamOrchestratorConfig extends ExecutionPolicy {
   conversationId?: string
   leader: AgentConfig
   workers: AgentConfig[]
@@ -901,6 +902,8 @@ Rules:
     }
 
     const runner = new AgentRunner({
+      automation: this.config.automation,
+      requestToolApproval: this.config.requestToolApproval,
       conversationId: this.config.conversationId,
       agentConfig: worker,
       provider,

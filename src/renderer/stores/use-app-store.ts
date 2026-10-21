@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { WorkMode } from '../../shared/types'
 import type { FileAccessGrant } from '../../shared/types/file-access'
+import { workspaceLayout } from '@/lib/workspace-layout'
 
 export type AppView = 'chat' | 'editor' | 'settings' | 'artifacts' | 'symposium' | 'cost'
 export type Theme = 'light' | 'dark' | 'starlight'
@@ -26,7 +27,8 @@ interface AppState {
   currentView: AppView
   artifactWorkspaceId: string | null
   rightPanelVisible: boolean
-  rightPanelTab: 'tasks' | 'files' | 'requirements' | 'project-knowledge' | 'editor'
+  workspaceExpanded: boolean
+  rightPanelTab: 'tasks' | 'purposes' | 'files' | 'requirements' | 'project-knowledge' | 'editor'
   terminalVisible: boolean
   terminalHeight: number
   terminalWidth: number
@@ -52,7 +54,9 @@ interface AppState {
   closeTaskArtifacts: () => void
   toggleRightPanel: () => void
   setRightPanelVisible: (visible: boolean) => void
-  setRightPanelTab: (tab: 'tasks' | 'files' | 'requirements' | 'editor') => void
+  setRightPanelTab: (tab: AppState['rightPanelTab']) => void
+  setWorkspaceExpanded: (expanded: boolean) => void
+  openPurposeWorkspace: () => void
   toggleTerminal: () => void
   setTerminalVisible: (visible: boolean) => void
   setTerminalHeight: (height: number) => void
@@ -83,8 +87,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   fileAccessGrants: [],
   currentView: 'chat',
   artifactWorkspaceId: null,
-  rightPanelVisible: true,
+  rightPanelVisible: typeof window === 'undefined' || !workspaceLayout(window.innerWidth || 1440, false, 304, 360, false).overlay,
   rightPanelTab: 'tasks',
+  workspaceExpanded: false,
   terminalVisible: false,
   terminalHeight: 560,
   terminalWidth: 560,
@@ -121,19 +126,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ fileAccessGrants })
     window.eva.config.set('fileAccessGrants', fileAccessGrants).catch(console.error)
   },
-  setCurrentView: (view) => set({ currentView: view }),
-  openTaskArtifacts: (workspaceId) => set({ currentView: 'artifacts', artifactWorkspaceId: workspaceId }),
+  setCurrentView: (view) => set({ currentView: view, ...(view !== 'chat' ? { workspaceExpanded: false } : {}) }),
+  openTaskArtifacts: (workspaceId) => set({ currentView: 'artifacts', artifactWorkspaceId: workspaceId, workspaceExpanded: false }),
   closeTaskArtifacts: () => set({ currentView: 'chat', artifactWorkspaceId: null }),
   toggleRightPanel: () => set((s) => {
-    const visible = !s.rightPanelVisible
+    const visible = s.terminalVisible || !s.rightPanelVisible
     window.eva.config.set('rightPanelVisible', visible).catch(console.error)
-    return { rightPanelVisible: visible }
+    if (s.terminalVisible) window.eva.config.set('terminalVisible', false).catch(console.error)
+    return { rightPanelVisible: visible, terminalVisible: false, workspaceExpanded: false }
   }),
-  setRightPanelVisible: (visible) => set({ rightPanelVisible: visible }),
+  setRightPanelVisible: (visible) => set({ rightPanelVisible: visible, ...(!visible ? { workspaceExpanded: false } : {}) }),
   setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
+  setWorkspaceExpanded: (workspaceExpanded) => set({ workspaceExpanded }),
+  openPurposeWorkspace: () => set({ currentView: 'chat', settingsOpen: false, rightPanelVisible: true, terminalVisible: false, rightPanelTab: 'purposes', workspaceExpanded: true }),
   setTerminalVisible: (visible) => {
     window.eva.config.set('terminalVisible', visible).catch(console.error)
-    set({ terminalVisible: visible })
+    set({ terminalVisible: visible, workspaceExpanded: false })
   },
   toggleTerminal: () => get().setTerminalVisible(!get().terminalVisible),
   setTerminalHeight: (terminalHeight) => set({ terminalHeight }),
@@ -150,6 +158,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   loadConfig: async () => {
     try {
       const config = await window.eva.config.getAll() as Record<string, unknown>
+      const compact = workspaceLayout(window.innerWidth || 1440, Boolean(config.sidebarCollapsed), Number(config.sidebarWidth) || 304, Number(config.terminalVisible ? config.terminalWidth : config.rightPanelWidth) || 360, Boolean(config.terminalVisible)).overlay
       set({
         theme: ['light', 'dark', 'starlight'].includes(config.theme as string) ? config.theme as Theme : 'light',
         language: ['en', 'zh', 'ja'].includes(config.language as string) ? config.language as AppLanguage : 'en',
@@ -162,8 +171,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         explorerHeight: Math.max(180, Number(config.explorerHeight) || 380),
         workspacePath: (config.workspacePath as string) || '',
         fileAccessGrants: (config.fileAccessGrants as FileAccessGrant[]) || [],
-        rightPanelVisible: (config.rightPanelVisible as boolean) ?? true,
-        terminalVisible: (config.terminalVisible as boolean) ?? false,
+        rightPanelVisible: !compact && ((config.rightPanelVisible as boolean) ?? true),
+        terminalVisible: !compact && ((config.terminalVisible as boolean) ?? false),
         terminalHeight: Math.max(220, Math.min(960, Number(config.terminalHeight) || 560)),
         terminalWidth: Math.max(380, Math.min(960, Number(config.terminalWidth) || 560)),
         activeProviderId: (config.activeProviderId as string) || 'openai',

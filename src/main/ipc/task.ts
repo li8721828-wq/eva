@@ -1,4 +1,5 @@
 import { BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { createLocalExecutionPolicy } from '../services/execution-policy'
 import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import { markGoalProgressCancelled, markGoalProgressFailed, type GoalConfig, type GoalProgress, type TaskCheckpoint, type TaskFeedback, type TaskPlan, type TaskRunSnapshot, type TeamEvent } from '../../shared/types/task'
@@ -11,6 +12,7 @@ import type { ProviderRegistry } from '../providers'
 import { ContextManager } from '../agent-engine/context'
 import { TeamOrchestrator } from '../agent-engine/team-orchestrator'
 import { GoalPlanner } from '../agent-engine/goal-planner'
+import { PurposeService } from '../services/purpose-service'
 import type { GoalEvent } from '../agent-engine/goal-planner'
 import { getStorage, type StorageManager } from '../storage'
 import { recordActivity } from '../services/activity-log'
@@ -537,10 +539,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
         if (!conversation) {
           throw new Error('Conversation not found.')
         }
-        const durableMemory = await getStorage().longTermMemory.buildContext('default', {
+        const durableMemory = [await getStorage().longTermMemory.buildContext('default', {
           workspaceId: conversation.workspaceId,
           workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
-        }, goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
+        }, goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled }), await new PurposeService(getStorage()).context(conversationId)].filter(Boolean).join('\n\n')
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const historyMessages = await getStorage().conversations.getMessages(conversationId, { limit: 12 })
@@ -671,6 +673,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
         // 4. Create TeamOrchestrator
         orchestrator = new TeamOrchestrator({
+          ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversationId, workspaceId: conversation.workspaceId, window: win }),
           conversationId,
           leader,
           workers,
@@ -1024,10 +1027,10 @@ export function registerTaskHandlers(services?: TaskServices): void {
         if (!conversation) throw new Error('The Goal conversation is unavailable.')
         const workspaceAccess = await getConversationAccess(conversation)
         const workspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath') as string)
-        const durableMemory = await getStorage().longTermMemory.buildContext('default', {
+        const durableMemory = [await getStorage().longTermMemory.buildContext('default', {
           workspaceId: conversation.workspaceId,
           workspacePath: conversation.workspacePath || getStorage().config.get('workspacePath'),
-        }, payload.goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled })
+        }, payload.goal, 12, { enabled: getStorage().personalPreferences.getSettings().injectionEnabled }), await new PurposeService(getStorage()).context(conversation.id)].filter(Boolean).join('\n\n')
 
         // 4. Create GoalPlanner
         const goalConfig: GoalConfig = {
@@ -1038,6 +1041,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         planner = new GoalPlanner({
+          ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversationId: payload.conversationId, workspaceId: conversation.workspaceId, window: win }),
           conversationId: payload.conversationId,
           agentConfig: goalAgentConfig,
           provider,

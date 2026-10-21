@@ -39,6 +39,7 @@ const READ_ONLY_TOOLS = new Set([
 ])
 
 const WORKSPACE_WRITE_TOOLS = new Set([
+  'record_purpose_progress',
   'write_file',
   'edit_file',
   'spreadsheet',
@@ -287,6 +288,7 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
   const { conversationId, workspaceId, window, config } = context
 
   return async (request: ToolApprovalRequest) => {
+    if (request.signal?.aborted) return { approved: false, message: 'The run was cancelled.' }
     const category = requiresApproval(request.toolCall.name, config.policy)
     if (category === null) {
       return { approved: true }
@@ -345,12 +347,33 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
     }
 
     return new Promise<ToolApprovalDecision>((resolve) => {
+      let settled = false
+      let displayed = false
       const settle = (decision: ToolApprovalDecision): void => {
-        releaseApprovalSlot(conversationId)
+        if (settled) return
+        settled = true
+        const pending = pendingApprovals.get(approvalId)
+        if (pending) clearTimeout(pending.timer)
+        pendingApprovals.delete(approvalId)
+        request.signal?.removeEventListener('abort', abort)
+        if (displayed) releaseApprovalSlot(conversationId)
+        else {
+          const waiting = approvalWaiters.get(conversationId)
+          const index = waiting?.indexOf(waiter) ?? -1
+          if (index >= 0) waiting!.splice(index, 1)
+          if (waiting?.length === 0) approvalWaiters.delete(conversationId)
+        }
         resolve(decision)
+      }
+      const abort = (): void => {
+        const pending = pendingApprovals.get(approvalId)
+        if (pending) clearTimeout(pending.timer)
+        pendingApprovals.delete(approvalId)
+        settle({ approved: false, message: 'The run was cancelled.' })
       }
 
       const deliver = (): void => {
+        displayed = true
         // Registered before the card leaves: a client can answer as soon as it
         // receives it, and that answer has to find something to resolve.
         const timer = setTimeout(() => {
@@ -378,20 +401,26 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
         })
         // Announced only now: before this moment the id does not resolve, and an
         // observer that answered straight away would have its decision dropped.
-        context.onRequested?.(approvalPayload)
-
-        if (!deliverCard(approvalPayload)) {
-          clearTimeout(timer)
-          pendingApprovals.delete(approvalId)
+        try {
+          context.onRequested?.(approvalPayload)
+          if (settled) return
+          if (deliverCard(approvalPayload)) return
+        } catch {
+          // A closed IPC channel or failed relay must not leave an unresolved
+          // approval occupying the conversation's only visible slot.
+        }
+        if (!settled) {
           settle({ approved: false, message: '审批卡片无法送达该客户端，本次调用已按拒绝处理。' })
         }
       }
 
-      presentApproval({
+      const waiter: ApprovalWaiter = {
         conversationId,
         deliver,
-        deny: (reason) => resolve({ approved: false, message: reason }),
-      })
+        deny: (reason) => settle({ approved: false, message: reason }),
+      }
+      request.signal?.addEventListener('abort', abort, { once: true })
+      presentApproval(waiter)
     })
   }
 }

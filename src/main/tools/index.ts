@@ -16,6 +16,7 @@ import { createPersonalPreferenceTools } from './personal-preference-tools'
 import { createSpreadsheetTools } from './spreadsheet-tools'
 import { createSkillTools } from './skill-tools'
 import { createAskUserTools } from './ask-user-tools'
+import { createPurposeTools } from './purpose-tools'
 import type { AskUserOutcome, AskUserPrompt } from '../services/ask-user-policy'
 import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
 import type { LongTermMemoryStore } from '../storage/long-term-memory-store'
@@ -23,6 +24,7 @@ import type { ProjectIndexService } from '../services/project-index-service'
 import type { ProviderRegistry } from '../providers'
 
 export interface ToolContext {
+  signal?: AbortSignal
   conversationId?: string
   workspacePath: string
   fileAccessGrants?: FileAccessGrant[]
@@ -114,7 +116,9 @@ export interface TerminalService {
   executeCommand(
     sessionId: string,
     command: string,
-    timeout?: number
+    timeout?: number,
+    cwd?: string,
+    signal?: AbortSignal,
   ): Promise<{ stdout: string; stderr: string; exitCode: number }>
   writeInput(sessionId: string, data: string): void
   resize(sessionId: string, cols: number, rows: number): void
@@ -190,6 +194,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createSpreadsheetTools()) registry.register(tool)
   for (const tool of createSkillTools()) registry.register(tool)
   for (const tool of createAskUserTools()) registry.register(tool)
+  for (const tool of createPurposeTools()) registry.register(tool)
   if (personalPreferenceStore) {
     for (const tool of createPersonalPreferenceTools(personalPreferenceStore, longTermMemory)) registry.register(tool)
   }

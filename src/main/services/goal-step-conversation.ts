@@ -6,6 +6,7 @@ import type { GoalStep, GoalStepHandoff } from '../../shared/types/task'
 import { goalStepHandoffPrompt } from '../../shared/goal-step-handoff'
 import { getStorage } from '../storage'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
+import { PurposeService } from './purpose-service'
 
 export { goalStepHandoffPrompt } from '../../shared/goal-step-handoff'
 
@@ -16,6 +17,7 @@ export async function prepareGoalStepConversation(input: {
   step: GoalStep
   handoff: GoalStepHandoff
 }): Promise<{ conversationId: string; messages: ChatMessage[]; message: ChatMessage }> {
+  input.handoff.purposeContext = await new PurposeService(getStorage()).context(input.parent.id) || undefined
   const existingId = input.step.agentConversationId
   const existing = existingId ? await getStorage().conversations.getConversation(existingId) : null
   const conversation = existing || await getStorage().conversations.createConversation({

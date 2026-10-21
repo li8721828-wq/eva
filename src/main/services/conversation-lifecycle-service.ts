@@ -68,6 +68,7 @@ export class ConversationLifecycleService {
   }
 
   async update(id: string, data: UpdateConversationInput): Promise<Conversation | null> {
+    if (Object.prototype.hasOwnProperty.call(data, 'purposeId')) throw new Error('Link conversations through the project purpose operation.')
     const conversation = await this.storage.conversations.getConversation(id)
     await this.storage.conversations.updateConversation(id, {
       ...data,

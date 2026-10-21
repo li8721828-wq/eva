@@ -8,6 +8,7 @@ import type { ChatMessageInput } from '../../shared/types/provider'
 import type { ChatMessage } from '../../shared/types/conversation'
 import { goalStepHandoffPrompt } from '../../shared/goal-step-handoff'
 import { AgentRunner } from './agent-runner'
+import type { ExecutionPolicy } from '../services/execution-policy'
 import { ContextManager } from './context'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPool } from '../../shared/types/model-pool'
@@ -83,7 +84,7 @@ export type GoalEvent =
   | { type: 'done'; progress: GoalProgress }
   | { type: 'error'; error: string }
 
-export interface GoalPlannerConfig {
+export interface GoalPlannerConfig extends ExecutionPolicy {
   conversationId?: string
   agentConfig: AgentConfig
   provider: LLMProvider
@@ -550,6 +551,8 @@ Rules:
     }
 
     const runner = new AgentRunner({
+      automation: this.config.automation,
+      requestToolApproval: this.config.requestToolApproval,
       conversationId: this.config.conversationId,
       agentConfig: this.config.agentConfig,
       provider: this.config.provider,

@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
+import { shellCopy } from '@/lib/shell-copy'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { ConversationList } from './ConversationList'
@@ -15,8 +16,9 @@ export interface SidebarProps {
 }
 
 export function Sidebar({ className, style }: SidebarProps) {
-  const { sidebarCollapsed, toggleSidebar, setSettingsOpen, setCurrentView } =
+  const { sidebarCollapsed, toggleSidebar, setSettingsOpen, setCurrentView, language } =
     useAppStore(useShallow((state) => ({
+      language: state.language,
       sidebarCollapsed: state.sidebarCollapsed,
       toggleSidebar: state.toggleSidebar,
       setSettingsOpen: state.setSettingsOpen,
@@ -106,23 +108,23 @@ export function Sidebar({ className, style }: SidebarProps) {
   if (sidebarCollapsed) {
     return (
       <div className="eva-sidebar flex w-12 flex-col items-center gap-2 border-r py-3">
-        <Button variant="ghost" size="icon" onClick={toggleSidebar} title="Expand sidebar">
+        <Button variant="ghost" size="icon" onClick={toggleSidebar} title={shellCopy[language].expand}>
           <PanelLeft className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="New global task" onClick={() => createConversation(undefined, 'normal', null)}>
+        <Button variant="ghost" size="icon" title={shellCopy[language].newChat} onClick={() => createConversation(undefined, 'normal', null)}>
           <Plus className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="Add project folder" onClick={() => void addWorkspace()}>
+        <Button variant="ghost" size="icon" title={shellCopy[language].addProject} onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="Agent Symposium" onClick={() => setCurrentView('symposium')}>
+        <Button variant="ghost" size="icon" title={shellCopy[language].symposium} onClick={() => setCurrentView('symposium')}>
           <UsersRound className="h-4 w-4" />
         </Button>
         <Button
           variant="ghost"
           size="icon"
-          title="Settings"
-          aria-label="Settings"
+          title={shellCopy[language].settings}
+          aria-label={shellCopy[language].settings}
           onClick={() => setSettingsOpen(true)}
         >
           <Settings className="h-4 w-4" />
@@ -149,15 +151,15 @@ export function Sidebar({ className, style }: SidebarProps) {
         </div>
       )}
       {/* Header */}
-      <div className="flex h-12 items-center justify-between border-b border-indigo-100/90 px-4">
-        <span className="text-sm font-semibold text-zinc-800">Workspace</span>
+      <div className="flex h-12 items-center justify-between px-4">
+        <span className="text-sm font-semibold text-zinc-800">{shellCopy[language].project}</span>
         <div className="flex items-center">
           <Button
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
             onClick={toggleSidebar}
-            title="Collapse sidebar"
+            title={shellCopy[language].collapse}
           >
             <PanelLeftClose className="h-4 w-4" />
           </Button>
@@ -173,11 +175,11 @@ export function Sidebar({ className, style }: SidebarProps) {
           onClick={() => setCurrentView('symposium')}
         >
           <UsersRound className="h-4 w-4" />
-          <span>Agent Symposium</span>
+          <span>{shellCopy[language].symposium}</span>
         </Button>
         <Button variant="ghost" size="sm" className="h-9 w-full justify-start gap-2.5 px-3" onClick={() => void addWorkspace()}>
           <FolderPlus className="h-4 w-4" />
-          Add Project Folder
+          {shellCopy[language].addProject}
         </Button>
         {dropMessage && <p className="px-3 pt-1 text-xs leading-5 text-zinc-500">{dropMessage}</p>}
       </div>
@@ -187,7 +189,7 @@ export function Sidebar({ className, style }: SidebarProps) {
 
       {/* Bottom section: Mode + Settings */}
       <div className="px-3 pb-2 pt-4">
-        <div className="px-3 pb-2 text-xs font-medium text-zinc-500 uppercase tracking-wider">Mode</div>
+        <div className="px-3 pb-2 text-xs font-medium text-zinc-500 uppercase tracking-wider">{shellCopy[language].mode}</div>
         <ModeSelector />
       </div>
 
@@ -199,7 +201,7 @@ export function Sidebar({ className, style }: SidebarProps) {
           onClick={() => setSettingsOpen(true)}
         >
           <Settings className="h-4 w-4" />
-          Settings
+          {shellCopy[language].settings}
         </Button>
       </div>
     </div>

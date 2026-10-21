@@ -1,5 +1,93 @@
 # 工程记忆变更记录
 
+## 2026-10-21：统一工作台、设置导航与状态表达
+
+- 影响文件：`renderer/App.tsx`、`stores/use-app-store.ts`、`components/{chat,sidebar,tasks,settings,agents,ui}` 下相应组件与 `index.css`；新增 `ui/Switch.tsx`、`lib/{agent-presentation,cost-presentation,settings-detail-copy,workspace-copy}.ts`，扩展 `floating-layer` 的非模态工作区支持。更新 `docs/PURPOSES.md`、架构与回归防护；新增成本/智能体显示测试及真实 App 浏览器夹具，扩充已有设置/主线验证。
+- 工作台：聊天标题增加项目上下文，项目行和聊天标题提供主线入口。主线复用右栏组件树展开至主工作区，保留草稿与用户尺寸偏好；展开时侧栏可导航，Escape 先收回，页面切换与交接继续恢复目标页面/会话输入框。项目与当前会话不一致时不展示原会话的执行、需求和用量，明确引导选择该项目会话。空任务便签收短，空态说明下一步；执行记录读取中/失败/空态分开，失败可重试，序号阻止旧会话/项目的迟到读取覆盖当前记录。没有改变运行计划、工具证据或主线验收协议。
+- 设置：分为偏好与模型、扩展与连接、用量与诊断，保留本次视图中的组内位置。技能/插件/MCP 分区查看；内部调用链按需展开。智能体页与其他页面统一页头和边距，内置名称/默认说明只作本地化显示；用户修改的说明、自定义名称和持久化消息不改写。任务、模型编辑器、模型池、插件和 MCP 的主要界面文案补充本地化。
+- 共享外观：输入与按钮改用现有主题变量，布尔设置复用保留原生键盘/label/disabled 语义的 Switch；多选与验收确认继续使用 checkbox。主线表单复用输入组件，宽屏范围/验收分列，窄屏回落单列。设置标题、状态卡与侧栏选中态适配三主题；未加回窗口/项目标题下沿两条装饰线，也未重新给通用/模型/QQ 包整页白卡。
+- 状态与失败：模型连接突出当前项，标签靠近连接名称，显示开关保持固定含义。QQ 连接前校验项目/智能体可用性，失效选择保留，提示可定位字段；模型池保存失败显示错误并保留修改，服务状态读取失败提供重试。成本全未计价显示“尚未估算”，不画零费用曲线；真实零费用仍显示零，部分计价注明覆盖范围/已知下限，供应商分布按当前筛选。运行概览区分配置数量、当前执行与历史异常，不把启用数量宣称为健康检查。
+- 验证：定向组件/状态/价格/智能体测试通过，node/web 类型检查通过，全量 **120 文件 / 909 项**通过。首次与界面检查并发的全量运行有一项真实 Git 指纹测试超时；单独定向及随后独立全量均通过，未放宽超时或改变该测试。生产构建、trusted IPC 边界、115 项打包文件模式与 `git diff --check` 通过；构建保留已有 streamdown 指令提示。
+- 界面验证：隔离 Electron 用户目录、模拟 IPC 数据。覆盖三主题，设置 620/1200px、主线表单 360/620px、实际 App 工作台 620/1400px；验证展开/收回/缩放/Escape 保留草稿与尺寸、页面切换可见性、交接继续返回会话输入框、跨项目记录作用域、会话迟到读取隔离、失败重试、QQ 失效项目阻止连接并定位、开关键盘操作、模型池失败保留、未计价/真实零费用；截图位于忽略目录 `tmp/ui-check/`，已目检主要宽窄布局和深色状态。
+- 边界：未调用用户模型或 QQ 账号，界面验证不代表真实服务连通性或多人协作端到端验收。原始错误/工具名称/第三方插件内容仍可能含英文；未重写全部历史页面与第三方内容。项目原有未提交修改保留，本轮未提交、推送或生成安装包。
+
+## 2026-10-21：主线 AI 分析并填入新建草稿
+
+- 新增 `services/purpose-draft-service.ts`、`renderer/components/tasks/PurposeDraftAssistant.tsx`、`tests/unit/purpose-draft-service.test.ts`；修改主线共享类型/IPC 契约/preload、`ipc/{purpose,index}.ts`、`storage/purpose-store.ts`、`memory-sanitizer.ts`、`PurposePanel.tsx`、局部样式、浏览器夹具与使用说明。
+- 新建主线支持一句需求自动生成名称、目标、范围、验收标准与里程碑；同项目当前会话来源默认不勾选。生成使用当前选择的模型，仅取有限公开会话文本和已有缓存索引元数据，不运行工具、不修改项目或既有主线。其他工作树索引不冒充当前代码；常见凭据模式在输入/输出脱敏，输出严格校验字段/长度，截断、工具调用或无效 JSON 拒绝应用。
+- 草稿保持可编辑，支持撤回；AI 假设/待确认项作为可编辑规划备注，用户保存后进入主线 notes，原始需求、会话片段、模型响应和临时生成状态不进入共享文件。planningNotes 只用于创建输入，不增加持久化文档顶层字段。模型生成不能写完成状态或验证依据。
+- 同 renderer 限一项生成，取消按 owner/requestId 隔离，窗口关闭取消所属请求；60 秒超时同时通过 AbortSignal 和 Promise.race 处理忽略取消的 provider。来源变更、取消后的迟到响应失效；失败保留原表单，生成期间锁定保存字段。
+- 验证：新增辅助模型分析 10 项、规划备注持久化 1 项；定向 20 项、node/web 类型检查、全量 **118 文件 / 902 项**、IPC 边界与 115 项打包规则通过。界面夹具验证自动填五字段、未保存前无创建、同项目会话 opt-in、撤回、生成失败保留字段、取消后迟到结果不覆盖、规划备注随保存保留；三主题 × 360/620px 无横向溢出，`tmp/ui-check/purpose-draft-*.png` 已目检。生产构建通过，保留既有 streamdown 指令提示。
+- 边界：模型测试使用受控模拟 provider，未调用用户账号或真实模型；生成计划质量仍需用户核实。本轮仅新建表单自动起草，不自动改写已有主线、历史验收或执行记录，索引元数据不等于已阅读源码/执行测试。未提交或推送。
+
+## 2026-10-21：项目任务主线、公开进度与跨会话交接第一版
+
+- 新增 `shared/types/purpose.ts`、`storage/purpose-store.ts`、`services/purpose-{service,code-state}.ts`、`ipc/purpose.ts`、`tools/purpose-tools.ts`、`renderer/components/tasks/PurposePanel.tsx`；接入 storage/IPC/preload/shared contract、聊天/Goal/团队/App Server/QQ 上下文与实际执行记录，任务工作区增加「主线」。新增 `docs/PURPOSES.md`；`.gitignore` 仅放行根项目 `.eva/purposes/*.json`，其余运行产物、锁和临时文件继续忽略。
+- 主线用稳定 UUID 和项目内 JSON 保存目标、范围、验收标准、里程碑、决策/发现、公开进度、工具元数据、交接及变更历史。原子写入、文件大小/schema/路径检查、写锁和期望 revision 防止损坏与旧草稿覆盖；普通会话更新不能修改 purposeId，关联需校验同项目和执行状态。
+- 人工里程碑完成需验证依据，整条主线验收需全部里程碑完成和说明；基线与里程碑计划变化保留旧记录。`record_purpose_progress` 属于受审批的 workspace-write，Coding Assistant 默认增加该能力（工具目录 34）；只允许公开报告、进行中/受阻状态，不授予验收、目标修改或跨项目权限。AI 报告与步骤状态均视为待核实结论。
+- 接手检查记录 Git 分支/提交及暂存、未暂存、未跟踪内容的指纹，排除主线自身。不能核实则显示 unknown，不能冒充一致。继续时复检代码/revision，创建使用本地模型配置、workspace 权限和空目录授权的新会话，下一步放入草稿，由用户发送。不会自动切分支、执行命令、提交、推送或重放工具。
+- 子会话沿父关系解析主线，Goal 的显式 `purposeContext` 在步骤边界刷新，不继承父聊天全文。交接检查拦截活动/可恢复任务及实际子运行；已停止父任务的历史子会话 running 元数据不永久阻塞交接。执行记录保存失败通知/记录活动，不触发已成功操作的重试。
+- 验证：新增主线存储 8 项、服务 12 项、真实 Git 指纹 3 项、Goal 交接引用 1 项；定向测试、node/web 类型检查、全量 **117 文件 / 891 项**、生产构建、IPC 边界与 115 项打包文件模式检查通过。真实 Git 测试涉及多次 Windows 子进程调用，单项显式允许 15 秒，避免与全量/构建并发时误触默认 5 秒超时。`git check-ignore` 确认主线 JSON 可追踪、锁/临时/其他运行产物仍忽略。
+- 界面验证：隔离 Electron 夹具检查创建、关联、人工交接、代码变化复核、继续新会话、保存失败保留草稿，三主题 × 360/620px 无横向溢出；截图 `tmp/ui-check/purpose-*.png` 已目检。真实存储测试把主线复制到另一个目录并使用全新的本地项目 ID/会话目录接手，不依赖原聊天。未调用真实模型或使用用户凭据；夹具不是多人网络协作端到端验证。
+- 剩余边界：第一版通过项目文件/Git 移交，未实现在线同步、跨机器任务租约、补丁打包、自动环境安装或 CI 验收。记录时点代码快照不证明每个检查对应同一版本。每份主线 2 MB，单条执行最多 100 工具/50 步骤，模型参考最多 24,000 字符；原始聊天、命令参数/输出和个人记忆不自动共享。意外退出遗留写锁时需确认无写入进程后移除锁；细节见使用说明。未提交或推送。
+
+## 2026-10-20：去除顶部两条装饰分隔线
+
+- 影响文件：`renderer/index.css`、`renderer/components/sidebar/Sidebar.tsx`。
+- 移除窗口标题栏的底边框、左侧“项目”页头的底边框工具类；保留既有高度、标题栏拖拽区、窗口操作与侧栏收起操作。
+- 验证：核对对应样式与 JSX，`git diff --check`、`npm run typecheck`、全量 **114 文件 / 867 项**通过。纯装饰改动，未新增测试或变更交互逻辑；未额外做真机截图验证。
+
+## 2026-10-20：再次调整通用与 QQ 页的表单布局
+
+- 影响文件：`renderer/components/settings/SettingsDialog.tsx`、`renderer/index.css`、`renderer/lib/settings-page-copy.ts`、`tests/browser/{settings-fixture.tsx,runner.cjs}`。仅改通用/QQ 对应 JSX 与专用样式；模型页、成本中心、长期记忆保持前一轮状态。
+- 通用：列宽收至 60rem，标签统一置于控件上方；语言与主题同组，目录随后，网络独立成组，去掉逐行宽屏左右推开的布局。主题改为三枚带配色缩略图和选中状态的按钮，仍调用原 `setTheme` 保存。代理方式/检测地址并排，手动代理字段按选择显示，窄内容宽度自动改为单列。
+- QQ：列宽收至 68rem，主表单与连接状态侧区分栏，窄内容宽度把状态移至表单前方；状态小区包含真实状态、诊断和测试环境开关，表单本身无白卡。启用/环境改成有原生 checkbox 语义的开关，保存期间锁定字段；轨道补显式宽度，修复浏览器检查发现的 620px 下开关文字溢出。
+- 显示修复：已选项目/智能体不在当前列表时，增加禁用的“已不可用，请重新选择”选项，保留原 ID，不自动改配置，也不再把 ID 显示成名称。后端已有 `QQ did not return an access token.` 错误改为本地语言诊断和核对提示，其他诊断保留原消息；这不代表 QQ 鉴权问题已修复。
+- 验证：模型编辑器/弹窗定向 9 项通过；node/web 类型检查、全量 **114 文件 / 867 项**、生产构建通过。`npm run verify:ui` 使用真实 SettingsDialog + 隔离 IPC 演示数据，检查三页三主题 × 1200/620px 无横向溢出、主题按钮持久化、手动代理值提交、QQ 密钥留空不传明文/环境开关保存、异常状态与失效项目标签。18 个常规设置截图及三主题 QQ 异常截图写入 `tmp/ui-check/`，已目检通用/QQ 宽窄浅色及深色异常状态。
+- 边界：未连接真实 QQ 账号、未读取或修改用户凭据；界面测试使用演示数据。未提交或推送。
+
+## 2026-10-20：按截图反馈移除通用、模型与 QQ 页的多余外框
+
+- 影响文件：`renderer/components/settings/SettingsDialog.tsx`、`renderer/index.css`，新增 `renderer/lib/settings-page-copy.ts`；扩展 `tests/browser/{ui-fixture,settings-fixture}.tsx` 和 `tests/browser/runner.cjs`。成本中心、长期记忆组件未改动，新增 CSS 仅作用于这三页的专用类。
+- 通用页：语言、主题、工作目录改为画布上的设置行，移除单字段白卡及 hover lift；宽布局标签/说明与控件分列，窄内容宽度下改为上下排列，保留输入控件边界。网络设置继续作为独立页面分区，限制长字段的阅读宽度。
+- 模型页：移除包住全部连接、模型池的白色外框；页面标题、添加按钮直接位于画布，每条连接保留自身边界，模型池以留白及细线分隔。编辑弹窗及模型获取/保存行为未改动。
+- QQ 页：移除整页白框与页级浮起效果；凭据、访问与路由通过标题/留白/细线分组，AppID/AppSecret 和项目/智能体按可用宽度分列。增加 label 与控件的关联，保留启用、密钥留空保留、OpenID、项目权限、保存/连接语义。三页新增文案使用三语字典。
+- 验证：已有模型编辑器/弹窗定向 9 项通过；`npm run typecheck`、全量 **114 文件 / 867 项通过**、`npm run build`、`npm run verify:ui` 均通过。浏览器改为额外挂载真实 SettingsDialog，使用隔离演示数据检查三页 × 三主题 × 1200/620px 共 18 个截图状态、无页级/单字段白卡、内容不横向溢出；模型编辑器仍可打开，QQ 修改后的 AppID 与项目 ID 正确传入保存接口。截图位于忽略目录 `tmp/ui-check/settings-*.png`，已目检宽/窄浅色及深色 QQ 页。
+- 边界：未接入真实 QQ 账号或修改用户模型连接；浏览器保存检查是模拟 IPC 的界面验证。原有模型池业务区及其历史文案不在本轮去框改动内。未提交或推送。
+
+## 2026-10-20：前端布局、浮层交互、主题与保存反馈整改
+
+- 影响文件：`renderer/App.tsx`、`renderer/stores/use-app-store.ts`、`renderer/components/{ui,chat,settings,sidebar,tasks,terminal}` 下对应组件、`renderer/index.css`；新增 `renderer/lib/{workspace-layout,floating-layer,terminal-theme,shell-copy}.ts`。模型选择同时调整 `storage/config-store.ts`、`ipc/system.ts`、preload 与共享 IPC 契约。新增 `tests/unit/{workspace-layout,workspace-ui-store}.test.ts`、扩充 config-store / dialog portal 回归，以及 `tests/browser/`、`scripts/verify-ui.mjs`、`npm run verify:ui`。
+- 布局：统一为对话主列预留 480px，侧栏/终端/便签按同一宽度预算夹取；初次加载窄窗口收起右栏，显式打开时使用抽屉并支持 Escape 和焦点约束，不改持久化的宽度偏好。终端可直接切回任务工作区；便签与终端高度限制在可见窗口内。分隔条支持方向键，拖拽取消/窗口失焦会收尾；工作区标签可横向滚动并通过方向键切换。
+- 浮层：Dialog 与 Select 共用按深度排序的层栈，Escape 或外部按下一次只关闭最上层；嵌套标题使用独立 ID。菜单支持方向键/Home/End/Enter/空格、跳过禁用选项、Tab 回到自然顺序，菜单位置按实际高度和窗口边界限制。焦点在布局提交后同步设置，避免隐藏或繁忙窗口中依赖下一帧导致的焦点竞态。Dialog 继续 portal 到 body。
+- 主题与排版：共享主要按钮、菜单、焦点框读取主题 token，移除焦点阴影的无限移动动画，保留已认可的设置组 hover 手感。终端订阅三套主题并在切换时保留 IME 隐藏光标状态。xs/sm 调整为实际 12/13px；命令叠层与 textarea 共用字体度量并同步滚动，修正深色主题强制文字颜色导致的双重显示。图片说明改为本条消息的参考资料；主导航、模式、任务标签和主题名称补齐三语。
+- 保存与效率：模型连接/模型通过 `config:select-model` 单次 electron-store 写入；保存完成后才更新 UI，失败可重试。自动化/审批/沙箱加载期间或读取失败时禁用编辑，保存期间防止重复操作；保存失败保留原配置并提示重试，沙箱刷新失败与保存失败分开提示。QQ 只在当前设置页可见时轮询，避免请求重叠与离页回写；ChatPanel、TerminalPanel、Settings、任务工作区收窄 store 订阅。
+- 验证：定向回归、node/web 类型检查、全量 **114 文件 / 867 项通过**；生产构建、IPC 边界、115 项打包文件模式检查通过。隔离的 Electron 离屏浏览器运行真实共享组件：嵌套 Escape、外部按下只关一层、键盘选项/焦点恢复/Tab 约束、900/1100/1440px 菜单边界、叠层字体度量与三主题透明文字检查均通过，三主题截图已目检，输出到忽略目录 `tmp/ui-check/`。浏览器检查使用临时用户目录，不读取用户模型连接或调用模型。
+- 验证边界：浏览器夹具覆盖共享控件与 xterm，不等于真实模型驱动的全应用端到端；完整业务页仍有历史工具类配色和未迁移文案，本轮未重写全部页面。未提交或推送。
+
+## 2026-10-20：运行取消、终端队列、多行脚本与审批异常收尾
+
+- 影响文件：`services/{terminal-service,tool-dispatcher,tool-approval-policy}.ts`、`tools/{index,terminal-tools}.ts`，以及 `tests/unit/{terminal-service,terminal-fallback,terminal-tool-policy,tool-approval-policy,execution-policy}.test.ts`。
+- 运行取消：AbortSignal 从 runner 经 dispatcher/ToolContext 传给命令服务。取消运行中的 PTY 命令时先中断、关闭原 shell；fallback 同时结束会话及其正在执行的单次命令进程。排队调用立即返回取消，并在出队时再次检查，不能在前一条命令结束后偷偷执行。用户取消不再写入“重复失败命令”阻止表。
+- 队列/时限：调用绑定入队时的具体终端实例，原终端关闭或重建后旧队列拒绝执行；旧进程的迟到输出不再投递到新实例。启动、显式 cwd 切换、正文共享一个超时预算。fallback 输出同步到会话缓冲与界面订阅。
+- 多行脚本：Windows 实测直接发送 LF 会被 PSReadLine 当作编辑操作，三行脚本可出现输出行序颠倒。改为 UTF-8/Base64 单行传输、在当前 shell dot-source 原脚本，并在脚本内部采集退出状态；通过随机开始标记从工具结果剥离传输回显。脚本内变量和 cwd 变更继续保留，非零 native 退出码不被 dot-source 重置后的 `$?` 覆盖。
+- 审批异常：观察回调、IPC 或 relay 发送抛错时按拒绝收尾；统一清理计时器/挂起登记/展示槽位。回调中若已同步作出决定或取消，不再发送失效卡片。
+- 验证：新增 13 项回归（先复现 5 项失败后修复），`npm run typecheck`、全量测试 **112 文件 / 839 项通过**、`npm run build`、IPC 边界与 115 项打包文件模式检查均通过。额外覆盖真实 runner.abort 到 execute_command 的整条信号链、启动/排队/执行/沙箱准备期间取消、旧队列和迟到输出、统一时限、多行传输及审批异常后的下一张卡。
+- Windows 实测：实际 node-pty + PowerShell 验证多行按 FIRST/LAST 顺序输出、末行 native 失败返回 7、变量及临时目录变更保留；10 秒命令取消约 168ms 返回，真实 fallback 同类取消约 162ms 返回。
+- 剩余边界：Node 24 直接运行原生探针时，node-pty 的独立退出 helper 出现 `AttachConsole failed` 日志，探针断言通过；未修改依赖，也未确认 Electron 内是否出现同款日志。macOS/Linux 原生终端和真实模型审批 UI 仍未实测。Windows 保持既有 policy-only 沙箱，PTY 的 stdout/stderr 仍合流。未提交或推送。
+
+## 2026-10-19：执行策略、终端结果、计划状态与保存可靠性整改
+
+- 范围：修复本轮审查列出的 8 项问题。影响 `agent-engine/{agent-runner,goal-planner,team-orchestrator}.ts`、`ipc/{conversation,task}.ts`、`services/{execution-policy,tool-dispatcher,tool-approval-policy,remote-tool-policy,remote-conversation-executor,symposium-execution-service,terminal-service}.ts`、`services/app-server/server.ts`、`tools/{index,terminal-tools}.ts`、`storage/{active-plan-store,agent-store,atomic-file}.ts`、`renderer/stores/use-app-store.ts`、`package.json` 及相关测试。
+- 执行策略：新增 `execution-policy.ts` 统一合并 automation 默认值并组合沙箱/审批策略；聊天、内部任务、Goal、团队、Symposium、App-Server、QQ 均显式传递。Goal/团队子执行器继承父任务审批通道；启用策略但缺审批通道时拒绝需要审批的调用；plan 模式拒绝注册工具中的非只读操作。QQ 保留原有命令白名单及强制写操作审批，并覆盖 spreadsheet/技能等其余受策略约束工具。
+- 审批取消：AbortSignal 贯通 runner/dispatcher/审批等待队列；已显示与排队的审批均可独立取消，取消后迟到的允许结果不能执行工具，也不占用下一张卡的槽位。
+- 终端：PowerShell prompt 在任何格式化命令之前采集成功状态、native exit code 与新 ErrorRecord；POSIX 完成标记携带真实 `$?`。等待初始 prompt，同会话命令串行，显式 cwd 在原 shell 中先切换且切换失败不执行正文。超时关闭 shell，避免迟到的完成标记污染下一条命令；沙箱作用域变化时重建 shell，界面输出订阅保留。fallback 使用独立的非交互 PowerShell 参数并同样经过沙箱包装，修复 `-Command … -c …` 混用。
+- 状态/保存：只有更新为 active 的计划才能暂停同作用域其他 active 计划，旧任务收尾不再暂停新任务；active-plans 改用原子写入。AgentStore 改用异步原子 JSON 写入，对 EPERM/EBUSY/EACCES 最多尝试 5 次，最终失败保留旧文件并清理临时文件。
+- 类型：右栏 setter 参数复用状态字段类型，覆盖 project-knowledge；`npm run typecheck` 现在同时检查 node/web 两份配置，避免前端错误被日常检查遗漏。
+- 验证：先运行定向回归，再运行 `npm run typecheck`、`npm test -- --reporter=dot`（**112 文件 / 826 项全过，新增 32 项**）、`npm run build`、`npm run verify:ipc-boundary`、`npm run verify:package-files`（115 patterns），全部通过。新增测试覆盖真实 Goal/团队子 runner 的批准/拒绝和沙箱作用域、所有生产构造入口的策略接线、审批取消、终端退出码/分片/排队/cwd/超时/重建订阅、fallback 参数、QQ 审批和文件锁重试。
+- Windows 实测：使用实际 node-pty + PowerShell 执行 `cmd /c exit 7`→7、成功命令→0、非终止 Write-Error→1；显式切换到临时目录成功，非法 cwd 阻止后续命令。真实 fallback 成功/原生命令失败/PowerShell 错误分别返回 0/7/1。探针只新建独立终端，未调用模型或修改用户应用配置。
+- 边界：Windows 后端仍是既有 policy-only 实现，本次接通策略不等于新增 AppContainer/操作系统级强隔离。PTY 输出仍包含终端格式且 stdout/stderr 合流；没有把它宣称为独立的原始 stdout。macOS/Linux 原生终端与真实模型驱动的整套审批 UI 尚未实测；现有 streamdown 构建提示仍在，但构建成功。未提交或推送。
+
 ## 2026-10-16（第一条）：`write_skill_file`——技能落盘不再撞沙箱，计划不再「执行一步就不走」
 
 - 影响文件：`src/main/storage/atomic-file.ts`（新导出 `writeTextAtomic` `:18`，`writeJsonAtomic` 改为在它上面拼 JSON，字节输出与改前相同）、`src/main/services/skill-service.ts`（把 `readSkill` 的校验抽成共用的 `checkSkillMarkdown` `:174`；新 `SkillFileWriteRequest` 与 `writeSkillFile` `:275`；新私有 `splitSkillRelativePath` `:346`、`exists`）、`src/main/tools/skill-tools.ts`（`createSkillTools()` 从返回一个改为返回 `[load_skill, write_skill_file]`）、`src/shared/tool-catalog.ts`（`write_skill_file` 条目，category `Files`、risk `write`；`TOOL_CATALOG_VERSION` 32→33）、`src/main/services/tool-approval-policy.ts`（`write_skill_file` 入 `WORKSPACE_WRITE_TOOLS` `:45`，并在 `buildSummary` `:104` 给出「Write skill file <name>/<file>」+ 目标文件夹一行）、`src/shared/constants.ts`（只给 Coding Assistant 补这个名字，它本来就带 `write_file`/`edit_file`；Code Reviewer / Research Analyst / Team Leader 保持只读，要用就在设置里授权）、`src/renderer/stores/use-chat-store.ts`（`tool_approval_request` 分支 `:770` 去掉 `isStreaming` 守卫）、新 `tests/unit/skill-write.test.ts`（14 项）、`tests/unit/skill-tool.test.ts`（+3 项）、`tests/unit/chat-stream-store.test.ts`（+2 项）、仓库外的 `%APPDATA%\eva\skills\skill-creator\SKILL.md`（写入通道与落盘步骤重写）。

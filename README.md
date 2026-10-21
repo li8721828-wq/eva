@@ -7,6 +7,7 @@ Eva 是一个基于 Electron 的桌面端 AI 编程助手，支持多 AI Agent �
 - **多 Agent 协作** — 支持 Leader、Researcher、Coder、Reviewer、Tester 等多种角色，通过团队编排实现复杂任务分工
 - **多 Provider 支持** — 兼容 OpenAI 和 Anthropic Claude 等主流 AI 提供商
 - **目标驱动模式** — 设定高层目标，Agent 自动规划并分解任务
+- **任务主线与交接** — 在项目中保存目标、验收、进度与交接记录，换会话或移交项目后继续工作；参见 [使用说明](docs/PURPOSES.md)
 - **内置代码编辑器** — 集成 Monaco Editor，提供接近 VS Code 的编辑体验
 - **内置终端** — 使用 xterm.js 实现命令行操作
 - **任务看板** — 可视化追踪任务进度和状态

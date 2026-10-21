@@ -34,6 +34,21 @@ function makeContext(fullFilesystemAccess: boolean): ToolContext {
 describe('execute_command permission boundary', () => {
   const tool = createTerminalTools().find((candidate) => candidate.definition.name === 'execute_command')!
 
+  it('passes the run cancellation signal through to terminal execution', async () => {
+    const controller = new AbortController()
+    const context = { ...makeContext(true), signal: controller.signal }
+    await tool.execute({ command: 'echo ok' }, context)
+    expect(context.terminalService.executeCommand).toHaveBeenCalledWith(expect.any(String), 'echo ok', 30000, undefined, controller.signal)
+  })
+
+  it('does not create a terminal for an already cancelled run', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const context = { ...makeContext(true), signal: controller.signal }
+    expect(await tool.execute({ command: 'echo ok' }, context)).toContain('cancelled')
+    expect(context.terminalService.createSession).not.toHaveBeenCalled()
+  })
+
   it('does not run a one-off shell without full filesystem access', async () => {
     const context = makeContext(false)
     const result = await tool.execute({ command: 'type C:\\Users\\private.txt' }, context)

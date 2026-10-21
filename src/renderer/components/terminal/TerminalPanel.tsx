@@ -4,6 +4,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
+import { terminalTheme } from '@/lib/terminal-theme'
+import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/Button'
 import { Plus, X, Terminal, PanelRightClose } from 'lucide-react'
@@ -33,30 +35,6 @@ export interface TerminalPanelProps {
   height?: number
 }
 
-const terminalTheme = {
-  background: '#f8f9fc',
-  foreground: '#243348',
-  cursor: '#6259d8',
-  cursorAccent: '#ffffff',
-  selectionBackground: 'rgba(98, 89, 216, 0.18)',
-  black: '#243348',
-  red: '#a83f4b',
-  green: '#20734f',
-  yellow: '#8f5107',
-  blue: '#3f6096',
-  magenta: '#7354a7',
-  cyan: '#256d83',
-  white: '#334155',
-  brightBlack: '#526176',
-  brightRed: '#c95764',
-  brightGreen: '#32865d',
-  brightYellow: '#ad690f',
-  brightBlue: '#5274a8',
-  brightMagenta: '#8969bd',
-  brightCyan: '#13738d',
-  brightWhite: '#1f2937',
-}
-
 const ANSI = {
   reset: '\x1b[0m',
   value: '\x1b[1;36m',
@@ -81,10 +59,11 @@ function isPowerShellPrompt(data: string): boolean {
 }
 
 export function TerminalPanel({ className, height }: TerminalPanelProps) {
-  const { workspacePath, toggleTerminal } = useAppStore()
-  const { conversations, currentConversationId } = useChatStore()
-  const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
+  const { workspacePath, toggleTerminal, theme } = useAppStore(useShallow(s => ({ workspacePath: s.workspacePath, toggleTerminal: s.toggleTerminal, theme: s.theme })))
+  const { currentConversationId, currentConversation } = useChatStore(useShallow(s => ({ currentConversationId: s.currentConversationId, currentConversation: s.conversations.find(c => c.id === s.currentConversationId) })))
   const conversationWorkspacePath = currentConversation?.workspacePath
+  const themeRef = useRef(terminalTheme(theme))
+  themeRef.current = terminalTheme(theme)
   const terminalWorkspacePath = conversationWorkspacePath || workspacePath || '.'
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeTab, setActiveTab] = useState<string>('')
@@ -96,6 +75,13 @@ export function TerminalPanel({ className, height }: TerminalPanelProps) {
   const deferredPrompts = useRef(new Map<string, DeferredPrompt>())
   const autoCreateRef = useRef(true)
   const previousConversationRef = useRef(currentConversationId)
+
+  useEffect(() => {
+    for (const [id, mounted] of mountedTerminals.current) {
+      const composing = terminalContainers.current.get(id)?.querySelector('.composition-view.active')
+      mounted.terminal.options.theme = composing ? { ...themeRef.current, cursor: 'transparent' } : themeRef.current
+    }
+  }, [theme])
 
   const fitTerminal = useCallback((id: string) => {
     const mounted = mountedTerminals.current.get(id)
@@ -122,7 +108,7 @@ export function TerminalPanel({ className, height }: TerminalPanelProps) {
       lineHeight: 1.3,
       letterSpacing: 0,
       scrollback: 5_000,
-      theme: terminalTheme,
+      theme: themeRef.current,
     })
     const fitAddon = new FitAddon()
     terminal.loadAddon(fitAddon)
@@ -141,7 +127,7 @@ export function TerminalPanel({ className, height }: TerminalPanelProps) {
     const compositionView = container.querySelector<HTMLElement>('.composition-view')
     const updateCompositionCursor = () => {
       const composing = compositionView?.classList.contains('active')
-      terminal.options.theme = composing ? { ...terminalTheme, cursor: 'transparent' } : terminalTheme
+      terminal.options.theme = composing ? { ...themeRef.current, cursor: 'transparent' } : themeRef.current
     }
     const compositionObserver = new MutationObserver(updateCompositionCursor)
     if (compositionView) {
@@ -341,7 +327,7 @@ export function TerminalPanel({ className, height }: TerminalPanelProps) {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 bg-[#f8f9fc]">
+      <div className="min-h-0 flex-1" style={{ backgroundColor: themeRef.current.background }}>
         {visibleTabs.map((tab) => (
           <div
             key={tab.id}

@@ -1,4 +1,5 @@
 import type { ToolExecutor, ToolContext } from './index'
+import path from 'path'
 import { conversationTerminalSessionId } from '../../shared/terminal-session'
 import { setConversationTerminalVisibility } from '../services/terminal-panel-controller'
 
@@ -116,6 +117,7 @@ const executeCommandTool: ToolExecutor = {
   async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
     const command = typeof params.command === 'string' ? params.command.trim() : ''
     if (!command) return 'Command execution requires a non-empty command.'
+    if (context.signal?.aborted) return 'Command cancelled before execution.'
 
     // An explicit conversation terminal tool grant authorizes control of that
     // visible shell. It is distinct from unrestricted background shell access.
@@ -125,12 +127,17 @@ const executeCommandTool: ToolExecutor = {
       return 'Command execution requires Full filesystem access. Workspace-only and authorized-folder conversations can use file tools, but cannot run an unrestricted local shell.'
     }
 
-    const timeout = Math.min((params.timeout as number) ?? 30_000, 120_000)
+    const timeout = typeof params.timeout === 'number' && Number.isFinite(params.timeout)
+      ? Math.max(1, Math.min(params.timeout, 120_000))
+      : 30_000
 
     const sessionId = context.conversationId
       ? conversationTerminalSessionId(context.conversationId)
       : `tool_cmd_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-    const cwd = (params.cwd as string) || context.workspacePath
+    const explicitCwd = typeof params.cwd === 'string' && params.cwd.trim()
+      ? path.resolve(context.workspacePath || process.cwd(), params.cwd)
+      : undefined
+    const cwd = explicitCwd || context.workspacePath
     const guardError = commandGuardError(command)
     if (guardError) return guardError
 
@@ -141,7 +148,7 @@ const executeCommandTool: ToolExecutor = {
 
     try {
       await context.terminalService.createSession(sessionId, cwd)
-      const result = await context.terminalService.executeCommand(sessionId, command, timeout)
+      const result = await context.terminalService.executeCommand(sessionId, command, timeout, explicitCwd, context.signal)
 
       const parts: string[] = []
 
@@ -156,7 +163,8 @@ const executeCommandTool: ToolExecutor = {
       }
 
       const output = parts.join('\n') || '(no output)'
-      if (commandFailed(result)) failedCommandsBySession.set(sessionId, command)
+      if (context.signal?.aborted) failedCommandsBySession.delete(sessionId)
+      else if (commandFailed(result)) failedCommandsBySession.set(sessionId, command)
       else failedCommandsBySession.delete(sessionId)
       return truncateOutput(output)
     } catch (err) {

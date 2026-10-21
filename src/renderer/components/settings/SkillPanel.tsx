@@ -1,3 +1,4 @@
+import { Switch } from '@/components/ui/Switch'
 import { useEffect, useState } from 'react'
 import { FolderOpen, RefreshCw, ScrollText } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -99,9 +100,7 @@ export function SkillPanel() {
                     <div className="mt-0.5 truncate text-xs text-zinc-500">{skill.description}</div>
                   </div>
                   <label className="flex shrink-0 items-center gap-1.5 text-xs text-zinc-500">
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 accent-violet-600"
+                    <Switch
                       checked={skill.enabled}
                       disabled={busy}
                       onChange={(event) => void run(() => window.eva.skills.setEnabled(skill.name, event.target.checked, workspacePath || undefined))}

@@ -13,7 +13,8 @@ describe('dialog overlay guards', () => {
     // flickers with the cursor. Rendering inline (the pre-fix behavior) reintroduces that bug in every
     // host that nests the dialog inside a lifted card — the model connection editor does exactly that.
     expect(source).toContain("import { createPortal } from 'react-dom'")
-    expect(source).toMatch(/createPortal\(\s*<div className="fixed inset-0 z-50/)
+    expect(source).toMatch(/return createPortal\(/)
+    expect(source).toContain('className="fixed inset-0 flex items-center justify-center p-4"')
     expect(source).toContain('document.body')
   })
 

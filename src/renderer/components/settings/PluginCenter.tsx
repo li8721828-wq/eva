@@ -1,3 +1,5 @@
+import { settingsDetailText } from '@/lib/settings-detail-copy'
+import { useAppStore } from '@/stores/use-app-store'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, Download, Eye, EyeOff, FolderOpen, FolderUp, Loader2, PackageCheck, PlugZap, Power, RefreshCw, Server, Settings2, ShieldCheck, Square, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
@@ -23,6 +25,8 @@ function hasRequiredSettings(plugin: InstalledPlugin): boolean {
 }
 
 export function PluginCenter() {
+  const language = useAppStore(state => state.language)
+  const t = (text: string) => settingsDetailText(language, text)
   const [installed, setInstalled] = useState<InstalledPlugin[]>([])
   const [marketplace, setMarketplace] = useState<MarketplacePluginView[]>([])
   const [loading, setLoading] = useState(true)
@@ -227,13 +231,13 @@ export function PluginCenter() {
         <div className="flex min-w-0 items-start gap-3">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-violet-50 text-violet-600"><PlugZap className="h-5 w-5" /></span>
           <div>
-            <h3 className="text-sm font-semibold text-zinc-900">Plugin center</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Install integrations and reusable workflows. Search providers supply the backend used by the separate Web search Agent tool.</p>
+            <h3 className="text-sm font-semibold text-zinc-900">{t("Plugin center")}</h3>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">{t("Install integrations and reusable workflows. Search providers supply the backend used by the separate Web search Agent tool.")}</p>
           </div>
         </div>
         <Button variant="outline" size="sm" onClick={() => void importPlugin()} disabled={workingId !== null} className="shrink-0 gap-1.5">
           {workingId === 'import' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FolderUp className="h-3.5 w-3.5" />}
-          Import manifest
+          {t("Import manifest")}
         </Button>
       </div>
 
@@ -244,31 +248,31 @@ export function PluginCenter() {
         </div>
       )}
 
-      <section className="eva-lift eva-panel flex flex-wrap items-center justify-between gap-4 px-5 py-4" aria-label="Web search service">
+      <section className="eva-lift eva-panel flex flex-wrap items-center justify-between gap-4 px-5 py-4" aria-label={t("Web search service")}>
         <div>
-          <p className="text-sm font-semibold text-zinc-900">Web search service</p>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">Agent permission is configured in Agents. Choose one provider here to decide where permitted web searches are sent.</p>
+          <p className="text-sm font-semibold text-zinc-900">{t("Web search service")}</p>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">{t("Agent permission is configured in Agents. Choose one provider here to decide where permitted web searches are sent.")}</p>
         </div>
         <div className={cn('eva-status', searchServiceReady ? 'eva-status--success' : activeSearchProvider ? 'eva-status--warning' : 'eva-status--neutral')}>
           {searchServiceReady
-            ? `Active: ${activeSearchProvider?.name}`
+            ? language === 'zh' ? `当前使用：${activeSearchProvider?.name}` : language === 'ja' ? `使用中: ${activeSearchProvider?.name}` : `Active: ${activeSearchProvider?.name}`
             : activeSearchProvider
-              ? `${activeSearchProvider.name} needs configuration`
-              : 'No active search service'}
+              ? language === 'zh' ? `${activeSearchProvider.name} 待配置` : language === 'ja' ? `${activeSearchProvider.name} は設定が必要` : `${activeSearchProvider.name} needs configuration`
+              : t("No active search service")}
         </div>
       </section>
 
       <Tabs defaultValue="installed" className="settings-dialog__plugin-tabs">
         <TabsList className="settings-dialog__plugin-tabs-list">
-          <TabsTrigger value="installed">Installed ({installed.length})</TabsTrigger>
-          <TabsTrigger value="marketplace">Marketplace</TabsTrigger>
+          <TabsTrigger value="installed">{language === 'zh' ? '已安装' : language === 'ja' ? 'インストール済み' : 'Installed'} ({installed.length})</TabsTrigger>
+          <TabsTrigger value="marketplace">{t("Marketplace")}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="installed" className="settings-dialog__plugin-tab-content">
           {loading ? (
-            <div className="settings-dialog__plugin-empty"><Loader2 className="h-4 w-4 animate-spin" /> Loading plugins...</div>
+            <div className="settings-dialog__plugin-empty"><Loader2 className="h-4 w-4 animate-spin" /> {t("Loading plugins...")}</div>
           ) : installed.length === 0 ? (
-            <div className="settings-dialog__plugin-empty"><PackageCheck className="h-4 w-4" /> No plugins installed. Browse the marketplace or import an Eva plugin manifest.</div>
+            <div className="settings-dialog__plugin-empty"><PackageCheck className="h-4 w-4" /> {t("No plugins installed. Browse the marketplace or import an Eva plugin manifest.")}</div>
           ) : (
             <div className="settings-dialog__plugin-list">
               {installed.map((plugin) => (
@@ -276,34 +280,34 @@ export function PluginCenter() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <h4 className="truncate text-sm font-semibold text-zinc-900">{plugin.name}</h4>
-                      {isSearchProviderPluginId(plugin.id) && <span className="rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Search provider</span>}
+                      {isSearchProviderPluginId(plugin.id) && <span className="rounded bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">{t("Search provider")}</span>}
                       <span className={cn('eva-status px-2 py-0.5 text-[11px]', plugin.enabled ? 'eva-status--success' : 'eva-status--neutral')}>
-                        {plugin.enabled ? 'Enabled' : 'Disabled'}
+                        {plugin.enabled ? t("Enabled") : t("Disabled")}
                       </span>
                     </div>
                     <p className="mt-1.5 text-xs leading-5 text-zinc-500">{plugin.description}</p>
                     <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-[11px] text-zinc-500">
                       <span>{PLUGIN_CATEGORIES[plugin.category]}</span>
                       <span>v{plugin.version}</span>
-                      <span>{plugin.source === 'marketplace' ? 'Marketplace' : 'Imported locally'}</span>
+                      <span>{plugin.source === 'marketplace' ? t("Marketplace") : t("Imported locally")}</span>
                     </div>
                     <div className="mt-3"><PermissionPills plugin={plugin} /></div>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
                     {isKeylessSearchProviderPluginId(plugin.id) ? (
-                      <Button variant="ghost" size="icon" onClick={() => void runLiveSearchTest(plugin)} disabled={workingId !== null} title="Run one live test search" aria-label={`Test ${plugin.name}`}>
+                      <Button variant="ghost" size="icon" onClick={() => void runLiveSearchTest(plugin)} disabled={workingId !== null} title={t("Run one live test search")} aria-label={`Test ${plugin.name}`}>
                         {workingId === plugin.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 text-zinc-500" />}
                       </Button>
                     ) : null}
                     {plugin.configuration?.length ? (
-                      <Button variant="ghost" size="icon" onClick={() => openConfiguration(plugin)} disabled={workingId !== null} title="Configure plugin" aria-label={`Configure ${plugin.name}`}>
+                      <Button variant="ghost" size="icon" onClick={() => openConfiguration(plugin)} disabled={workingId !== null} title={t("Configure plugin")} aria-label={`Configure ${plugin.name}`}>
                         <Settings2 className="h-4 w-4 text-zinc-500" />
                       </Button>
                     ) : null}
-                    <Button variant="ghost" size="icon" onClick={() => void togglePlugin(plugin)} disabled={workingId !== null} title={plugin.enabled ? 'Disable plugin' : 'Enable plugin'} aria-label={plugin.enabled ? `Disable ${plugin.name}` : `Enable ${plugin.name}`}>
+                    <Button variant="ghost" size="icon" onClick={() => void togglePlugin(plugin)} disabled={workingId !== null} title={plugin.enabled ? t("Disable plugin") : t("Enable plugin")} aria-label={plugin.enabled ? `Disable ${plugin.name}` : `Enable ${plugin.name}`}>
                       {workingId === plugin.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Power className={cn('h-4 w-4', plugin.enabled ? 'text-emerald-600' : 'text-zinc-500')} />}
                     </Button>
-                    <Button variant="ghost" size="icon" onClick={() => void removePlugin(plugin)} disabled={workingId !== null} title="Remove plugin" aria-label={`Remove ${plugin.name}`}>
+                    <Button variant="ghost" size="icon" onClick={() => void removePlugin(plugin)} disabled={workingId !== null} title={t("Remove plugin")} aria-label={`Remove ${plugin.name}`}>
                       <Trash2 className="h-4 w-4 text-zinc-400 hover:text-red-600" />
                     </Button>
                   </div>
@@ -332,7 +336,7 @@ export function PluginCenter() {
                         </select>
                       ) : (
                         <div className="flex gap-2">
-                          <div className="relative min-w-0 flex-1"><Input type={field.type === 'number' ? 'number' : field.type === 'secret' && !visibleSecrets[field.key] ? 'password' : 'text'} value={configValues[field.key] || ''} onChange={(event) => setConfigValues((values) => ({ ...values, [field.key]: event.target.value }))} placeholder={field.placeholder} className={field.type === 'secret' ? 'pr-9' : undefined} autoComplete={field.type === 'secret' ? 'off' : undefined} />{field.type === 'secret' ? <button type="button" onClick={() => setVisibleSecrets((current) => ({ ...current, [field.key]: !current[field.key] }))} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 hover:text-zinc-600" aria-label={visibleSecrets[field.key] ? 'Hide API key' : 'Show API key'}>{visibleSecrets[field.key] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button> : null}</div>
+                          <div className="relative min-w-0 flex-1"><Input type={field.type === 'number' ? 'number' : field.type === 'secret' && !visibleSecrets[field.key] ? 'password' : 'text'} value={configValues[field.key] || ''} onChange={(event) => setConfigValues((values) => ({ ...values, [field.key]: event.target.value }))} placeholder={field.placeholder} className={field.type === 'secret' ? 'pr-9' : undefined} autoComplete={field.type === 'secret' ? 'off' : undefined} />{field.type === 'secret' ? <button type="button" onClick={() => setVisibleSecrets((current) => ({ ...current, [field.key]: !current[field.key] }))} className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-zinc-400 hover:text-zinc-600" aria-label={visibleSecrets[field.key] ? t("Hide API key") : t("Show API key")}>{visibleSecrets[field.key] ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</button> : null}</div>
                           {field.type === 'path-file' || field.type === 'path-directory' ? <Button type="button" variant="outline" size="sm" onClick={() => void browseConfigurationPath(field)} title="Browse path" aria-label={`Browse ${field.label}`}><FolderOpen className="h-4 w-4" /></Button> : null}
                         </div>
                       )}

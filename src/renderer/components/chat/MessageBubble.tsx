@@ -1,3 +1,4 @@
+import { agentDisplayName } from '@/lib/agent-presentation'
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -566,6 +567,8 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
   const agents = useAgentStore((state) => state.agents)
+  const author = agents.find(agent => agent.id === message.agentId)
+  const displayedAuthor = author && message.agentName === author.name ? agentDisplayName(author, language) : message.agentName
   const updateMessageFavorite = useChatStore((state) => state.updateMessageFavorite)
   const regenerateFromMessage = useChatStore((state) => state.regenerateFromMessage)
   const setQuotedMessage = useChatStore((state) => state.setQuotedMessage)
@@ -640,7 +643,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             {/* Agent name label */}
             {message.agentName && (
               <Badge variant="primary" className="mb-1">
-                {message.agentName}
+                {displayedAuthor}
               </Badge>
             )}
             {message.attachments?.length ? <MessageAttachments attachments={message.attachments} /> : null}
@@ -715,7 +718,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
             <div className="chat-agent-label mb-3 flex items-center gap-2">
               <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
               <Badge variant="primary" className="px-1.5 py-0">
-                {message.agentName}
+                {displayedAuthor}
               </Badge>
             </div>
           )}

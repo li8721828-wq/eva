@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
+import { estimatedCost } from '@/lib/cost-presentation'
 import { uiCopy } from '@/lib/ui-copy'
 
 type Range = '7d' | '30d' | '90d' | 'all'
@@ -52,19 +53,19 @@ function bucketKey(timestamp: number, granularity: Granularity): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
-function TrendChart({ records, granularity }: { records: CostUsageRecord[]; granularity: Granularity }) {
+function TrendChart({ records, granularity, emptyLabel, noEstimateLabel, title }: { records: CostUsageRecord[]; granularity: Granularity; emptyLabel: string; noEstimateLabel: string; title: string }) {
   const points = useMemo(() => {
-    const buckets = new Map<string, { cost: number; tokens: number }>()
+    const buckets = new Map<string, { cost: number | undefined; tokens: number }>()
     for (const record of records) {
       const key = bucketKey(record.timestamp, granularity)
-      const current = buckets.get(key) || { cost: 0, tokens: 0 }
-      current.cost += record.estimatedCostCny || 0
+      const current = buckets.get(key) || { cost: undefined, tokens: 0 }
+      if (record.estimatedCostCny !== undefined) current.cost = (current.cost ?? 0) + record.estimatedCostCny
       current.tokens += record.promptTokens + record.completionTokens
       buckets.set(key, current)
     }
     return Array.from(buckets.entries()).sort(([left], [right]) => left.localeCompare(right)).map(([label, value]) => ({ label, ...value }))
   }, [granularity, records])
-  const maxCost = Math.max(0.01, ...points.map((point) => point.cost))
+  const maxCost = Math.max(0.01, ...points.map((point) => point.cost ?? 0))
   const width = 760
   const height = 250
   const left = 54
@@ -75,18 +76,20 @@ function TrendChart({ records, granularity }: { records: CostUsageRecord[]; gran
   const plotHeight = height - top - bottom
   const x = (index: number) => points.length <= 1 ? left + plotWidth / 2 : left + (index / (points.length - 1)) * plotWidth
   const y = (value: number) => top + plotHeight - (value / maxCost) * plotHeight
-  const line = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${x(index)} ${y(point.cost)}`).join(' ')
+  const line = points.map((point, index) => point.cost === undefined ? '' : `${index === 0 || points[index - 1].cost === undefined ? 'M' : 'L'} ${x(index)} ${y(point.cost)}`).join(' ')
   const ticks = [0, 0.5, 1]
 
-  if (points.length === 0) return <div className="flex h-[250px] items-center justify-center text-sm text-zinc-400">No usage in the selected period.</div>
+  if (points.length === 0) return <div className="flex h-[250px] items-center justify-center text-sm text-zinc-400">{emptyLabel}</div>
+
+  if (estimatedCost(records) === undefined) return <div className="flex h-[250px] items-center justify-center text-center text-sm text-zinc-500">{noEstimateLabel}</div>
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Estimated cost trend" className="h-[250px] w-full overflow-visible">
-      <title>Estimated cost trend</title>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={title} className="h-[250px] w-full overflow-visible">
+      <title>{title}</title>
       {ticks.map((tick) => <g key={tick}><line x1={left} x2={width - right} y1={y(maxCost * tick)} y2={y(maxCost * tick)} className="stroke-zinc-200" /><text x={left - 8} y={y(maxCost * tick) + 4} textAnchor="end" className="fill-zinc-400 text-[11px]">{cny(maxCost * tick)}</text></g>)}
-      <path d={`${line} L ${x(points.length - 1)} ${top + plotHeight} L ${x(0)} ${top + plotHeight} Z`} className="fill-violet-100/80" />
+      {points.every(point => point.cost !== undefined) && <path d={`${line} L ${x(points.length - 1)} ${top + plotHeight} L ${x(0)} ${top + plotHeight} Z`} className="fill-violet-100/80" />}
       <path d={line} fill="none" className="stroke-violet-600" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-      {points.map((point, index) => <g key={point.label}><circle cx={x(index)} cy={y(point.cost)} r="3.5" className="fill-violet-600" /><title>{`${point.label}: ${cny(point.cost)} · ${tokens(point.tokens)} tokens`}</title></g>)}
+      {points.map((point, index) => point.cost === undefined ? null : <g key={point.label}><circle cx={x(index)} cy={y(point.cost)} r="3.5" className="fill-violet-600" /><title>{`${point.label}: ${cny(point.cost)} · ${tokens(point.tokens)} tokens`}</title></g>)}
       {points.filter((_, index) => index === 0 || index === points.length - 1 || (points.length <= 6 && index % 1 === 0)).map((point, index, list) => {
         const originalIndex = points.indexOf(point)
         return <text key={`${point.label}-axis`} x={x(originalIndex)} y={height - 15} textAnchor={originalIndex === 0 ? 'start' : originalIndex === points.length - 1 ? 'end' : 'middle'} className="fill-zinc-400 text-[11px]">{list.length > 4 ? point.label.slice(5) : point.label}</text>
@@ -103,6 +106,9 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
   const setCurrentView = useAppStore((state) => state.setCurrentView)
   const language = useAppStore((state) => state.language)
   const copy = uiCopy[language].cost
+  const unestimated = language === 'zh' ? '尚未估算' : language === 'ja' ? '未推定' : 'Not estimated'
+  const needRates = language === 'zh' ? '暂无可用的成本估算，请在下方配置模型费率。' : language === 'ja' ? '推定コストはありません。下で料金を設定してください。' : 'No cost estimates available. Configure model rates below.'
+
   const [report, setReport] = useState<CostUsageReport | null>(null)
   const [range, setRange] = useState<Range>('30d')
   const [granularity, setGranularity] = useState<Granularity>('day')
@@ -132,6 +138,7 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
 
   const providers = useMemo(() => Array.from(new Map((report?.records || []).map((record) => [record.providerId, record.providerName])).entries()), [report])
   const visibleRecords = useMemo(() => (report?.records || []).filter((record) => record.timestamp >= rangeStart(range) && (providerId === 'all' || record.providerId === providerId)), [providerId, range, report])
+  const visibleSuppliers = useMemo(() => Array.from(new Map(visibleRecords.map(record => [record.providerId, record.providerName])).entries()), [visibleRecords])
   const totals = useMemo(() => visibleRecords.reduce((total, record) => ({
     cost: total.cost + (record.estimatedCostCny || 0),
     priced: total.priced + (record.estimatedCostCny === undefined ? 0 : 1),
@@ -157,7 +164,7 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
     for (const record of visibleRecords) {
       const key = `${record.providerId}:${record.model}`
       const current = rows.get(key) || { providerName: record.providerName, model: record.model, cost: 0, priced: 0, prompt: 0, completion: 0, cached: 0, calls: 0 }
-      current.cost += record.estimatedCostCny || 0
+      if (record.estimatedCostCny !== undefined) current.cost = (current.cost ?? 0) + record.estimatedCostCny
       current.priced += record.estimatedCostCny === undefined ? 0 : 1
       current.prompt += record.promptTokens
       current.completion += record.completionTokens
@@ -237,18 +244,18 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
         </div>
 
         <section className="cost-metrics grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <Metric icon={Coins} label={copy.estimatedCost} value={cny(totals.cost)} detail={totals.priced === visibleRecords.length ? copy.allRecordsPriced : `${totals.priced}/${visibleRecords.length} ${copy.recordsPriced}`} />
+          <Metric icon={Coins} label={copy.estimatedCost} value={visibleRecords.length === 0 ? '--' : totals.priced ? `${totals.priced < visibleRecords.length ? '≥ ' : ''}${cny(totals.cost)}` : unestimated} detail={visibleRecords.length === 0 ? copy.noUsage : totals.priced === visibleRecords.length ? copy.allRecordsPriced : `${totals.priced}/${visibleRecords.length} ${copy.recordsPriced}`} />
           <Metric icon={Zap} label={copy.modelCalls} value={totals.calls.toLocaleString()} detail={`${visibleRecords.length} ${copy.usageRecords}`} />
-          <Metric icon={BarChart3} label="Token volume" value={tokens(totals.prompt + totals.completion)} detail={`Input ${tokens(totals.prompt)} · Output ${tokens(totals.completion)}`} />
+          <Metric icon={BarChart3} label={copy.tokenVolume} value={tokens(totals.prompt + totals.completion)} detail={`${copy.input} ${tokens(totals.prompt)} · ${copy.output} ${tokens(totals.completion)}`} />
           <Metric icon={Database} label={copy.cacheHitRate} value={`${(cacheRate * 100).toFixed(1)}%`} detail={`${tokens(totals.cached)} ${copy.cachedInputTokens}`} />
         </section>
 
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(280px,0.75fr)]">
-          <div className="cost-panel cost-panel--trend p-5"><div className="mb-4"><h2 className="text-sm font-semibold text-zinc-900">{copy.costTrend}</h2><p className="mt-1 text-xs text-zinc-500">{copy.costTrendDescription}</p></div><TrendChart records={visibleRecords} granularity={granularity} /></div>
-          <div className="cost-panel cost-panel--allocation p-5"><h2 className="text-sm font-semibold text-zinc-900">{copy.supplierAllocation}</h2><div className="mt-5 space-y-4">{providers.length === 0 ? <p className="text-sm text-zinc-400">{copy.noUsage}</p> : providers.map(([id, name]) => { const rows = visibleRecords.filter((record) => record.providerId === id); const value = rows.reduce((sum, record) => sum + (record.estimatedCostCny || 0), 0); const share = totals.cost > 0 ? value / totals.cost : 0; return <div key={id}><div className="flex items-center justify-between gap-3 text-sm"><span className="truncate text-zinc-700">{name}</span><span className="shrink-0 font-medium text-zinc-900">{cny(value)}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-100"><div className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-500" style={{ width: `${Math.max(share * 100, value > 0 ? 2 : 0)}%` }} /></div><p className="mt-1 text-xs text-zinc-400">{tokens(rows.reduce((sum, record) => sum + record.promptTokens + record.completionTokens, 0))} tokens</p></div> })}</div></div>
+          <div className="cost-panel cost-panel--trend p-5"><div className="mb-4"><h2 className="text-sm font-semibold text-zinc-900">{copy.costTrend}</h2><p className="mt-1 text-xs text-zinc-500">{copy.costTrendDescription}</p></div><TrendChart records={visibleRecords} granularity={granularity} emptyLabel={copy.noUsage} noEstimateLabel={needRates} title={copy.costTrend} /></div>
+          <div className="cost-panel cost-panel--allocation p-5"><h2 className="text-sm font-semibold text-zinc-900">{copy.supplierAllocation}</h2><div className="mt-5 space-y-4">{visibleSuppliers.length === 0 ? <p className="text-sm text-zinc-400">{copy.noUsage}</p> : visibleSuppliers.map(([id, name]) => { const rows = visibleRecords.filter((record) => record.providerId === id); const value = rows.reduce((sum, record) => sum + (record.estimatedCostCny || 0), 0); const share = totals.cost > 0 ? value / totals.cost : 0; return <div key={id}><div className="flex items-center justify-between gap-3 text-sm"><span className="truncate text-zinc-700">{name}</span><span className="shrink-0 font-medium text-zinc-900">{estimatedCost(rows) === undefined ? unestimated : `${rows.some(record => record.estimatedCostCny === undefined) ? '≥ ' : ''}${cny(value)}`}</span></div><div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-100"><div className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-500" style={{ width: `${Math.max(share * 100, value > 0 ? 2 : 0)}%` }} /></div><p className="mt-1 text-xs text-zinc-400">{tokens(rows.reduce((sum, record) => sum + record.promptTokens + record.completionTokens, 0))} tokens</p></div> })}</div></div>
         </section>
 
-        <section className="cost-panel cost-table"><div className="flex items-center justify-between gap-4 border-b border-zinc-100 px-5 py-4"><div><h2 className="text-sm font-semibold text-zinc-900">Model usage</h2><p className="mt-1 text-xs text-zinc-500">Grouped by supplier and model for the selected time period.</p></div></div><div className="overflow-x-auto"><table className="w-full min-w-[740px] text-sm"><thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">Supplier</th><th className="px-5 py-3">Model</th><th className="px-5 py-3 text-right">Cost</th><th className="px-5 py-3 text-right">Calls</th><th className="px-5 py-3 text-right">Input</th><th className="px-5 py-3 text-right">Output</th><th className="px-5 py-3 text-right">Cache hit</th></tr></thead><tbody className="divide-y divide-zinc-100">{breakdown.length === 0 ? <tr><td colSpan={7} className="px-5 py-10 text-center text-zinc-400">No usage records match these filters.</td></tr> : breakdown.map((row) => <tr key={`${row.providerName}:${row.model}`}><td className="px-5 py-3 text-zinc-600">{row.providerName}</td><td className="px-5 py-3 font-mono text-xs text-zinc-800">{row.model}</td><td className="px-5 py-3 text-right font-medium text-zinc-900">{row.priced ? cny(row.cost) : '--'}</td><td className="px-5 py-3 text-right text-zinc-600">{row.calls}</td><td className="px-5 py-3 text-right text-zinc-600">{tokens(row.prompt)}</td><td className="px-5 py-3 text-right text-zinc-600">{tokens(row.completion)}</td><td className="px-5 py-3 text-right text-zinc-600">{row.prompt > 0 ? `${((row.cached / row.prompt) * 100).toFixed(1)}%` : '--'}</td></tr>)}</tbody></table></div></section>
+        <section className="cost-panel cost-table"><div className="flex items-center justify-between gap-4 border-b border-zinc-100 px-5 py-4"><div><h2 className="text-sm font-semibold text-zinc-900">{copy.modelUsage}</h2><p className="mt-1 text-xs text-zinc-500">{copy.modelUsageDescription}</p></div></div><div className="overflow-x-auto"><table className="w-full min-w-[740px] text-sm"><thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">{copy.supplier}</th><th className="px-5 py-3">Model</th><th className="px-5 py-3 text-right">{copy.cost}</th><th className="px-5 py-3 text-right">{copy.calls}</th><th className="px-5 py-3 text-right">{copy.input}</th><th className="px-5 py-3 text-right">{copy.output}</th><th className="px-5 py-3 text-right">{copy.cacheHit}</th></tr></thead><tbody className="divide-y divide-zinc-100">{breakdown.length === 0 ? <tr><td colSpan={7} className="px-5 py-10 text-center text-zinc-400">{copy.noMatchingUsage}</td></tr> : breakdown.map((row) => <tr key={`${row.providerName}:${row.model}`}><td className="px-5 py-3 text-zinc-600">{row.providerName}</td><td className="px-5 py-3 font-mono text-xs text-zinc-800">{row.model}</td><td className="px-5 py-3 text-right font-medium text-zinc-900">{row.priced ? cny(row.cost) : unestimated}</td><td className="px-5 py-3 text-right text-zinc-600">{row.calls}</td><td className="px-5 py-3 text-right text-zinc-600">{tokens(row.prompt)}</td><td className="px-5 py-3 text-right text-zinc-600">{tokens(row.completion)}</td><td className="px-5 py-3 text-right text-zinc-600">{row.prompt > 0 ? `${((row.cached / row.prompt) * 100).toFixed(1)}%` : '--'}</td></tr>)}</tbody></table></div></section>
 
         <section className="cost-panel cost-table">
           <div className="flex flex-wrap items-start justify-between gap-3 border-b border-zinc-100 px-5 py-4">
@@ -271,7 +278,7 @@ export function CostCenter({ embedded = false }: CostCenterProps) {
           )}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1040px] text-sm">
-              <thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">Supplier</th><th className="px-5 py-3">Model</th><th className="px-5 py-3">Currency</th><th className="px-5 py-3">Input / M</th><th className="px-5 py-3">Cached input / M</th><th className="px-5 py-3">Output / M</th><th className="px-5 py-3">Source</th><th className="w-14 px-5 py-3"><span className="sr-only">Remove</span></th></tr></thead>
+              <thead className="bg-zinc-50 text-left text-xs font-medium text-zinc-500"><tr><th className="px-5 py-3">{copy.supplier}</th><th className="px-5 py-3">Model</th><th className="px-5 py-3">Currency</th><th className="px-5 py-3">Input / M</th><th className="px-5 py-3">Cached input / M</th><th className="px-5 py-3">Output / M</th><th className="px-5 py-3">Source</th><th className="w-14 px-5 py-3"><span className="sr-only">Remove</span></th></tr></thead>
               <tbody className="divide-y divide-zinc-100">
                 {rateCards.length === 0 ? <tr><td colSpan={8} className="px-5 py-8 text-center text-zinc-400">Refresh supplier prices or add a manual connection rate.</td></tr> : rateCards.map((rate) => <tr key={rate.id}>
                   <td className="px-5 py-2"><Select value={rate.providerId} onChange={(event) => updateRate(rate.id, { providerId: event.target.value })} options={providers.length ? providers.map(([id, name]) => ({ value: id, label: name })) : [{ value: rate.providerId, label: rate.providerId || 'Supplier ID' }]} /></td>

@@ -3,6 +3,8 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { EMPTY_EXPERT_TASK, useTaskStore } from '@/stores/use-task-store'
+import { useShallow } from 'zustand/react/shallow'
+import { shellCopy } from '@/lib/shell-copy'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { MessageList } from './MessageList'
@@ -12,6 +14,7 @@ import { Bot, AlertCircle, ShieldAlert, Terminal, PanelRight, PanelRightClose, X
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
+import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import type { GitRepositoryStatus } from '../../../shared/types'
 import { SYMPOSIUM_TOOL_OPTIONS } from '../../../shared/types/symposium'
 import type { QqRemoteStatus } from '../../../shared/types/qq'
@@ -29,13 +32,15 @@ const QQ_CONNECTION_PRESENTATION: Record<QqRemoteStatus['state'], { label: strin
 }
 
 export function ChatPanel({ className }: ChatPanelProps) {
-  const { conversations, currentConversationId, error, setError, setConversationGitBranch, setConversationSymposium } = useChatStore()
-  const { agents } = useAgentStore()
-  const { workMode, terminalVisible, toggleTerminal, rightPanelVisible, toggleRightPanel } = useAppStore()
+  const { currentConversation, currentConversationId, error, setError, setConversationGitBranch, setConversationSymposium } = useChatStore(useShallow(s => ({ currentConversation: s.conversations.find(c => c.id === s.currentConversationId), currentConversationId: s.currentConversationId, error: s.error, setError: s.setError, setConversationGitBranch: s.setConversationGitBranch, setConversationSymposium: s.setConversationSymposium })))
+  const agents = useAgentStore(s => s.agents)
+  const { workMode, terminalVisible, toggleTerminal, rightPanelVisible, toggleRightPanel, language } = useAppStore(useShallow(s => ({ workMode: s.workMode, terminalVisible: s.terminalVisible, toggleTerminal: s.toggleTerminal, rightPanelVisible: s.rightPanelVisible, toggleRightPanel: s.toggleRightPanel, language: s.language })))
+  const copy = shellCopy[language]
+  const workspaces = useWorkspaceStore(state => state.workspaces)
+  const project = workspaces.find(item => item.id === currentConversation?.workspaceId || (!currentConversation?.workspaceId && item.path === currentConversation?.workspacePath))
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
   const { currentPlan, isRunning: isTaskRunning, recoveryStatus, summary: expertSummary } = expertTask
 
-  const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
   const symposiumRuntime = useSymposiumStore((state) => currentConversationId ? state.runtimes[currentConversationId] : undefined)
   const symposium = currentConversation?.symposium
   const symposiumRunning = symposiumRuntime?.status === 'running'
@@ -180,9 +185,12 @@ export function ChatPanel({ className }: ChatPanelProps) {
       {/* Header */}
       <div className="eva-chat-header flex h-14 items-center justify-between gap-4 border-b px-6">
         <div className="flex min-w-0 items-center gap-2.5">
-          <h1 className="truncate text-base font-semibold text-zinc-800" title={currentConversation?.title || 'New conversation'}>
-            {currentConversation?.title || 'New conversation'}
+          <div className="min-w-0">
+          <p className="chat-project-context truncate" title={project?.path}>{project?.name || copy.noProject}</p>
+          <h1 className="truncate text-sm font-semibold text-zinc-800" title={currentConversation?.title || copy.newChat}>
+            {currentConversation?.title || copy.newChat}
           </h1>
+          </div>
           {qqStatus && (() => {
             const status = QQ_CONNECTION_PRESENTATION[qqStatus.state]
             return (
@@ -194,28 +202,29 @@ export function ChatPanel({ className }: ChatPanelProps) {
           })()}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {project && <Button variant="ghost" size="sm" className="chat-purpose-entry gap-1.5" onClick={() => { useWorkspaceStore.getState().setActiveWorkspaceId(project.id); useAppStore.getState().openPurposeWorkspace() }}><Pin className="h-3.5 w-3.5" /><span>{copy.purposes}</span></Button>}
           {currentConversationId && (
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8"
               onClick={toggleTerminal}
-              title={terminalVisible ? 'Hide terminal' : 'Open terminal for this conversation workspace'}
-              aria-label={terminalVisible ? 'Hide terminal' : 'Open terminal for this conversation workspace'}
+              title={terminalVisible ? copy.hideTerminal : copy.showTerminal}
+              aria-label={terminalVisible ? copy.hideTerminal : copy.showTerminal}
             >
               <Terminal className="h-4 w-4" />
             </Button>
           )}
-          {!terminalVisible && (
+          {(
             <Button
               variant="ghost"
               size="icon"
               className="h-8 w-8"
               onClick={toggleRightPanel}
-              title={rightPanelVisible ? 'Hide task workspace' : 'Show task workspace'}
-              aria-label={rightPanelVisible ? 'Hide task workspace' : 'Show task workspace'}
+              title={rightPanelVisible && !terminalVisible ? copy.hideWorkspace : copy.showWorkspace}
+              aria-label={rightPanelVisible && !terminalVisible ? copy.hideWorkspace : copy.showWorkspace}
             >
-              {rightPanelVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRight className="h-4 w-4" />}
+              {rightPanelVisible && !terminalVisible ? <PanelRightClose className="h-4 w-4" /> : <PanelRight className="h-4 w-4" />}
             </Button>
           )}
           {currentConversation && (

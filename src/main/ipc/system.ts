@@ -252,6 +252,10 @@ export function registerSystemHandlers(
     return rendererConfig()
   })
 
+  ipcMain.handle(IPC.CONFIG_SELECT_MODEL, async (_event, providerId: string, model: string): Promise<void> => {
+    getStorage().config.selectModel(providerId, model)
+  })
+
   ipcMain.handle(IPC.NETWORK_GET_CONFIG, (): NetworkConfig => getStorage().config.get('network'))
   ipcMain.handle(IPC.NETWORK_SAVE_CONFIG, async (_event, config: Partial<NetworkConfig>): Promise<NetworkConfig> => {
     const normalized = normalizeNetworkConfig(config)

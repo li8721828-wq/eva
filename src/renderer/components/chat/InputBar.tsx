@@ -15,6 +15,8 @@ import type { ProviderConfigEntry } from '../../../shared/types/provider'
 import { useShallow } from 'zustand/react/shallow'
 import { activeSlashCommand, buildSlashPopoverItems, type ChatSlashCommand, type SlashPopoverItem } from '@/lib/chat-commands'
 import { useChatAttachments } from '@/hooks/use-chat-attachments'
+import { pushToast } from '@/stores/use-toast-store'
+import { shellCopy } from '@/lib/shell-copy'
 
 export interface InputBarProps {
   className?: string
@@ -79,6 +81,9 @@ export function InputBar({ className }: InputBarProps) {
   const startExpertTask = useTaskStore((state) => state.startExpertTask)
   const abortExpertTask = useTaskStore((state) => state.abortExpertTask)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const highlightRef = useRef<HTMLDivElement>(null)
+  const modelSavingRef = useRef(false)
+  const [modelSaving, setModelSaving] = useState(false)
   const slashPopoverRef = useRef<HTMLDivElement>(null)
   const [isDraggingAttachments, setIsDraggingAttachments] = useState(false)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
@@ -546,15 +551,21 @@ export function InputBar({ className }: InputBarProps) {
 
   const saveModelSelection = async (providerId: string, model: string) => {
     if (providerId === activeProviderId && model === activeModel) return
-    setActiveProvider(providerId)
-    setActiveModel(model)
+    if (modelSavingRef.current) return
+    modelSavingRef.current = true
+    setModelSaving(true)
     try {
-      await window.eva.config.set('activeProviderId', providerId)
-      await window.eva.config.set('activeModel', model)
+      await window.eva.config.selectModel(providerId, model)
+      setActiveProvider(providerId)
+      setActiveModel(model)
     } catch (error) {
-      setActiveProvider(activeProviderId)
-      setActiveModel(activeModel)
       console.error('Failed to save active model:', error)
+      const copy = shellCopy[language]
+      pushToast({ kind: 'error', title: copy.saveFailed, description: copy.saveHint, durationMs: 0,
+        actions: [{ label: copy.retry, onClick: () => { void saveModelSelection(providerId, model) } }] })
+    } finally {
+      modelSavingRef.current = false
+      setModelSaving(false)
     }
   }
 
@@ -623,8 +634,8 @@ export function InputBar({ className }: InputBarProps) {
                 </div>
               ))}
               <div className="flex min-w-0 flex-col justify-center text-xs leading-5 text-zinc-500">
-                <span className="font-medium text-zinc-700">Reference images</span>
-                <span>Agent will use these views to build a new editable model.</span>
+                <span className="font-medium text-zinc-700">{shellCopy[language].images}</span>
+                <span>{shellCopy[language].imageHint}</span>
               </div>
             </div>
           )}
@@ -652,8 +663,8 @@ export function InputBar({ className }: InputBarProps) {
             <div className="flex min-h-16 items-end gap-3 rounded-t-[7px] bg-white px-4 py-3">
             <div className="relative min-h-[32px] flex-1">
               {selectedSlashCommand && (
-                <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words py-1.5 text-sm leading-5 text-zinc-900">
-                  <span className="font-medium text-violet-600">{selectedSlashCommand}</span>
+                <div ref={highlightRef} aria-hidden="true" className="chat-composer__highlight pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words py-1.5 text-base leading-5 text-zinc-900">
+                  <span className="text-violet-600">{selectedSlashCommand}</span>
                   {inputText.slice(selectedSlashCommand.length)}
                 </div>
               )}
@@ -661,11 +672,17 @@ export function InputBar({ className }: InputBarProps) {
                 ref={textareaRef}
                 value={inputText}
                 onChange={handleInput}
+                onScroll={(event) => {
+                  if (highlightRef.current) {
+                    highlightRef.current.scrollTop = event.currentTarget.scrollTop
+                    highlightRef.current.scrollLeft = event.currentTarget.scrollLeft
+                  }
+                }}
                 onKeyDown={handleKeyDown}
                 onClick={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
                 onKeyUp={(event) => setCaretPosition(event.currentTarget.selectionStart ?? event.currentTarget.value.length)}
                 onPaste={handlePaste}
-                placeholder={isSymposiumRunning ? 'Participants are responding to the shared discussion...' : currentConversation?.symposium ? 'Add your perspective to the shared discussion' : 'Ask Eva to write, debug, or explain code'}
+                placeholder={isSymposiumRunning ? 'Participants are responding to the shared discussion...' : currentConversation?.symposium ? 'Add your perspective to the shared discussion' : shellCopy[language].prompt}
                 rows={1}
                 disabled={isSymposiumRunning || isRequirementSubmitting}
                 className={cn(
@@ -821,7 +838,7 @@ export function InputBar({ className }: InputBarProps) {
                       value={activeModelChoice}
                       onChange={(event) => void handleModelChoiceChange(event.target.value)}
                       options={modelChoiceOptions}
-                      disabled={isSymposiumRunning || modelChoices.length === 0}
+                      disabled={modelSaving || isSymposiumRunning || modelChoices.length === 0}
                       className="h-7 rounded-md border border-transparent bg-transparent px-2.5 text-xs font-medium text-zinc-600 shadow-none hover:bg-white/75 hover:text-zinc-800 focus:border-[rgba(99,102,115,0.16)] focus:bg-white/80 focus:shadow-[0_5px_14px_-12px_rgba(39,42,58,0.35)] focus:ring-0 focus-visible:border-[rgba(99,102,115,0.16)] focus-visible:ring-0"
                       menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 shadow-[0_16px_36px_-26px_rgba(39,42,58,0.38),0_5px_12px_-10px_rgba(39,42,58,0.1)]"
                       optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"

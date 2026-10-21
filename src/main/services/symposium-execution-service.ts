@@ -18,6 +18,7 @@ import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import type { ApplicationServices } from './application-services'
 import { recordActivity } from './activity-log'
 import { activeRunRegistry } from './run-registry'
+import { createLocalExecutionPolicy } from './execution-policy'
 
 type SymposiumServices = Pick<ApplicationServices,
   'storage' | 'toolRegistry' | 'providerRegistry' | 'fileService' | 'terminalService'
@@ -206,6 +207,7 @@ export class SymposiumExecutionService {
           timestamp: Date.now(),
         }
         const runner = new AgentRunner({
+          ...createLocalExecutionPolicy(storage.config.get('automation'), { conversationId: input.conversationId, workspaceId: conversation.workspaceId, window: win }),
           conversationId: input.conversationId,
           agentConfig: effectiveAgent,
           provider,

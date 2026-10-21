@@ -4,9 +4,10 @@ import type { Workspace } from '../../../shared/types/workspace'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
+import { shellCopy } from '@/lib/shell-copy'
 import { cn } from '@/lib/utils'
 import { useShallow } from 'zustand/react/shallow'
-import { AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageSquare, Plus, Trash2, UsersRound, XCircle } from 'lucide-react'
+import { Target, AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageSquare, Plus, Trash2, UsersRound, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
@@ -47,8 +48,8 @@ function ConversationRow({ conversation, isSelected, archived = false, showExecu
   return (
     <div
       className={cn(
-        'group flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium leading-5 transition-colors',
-        isSelected ? 'bg-gradient-to-r from-violet-100/90 via-indigo-50 to-cyan-50 text-indigo-950 shadow-[0_7px_15px_-14px_rgba(79,70,229,0.8)] ring-1 ring-violet-100/90' : 'text-zinc-600 hover:bg-violet-50/70 hover:text-indigo-900',
+        'eva-conversation-row group flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium leading-5 transition-colors',
+        isSelected ? 'is-current' : '',
         archived && 'text-zinc-500'
       )}
     >
@@ -58,7 +59,7 @@ function ConversationRow({ conversation, isSelected, archived = false, showExecu
           <span className="min-w-0 flex-1 truncate">{conversation.title || 'Untitled'}</span>
         </div>
       ) : (
-        <button type="button" onClick={() => onSelect(conversation.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+        <button type="button" onClick={() => onSelect(conversation.id)} aria-current={isSelected ? 'page' : undefined} className="flex min-w-0 flex-1 items-center gap-2 text-left">
           {conversation.symposium
             ? <UsersRound className="h-3.5 w-3.5 shrink-0 text-violet-500" />
             : <MessageSquare className="h-3.5 w-3.5 shrink-0 text-zinc-400" />}
@@ -89,6 +90,8 @@ export interface ConversationListProps {
 }
 
 export function ConversationList({ className }: ConversationListProps) {
+  const language = useAppStore(state => state.language)
+  const copy = shellCopy[language]
   const setCurrentView = useAppStore((state) => state.setCurrentView)
   const { conversations, currentConversationId, createConversation, deleteConversation, archiveConversation, restoreConversation, selectConversation } = useChatStore(useShallow((state) => ({
     conversations: state.conversations,
@@ -113,6 +116,7 @@ export function ConversationList({ className }: ConversationListProps) {
   const [workspaceToDelete, setWorkspaceToDelete] = useState<Workspace | null>(null)
 
   const handleSelect = async (id: string) => {
+    useAppStore.getState().setWorkspaceExpanded(false)
     setCurrentView('chat')
     await selectConversation(id)
   }
@@ -162,7 +166,7 @@ export function ConversationList({ className }: ConversationListProps) {
             className="flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
             aria-expanded={channelsOpen}
           >
-            <span>Channels</span>
+            <span>{copy.channels}</span>
           </button>
           {channelsOpen && (channelConversations.length > 0 ? (
             <div className="mt-1 space-y-1">
@@ -188,7 +192,7 @@ export function ConversationList({ className }: ConversationListProps) {
           className="w-full rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
           aria-expanded={projectsOpen}
         >
-          Projects
+          {copy.projects}
         </button>
 
         {projectsOpen && workspaces.map((workspace) => {
@@ -201,16 +205,17 @@ export function ConversationList({ className }: ConversationListProps) {
                 <button
                   type="button"
                   onClick={() => toggleProject(workspace.id)}
-                  className="flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-md border border-transparent bg-white/28 px-3 text-left text-sm font-medium leading-5 text-zinc-600 transition-all hover:border-indigo-100/90 hover:bg-white/72 hover:text-indigo-900 hover:shadow-[0_7px_16px_-15px_rgba(79,70,229,0.75)]"
+                  className="eva-project-entry flex h-9 min-w-0 flex-1 items-center gap-2.5 rounded-md px-3 text-left text-sm font-medium leading-5 transition-colors"
                 >
                   <span className="truncate">{workspace.name}</span>
                   <span className="ml-auto text-xs leading-5 text-zinc-400">{workspaceConversations.length}</span>
                 </button>
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" title={`${workspace.name} · ${copy.purposes}`} aria-label={`${workspace.name} · ${copy.purposes}`} onClick={() => { setActiveWorkspaceId(workspace.id); useAppStore.getState().openPurposeWorkspace() }}><Target className="h-3.5 w-3.5" /></Button>
                 <Button
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7 shrink-0"
-                  onClick={() => createConversation(undefined, 'normal', workspace.id)}
+                  onClick={() => { useAppStore.getState().setWorkspaceExpanded(false); void createConversation(undefined, 'normal', workspace.id) }}
                   title={`New conversation in ${workspace.name}`}
                   aria-label={`New conversation in ${workspace.name}`}
                 >
@@ -241,7 +246,7 @@ export function ConversationList({ className }: ConversationListProps) {
                       onDelete={setConversationToDelete}
                     />
                   ))}
-                  {workspaceConversations.length === 0 && <p className="px-3 py-2 text-xs text-zinc-400">No conversations</p>}
+                  {workspaceConversations.length === 0 && <p className="px-3 py-2 text-xs text-zinc-400">{copy.newChat}</p>}
                 </div>
               )}
             </div>
@@ -257,14 +262,14 @@ export function ConversationList({ className }: ConversationListProps) {
               className="flex h-9 min-w-0 flex-1 items-center rounded-md px-2 py-1 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
               aria-expanded={globalTasksOpen}
             >
-              <span>Global tasks</span>
+              <span>{language === 'zh' ? '独立对话' : language === 'ja' ? '独立した会話' : 'Standalone chats'}</span>
               <span className="ml-auto text-xs normal-case tracking-normal text-zinc-400">{unassigned.length}</span>
             </button>
             <Button
               variant="ghost"
               size="icon"
               className="h-7 w-7 shrink-0"
-              onClick={() => createConversation(undefined, 'normal', null)}
+              onClick={() => { useAppStore.getState().setWorkspaceExpanded(false); void createConversation(undefined, 'normal', null) }}
               title="New global task"
               aria-label="New global task"
             >
@@ -294,7 +299,7 @@ export function ConversationList({ className }: ConversationListProps) {
               className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-xs font-medium uppercase tracking-wider text-zinc-500 hover:bg-zinc-100"
               aria-expanded={archivedOpen}
             >
-              Archived
+              {language === 'zh' ? '已归档' : language === 'ja' ? 'アーカイブ済み' : 'Archived'}
               <span className="ml-auto text-zinc-400">{archivedConversations.length}</span>
             </button>
             {archivedOpen && (

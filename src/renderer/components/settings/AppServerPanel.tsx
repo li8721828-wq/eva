@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Copy, Loader2, Play, Power, ShieldAlert, Square } from 'lucide-react'
+import { Button } from '@/components/ui/Button'
+import { Switch } from '@/components/ui/Switch'
 import { Input } from '@/components/ui/Input'
 import { useAppStore } from '@/stores/use-app-store'
 import { uiCopy } from '@/lib/ui-copy'
@@ -171,6 +173,7 @@ export function AppServerPanel() {
   }
 
   if (!status) {
+    if (error) return <div role="alert" className="text-sm text-red-600"><p>{language === 'zh' ? '无法读取服务状态，请重试。' : language === 'ja' ? '状態を読み込めません。再試行してください。' : 'Could not load server status. Please retry.'}</p><details><summary>{language === 'zh' ? '错误详情' : 'Details'}</summary>{error}</details><Button variant="outline" size="sm" className="mt-3" onClick={() => void refresh()}>{language === 'zh' ? '重试' : language === 'ja' ? '再試行' : 'Retry'}</Button></div>
     return <div className="flex items-center gap-2 text-sm text-zinc-500"><Loader2 className="h-4 w-4 animate-spin" />加载 App Server 状态…</div>
   }
 
@@ -185,18 +188,19 @@ export function AppServerPanel() {
 
   return (
     <div className="space-y-5">
-      <div className="eva-lift eva-panel p-4">
+      <header className="settings-section-heading"><h2 className="text-base font-semibold text-zinc-900">App Server</h2><p className="text-sm text-zinc-500">{language === 'zh' ? '让 IDE 或其他客户端连接 Eva，继续项目中的工作。' : language === 'ja' ? 'IDE や他のクライアントから Eva に接続します。' : 'Connect an IDE or another client to continue your project work in Eva.'}</p></header>
+      <div className="py-2">
         <div className="flex items-start gap-3">
           <ShieldAlert className="mt-0.5 h-4 w-4 text-amber-600" />
           <div className="text-sm text-zinc-700">
             <p className="font-semibold text-zinc-800">{remoteConfigured ? 'App Server 远程 HTTPS 模式' : publicConfigured ? 'App Server 本机 + 公网隧道模式' : 'App Server 本机模式'}</p>
             <p className="mt-1 text-zinc-600 leading-5">{remoteConfigured ? '远程模式通过 HTTPS/WSS 提供 ACP。公网入口必须配置可验证的 TLS 证书，并始终要求 Bearer Token。' : publicConfigured ? 'Eva 只监听本机 HTTP，由 Cloudflare Tunnel 或其他反向代理提供公网 HTTPS/WSS。Bearer Token 仍然必须开启。' : '默认只监听本机回环地址。填写公网基址后，Cloudflare Tunnel 或其他反向代理可以把手机请求转到这里。'}</p>
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-zinc-600">
+            <details className="settings-technical-details mt-3"><summary>{language === 'zh' ? '接口与事件说明' : language === 'ja' ? 'API とイベント' : 'API and events'}</summary><ul className="mt-2 list-disc space-y-1 pl-5 text-zinc-600">
               <li>线程管理：<code>thread/list</code>、<code>thread/start</code>、<code>thread/get</code></li>
               <li>会话控制：<code>turn/start</code>、<code>turn/interrupt</code></li>
               <li>工具审批：<code>approval/decide</code></li>
               <li>事件流：<code>turn/started</code>、<code>turn/text_delta</code>、<code>turn/tool_call_start</code>、<code>turn/tool_result</code>、<code>turn/completed</code>、<code>turn/error</code></li>
-            </ul>
+            </ul></details>
           </div>
         </div>
       </div>
@@ -219,15 +223,15 @@ export function AppServerPanel() {
           </div>
           <div className="flex items-center gap-2">
             {status.running ? (
-              <button type="button" onClick={() => void stop()} disabled={busy} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-rose-200 bg-white px-3 text-sm font-medium text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-60">
+              <Button variant="outline" size="sm" onClick={() => void stop()} disabled={busy} className="gap-1.5">
                 <Square className="h-3.5 w-3.5" />停止
-              </button>
+              </Button>
             ) : (
-              <button type="button" onClick={() => void start()} disabled={busy} className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-600 px-3 text-sm font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-60">
+              <Button size="sm" onClick={() => void start()} disabled={busy} className="gap-1.5">
                 <Play className="h-3.5 w-3.5" fill="currentColor" />启动
-              </button>
+              </Button>
             )}
-            <button type="button" onClick={() => void refresh()} disabled={busy} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-50">
+            <button type="button" onClick={() => void refresh()} aria-label="刷新服务状态" title="刷新服务状态" disabled={busy} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 transition-colors hover:bg-zinc-50">
               <Power className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -293,12 +297,10 @@ export function AppServerPanel() {
       <div className="eva-lift eva-panel space-y-2 p-4">
         <label className="flex cursor-pointer items-center justify-between gap-3 text-sm text-zinc-700">
           <span>{text.autoStartLabel}</span>
-          <input
-            type="checkbox"
+          <Switch
             checked={config.autoStart}
             disabled={saving}
             onChange={(event) => void persist({ ...config, autoStart: event.target.checked })}
-            className="h-4 w-4 accent-violet-600 disabled:opacity-40"
           />
         </label>
         <p className="text-xs leading-5 text-zinc-500">{text.autoStartHint}</p>
@@ -401,7 +403,6 @@ export function AppServerPanel() {
             checked={config.acpRequireAuth}
             disabled={saving || externalConfigured}
             onChange={(event) => void persist({ ...config, acpRequireAuth: event.target.checked })}
-            className="h-4 w-4 accent-violet-600 disabled:opacity-40"
           />
         </label>
         <p className="text-xs leading-5 text-zinc-500">{text.requireAuthHint}</p>

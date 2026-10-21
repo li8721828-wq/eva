@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   BookOpen,
@@ -27,6 +27,9 @@ import { CodeEditor } from '@/components/editor/CodeEditor'
 import { FileExplorer } from '@/components/editor/FileExplorer'
 import { PlanChecklist } from '@/components/chat/PlanChecklist'
 import { buildPlanChecklist } from '../../../shared/plan-checklist'
+import { workspaceText } from '@/lib/workspace-copy'
+import { shellCopy } from '@/lib/shell-copy'
+import { useShallow } from 'zustand/react/shallow'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
@@ -34,6 +37,7 @@ import { EMPTY_EXPERT_TASK, EMPTY_GOAL_TASK, useTaskStore } from '@/stores/use-t
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import type { RequirementDocument, RequirementRun } from '../../../shared/types/requirement-engineering'
 import { ProjectKnowledgePanel } from '@/components/settings/ProjectKnowledgePanel'
+import { PurposePanel } from './PurposePanel'
 
 type StepItem = {
   id: string
@@ -144,16 +148,19 @@ function latestEvaluationStatus(run: RequirementRun): { blockers: string[]; chec
   return { blockers: evaluation?.blockers || [], checks: [], structured: false }
 }
 
-export function TaskWorkspacePanel() {
+export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (compact: boolean) => void } = {}) {
   const {
+    language,
     currentFile,
     rightPanelTab,
     setCurrentFile,
     setRightPanelTab,
     workspacePath,
-  } = useAppStore()
-  const { conversations, currentConversationId, messages, selectConversation, setError, streamingByConversation } = useChatStore()
-  const { workspaces, activeWorkspaceId } = useWorkspaceStore()
+  } = useAppStore(useShallow(s => ({ language: s.language, currentFile: s.currentFile, rightPanelTab: s.rightPanelTab, setCurrentFile: s.setCurrentFile, setRightPanelTab: s.setRightPanelTab, workspacePath: s.workspacePath })))
+  const copy = shellCopy[language]
+  const t = (text: string) => workspaceText(language, text)
+  const { conversations, currentConversationId, messages, selectConversation, setError, streamingByConversation } = useChatStore(useShallow(s => ({ conversations: s.conversations, currentConversationId: s.currentConversationId, messages: s.messages, selectConversation: s.selectConversation, setError: s.setError, streamingByConversation: s.streamingByConversation })))
+  const { workspaces, activeWorkspaceId } = useWorkspaceStore(useShallow(s => ({ workspaces: s.workspaces, activeWorkspaceId: s.activeWorkspaceId })))
   const liveGoalTask = useTaskStore((state) => currentConversationId ? state.goalTasks[currentConversationId] || EMPTY_GOAL_TASK : EMPTY_GOAL_TASK)
   const liveExpertTask = useTaskStore((state) => currentConversationId ? state.expertTasks[currentConversationId] || EMPTY_EXPERT_TASK : EMPTY_EXPERT_TASK)
   const abortGoal = useTaskStore((state) => state.abortGoal)
@@ -164,7 +171,9 @@ export function TaskWorkspacePanel() {
   const [activePlan, setActivePlan] = useState<ActivePlan | null>(null)
   const [artifacts, setArtifacts] = useState<TaskArtifactItem[]>([])
   const [requirementRuns, setRequirementRuns] = useState<RequirementRun[]>([])
-  const [, setLoading] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const refreshGeneration = useRef(0)
   const [taskView, setTaskView] = useState<'plan' | 'usage'>('plan')
   const [showAllSteps, setShowAllSteps] = useState(false)
   const [expandedStepId, setExpandedStepId] = useState<string | null>(null)
@@ -174,6 +183,7 @@ export function TaskWorkspacePanel() {
 
   const activeWorkspace = workspaces.find((workspace) => workspace.id === activeWorkspaceId)
   const currentConversation = conversations.find((conversation) => conversation.id === currentConversationId)
+  const conversationInWorkspace = Boolean(currentConversation && (!activeWorkspaceId || currentConversation.workspaceId === activeWorkspaceId || (!currentConversation.workspaceId && currentConversation.workspacePath === activeWorkspace?.path)))
   const resolvedWorkspacePath = activeWorkspace?.path || workspacePath
   // The note ticks the round's plan. While a round streams, only its own updates
   // count: falling back to the previous reply would show finished ticks before
@@ -229,9 +239,15 @@ export function TaskWorkspacePanel() {
   const contextTokens = latestUsageMessage?.usage?.promptTokens || 0
   const contextRate = contextBudget > 0 ? Math.min(100, (contextTokens / contextBudget) * 100) : 0
   const cacheRate = usageTotals.prompt > 0 ? (usageTotals.cached / usageTotals.prompt) * 100 : 0
+  useEffect(() => {
+    onCompactChange?.(rightPanelTab === 'tasks' && taskView === 'plan' && !loading && !loadError && !hasTaskRun && !roundChecklist && artifacts.length === 0)
+  }, [onCompactChange, rightPanelTab, taskView, loading, loadError, hasTaskRun, roundChecklist, artifacts.length])
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
     if (!currentConversationId) {
+      setLoading(false)
+      setLoadError('')
       setSnapshot(null)
       setActivePlan(null)
       setArtifacts([])
@@ -239,6 +255,7 @@ export function TaskWorkspacePanel() {
       return
     }
     setLoading(true)
+    setLoadError('')
     try {
       const [nextSnapshot, runs, nextRequirementRuns, nextActivePlan] = await Promise.all([
         window.eva.task.getSnapshot(currentConversationId),
@@ -246,23 +263,26 @@ export function TaskWorkspacePanel() {
         window.eva.requirements.listRuns(currentConversationId),
         activePlanScopeKey ? window.eva.activePlan.get(activePlanScopeKey) : Promise.resolve(null),
       ])
+      if (generation !== refreshGeneration.current) return
       setSnapshot(nextSnapshot)
       setActivePlan(nextActivePlan)
       const run = runs.find((item) => item.conversationId === currentConversationId)
       setArtifacts(run?.files || [])
       setRequirementRuns(nextRequirementRuns)
     } catch (error) {
+      if (generation !== refreshGeneration.current) return
+      setLoadError(error instanceof Error ? error.message : String(error))
       console.error('Failed to load task workspace:', error)
       setSnapshot(null)
       setActivePlan(null)
       setArtifacts([])
       setRequirementRuns([])
     } finally {
-      setLoading(false)
+      if (generation === refreshGeneration.current) setLoading(false)
     }
   }, [activePlanScopeKey, activeWorkspaceId, currentConversationId])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refresh(); return () => { refreshGeneration.current++ } }, [refresh])
 
   useEffect(() => {
     setShowAllArtifacts(false)
@@ -329,7 +349,7 @@ export function TaskWorkspacePanel() {
       }
       await refresh()
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not stop this task.')
+      setError(error instanceof Error ? error.message : t('Could not stop this task.'))
     } finally {
       setStopping(false)
     }
@@ -347,7 +367,7 @@ export function TaskWorkspacePanel() {
       }
       await refresh()
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not continue this task.')
+      setError(error instanceof Error ? error.message : t('Could not continue this task.'))
     } finally {
       setStopping(false)
     }
@@ -355,14 +375,14 @@ export function TaskWorkspacePanel() {
 
   const cancelTask = async () => {
     if (!currentConversationId || cancelling) return
-    if (!window.confirm('Cancel this task? Its current execution cannot be continued.')) return
+    if (!window.confirm(t('Cancel this task? Its current execution cannot be continued.'))) return
     setCancelling(true)
     try {
       if (snapshot?.kind === 'goal') await abortGoal(currentConversationId)
       else await abortExpertTask(currentConversationId)
       await refresh()
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Could not cancel this task.')
+      setError(error instanceof Error ? error.message : t('Could not cancel this task.'))
     } finally {
       setCancelling(false)
     }
@@ -378,69 +398,88 @@ export function TaskWorkspacePanel() {
 
   return (
     <div className="task-workspace-panel flex min-h-0 flex-1 flex-col">
-      <div className="task-workspace-note__tabs flex shrink-0 items-center gap-1 px-3 py-2" role="tablist" aria-label="Task workspace">
+      <div className="task-workspace-note__tabs flex shrink-0 items-center gap-1 px-3 py-2" role="tablist" aria-label={t('Task workspace')} onKeyDown={(event) => {
+        const tabs = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]'))
+        const index = tabs.indexOf(document.activeElement as HTMLButtonElement)
+        if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return
+        event.preventDefault()
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowLeft' ? -1 : 1) + tabs.length) % tabs.length
+        tabs[next]?.focus()
+        tabs[next]?.click()
+        tabs[next]?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+      }}>
+        <button type="button" role="tab" tabIndex={rightPanelTab === 'purposes' ? 0 : -1} aria-selected={rightPanelTab === 'purposes'} onClick={() => setRightPanelTab('purposes')}
+          className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'purposes' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}>
+          <Target className="h-3.5 w-3.5" /> {language === 'zh' ? '主线' : language === 'ja' ? '主線' : 'Purposes'}
+        </button>
         <button
           type="button"
           role="tab"
+          tabIndex={rightPanelTab === 'tasks' ? 0 : -1}
           aria-selected={rightPanelTab === 'tasks'}
           onClick={() => { setRightPanelTab('tasks'); setTaskView('plan') }}
           className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'tasks' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
         >
-          <ListTodo className="h-3.5 w-3.5" /> Tasks
+          <ListTodo className="h-3.5 w-3.5" /> {copy.tasks}
         </button>
         <button
           type="button"
           role="tab"
+          tabIndex={rightPanelTab === 'files' ? 0 : -1}
           aria-selected={rightPanelTab === 'files'}
           onClick={() => setRightPanelTab('files')}
           className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'files' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
         >
-          <FolderOpen className="h-3.5 w-3.5" /> Files
+          <FolderOpen className="h-3.5 w-3.5" /> {copy.files}
         </button>
         <button
           type="button"
           role="tab"
+          tabIndex={rightPanelTab === 'requirements' ? 0 : -1}
           aria-selected={rightPanelTab === 'requirements'}
           onClick={() => setRightPanelTab('requirements')}
           className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'requirements' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
         >
-          <ClipboardList className="h-3.5 w-3.5" /> 需求
+          <ClipboardList className="h-3.5 w-3.5" /> {copy.requirements}
         </button>
         <button
           type="button"
           role="tab"
+          tabIndex={rightPanelTab === 'project-knowledge' ? 0 : -1}
           aria-selected={rightPanelTab === 'project-knowledge'}
           onClick={() => setRightPanelTab('project-knowledge')}
           className={cn('flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'project-knowledge' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
         >
-          <BookOpen className="h-3.5 w-3.5" /> 记录
+          <BookOpen className="h-3.5 w-3.5" /> {copy.records}
         </button>
         <button
           type="button"
           onClick={() => { setRightPanelTab('tasks'); setTaskView((view) => view === 'usage' ? 'plan' : 'usage') }}
           className={cn('ml-auto flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'tasks' && taskView === 'usage' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
-          title={taskView === 'usage' ? 'Show task plan' : 'Show conversation usage'}
-          aria-label={taskView === 'usage' ? 'Show task plan' : 'Show conversation usage'}
+          title={taskView === 'usage' ? t('Show task plan') : t('Show conversation usage')}
+          aria-label={taskView === 'usage' ? t('Show task plan') : t('Show conversation usage')}
         >
-          <BarChart3 className="h-3.5 w-3.5" /> Usage
+          <BarChart3 className="h-3.5 w-3.5" /> {copy.usage}
         </button>
         {currentFile && <button
           type="button"
           role="tab"
+          tabIndex={rightPanelTab === 'editor' ? 0 : -1}
           aria-selected={rightPanelTab === 'editor'}
           onClick={openSelectedFile}
           className={cn('ml-auto flex max-w-[45%] items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors', rightPanelTab === 'editor' ? 'bg-violet-100/80 text-violet-800' : 'text-zinc-500 hover:bg-white/75 hover:text-zinc-800')}
           title={currentFile.path}
         >
-          <FileText className="h-3.5 w-3.5 shrink-0" /> <span className="truncate">Document</span>
+          <FileText className="h-3.5 w-3.5 shrink-0" /> <span className="truncate">{copy.document}</span>
         </button>}
       </div>
 
       {rightPanelTab === 'files' && <FileExplorer className="min-h-0 flex-1" onFileSelect={() => setRightPanelTab('editor')} />}
+      {rightPanelTab === 'purposes' && <PurposePanel key={activeWorkspaceId} workspaceId={activeWorkspaceId} />}
 
       {rightPanelTab === 'project-knowledge' && <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3"><ProjectKnowledgePanel /></div>}
 
-      {rightPanelTab === 'requirements' && (
+      {rightPanelTab === 'requirements' && conversationInWorkspace && (
         <div className="task-workspace-note__content min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <div className="border-b border-indigo-100/80 pb-4">
             <h2 className="text-sm font-semibold text-zinc-800">需求工程文档</h2>
@@ -518,47 +557,49 @@ export function TaskWorkspacePanel() {
       {rightPanelTab === 'editor' && !currentFile && (
         <div className="flex flex-1 flex-col items-center justify-center px-7 text-center text-sm leading-6 text-zinc-500">
           <FileText className="mb-3 h-6 w-6 text-violet-300" />
-          Select a document from Files to preview it here.
+          {t('Select a document from Files to preview it here.')}
         </div>
       )}
 
-      {rightPanelTab === 'tasks' && taskView === 'usage' && (
+      {!conversationInWorkspace && (rightPanelTab === 'tasks' || rightPanelTab === 'requirements') && <div className="task-workspace-note__content min-h-0 flex-1 overflow-y-auto px-4 py-5 text-sm text-zinc-500">{language === 'zh' ? '请在左侧选择当前项目的会话，再查看执行记录、用量与需求文档。' : language === 'ja' ? '左側でこのプロジェクトの会話を選ぶと、実行記録、使用量、要件を確認できます。' : 'Select a conversation in this project to see its execution records, usage, and requirements.'}</div>}
+
+      {rightPanelTab === 'tasks' && conversationInWorkspace && taskView === 'usage' && (
         <div className="task-workspace-note__content min-h-0 flex-1 overflow-y-auto px-4 py-4">
           <div className="border-b border-indigo-100/80 pb-4">
-            <h2 className="text-sm font-semibold text-zinc-800">Conversation usage</h2>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Token, cache, and context information for this conversation.</p>
+            <h2 className="text-sm font-semibold text-zinc-800">{t('Conversation usage')}</h2>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">{t('Token, cache, and context information for this conversation.')}</p>
           </div>
 
           {usageMessages.length === 0 ? (
             <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
               <BarChart3 className="mb-3 h-6 w-6 text-violet-300" />
-              <p className="font-medium text-zinc-700">No usage recorded yet</p>
-              <p className="mt-1">Usage appears after the first model response is complete.</p>
+              <p className="font-medium text-zinc-700">{t('No usage recorded yet')}</p>
+              <p className="mt-1">{t('Usage appears after the first model response is complete.')}</p>
             </div>
           ) : (
             <div className="divide-y divide-indigo-100/80 text-sm">
               <section className="py-5">
-                <div className="flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Token volume</h3><span className="text-xs text-zinc-400">{usageTotals.calls} calls</span></div>
+                <div className="flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t('Token volume')}</h3><span className="text-xs text-zinc-400">{usageTotals.calls} {language === 'zh' ? '次调用' : language === 'ja' ? '回の呼出し' : 'calls'}</span></div>
                 <dl className="mt-3 grid grid-cols-2 gap-x-5 gap-y-3">
-                  <div><dt className="text-xs text-zinc-500">Total</dt><dd className="mt-1 text-lg font-semibold tabular-nums text-zinc-800">{formatTokens(usageTotals.prompt + usageTotals.completion)}</dd></div>
-                  <div><dt className="text-xs text-zinc-500">Input</dt><dd className="mt-1 text-lg font-semibold tabular-nums text-zinc-800">{formatTokens(usageTotals.prompt)}</dd></div>
-                  <div><dt className="text-xs text-zinc-500">Output</dt><dd className="mt-1 font-medium tabular-nums text-zinc-700">{formatTokens(usageTotals.completion)}</dd></div>
-                  <div><dt className="text-xs text-zinc-500">Latest model</dt><dd className="mt-1 truncate font-mono text-xs text-zinc-600" title={latestUsageMessage?.model}>{latestUsageMessage?.model || 'Unknown'}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Total')}</dt><dd className="mt-1 text-lg font-semibold tabular-nums text-zinc-800">{formatTokens(usageTotals.prompt + usageTotals.completion)}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Input')}</dt><dd className="mt-1 text-lg font-semibold tabular-nums text-zinc-800">{formatTokens(usageTotals.prompt)}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Output')}</dt><dd className="mt-1 font-medium tabular-nums text-zinc-700">{formatTokens(usageTotals.completion)}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Latest model')}</dt><dd className="mt-1 truncate font-mono text-xs text-zinc-600" title={latestUsageMessage?.model}>{latestUsageMessage?.model || t('Unknown')}</dd></div>
                 </dl>
               </section>
 
               <section className="py-5">
-                <div className="flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Prompt cache</h3><span className="text-sm font-semibold tabular-nums text-emerald-700">{cacheRate.toFixed(1)}%</span></div>
+                <div className="flex items-center justify-between"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t('Prompt cache')}</h3><span className="text-sm font-semibold tabular-nums text-emerald-700">{cacheRate.toFixed(1)}%</span></div>
                 <dl className="mt-3 grid grid-cols-2 gap-x-5">
-                  <div><dt className="text-xs text-zinc-500">Cached input</dt><dd className="mt-1 font-medium tabular-nums text-zinc-700">{formatTokens(usageTotals.cached)}</dd></div>
-                  <div><dt className="text-xs text-zinc-500">Uncached input</dt><dd className="mt-1 font-medium tabular-nums text-zinc-700">{formatTokens(Math.max(0, usageTotals.prompt - usageTotals.cached))}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Cached input')}</dt><dd className="mt-1 font-medium tabular-nums text-zinc-700">{formatTokens(usageTotals.cached)}</dd></div>
+                  <div><dt className="text-xs text-zinc-500">{t('Uncached input')}</dt><dd className="mt-1 font-medium tabular-nums text-zinc-700">{formatTokens(Math.max(0, usageTotals.prompt - usageTotals.cached))}</dd></div>
                 </dl>
                 <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-zinc-100"><div className="h-full rounded-full bg-emerald-400" style={{ width: `${cacheRate}%` }} /></div>
               </section>
 
               <section className="py-5">
-                <div className="flex items-center justify-between gap-3"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Current context</h3><span className="shrink-0 text-sm font-semibold tabular-nums text-violet-700">{contextRate.toFixed(1)}%</span></div>
-                <p className="mt-2 text-xs leading-5 text-zinc-500">Latest request: {formatTokens(contextTokens)} of {formatTokens(contextBudget)} available input tokens.</p>
+                <div className="flex items-center justify-between gap-3"><h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t('Current context')}</h3><span className="shrink-0 text-sm font-semibold tabular-nums text-violet-700">{contextRate.toFixed(1)}%</span></div>
+                <p className="mt-2 text-xs leading-5 text-zinc-500">{language === 'zh' ? `最近请求使用 ${formatTokens(contextTokens)} / ${formatTokens(contextBudget)} 输入 Token。` : language === 'ja' ? `直近のリクエスト: ${formatTokens(contextTokens)} / ${formatTokens(contextBudget)} 入力トークン。` : `Latest request: ${formatTokens(contextTokens)} of ${formatTokens(contextBudget)} available input tokens.`}</p>
                 {latestUsageMessage?.usage?.contextDiagnostics && (
                   <p className="mt-1 text-xs leading-5 text-zinc-500">
                     Local estimate: {formatTokens(latestUsageMessage.usage.contextDiagnostics.estimatedTokens)}; retained {latestUsageMessage.usage.contextDiagnostics.retainedMessages}, omitted {latestUsageMessage.usage.contextDiagnostics.omittedMessages}, compacted {latestUsageMessage.usage.contextDiagnostics.compactedMessages}.
@@ -571,24 +612,25 @@ export function TaskWorkspacePanel() {
         </div>
       )}
 
-      {rightPanelTab === 'tasks' && taskView === 'plan' && (
+      {rightPanelTab === 'tasks' && conversationInWorkspace && taskView === 'plan' && (
         <div className="task-workspace-note__content min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {loadError && <div role="alert" className="purpose-error"><p>{language === 'zh' ? '无法读取执行记录，请重试。' : language === 'ja' ? '実行記録を読み込めません。再試行してください。' : 'Could not load execution records. Please retry.'}</p><details><summary>{language === 'zh' ? '错误详情' : 'Details'}</summary>{loadError}</details><button type="button" onClick={() => void refresh()}>{copy.retry}</button></div>}
           <div className="flex items-start justify-between gap-3 border-b border-indigo-100/80 pb-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold text-zinc-800">Task workspace</span>
+                <span className="text-sm font-semibold text-zinc-800">{t('Task workspace')}</span>
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <span className={cn('eva-status', taskStatus === 'completed' ? 'eva-status--success' : taskStatus === 'failed' ? 'eva-status--error' : taskStatus ? 'eva-status--active' : 'eva-status--neutral')}>
-                {statusLabel(taskStatus)}
-              </span>
+              {taskStatus && <span className={cn('eva-status', taskStatus === 'completed' ? 'eva-status--success' : taskStatus === 'failed' ? 'eva-status--error' : taskStatus ? 'eva-status--active' : 'eva-status--neutral')}>
+                {t(statusLabel(taskStatus))}
+              </span>}
               {(taskIsRunning || taskCanResume || taskCanCancel) && <>
-                {(taskIsRunning || taskCanResume) && <button type="button" onClick={() => void (taskCanResume ? continueTask() : stopTask())} disabled={stopping} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60" title={taskCanResume ? 'Continue this task' : 'Stop after the current operation'}>
-                  {taskCanResume ? <Play className="h-3 w-3 fill-current" /> : <Square className="h-3 w-3 fill-current" />}{stopping ? 'Working...' : taskCanResume ? 'Continue' : 'Stop'}
+                {(taskIsRunning || taskCanResume) && <button type="button" onClick={() => void (taskCanResume ? continueTask() : stopTask())} disabled={stopping} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-violet-700 transition-colors hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60" title={taskCanResume ? t('Continue this task') : t('Stop after the current operation')}>
+                  {taskCanResume ? <Play className="h-3 w-3 fill-current" /> : <Square className="h-3 w-3 fill-current" />}{stopping ? t('Working...') : taskCanResume ? t('Continue') : t('Stop')}
                 </button>}
-                {taskCanCancel && <button type="button" onClick={() => void cancelTask()} disabled={cancelling} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:cursor-wait disabled:opacity-60" title="Cancel this task">
-                  <CircleMinus className="h-3.5 w-3.5" />{cancelling ? 'Cancelling...' : 'Cancel'}
+                {taskCanCancel && <button type="button" onClick={() => void cancelTask()} disabled={cancelling} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:cursor-wait disabled:opacity-60" title={t('Cancel this task')}>
+                  <CircleMinus className="h-3.5 w-3.5" />{cancelling ? t('Cancelling...') : t('Cancel')}
                 </button>}
               </>}
             </div>
@@ -601,23 +643,23 @@ export function TaskWorkspacePanel() {
           )}
 
           {!hasTaskRun ? (
-            currentConversation?.parentConversationId ? (
+            loading ? <p className="py-6 text-sm text-zinc-500">{language === 'zh' ? '正在读取执行记录…' : language === 'ja' ? '実行記録を読み込み中…' : 'Loading execution records…'}</p> : loadError ? null : currentConversation?.parentConversationId ? (
               <div className="border-b border-indigo-100/80 py-4">
                 <div className="flex items-start gap-2 rounded-md bg-violet-50/70 px-3 py-3 text-xs leading-5 text-zinc-600">
                   <Target className="mt-0.5 h-4 w-4 shrink-0 text-violet-500" />
                   <div className="min-w-0 flex-1">
-                    <p className="font-medium text-zinc-800">Hidden Goal step conversation</p>
-                    <p className="mt-1">This conversation is scoped to one Goal step and is hidden from the left conversation list.</p>
+                    <p className="font-medium text-zinc-800">{t('Hidden Goal step conversation')}</p>
+                    <p className="mt-1">{t('This conversation is scoped to one Goal step and is hidden from the left conversation list.')}</p>
                     <button type="button" onClick={() => void openParentConversation()} className="mt-2 inline-flex items-center gap-1 font-medium text-violet-700 hover:text-violet-900">
-                      <ChevronRight className="h-3.5 w-3.5 rotate-180" /> Back to parent task
+                      <ChevronRight className="h-3.5 w-3.5 rotate-180" /> {t('Back to parent task')}
                     </button>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col items-start py-8 text-sm leading-6 text-zinc-500">
+              <div className="flex flex-col items-start py-5 text-sm leading-6 text-zinc-500">
                 <PanelTopOpen className="mb-3 h-6 w-6 text-violet-300" />
-                <p className="font-medium text-zinc-700">No task plan yet</p>
+                <p className="font-medium text-zinc-700">{t('No task plan yet')}</p><p className="mt-1 text-xs leading-5">{language === 'zh' ? '直接在对话中说明任务；长期目标可以先建立项目主线。' : language === 'ja' ? '会話で作業を依頼できます。長期の目標には主線を作成します。' : 'Describe a task in chat, or create a project purpose for a longer goal.'}</p><button type="button" className="mt-3 text-xs font-medium text-[var(--accent)]" onClick={() => useAppStore.getState().openPurposeWorkspace()}>{copy.purposes}</button>
               </div>
             )
           ) : (
@@ -625,11 +667,11 @@ export function TaskWorkspacePanel() {
               {taskGoal && <p className="mt-4 line-clamp-2 border-l-2 border-violet-200 pl-3 text-xs leading-5 text-zinc-600">{taskGoal}</p>}
               <section className="mt-5">
                 <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Task outline</h2>
+                  <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t('Task outline')}</h2>
                   <span className="text-xs tabular-nums text-zinc-400">{completedSteps}/{steps.length}</span>
                 </div>
                 {steps.length === 0 ? (
-                  <p className="py-2 text-sm text-zinc-500">Eva is preparing the task plan.</p>
+                  <p className="py-2 text-sm text-zinc-500">{t('Eva is preparing the task plan.')}</p>
                 ) : (
                   <ol className="space-y-1">
                     {visibleSteps.map((step, index) => {
@@ -643,21 +685,21 @@ export function TaskWorkspacePanel() {
                               <div className="flex items-start gap-2">
                                 <span className="mt-0.5 text-xs tabular-nums text-zinc-400">{index + 1}</span>
                                 <p className={cn('min-w-0 flex-1 truncate text-sm leading-5', step.status === 'completed' ? 'text-zinc-500' : 'font-medium text-zinc-700')} title={step.title}>{step.title}</p>
-                                {step.assignedAgentName && <span className="max-w-28 shrink-0 truncate rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700" title={`Assigned to ${step.assignedAgentName}`}>{step.assignedAgentName}</span>}
+                                {step.assignedAgentName && <span className="max-w-28 shrink-0 truncate rounded bg-violet-50 px-1.5 py-0.5 text-[11px] font-medium text-violet-700" title={`${language === 'zh' ? '执行智能体：' : language === 'ja' ? '担当: ' : 'Assigned to '}${step.assignedAgentName}`}>{step.assignedAgentName}</span>}
                                 {step.maxAttempts && step.maxAttempts > 1 && <span className={cn('mt-0.5 shrink-0 text-[11px] tabular-nums', step.status === 'in_progress' ? 'text-violet-600' : step.status === 'failed' ? 'text-rose-600' : 'text-zinc-400')}>尝试 {step.attempt || 1}/{step.maxAttempts}</span>}
-                                {step.agentConversationId && <button type="button" onClick={(event) => { event.stopPropagation(); void openStepConversation(step.agentConversationId) }} className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-violet-500 hover:bg-violet-100 hover:text-violet-800" title="Open this step conversation" aria-label="Open this step conversation"><ExternalLink className="h-3.5 w-3.5" /></button>}
+                                {step.agentConversationId && <button type="button" onClick={(event) => { event.stopPropagation(); void openStepConversation(step.agentConversationId) }} className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-violet-500 hover:bg-violet-100 hover:text-violet-800" title={t('Open this step conversation')} aria-label={t('Open this step conversation')}><ExternalLink className="h-3.5 w-3.5" /></button>}
                                 {isExpanded ? <ChevronDown className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" /> : <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-zinc-400" />}
                               </div>
                             </div>
                           </div>
                           {isExpanded && (
                             <div className="mb-2 ml-7 border-l-2 border-violet-100 pl-3 pr-1 text-xs leading-5 text-zinc-600">
-                              <div className="flex items-center justify-between gap-3"><span className="font-medium text-zinc-700">{stepStatusLabel(step.status)}</span>{step.toolCalls?.length ? <span className="shrink-0 text-zinc-400">{step.toolCalls.length} activities</span> : null}</div>
-                              {step.attempts?.length ? <div className="mt-2 space-y-1 rounded bg-violet-50/50 px-2.5 py-2"><p className="text-[11px] font-medium uppercase tracking-wide text-violet-500">Retry history</p>{step.attempts.map((attempt) => <p key={attempt.attempt} className={cn('text-xs', attempt.status === 'failed' ? 'text-rose-600' : attempt.status === 'completed' ? 'text-emerald-700' : 'text-violet-700')}>Attempt {attempt.attempt}: {attempt.status === 'failed' ? attempt.error || 'Connection failed' : attempt.status === 'completed' ? 'Completed' : 'Retry in progress'}</p>)}</div> : null}
+                              <div className="flex items-center justify-between gap-3"><span className="font-medium text-zinc-700">{t(stepStatusLabel(step.status))}</span>{step.toolCalls?.length ? <span className="shrink-0 text-zinc-400">{step.toolCalls.length} {language === 'zh' ? '条执行记录' : language === 'ja' ? '件の実行記録' : 'activities'}</span> : null}</div>
+                              {step.attempts?.length ? <div className="mt-2 space-y-1 rounded bg-violet-50/50 px-2.5 py-2"><p className="text-[11px] font-medium uppercase tracking-wide text-violet-500">{t('Retry history')}</p>{step.attempts.map((attempt) => <p key={attempt.attempt} className={cn('text-xs', attempt.status === 'failed' ? 'text-rose-600' : attempt.status === 'completed' ? 'text-emerald-700' : 'text-violet-700')}>{language === 'zh' ? '尝试' : language === 'ja' ? '試行' : 'Attempt'} {attempt.attempt}: {attempt.status === 'failed' ? attempt.error || t('Connection failed') : attempt.status === 'completed' ? t('Completed') : t('Retry in progress')}</p>)}</div> : null}
                               {step.detail && <p className="mt-1.5 whitespace-pre-wrap break-words">{step.detail}</p>}
-                              {step.result && step.result !== step.detail && <div className="mt-2 rounded bg-zinc-50 px-2.5 py-2 text-zinc-600"><p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400">Result</p><p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words">{step.result}</p></div>}
+                              {step.result && step.result !== step.detail && <div className="mt-2 rounded bg-zinc-50 px-2.5 py-2 text-zinc-600"><p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-400">{t('Result')}</p><p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words">{step.result}</p></div>}
                               {step.status === 'failed' && !step.agentConversationId && !step.toolCalls?.length && <p className="mt-2 rounded bg-amber-50 px-2.5 py-2 text-amber-800">未启动：前置任务未完成，因此没有创建子对话或执行记录。</p>}
-                              {step.toolCalls?.length ? <div className="mt-2 space-y-1.5"><p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">Execution activity</p>{step.toolCalls.map((toolCall) => <div key={toolCall.id} className="rounded bg-zinc-50 px-2.5 py-2"><div className="flex items-center justify-between gap-3"><span className="truncate font-medium text-zinc-700">{toolCall.name}</span><span className={cn('shrink-0 text-[11px]', toolCall.isError ? 'text-rose-500' : toolCall.result ? 'text-emerald-600' : 'text-violet-500')}>{toolCall.isError ? 'Failed' : toolCall.result ? 'Completed' : 'Running'}</span></div>{toolCall.result && <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-zinc-500">{toolCall.result}</p>}</div>)}</div> : !hasActivity && <p className="mt-1.5 text-zinc-400">Execution records will appear here as this step progresses.</p>}
+                              {step.toolCalls?.length ? <div className="mt-2 space-y-1.5"><p className="text-[11px] font-medium uppercase tracking-wide text-zinc-400">{t('Execution activity')}</p>{step.toolCalls.map((toolCall) => <div key={toolCall.id} className="rounded bg-zinc-50 px-2.5 py-2"><div className="flex items-center justify-between gap-3"><span className="truncate font-medium text-zinc-700">{toolCall.name}</span><span className={cn('shrink-0 text-[11px]', toolCall.isError ? 'text-rose-500' : toolCall.result ? 'text-emerald-600' : 'text-violet-500')}>{toolCall.isError ? t('Failed') : toolCall.result ? t('Completed') : t('In progress')}</span></div>{toolCall.result && <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-zinc-500">{toolCall.result}</p>}</div>)}</div> : !hasActivity && <p className="mt-1.5 text-zinc-400">{t('Execution records will appear here as this step progresses.')}</p>}
                             </div>
                           )}
                         </li>
@@ -665,16 +707,17 @@ export function TaskWorkspacePanel() {
                     })}
                   </ol>
                 )}
-                {steps.length > 5 && <button type="button" onClick={() => setShowAllSteps((show) => !show)} className="mt-2 text-xs font-medium text-violet-700 hover:text-violet-900">{showAllSteps ? 'Show less' : `Show all ${steps.length} steps`}</button>}
+                {steps.length > 5 && <button type="button" onClick={() => setShowAllSteps((show) => !show)} className="mt-2 text-xs font-medium text-violet-700 hover:text-violet-900">{showAllSteps ? t('Show less') : language === 'zh' ? `显示全部 ${steps.length} 个步骤` : language === 'ja' ? `全 ${steps.length} ステップを表示` : `Show all ${steps.length} steps`}</button>}
               </section>
             </>
           )}
 
-          <section className="mt-6 border-t border-indigo-100/80 pt-5">
+          {(hasTaskRun || artifacts.length > 0) && <section className="mt-5">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Generated documents</h2>
-              <button type="button" onClick={() => setRightPanelTab('files')} className="text-xs font-medium text-violet-700 hover:text-violet-900">Browse files</button>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{t('Generated documents')}</h2>
+              <button type="button" onClick={() => setRightPanelTab('files')} className="text-xs font-medium text-violet-700 hover:text-violet-900">{t('Browse files')}</button>
             </div>
+            {artifacts.length === 0 && <p className="text-xs text-zinc-500">{t('No generated documents yet.')}</p>}
             {artifacts.length > 0 && (
               <div className="space-y-1">
                 {visibleArtifacts.map((artifact) => <button key={artifact.id} type="button" onClick={() => void openArtifact(artifact)} onContextMenu={(event) => { event.preventDefault(); if (!artifact.path) return; void window.eva.file.showContextMenu({ path: artifact.path, ...(resolvedWorkspacePath ? { workspacePath: resolvedWorkspacePath } : {}), isDirectory: false }).catch((error) => console.error('Failed to open task artifact menu:', error)) }} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-zinc-600 transition-colors hover:bg-violet-50/70 hover:text-violet-800" title={artifact.path}>
@@ -684,7 +727,7 @@ export function TaskWorkspacePanel() {
                 {artifacts.length > 3 && <button type="button" onClick={() => setShowAllArtifacts((show) => !show)} className="mt-1 px-2 text-xs font-medium text-violet-700 hover:text-violet-900">{showAllArtifacts ? '收起到 3 个文件' : `显示全部 ${artifacts.length} 个文件`}</button>}
               </div>
             )}
-          </section>
+          </section>}
         </div>
       )}
     </div>

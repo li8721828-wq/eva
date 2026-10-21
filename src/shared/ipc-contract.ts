@@ -1,4 +1,6 @@
 import { IPC } from './ipc-channels'
+import type { GeneratePurposeDraftInput, PurposeDraftAnalysis } from './types/purpose'
+import type { ContinuePurposeInput, CreatePurposeInput, Purpose, PurposeHandoffInput, PurposePreflight, PurposeRef, UpdatePurposeInput } from './types/purpose'
 import type { ChatMessage, Conversation } from './types/conversation'
 import type { ProjectKnowledgeEntry, ProjectKnowledgeScope, ProjectKnowledgeStatus } from './types/project-knowledge'
 import type { LongTermMemory, LongTermMemoryScope, LongTermMemoryStatus, UpdateLongTermMemoryInput } from './types/long-term-memory'
@@ -8,6 +10,16 @@ import type { RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput
 
 /** Canonical argument/result contracts for high-risk renderer/main boundaries. */
 export interface IpcContract {
+  [IPC.PURPOSE_DRAFT_GENERATE]: { args: [input: GeneratePurposeDraftInput]; result: PurposeDraftAnalysis }
+  [IPC.PURPOSE_DRAFT_CANCEL]: { args: [requestId: string]; result: void }
+  [IPC.PURPOSE_LIST]: { args: [workspaceId: string]; result: Purpose[] }
+  [IPC.PURPOSE_CREATE]: { args: [workspaceId: string, input: CreatePurposeInput]; result: Purpose }
+  [IPC.PURPOSE_UPDATE]: { args: [ref: PurposeRef, input: UpdatePurposeInput]; result: Purpose }
+  [IPC.PURPOSE_NOTE]: { args: [ref: PurposeRef, revision: number, kind: 'decision' | 'finding', content: string]; result: Purpose }
+  [IPC.PURPOSE_HANDOFF]: { args: [input: PurposeHandoffInput]; result: Purpose }
+  [IPC.PURPOSE_PREFLIGHT]: { args: [ref: PurposeRef]; result: PurposePreflight }
+  [IPC.PURPOSE_CONTINUE]: { args: [input: ContinuePurposeInput]; result: Conversation }
+  [IPC.PURPOSE_ATTACH]: { args: [ref: PurposeRef, conversationId: string]; result: void }
   [IPC.CONVERSATION_LOAD]: {
     args: [id: string]
     result: { conversation: Conversation; messages: ChatMessage[] }
@@ -18,6 +30,7 @@ export interface IpcContract {
   [IPC.TASK_SNAPSHOT]: { args: [conversationId: string]; result: TaskRunSnapshot | null }
   [IPC.CONFIG_GET]: { args: [key: string]; result: unknown }
   [IPC.CONFIG_SET]: { args: [key: string, value: unknown]; result: void }
+  [IPC.CONFIG_SELECT_MODEL]: { args: [providerId: string, model: string]; result: void }
   [IPC.CONFIG_GET_ALL]: { args: []; result: Record<string, unknown> }
   [IPC.CHAT_TOOL_APPROVAL_DECIDE]: {
     args: [payload: { conversationId: string; approvalId: string; approved: boolean; rememberScope?: 'once' | 'session' }]

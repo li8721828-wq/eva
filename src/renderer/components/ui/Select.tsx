@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useImperativeHandle, useRef, useState, useContext, useId, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown } from 'lucide-react'
+import { FloatingDepth, focusableElements, registerFloatingLayer } from '@/lib/floating-layer'
 import { cn } from '@/lib/utils'
 
 export interface SelectProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onChange' | 'value'> {
@@ -19,13 +20,16 @@ interface MenuPosition {
   left: number
   top: number
   width: number
-  openUpward: boolean
+  maxHeight: number
 }
 
 const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
   ({ className, value, onChange, options, disabled, onKeyDown, menuClassName, optionClassName, selectedOptionClassName, triggerIcon, menuWidth, ...props }, forwardedRef) => {
     const triggerRef = useRef<HTMLButtonElement>(null)
     const menuRef = useRef<HTMLDivElement>(null)
+    const depth = useContext(FloatingDepth) + 1
+    const menuId = useId()
+    const [activeIndex, setActiveIndex] = useState(0)
     const [open, setOpen] = useState(false)
     const [position, setPosition] = useState<MenuPosition | null>(null)
     const selected = options.find((option) => option.value === value)
@@ -35,43 +39,71 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
     const updatePosition = useCallback(() => {
       const rect = triggerRef.current?.getBoundingClientRect()
       if (!rect) return
-      const menuHeight = Math.min(options.length * 36 + 12, 240)
-      const openUpward = rect.bottom + menuHeight > window.innerHeight && rect.top > menuHeight
-      const width = menuWidth ?? rect.width
+      const gap = 8
+      const below = Math.max(0, window.innerHeight - rect.bottom - gap)
+      const above = Math.max(0, rect.top - gap)
+      const desiredHeight = Math.min(menuRef.current?.scrollHeight || options.length * 36 + 8, 240)
+      const upward = below < desiredHeight && above > below
+      const maxHeight = Math.min(240, upward ? above : below)
+      const width = Math.min(menuWidth ?? rect.width, window.innerWidth - gap * 2)
       setPosition({
-        left: menuWidth ? rect.right - width : rect.left,
-        top: openUpward ? rect.top - 4 : rect.bottom + 4,
-        width,
-        openUpward,
+        left: Math.max(gap, Math.min(menuWidth ? rect.right - width : rect.left, window.innerWidth - width - gap)),
+        top: upward ? Math.max(gap, rect.top - Math.min(desiredHeight, maxHeight) - 4) : rect.bottom + 4,
+        width, maxHeight,
       })
     }, [options.length, menuWidth])
 
-    useEffect(() => {
-      if (!open) return
-      updatePosition()
-      const closeOnOutsidePress = (event: MouseEvent) => {
-        const target = event.target as Node
-        if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) {
-          setOpen(false)
-        }
-      }
-      const closeOnEscape = (event: KeyboardEvent) => {
-        if (event.key === 'Escape') {
-          setOpen(false)
-          triggerRef.current?.focus()
-        }
-      }
-      window.addEventListener('mousedown', closeOnOutsidePress)
-      window.addEventListener('keydown', closeOnEscape)
+    useLayoutEffect(() => { if (open) updatePosition() }, [open, position !== null, updatePosition])
+    useLayoutEffect(() => {
+      if (!open || !menuRef.current) return
+      const unregister = registerFloatingLayer({
+        element: menuRef.current, trigger: triggerRef.current, depth,
+        dismiss: () => { setOpen(false); triggerRef.current?.focus() },
+      })
       window.addEventListener('resize', updatePosition)
       window.addEventListener('scroll', updatePosition, true)
       return () => {
-        window.removeEventListener('mousedown', closeOnOutsidePress)
-        window.removeEventListener('keydown', closeOnEscape)
+        unregister()
         window.removeEventListener('resize', updatePosition)
         window.removeEventListener('scroll', updatePosition, true)
       }
-    }, [open, updatePosition])
+    }, [open, position !== null, depth, updatePosition])
+    useLayoutEffect(() => {
+      if (!open) return
+      const item = menuRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`)
+      ;(item ?? menuRef.current)?.focus()
+      item?.scrollIntoView({ block: 'nearest' })
+    }, [open, activeIndex, position !== null])
+    useEffect(() => { if (disabled) setOpen(false) }, [disabled])
+    const openMenu = (last = false) => {
+      const selectedIndex = options.findIndex(option => option.value === value && !option.disabled)
+      const enabled = options.map((option, index) => option.disabled ? -1 : index).filter(index => index >= 0)
+      setActiveIndex(selectedIndex >= 0 ? selectedIndex : (last ? enabled.at(-1) : enabled[0]) ?? -1)
+      setOpen(true)
+    }
+    const handleMenuKeyDown = (event: React.KeyboardEvent) => {
+      const enabled = options.map((option, index) => option.disabled ? -1 : index).filter(index => index >= 0)
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+        event.preventDefault()
+        const current = enabled.indexOf(activeIndex)
+        const index = event.key === 'Home' ? 0 : event.key === 'End' ? enabled.length - 1
+          : (current + (event.key === 'ArrowUp' ? -1 : 1) + enabled.length) % enabled.length
+        setActiveIndex(enabled[index] ?? -1)
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        const option = options[activeIndex]
+        if (option) selectOption(option)
+      } else if (event.key === 'Tab') {
+        event.preventDefault()
+        setOpen(false)
+        const trigger = triggerRef.current
+        if (!trigger) return
+        const items = focusableElements(trigger.closest<HTMLElement>('[role="dialog"]') ?? document.body)
+          .filter(item => !item.closest('[role="listbox"]'))
+        const index = items.indexOf(trigger)
+        ;(items[(index + (event.shiftKey ? -1 : 1) + items.length) % items.length] ?? trigger).focus()
+      }
+    }
 
     const selectOption = (option: SelectProps['options'][number]) => {
       if (option.disabled) return
@@ -85,11 +117,11 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
       if (event.defaultPrevented || disabled) return
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault()
-        setOpen((current) => !current)
+        open ? setOpen(false) : openMenu()
       }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
-        setOpen(true)
+        openMenu(event.key === 'ArrowUp')
       }
     }
 
@@ -99,15 +131,16 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           ref={triggerRef}
           type="button"
           disabled={disabled}
-          onClick={() => !disabled && setOpen((current) => !current)}
+          onClick={() => { if (!disabled) { if (open) setOpen(false); else openMenu() } }}
           onKeyDown={handleKeyDown}
           className={cn(
-            'eva-focus-float flex h-9 w-full items-center justify-between gap-2 rounded-md border border-zinc-200 bg-white px-3 py-1 text-left text-sm text-zinc-900 shadow-sm transition-[border-color,box-shadow] hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50',
+            'eva-focus-float flex h-9 w-full items-center justify-between gap-2 rounded-md border border-[var(--ui-border-strong)] bg-[var(--bg-input)] px-3 py-1 text-left text-sm text-[var(--text-primary)] transition-[border-color,box-shadow] hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus-visible:border-transparent focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50',
             triggerIcon && 'justify-center px-0',
             className
           )}
           aria-expanded={open}
           aria-haspopup="listbox"
+          aria-controls={open ? menuId : undefined}
           {...props}
         >
           {triggerIcon || (
@@ -122,6 +155,10 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
           <div
             ref={menuRef}
             role="listbox"
+            id={menuId}
+            aria-label={props['aria-label'] ?? selected?.label ?? value}
+            tabIndex={-1}
+            onKeyDown={handleMenuKeyDown}
             className={cn(
               'fixed z-[100] max-h-60 overflow-y-auto rounded-md border border-zinc-200 bg-white p-1 shadow-lg',
               menuClassName
@@ -130,10 +167,11 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
               left: position.left,
               top: position.top,
               width: position.width,
-              transform: position.openUpward ? 'translateY(-100%)' : undefined,
+              maxHeight: position.maxHeight,
+              zIndex: 100 + depth * 20,
             }}
           >
-            {options.map((option) => {
+            {options.map((option, index) => {
               const isSelected = option.value === value
               return (
                 <button
@@ -141,6 +179,9 @@ const Select = React.forwardRef<HTMLButtonElement, SelectProps>(
                   type="button"
                   role="option"
                   aria-selected={isSelected}
+                  data-index={index}
+                  tabIndex={index === activeIndex ? 0 : -1}
+                  onFocus={() => setActiveIndex(index)}
                   disabled={option.disabled}
                   onClick={() => selectOption(option)}
                   className={cn(

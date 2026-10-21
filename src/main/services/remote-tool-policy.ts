@@ -2,10 +2,13 @@ import { BrowserWindow, dialog } from 'electron'
 import type { ToolApprovalDecision, ToolApprovalRequest } from '../agent-engine/agent-runner'
 import { recordActivity } from './activity-log'
 import { isAllowedRemoteTerminalCommand } from './remote-command-policy'
+import { requiresApproval } from './tool-approval-policy'
+import type { ToolApprovalPolicy } from '../../shared/types/automation'
 
 interface RemoteToolPolicyContext {
   conversationId: string
   workspaceId?: string
+  policy?: ToolApprovalPolicy
 }
 
 function buildOperationSummary(request: ToolApprovalRequest): { title: string; detail: string } {
@@ -19,7 +22,10 @@ function buildOperationSummary(request: ToolApprovalRequest): { title: string; d
     }
   }
 
-  const command = String(request.toolCall.arguments.command || '(missing command)')
+  if (request.toolCall.name !== 'execute_command' && request.toolCall.name !== 'write_terminal') {
+    return { title: `QQ remote tool request: ${request.toolCall.name}`, detail: `Workspace: ${request.workspacePath}\nArguments: ${JSON.stringify(request.toolCall.arguments).slice(0, 500)}` }
+  }
+  const command = String(request.toolCall.arguments.command || request.toolCall.arguments.text || '(missing command)')
   return {
     title: 'QQ remote terminal command request',
     detail: `Workspace: ${request.workspacePath}\nCommand: ${command}`,
@@ -48,12 +54,14 @@ async function showLocalApproval(title: string, detail: string): Promise<boolean
  */
 export function createRemoteToolApproval(context: RemoteToolPolicyContext): (request: ToolApprovalRequest) => Promise<ToolApprovalDecision> {
   return async (request) => {
-  if (request.toolCall.name !== 'write_file' && request.toolCall.name !== 'edit_file' && request.toolCall.name !== 'execute_command' && request.toolCall.name !== 'write_terminal') {
+    if (request.signal?.aborted) return { approved: false, message: 'The run was cancelled.' }
+    const alwaysAsk = ['write_file', 'edit_file', 'execute_command', 'write_terminal'].includes(request.toolCall.name)
+    if (!alwaysAsk && requiresApproval(request.toolCall.name, context.policy ?? 'safe') === null) {
       return { approved: true }
     }
 
-  if (request.toolCall.name === 'execute_command' || request.toolCall.name === 'write_terminal') {
-    const command = String(request.toolCall.arguments.command || request.toolCall.arguments.text || '')
+    if (request.toolCall.name === 'execute_command' || request.toolCall.name === 'write_terminal') {
+      const command = String(request.toolCall.arguments.command || request.toolCall.arguments.text || '')
       if (!isAllowedRemoteTerminalCommand(command)) {
         await recordActivity({
           category: 'permission',

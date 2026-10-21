@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { goalStepHandoffPrompt } from '../../src/main/services/goal-step-conversation'
 
 describe('Goal step conversation handoff', () => {
+  it('keeps the explicit purpose reference in isolated step context', () => {
+    const prompt = goalStepHandoffPrompt({ goal: 'Refunds', step: 'Fix idempotency', acceptanceCriteria: ['One refund per request'], userGuidance: [], dependencyResults: [], upstreamIssues: [], purposeContext: 'Purpose revision 4: migration remains unexecuted.' })
+    expect(prompt).toContain('Purpose revision 4: migration remains unexecuted.')
+    expect(prompt).toContain('verify claims against current code')
+  })
   it('contains only the explicit parent-to-step contract', () => {
     const prompt = goalStepHandoffPrompt({
       goal: 'Repair the import flow',

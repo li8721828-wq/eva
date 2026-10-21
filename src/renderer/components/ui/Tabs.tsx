@@ -101,7 +101,7 @@ function TabsTrigger({ value, children, className }: TabsTriggerProps) {
       className={cn(
         'px-4 py-2.5 text-sm font-medium transition-colors duration-150 border-b-2 -mb-px',
         isActive
-          ? 'border-violet-600 text-violet-600'
+          ? 'border-[var(--accent)] text-[var(--accent)]'
           : 'border-transparent text-zinc-500 hover:text-zinc-700',
         className
       )}

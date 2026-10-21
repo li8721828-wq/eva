@@ -18,7 +18,8 @@ export function ToastViewport() {
 
   return (
     <div
-      className="pointer-events-none fixed bottom-6 right-6 z-[100] flex w-[min(22rem,calc(100vw-3rem))] flex-col items-end gap-2"
+      className="pointer-events-none fixed bottom-6 right-6 z-[1000] flex w-[min(22rem,calc(100vw-3rem))] flex-col items-end gap-2"
+      data-floating-notification="true"
       role="region"
       aria-label="Notifications"
       aria-live="polite"

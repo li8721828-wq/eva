@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Archive, Brain, CheckCircle2, Database, RefreshCw, Search, Trash2, UserRound, FolderKanban, Zap, Check, Pencil, RotateCcw, X } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { Switch } from '@/components/ui/Switch'
 import { Select } from '@/components/ui/Select'
 import { useAppStore } from '@/stores/use-app-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
@@ -192,8 +193,8 @@ export function LongTermMemoryPanel() {
       <div className="eva-lift rounded-lg border border-zinc-200 bg-white">
         <div className="flex items-center gap-2 border-b border-zinc-100 px-4 py-3"><Database className="h-4 w-4 text-zinc-500" /><h3 className="text-sm font-semibold text-zinc-900">记忆系统配置</h3></div>
         <div className="divide-y divide-zinc-100">
-          <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">启用 Memory Agent 整理</span><span className="mt-0.5 block text-xs text-zinc-500">任务完成后分析回合事件，只保存具有长期价值的用户或项目记忆。</span></span><input type="checkbox" checked={settings.learningEnabled} onChange={(event) => void updateSetting('learningEnabled', event.target.checked)} className="h-4 w-4 accent-violet-600" /></label>
-          <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">向主 Agent 注入相关记忆</span><span className="mt-0.5 block text-xs text-zinc-500">只注入当前请求相关的用户记忆和项目记忆，并标记为参考资料。</span></span><input type="checkbox" checked={settings.injectionEnabled} onChange={(event) => void updateSetting('injectionEnabled', event.target.checked)} className="h-4 w-4 accent-violet-600" /></label>
+          <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">启用 Memory Agent 整理</span><span className="mt-0.5 block text-xs text-zinc-500">任务完成后分析回合事件，只保存具有长期价值的用户或项目记忆。</span></span><Switch checked={settings.learningEnabled} onChange={(event) => void updateSetting('learningEnabled', event.target.checked)} /></label>
+          <label className="flex cursor-pointer items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">向主 Agent 注入相关记忆</span><span className="mt-0.5 block text-xs text-zinc-500">只注入当前请求相关的用户记忆和项目记忆，并标记为参考资料。</span></span><Switch checked={settings.injectionEnabled} onChange={(event) => void updateSetting('injectionEnabled', event.target.checked)} /></label>
           <div className="flex items-center justify-between gap-4 px-4 py-3.5"><span><span className="block text-sm font-medium text-zinc-800">记忆 Agent 模型</span><span className="mt-0.5 block text-xs text-zinc-500">跟随完成当前任务的模型连接，避免额外维护一套模型配置。</span></span><span className="rounded-md bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">跟随当前任务</span></div>
         </div>
       </div>

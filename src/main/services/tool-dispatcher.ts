@@ -5,6 +5,7 @@ import { createExecutionEnvelope } from '../tools'
 import { validateToolArguments } from '../agent-engine/tool-dispatch'
 
 export interface ToolApprovalRequest {
+  signal?: AbortSignal
   toolCall: {
     id: string
     name: string
@@ -19,6 +20,7 @@ export interface ToolApprovalDecision {
 }
 
 export interface ToolDispatchRequest {
+  signal?: AbortSignal
   id: string
   name: string
   arguments: Record<string, unknown>
@@ -119,6 +121,7 @@ export class ToolDispatcher {
   constructor(private readonly config: ToolDispatcherConfig) {}
 
   async dispatch(request: ToolDispatchRequest): Promise<ToolDispatchResult> {
+    if (request.signal?.aborted) return rejection(request.name, 'The run was cancelled.')
     const tool = this.config.toolRegistry.get(request.name)
     if (!tool) return rejection(request.name, `Tool '${request.name}' not found in registry.`)
 
@@ -136,6 +139,7 @@ export class ToolDispatcher {
 
     if (this.config.requestToolApproval) {
       const approval = await this.config.requestToolApproval({
+        signal: request.signal,
         toolCall: {
           id: request.id,
           name: request.name,
@@ -149,8 +153,10 @@ export class ToolDispatcher {
     }
 
     const startedAt = Date.now()
+    if (request.signal?.aborted) return rejection(request.name, 'The run was cancelled.')
     try {
-      const output = await tool.execute(request.arguments, request.context)
+      const context = request.signal ? { ...request.context, signal: request.signal } : request.context
+      const output = await tool.execute(request.arguments, context)
       if (typeof output === 'string') {
         return {
           result: output,

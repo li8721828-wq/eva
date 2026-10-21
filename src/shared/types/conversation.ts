@@ -22,6 +22,8 @@ export interface Conversation {
   agentId: string
   mode: 'normal' | 'expert' | 'goal'
   workspaceId?: string
+  /** Stable project-local purpose; no renderer layout state or permission inheritance. */
+  purposeId?: string
   /** External message channel that owns this conversation. */
   channel?: 'qq'
   /** Internal team conversations are scoped to the task that created them. */

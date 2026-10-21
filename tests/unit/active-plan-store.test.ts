@@ -5,6 +5,17 @@ import { describe, expect, it } from 'vitest'
 import { ActivePlanStore } from '../../src/main/storage/active-plan-store'
 
 describe('ActivePlanStore', () => {
+  it.each(['completed', 'failed', 'cancelled', 'paused', 'interrupted'] as const)('does not pause the newer plan when an older task becomes %s', async (status) => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-active-plan-'))
+    try {
+      const store = new ActivePlanStore(dataDir)
+      const older = { conversationId: 'old', workspaceId: 'same', kind: 'goal' as const, status: 'running' as const, goal: 'Old plan' }
+      await store.syncTask(older)
+      await store.syncTask({ ...older, conversationId: 'new', goal: 'New plan' })
+      await store.syncTask({ ...older, status })
+      expect(await store.getActive('workspace:same')).toMatchObject({ conversationId: 'new', status: 'active' })
+    } finally { await fs.rm(dataDir, { recursive: true, force: true }) }
+  })
   it('keeps one active plan per workspace and tracks the next unfinished step', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-active-plan-'))
     try {

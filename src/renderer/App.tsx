@@ -16,8 +16,11 @@ import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { AgentManagerDialog } from '@/components/agents/AgentManagerDialog'
 import { AppTitlebar } from '@/components/layout/AppTitlebar'
 import { Button } from '@/components/ui/Button'
-import { PanelRightClose, Loader2 } from 'lucide-react'
+import { PanelRightClose, Loader2, Maximize2, Minimize2 } from 'lucide-react'
+import { shellCopy } from '@/lib/shell-copy'
 import { useShallow } from 'zustand/react/shallow'
+import { MAIN_MIN_WIDTH, workspaceLayout } from '@/lib/workspace-layout'
+import { registerFloatingLayer } from '@/lib/floating-layer'
 
 // Lazy-loaded heavy components
 const TerminalPanel = lazy(() => import('@/components/terminal/TerminalPanel').then(m => ({ default: m.TerminalPanel })))
@@ -31,12 +34,36 @@ const RIGHT_PANEL_MAX_WIDTH = 640
 const TERMINAL_MIN_WIDTH = 380
 const TERMINAL_MAX_WIDTH = 960
 const TERMINAL_MIN_HEIGHT = 220
+function resizeWithKeyboard(target: ResizeTarget, event: React.KeyboardEvent) {
+  const horizontal = target === 'task-note' || target === 'terminal-height'
+  const decrease = horizontal ? 'ArrowUp' : 'ArrowLeft'
+  const increase = horizontal ? 'ArrowDown' : 'ArrowRight'
+  if (![decrease, increase].includes(event.key)) return
+  event.preventDefault()
+  const state = useAppStore.getState()
+  const delta = (event.key === decrease ? -1 : 1) * (event.shiftKey ? 32 : 16) * (!horizontal && target !== 'sidebar' ? -1 : 1)
+  const layout = workspaceLayout(window.innerWidth, state.sidebarCollapsed, state.sidebarWidth, state.terminalVisible ? state.terminalWidth : state.rightPanelWidth, state.terminalVisible)
+  const available = layout.overlay ? window.innerWidth - layout.sidebarWidth - 24 : window.innerWidth - layout.sidebarWidth - MAIN_MIN_WIDTH - 8
+  const update = (key: 'sidebarWidth' | 'rightPanelWidth' | 'terminalWidth' | 'taskNoteHeight' | 'terminalHeight', value: number) => {
+    useAppStore.setState({ [key]: value })
+    void window.eva.config.set(key, value).catch(console.error)
+  }
+  if (target === 'sidebar') update('sidebarWidth', Math.max(240, Math.min(440, window.innerWidth - MAIN_MIN_WIDTH - 8 - (!layout.overlay && (state.rightPanelVisible || state.terminalVisible) ? layout.railWidth : 0), state.sidebarWidth + delta)))
+  else if (target === 'right-panel') update('rightPanelWidth', Math.max(300, Math.min(640, available, state.rightPanelWidth + delta)))
+  else if (target === 'terminal-width') update('terminalWidth', Math.max(380, Math.min(960, available, state.terminalWidth + delta)))
+  else if (target === 'terminal-height') update('terminalHeight', Math.max(220, Math.min(Math.max(220, window.innerHeight - 160), state.terminalHeight + delta)))
+  else update('taskNoteHeight', Math.max(340, Math.min(Math.max(340, window.innerHeight - 84), (state.taskNoteHeight ?? event.currentTarget.parentElement?.getBoundingClientRect().height ?? Math.round((layout.railWidth - 26) * 1.618)) + delta)))
+}
 function ResizeHandle({ target, onPointerDown }: { target: ResizeTarget; onPointerDown: (target: ResizeTarget, event: React.PointerEvent<HTMLDivElement>) => void }) {
   const isHorizontal = target === 'task-note' || target === 'terminal-height'
+  const value = useAppStore(s => target === 'sidebar' ? s.sidebarWidth : target === 'right-panel' ? s.rightPanelWidth : target === 'terminal-width' ? s.terminalWidth : target === 'terminal-height' ? s.terminalHeight : s.taskNoteHeight ?? Math.round((s.rightPanelWidth - 26) * 1.618))
   return (
     <div
       role="separator"
+      tabIndex={0}
+      onKeyDown={(event) => resizeWithKeyboard(target, event)}
       aria-orientation={isHorizontal ? 'horizontal' : 'vertical'}
+      aria-valuenow={value}
       aria-label={target === 'terminal-height' ? 'Resize terminal height' : target === 'terminal-width' ? 'Resize terminal width' : isHorizontal ? 'Resize task workspace height' : target === 'sidebar' ? 'Resize sidebar' : 'Resize task workspace width'}
       onPointerDown={(event) => onPointerDown(target, event)}
       className={isHorizontal
@@ -64,6 +91,8 @@ function LazyFallback({ className }: { className?: string }) {
 const App: React.FC = () => {
   const {
     rightPanelVisible,
+    workspaceExpanded,
+    setWorkspaceExpanded,
     toggleRightPanel,
     setRightPanelVisible,
     terminalVisible,
@@ -89,6 +118,8 @@ const App: React.FC = () => {
     setTerminalWidth,
   } = useAppStore(useShallow((state) => ({
     rightPanelVisible: state.rightPanelVisible,
+    workspaceExpanded: state.workspaceExpanded,
+    setWorkspaceExpanded: state.setWorkspaceExpanded,
     toggleRightPanel: state.toggleRightPanel,
     setRightPanelVisible: state.setRightPanelVisible,
     terminalVisible: state.terminalVisible,
@@ -122,6 +153,10 @@ const App: React.FC = () => {
   const loadAgents = useAgentStore((state) => state.loadAgents)
   const loadWorkspaces = useWorkspaceStore((state) => state.loadWorkspaces)
   const [activeResize, setActiveResize] = useState<ResizeTarget | null>(null)
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth)
+  const [viewportHeight, setViewportHeight] = useState(window.innerHeight)
+  const railRef = useRef<HTMLElement>(null)
+  const layout = workspaceLayout(viewportWidth, sidebarCollapsed, sidebarWidth, terminalVisible ? terminalWidth : rightPanelWidth, terminalVisible)
   const resizeCleanupRef = useRef<(() => void) | null>(null)
   const sidebarWidthRef = useRef(sidebarWidth)
   const rightPanelWidthRef = useRef(rightPanelWidth)
@@ -140,7 +175,7 @@ const App: React.FC = () => {
     const startSidebarWidth = sidebarWidthRef.current
     const startRightPanelWidth = rightPanelWidthRef.current
     const defaultTaskNoteHeight = Math.round((rightPanelWidthRef.current - 26) * 1.618)
-    const startTaskNoteHeight = taskNoteHeight || defaultTaskNoteHeight
+    const startTaskNoteHeight = taskNoteHeight || railRef.current?.querySelector('.task-workspace-note')?.getBoundingClientRect().height || defaultTaskNoteHeight
     const startTerminalHeight = terminalHeight
     const startTerminalWidth = terminalWidthRef.current
     setActiveResize(target)
@@ -149,10 +184,10 @@ const App: React.FC = () => {
 
     const onMove = (moveEvent: PointerEvent) => {
       if (target === 'sidebar') {
-        const available = window.innerWidth - (rightPanelVisible ? rightPanelWidthRef.current : 0) - 480
+        const available = window.innerWidth - (!layout.overlay && (rightPanelVisible || terminalVisible) ? layout.railWidth : 0) - MAIN_MIN_WIDTH - 8
         setSidebarWidth(Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, available, startSidebarWidth + moveEvent.clientX - startX)))
       } else if (target === 'right-panel') {
-        const available = window.innerWidth - sidebarWidthRef.current - 480
+        const available = layout.overlay ? window.innerWidth - layout.sidebarWidth - 24 : window.innerWidth - layout.sidebarWidth - MAIN_MIN_WIDTH - 8
         setRightPanelWidth(Math.max(RIGHT_PANEL_MIN_WIDTH, Math.min(RIGHT_PANEL_MAX_WIDTH, available, startRightPanelWidth - (moveEvent.clientX - startX))))
       } else if (target === 'task-note') {
         const maxHeight = Math.max(340, window.innerHeight - 84)
@@ -161,13 +196,15 @@ const App: React.FC = () => {
         const maxHeight = Math.max(TERMINAL_MIN_HEIGHT, window.innerHeight - 160)
         setTerminalHeight(Math.max(TERMINAL_MIN_HEIGHT, Math.min(maxHeight, startTerminalHeight + moveEvent.clientY - startY)))
       } else {
-        const available = window.innerWidth - sidebarWidthRef.current - 360
+        const available = layout.overlay ? window.innerWidth - layout.sidebarWidth - 24 : window.innerWidth - layout.sidebarWidth - MAIN_MIN_WIDTH - 8
         setTerminalWidth(Math.max(TERMINAL_MIN_WIDTH, Math.min(TERMINAL_MAX_WIDTH, available, startTerminalWidth - (moveEvent.clientX - startX))))
       }
     }
     const onUp = () => {
       document.removeEventListener('pointermove', onMove)
       document.removeEventListener('pointerup', onUp)
+      document.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('blur', onUp)
       document.body.style.userSelect = ''
       document.body.style.cursor = ''
       resizeCleanupRef.current = null
@@ -186,8 +223,10 @@ const App: React.FC = () => {
     }
     document.addEventListener('pointermove', onMove)
     document.addEventListener('pointerup', onUp)
+    document.addEventListener('pointercancel', onUp)
+    window.addEventListener('blur', onUp)
     resizeCleanupRef.current = onUp
-  }, [rightPanelVisible, setRightPanelWidth, setSidebarWidth, setTaskNoteHeight, setTerminalHeight, setTerminalWidth, taskNoteHeight, terminalHeight])
+  }, [rightPanelVisible, terminalVisible, layout.overlay, layout.railWidth, layout.sidebarWidth, setRightPanelWidth, setSidebarWidth, setTaskNoteHeight, setTerminalHeight, setTerminalWidth, taskNoteHeight, terminalHeight])
 
   // Initialize streaming listeners
   useStreaming()
@@ -223,17 +262,20 @@ const App: React.FC = () => {
     if (payload.conversationId === currentConversationId) setTerminalVisible(payload.visible)
   }), [currentConversationId, setTerminalVisible])
 
-  // Responsive: auto-hide right panel on small windows
+  // Width preferences survive resizing. Compact rails can be explicitly reopened as drawers.
   useEffect(() => {
     const handleResize = () => {
-      const width = window.innerWidth
-      if (width < 1000 && rightPanelVisible) {
-        setRightPanelVisible(false)
+      setViewportWidth(window.innerWidth)
+      setViewportHeight(window.innerHeight)
+      const state = useAppStore.getState()
+      if (!state.workspaceExpanded && workspaceLayout(window.innerWidth, state.sidebarCollapsed, state.sidebarWidth, state.terminalVisible ? state.terminalWidth : state.rightPanelWidth, state.terminalVisible).overlay) {
+        state.setRightPanelVisible(false)
+        if (state.terminalVisible) state.setTerminalVisible(false)
       }
     }
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
-  }, [rightPanelVisible, setRightPanelVisible])
+  }, [])
 
   // Settings can contain long, independently scrollable content. Reset any
   // legacy document scroll before showing a full-height workspace view.
@@ -255,7 +297,23 @@ const App: React.FC = () => {
     }
   }, [theme])
 
+  const projectName = useWorkspaceStore(state => state.workspaces.find(item => item.id === state.activeWorkspaceId)?.name)
+  const [compactNote, setCompactNote] = useState(false)
+  const copy = shellCopy[language]
+  const expanded = currentView === 'chat' && rightPanelVisible && workspaceExpanded && !terminalVisible
   const showRightPanel = currentView === 'chat' && (rightPanelVisible || terminalVisible)
+  const noteHeight = Math.min(taskNoteHeight ?? (compactNote ? 310 : Math.round((layout.railWidth - 26) * 1.618)), Math.max(240, viewportHeight - 84))
+  useEffect(() => {
+    if (!showRightPanel || (!layout.overlay && !expanded) || settingsOpen || !railRef.current) return
+    const previous = document.activeElement as HTMLElement | null
+    const unregister = registerFloatingLayer({ element: railRef.current, depth: 0, modal: !expanded, dismissOnOutside: !expanded, dismiss: () => {
+      if (useAppStore.getState().workspaceExpanded) { useAppStore.getState().setWorkspaceExpanded(false); return }
+      useAppStore.getState().setRightPanelVisible(false)
+      useAppStore.getState().setTerminalVisible(false)
+    } })
+    railRef.current.querySelector<HTMLElement>('button')?.focus()
+    return () => { unregister(); if (previous?.isConnected) previous.focus() }
+  }, [showRightPanel, layout.overlay, expanded, settingsOpen])
 
   return (
     <ErrorBoundary>
@@ -263,13 +321,13 @@ const App: React.FC = () => {
       <AppTitlebar />
       <div className="eva-workspace flex min-h-0 flex-1">
       {/* Left Sidebar */}
-      <Sidebar style={!sidebarCollapsed ? { width: sidebarWidth } : undefined} />
+      <Sidebar style={!sidebarCollapsed ? { width: layout.sidebarWidth } : undefined} />
       {!sidebarCollapsed && <ResizeHandle target="sidebar" onPointerDown={startResize} />}
 
       {/* Main Workspace */}
       <div className="flex flex-1 flex-col min-w-0">
-        <div className={settingsOpen ? 'hidden' : 'flex min-h-0 min-w-0 flex-1'} aria-hidden={settingsOpen || undefined}>
-          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div className={settingsOpen ? 'hidden' : 'relative flex min-h-0 min-w-0 flex-1'} aria-hidden={settingsOpen || undefined}>
+          <div className="min-h-0 min-w-0 flex-1 overflow-hidden" style={expanded ? { visibility: 'hidden' } : undefined} aria-hidden={expanded || undefined}>
             {currentView === 'artifacts' ? <TaskArtifactCenter /> : currentView === 'symposium' ? <SymposiumWorkspace /> : currentView === 'cost' ? <CostCenter /> : <ChatPanel className="h-full" />}
           </div>
 
@@ -278,39 +336,51 @@ const App: React.FC = () => {
           {/* Right utility rail switches between task workspace and terminal. */}
           {showRightPanel && (
             <>
-            {terminalVisible && <ResizeHandle target="terminal-width" onPointerDown={startResize} />}
-            <aside className="eva-utility-rail flex min-h-0 shrink-0 flex-col" style={{ width: terminalVisible ? terminalWidth : rightPanelWidth }} aria-label={terminalVisible ? 'Terminal' : 'Task workspace'}>
+            {layout.overlay && !expanded && <div className="absolute inset-0 z-30 bg-black/20" aria-hidden="true" />}
+            {terminalVisible && !layout.overlay && <ResizeHandle target="terminal-width" onPointerDown={startResize} />}
+            <aside ref={railRef} role={expanded ? 'region' : layout.overlay ? 'dialog' : undefined} aria-modal={layout.overlay && !expanded || undefined} className={`eva-utility-rail flex min-h-0 shrink-0 flex-col ${expanded ? 'eva-workspace-expanded absolute inset-0 z-40' : layout.overlay ? 'eva-utility-drawer absolute inset-y-0 right-0 z-40' : ''}`} style={expanded ? undefined : { width: layout.railWidth }} aria-label={terminalVisible ? copy.terminal : copy.workspace}>
               {terminalVisible ? (
                 <>
                   <Suspense fallback={<LazyFallback className="h-56" />}>
-                    <TerminalPanel height={terminalHeight} className="shrink-0" />
+                    <TerminalPanel height={Math.min(terminalHeight, Math.max(TERMINAL_MIN_HEIGHT, viewportHeight - 100))} className="shrink-0" />
                   </Suspense>
                   <ResizeHandle target="terminal-height" onPointerDown={startResize} />
                 </>
-              ) : <div className="task-workspace-note flex min-h-0 shrink-0 flex-col" style={taskNoteHeight ? { height: taskNoteHeight } : undefined}>
+              ) : <div className="task-workspace-note flex min-h-0 shrink-0 flex-col" style={expanded ? undefined : { height: noteHeight }}>
                 {/* Panel header */}
                 <div className="task-workspace-note__header flex items-center justify-between px-4 py-3">
-                  <span className="text-xs font-semibold text-zinc-600">Workspace</span>
-                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleRightPanel} title="Hide task workspace" aria-label="Toggle task workspace">
+                  <span className="text-sm font-semibold text-zinc-600">{expanded && projectName ? `${projectName} · ${copy.workspace}` : copy.workspace}</span>
+                  <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setWorkspaceExpanded(!expanded)} title={expanded ? copy.restoreWorkspace : copy.expandWorkspace} aria-label={expanded ? copy.restoreWorkspace : copy.expandWorkspace}>
+                    {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={toggleRightPanel} title={copy.hideWorkspace} aria-label={copy.hideWorkspace}>
                     <PanelRightClose className="h-4 w-4" />
                   </Button>
+                  </div>
                 </div>
 
-                <TaskWorkspacePanel />
-              <div
+                <TaskWorkspacePanel onCompactChange={setCompactNote} />
+              {!expanded && <><div
                   role="separator"
+                  tabIndex={0}
+                  onKeyDown={(event) => resizeWithKeyboard('task-note', event)}
                   aria-orientation="horizontal"
+                  aria-valuenow={noteHeight}
                   aria-label="Resize task workspace height"
                   className="task-workspace-note__resize-edge task-workspace-note__resize-edge--bottom"
                   onPointerDown={(event) => startResize('task-note', event)}
                 />
                 <div
                   role="separator"
+                  tabIndex={0}
+                  onKeyDown={(event) => resizeWithKeyboard('right-panel', event)}
                   aria-orientation="vertical"
+                  aria-valuenow={rightPanelWidth}
                   aria-label="Resize task workspace width"
                   className="task-workspace-note__resize-edge task-workspace-note__resize-edge--left"
                 onPointerDown={(event) => startResize('right-panel', event)}
-              />
+              /></>}
               </div>}
             </aside>
             </>

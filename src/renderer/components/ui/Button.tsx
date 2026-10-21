@@ -7,9 +7,9 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: 'border border-violet-600 bg-violet-600 text-white shadow-sm hover:border-violet-700 hover:bg-violet-700',
-        ghost: 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900',
-        outline: 'border border-zinc-200 bg-white text-zinc-700 shadow-sm hover:border-zinc-300 hover:bg-zinc-50',
+        default: 'border border-[var(--accent)] bg-[var(--accent)] text-[var(--accent-foreground)] shadow-sm hover:border-[var(--accent-hover)] hover:bg-[var(--accent-hover)]',
+        ghost: 'text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]',
+        outline: 'border border-[var(--ui-border-strong)] bg-[var(--bg-input)] text-[var(--text-primary)] hover:border-[var(--border-hover)] hover:bg-[var(--bg-hover)]',
         destructive: 'bg-red-600 text-white shadow-sm hover:bg-red-700',
       },
       size: {

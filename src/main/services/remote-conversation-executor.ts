@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type { ChatMessage, Conversation, ToolCall } from '../../shared/types/conversation'
 import type { ChatServices } from '../ipc/conversation'
 import { AgentRunner } from '../agent-engine/agent-runner'
+import { resolveExecutionAutomation } from './execution-policy'
 import { ContextManager } from '../agent-engine/context'
 import { getStorage } from '../storage'
 import { recordActivity } from './activity-log'
@@ -9,6 +10,7 @@ import { createRemoteToolApproval } from './remote-tool-policy'
 import { sanitizeToolHistory } from '../agent-engine/tool-history'
 import { resolveEffectiveAgentConfig } from './effective-agent-config'
 import { notifyRendererConversationChanged } from './conversation-notify'
+import { PurposeService } from './purpose-service'
 
 function getConversationAccess(conversation: Conversation): { fileAccessGrants: import('../../shared/types/file-access').FileAccessGrant[]; fullFilesystemAccess: boolean } {
   if (conversation.permissionLevel === 'full-access') return { fileAccessGrants: [], fullFilesystemAccess: true }
@@ -52,11 +54,13 @@ export async function executeRemoteConversationMessage(
   notifyRendererConversationChanged(conversationId)
 
   const access = getConversationAccess(conversation)
-  const durableMemory = await storage.longTermMemory.buildContext('default', {
+  const durableMemory = [await storage.longTermMemory.buildContext('default', {
     workspaceId: conversation.workspaceId,
     workspacePath: conversation.workspacePath || storage.config.get('workspacePath'),
-  }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled })
+  }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled }), await new PurposeService(storage).context(conversationId)].filter(Boolean).join('\n\n')
+  const automation = resolveExecutionAutomation(storage.config.get('automation'))
   const runner = new AgentRunner({
+    automation,
     conversationId,
     agentConfig: effectiveAgent,
     provider,
@@ -70,6 +74,7 @@ export async function executeRemoteConversationMessage(
       modelPools: getStorage().config.get('modelPools'),
       providerRegistry: services.providerRegistry,
     requestToolApproval: createRemoteToolApproval({
+      policy: automation.toolApproval.policy,
       conversationId,
       workspaceId: conversation.workspaceId,
     }),
@@ -103,6 +108,7 @@ export async function executeRemoteConversationMessage(
         if (toolCall) {
           toolCall.result = event.toolResult.result
           toolCall.isError = event.toolResult.isError
+          toolCall.protocol = event.toolResult.protocol
         }
         void recordActivity({
           category: 'tool', action: 'qq.tool_completed', status: event.toolResult.isError ? 'error' : 'success',
@@ -137,6 +143,7 @@ export async function executeRemoteConversationMessage(
         timestamp: Date.now(),
       })
     }
+    await new PurposeService(storage).recordExecutionSafely(conversationId, `remote:${userMessage.id}`, 'completed', toolCalls, effectiveAgent.model)
     services.memoryAgent.enqueue({
       conversationId,
       messageId: assistantMessageId,
@@ -161,6 +168,7 @@ export async function executeRemoteConversationMessage(
     })
     return assistantContent || 'The agent completed without a text response.'
   } catch (error) {
+    await new PurposeService(storage).recordExecutionSafely(conversationId, `remote:${userMessage.id}`, 'failed', toolCalls, effectiveAgent.model)
     void recordActivity({
       category: 'agent', action: 'qq.agent_failed', status: 'error',
       summary: 'QQ remote agent response failed.', conversationId, workspaceId: conversation.workspaceId,

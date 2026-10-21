@@ -17,6 +17,7 @@ export function goalStepHandoffPrompt(handoff: GoalStepHandoff, continuation = f
     `Workspace: ${handoff.workspacePath || '(not restricted to one workspace)'}`,
     'Confirmed parent context and constraints:',
     handoff.parentContext || '(No additional durable context was recorded.)',
+    ...(handoff.purposeContext ? ['Project purpose reference (verify claims against current code):', handoff.purposeContext] : []),
     'User guidance (newer guidance wins on conflict):',
     guidance,
     'Acceptance criteria:',

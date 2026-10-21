@@ -30,13 +30,7 @@ const categoryLabels: Record<ActivityCategory, string> = {
 }
 
 function Metric({ label, value, detail, tone = 'neutral' }: { label: string; value: number; detail: string; tone?: 'neutral' | 'success' | 'warning' | 'error' }) {
-  const colors = {
-    neutral: 'border-zinc-200 bg-white text-zinc-800',
-    success: 'border-emerald-100 bg-emerald-50/60 text-emerald-800',
-    warning: 'border-amber-100 bg-amber-50/60 text-amber-800',
-    error: 'border-red-100 bg-red-50/60 text-red-800',
-  }
-  return <div className={cn('eva-lift min-h-[94px] rounded-lg border px-4 py-3', colors[tone])}><p className="text-xs font-medium text-zinc-500">{label}</p><p className="mt-1 text-2xl font-semibold leading-none">{value}</p><p className="mt-2 text-xs text-zinc-500">{detail}</p></div>
+  return <div className="runtime-metric" data-tone={tone}><p>{label}</p><strong>{value}</strong><p>{detail}</p></div>
 }
 
 function ActivityStatus({ status }: Pick<ActivityLogEntry, 'status'>) {
@@ -109,7 +103,7 @@ export function RuntimeIntrospectionPanel() {
     <div className="mx-auto w-full max-w-6xl space-y-8">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900"><Boxes className="h-4 w-4 text-violet-600" />系统自省</div>
+          <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Boxes className="h-4 w-4 text-violet-600" />运行状态</h2>
           <p className="mt-1 max-w-3xl text-sm leading-6 text-zinc-500">只读查看 Eva 的运行构成、权限面与近期执行证据。敏感凭据、系统提示词、对话内容和文件内容均不会显示。</p>
         </div>
         <div className="flex items-center gap-3"><span className="text-xs text-zinc-400">{lastUpdated ? `更新于 ${new Date(lastUpdated).toLocaleTimeString()}` : '正在加载'}</span><Button variant="outline" size="sm" className="gap-1.5" onClick={() => void refresh()} disabled={loading}><RefreshCw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />刷新</Button></div>
@@ -119,18 +113,18 @@ export function RuntimeIntrospectionPanel() {
 
       <section aria-label="Runtime health">
         <div className="mb-3 flex items-center gap-2"><CircleDotDashed className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">运行概览</h3></div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Metric label="智能体" value={data.agents.length} detail={`${data.agents.filter((agent) => agent.isBuiltIn).length} 个内置`} />
-          <Metric label="已启用插件" value={summary.enabledPlugins.length} detail={`共 ${data.plugins.length} 个插件`} tone={data.plugins.length && !summary.enabledPlugins.length ? 'warning' : 'success'} />
-          <Metric label="模型连接" value={summary.enabledProviders.length} detail={`共 ${data.providers.length} 个连接`} tone={summary.enabledProviders.length ? 'success' : 'warning'} />
-          <Metric label="可用模型路由" value={summary.enabledRoutes.length} detail={`分布在 ${data.pools.length} 个模型池`} tone={summary.enabledRoutes.length ? 'success' : 'warning'} />
-          <Metric label="近期异常" value={summary.recentErrors} detail="最近 100 条运行事件" tone={summary.recentErrors ? 'error' : 'success'} />
+          <Metric label="已启用插件" value={summary.enabledPlugins.length} detail={`共 ${data.plugins.length} 个插件`}  />
+          <Metric label="已启用连接" value={summary.enabledProviders.length} detail={`共 ${data.providers.length} 个连接`}  />
+          <Metric label="已启用路由" value={summary.enabledRoutes.length} detail={`分布在 ${data.pools.length} 个模型池`}  />
+          <Metric label="历史异常" value={summary.recentErrors} detail="最近 100 条事件，不代表当前故障" />
           <Metric label="Agent OS 活动" value={data.kernel?.activeProcessCount || 0} detail={`${data.kernel?.queuedProcessCount || 0} 个排队`} tone={data.kernel?.activeProcessCount ? 'success' : 'neutral'} />
           <Metric label="资源锁" value={data.kernel?.resourceLocks.length || 0} detail="当前工作区执行锁" tone={data.kernel?.resourceLocks.length ? 'warning' : 'neutral'} />
         </div>
       </section>
 
-      <section aria-label="Agent OS runtime kernel">
+      <details className="runtime-diagnostics"><summary>执行内核与审计详情</summary><section className="mt-4" aria-label="Agent OS runtime kernel">
         <div className="mb-3 flex items-center gap-2"><Activity className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">Agent OS 执行内核</h3><span className="text-xs text-zinc-400">只读状态</span></div>
         <div className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
           <div className="eva-lift eva-panel overflow-hidden divide-y divide-zinc-100">
@@ -140,9 +134,9 @@ export function RuntimeIntrospectionPanel() {
             {data.audit.length ? data.audit.slice(0, 8).map((entry) => <div key={entry.id} className="px-4 py-3"><div className="flex items-center justify-between gap-3 text-xs"><span className="font-mono text-zinc-500">{entry.kind}</span><span className="text-zinc-400">{new Date(entry.timestamp).toLocaleTimeString()}</span></div><p className="mt-1 text-sm text-zinc-700">{entry.from ? `${entry.from} → ` : ''}{entry.to}</p><p className="mt-1 truncate text-xs text-zinc-500">{entry.detail || '状态已更新'}</p></div>) : <p className="px-4 py-6 text-sm text-zinc-500">尚无 Agent OS 审计记录。</p>}
           </div>
         </div>
-      </section>
+      </section></details>
 
-      <div className="grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+      <details className="runtime-diagnostics"><summary>智能体、插件与模型路由详情</summary><div className="mt-4 grid gap-8 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
         <section aria-label="Agent capability map">
           <div className="mb-3 flex items-center gap-2"><Bot className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">智能体与能力</h3></div>
           <div className="eva-lift eva-panel overflow-hidden divide-y divide-zinc-100">
@@ -155,7 +149,7 @@ export function RuntimeIntrospectionPanel() {
           <div><div className="mb-3 flex items-center gap-2"><Cpu className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">模型路由</h3></div><div className="eva-lift eva-panel overflow-hidden divide-y divide-zinc-100">{summary.routes.length ? summary.routes.map((route) => <div key={route.id} className="flex items-center justify-between gap-3 px-4 py-3"><div className="min-w-0"><p className="truncate text-sm font-medium text-zinc-800">{route.name}</p><p className="mt-1 truncate text-xs text-zinc-500">{route.providerId} / {route.model} · {route.capabilities.join(', ')}</p></div><span className={cn('eva-status shrink-0', route.enabled ? 'eva-status--success' : 'eva-status--neutral')}>{route.enabled ? `P${route.priority}` : '停用'}</span></div>) : <p className="px-4 py-5 text-sm text-zinc-500">尚未配置模型池路由。</p>}</div></div>
           <div><div className="mb-3 flex items-center gap-2"><Cpu className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">模型能力检测</h3></div><div className="eva-lift eva-panel overflow-hidden divide-y divide-zinc-100">{summary.modelProfiles.length ? summary.modelProfiles.slice(0, 16).map(({ provider, model, profile }) => <div key={`${provider.id}:${model.id}`} className="px-4 py-3"><div className="flex flex-wrap items-center justify-between gap-2"><p className="truncate text-sm font-medium text-zinc-800">{model.name || model.id}</p><span className="eva-status eva-status--neutral">{profile.protocol}</span></div><p className="mt-1 text-xs text-zinc-500">{provider.name} · 工具 {profile.supportsTools === undefined ? '未确认' : profile.supportsTools ? '支持' : '不支持'} · 流式 {profile.supportsStreaming ? '支持' : '不支持'} · 视觉 {profile.supportsVision ? '支持' : '不支持'} · 上下文 {Math.round(profile.contextWindowTokens / 1000)}K</p></div>) : <p className="px-4 py-5 text-sm text-zinc-500">尚未获取模型列表，刷新连接的模型后会显示能力检测结果。</p>}</div></div>
         </section>
-      </div>
+      </div></details>
 
       <section aria-label="Runtime evolution proposals">
         <div className="mb-3 flex items-center gap-2"><ShieldCheck className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">演进提案</h3><span className="eva-status eva-status--neutral">{data.proposals.filter((proposal) => proposal.status === 'draft').length} 待审</span></div>
@@ -165,8 +159,8 @@ export function RuntimeIntrospectionPanel() {
       </section>
 
       <section aria-label="Activity log">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">活动记录</h3></div><div className="flex flex-wrap gap-2">{Object.entries(summary.byCategory).map(([category, count]) => <span key={category} className="eva-status eva-status--neutral">{categoryLabels[category as ActivityCategory]} {count}</span>)}</div></div>
-        <div className="eva-lift eva-panel overflow-hidden divide-y divide-zinc-100">{data.activity.length ? data.activity.slice(0, 24).map((entry) => <div key={entry.id} className="flex items-start gap-3 px-4 py-3"><ActivityStatus status={entry.status} /><div className="min-w-0 flex-1"><p className="text-sm text-zinc-700">{entry.summary}</p><p className="mt-1 text-xs text-zinc-400">{categoryLabels[entry.category]} · {entry.action} · {new Date(entry.timestamp).toLocaleString()}</p></div></div>) : <p className="px-4 py-6 text-sm text-zinc-500">尚无运行事件。执行一次对话、任务或工具调用后，此处会自动出现记录。</p>}</div>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-violet-600" /><h3 className="text-sm font-semibold text-zinc-800">历史活动记录</h3></div><div className="flex flex-wrap gap-2">{Object.entries(summary.byCategory).map(([category, count]) => <span key={category} className="eva-status eva-status--neutral">{categoryLabels[category as ActivityCategory]} {count}</span>)}</div></div>
+        <p className="mb-3 text-xs text-zinc-500">以下为实际发生的历史事件；排查问题时请结合发生时间与当前执行状态。</p><div className="eva-lift eva-panel overflow-hidden divide-y divide-zinc-100">{data.activity.length ? data.activity.slice(0, 24).map((entry) => <div key={entry.id} className="flex items-start gap-3 px-4 py-3"><ActivityStatus status={entry.status} /><div className="min-w-0 flex-1"><p className="text-sm text-zinc-700">{entry.summary}</p><p className="mt-1 text-xs text-zinc-400">{categoryLabels[entry.category]} · {entry.action} · {new Date(entry.timestamp).toLocaleString()}</p></div></div>) : <p className="px-4 py-6 text-sm text-zinc-500">尚无运行事件。执行一次对话、任务或工具调用后，此处会自动出现记录。</p>}</div>
       </section>
     </div>
   )

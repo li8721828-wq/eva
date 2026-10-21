@@ -43,6 +43,51 @@ const REGISTERED_READ_ONLY_TOOLS = [
 ]
 
 describe('tool approval policy', () => {
+  it.each(['relay', 'observer'] as const)('releases the approval slot when the %s throws', async (source) => {
+    const conversationId = `throwing-${source}`
+    let id: string | undefined
+    const approve = createLocalToolApproval({
+      conversationId, window: null, config: { policy: 'safe', timeoutMs: 100 },
+      onRequested: card => { id = card.id; if (source === 'observer') throw new Error('observer failed') },
+    })
+    setApprovalRelay(conversationId, () => { if (source === 'relay') throw new Error('relay failed'); return true })
+    const request = { toolCall: { id: 'call', name: 'write_file', arguments: {} }, workspacePath: 'C:/a' }
+    try {
+      await expect(approve(request)).resolves.toMatchObject({ approved: false })
+      expect(resolvePendingApproval(id!, true)).toBe(false)
+      const next = createLocalToolApproval({ conversationId, window: null, config: { policy: 'safe', timeoutMs: 100 } })
+      setApprovalRelay(conversationId, card => { resolvePendingApproval(card.id, true); return true })
+      await expect(next(request)).resolves.toMatchObject({ approved: true })
+    } finally { rejectAllPendingApprovalsForConversation(conversationId, 'cleanup'); setApprovalRelay(conversationId, null) }
+  })
+  it('removes a cancelled queued request without consuming the next approval slot', async () => {
+    const sent: any[] = []
+    const window = { isDestroyed: () => false, webContents: { send: (_channel: string, event: any) => sent.push(event) } } as unknown as BrowserWindow
+    const approve = createLocalToolApproval({ conversationId: 'abort-queue', window, config: { policy: 'safe', timeoutMs: 1000 } })
+    const call = (id: string, signal?: AbortSignal): ToolApprovalRequest => ({ toolCall: { id, name: 'write_file', arguments: {} }, workspacePath: 'C:/a', signal })
+    const controller = new AbortController()
+    const first = approve(call('first'))
+    const second = approve(call('second', controller.signal))
+    const third = approve(call('third'))
+    controller.abort()
+    expect((await second).approved).toBe(false)
+    resolvePendingApproval(sent[0].toolApproval.id, true)
+    await first
+    expect(sent.map(event => event.toolApproval.toolCallId)).toEqual(['first', 'third'])
+    resolvePendingApproval(sent[1].toolApproval.id, false)
+    await third
+  })
+
+  it('invalidates a visible approval immediately when its run is cancelled', async () => {
+    const sent: any[] = []
+    const window = { isDestroyed: () => false, webContents: { send: (_channel: string, event: any) => sent.push(event) } } as unknown as BrowserWindow
+    const approve = createLocalToolApproval({ conversationId: 'abort-visible', window, config: { policy: 'safe', timeoutMs: 1000 } })
+    const controller = new AbortController()
+    const pending = approve({ signal: controller.signal, toolCall: { id: 'cancel-me', name: 'write_file', arguments: {} }, workspacePath: 'C:/a' })
+    controller.abort()
+    expect((await pending).approved).toBe(false)
+    expect(resolvePendingApproval(sent[0].toolApproval.id, true)).toBe(false)
+  })
   describe('off', () => {
     it('never asks for any tool', () => {
       expect(requiresApproval('write_file', 'off')).toBeNull()

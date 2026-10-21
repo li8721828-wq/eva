@@ -13,7 +13,8 @@ import { ContextManager } from '../../agent-engine/context'
 import { v4 as uuidv4 } from 'uuid'
 import { sanitizeToolHistory } from '../../agent-engine/tool-history'
 import { resolveEffectiveAgentConfig } from '../effective-agent-config'
-import { createLocalToolApproval, rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../tool-approval-policy'
+import { rejectAllPendingApprovalsForConversation, resolvePendingApproval } from '../tool-approval-policy'
+import { createLocalExecutionPolicy } from '../execution-policy'
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import { recordActivity } from '../activity-log'
 import { notifyRendererConversationChanged } from '../conversation-notify'
@@ -22,6 +23,7 @@ import type { ChatMessage, ChatUsage, ConversationPermissionLevel, ProgressUpdat
 import { TurnProgressProjector, stripProgressBlocks, toProgressSummaries, unwrapProgressTags } from '../../ipc/progress-protocol'
 import { toPublicExecutionNote } from '../../ipc/public-execution-trace'
 import { ConversationLifecycleService } from '../conversation-lifecycle-service'
+import { PurposeService } from '../purpose-service'
 import { isLoopbackHost, normalizeListenHost, readRequiredPem, resolveBaseUrl, validateRemoteTransport } from './transport'
 
 // -----------------------------------------------------------------------------
@@ -273,16 +275,12 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
       // External clients drive this turn; the desktop windows still have to see
       // the new request and the reply that follows.
       notifyRendererConversationChanged(threadId)
-      const durableMemory = await storage.longTermMemory.buildContext('default', {
+      const durableMemory = [await storage.longTermMemory.buildContext('default', {
         workspaceId: conversation.workspaceId,
         workspacePath,
-      }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled })
+      }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled }), await new PurposeService(storage).context(threadId)].filter(Boolean).join('\n\n')
 
       const storedAutomation = storage.config.get('automation') ?? DEFAULT_AUTOMATION_CONFIG
-      const toolApprovalConfig = {
-        ...DEFAULT_AUTOMATION_CONFIG.toolApproval,
-        ...(storedAutomation as any)?.toolApproval,
-      }
 
       const runner = new AgentRunner({
         conversationId: threadId,
@@ -298,11 +296,10 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
         modelPools: storage.config.get('modelPools'),
         providerRegistry: s.providerRegistry,
         eventStore: storage.agentRunEvents,
-        requestToolApproval: createLocalToolApproval({
+        ...createLocalExecutionPolicy(storedAutomation, {
           conversationId: threadId,
           workspaceId: conversation.workspaceId,
           window: win,
-          config: toolApprovalConfig,
           onRequested: (approval) => hub.broadcast({
             topic: 'turn',
             conversationId: threadId,
@@ -480,6 +477,10 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
             finishReason: result.finishReason,
             timestamp: Date.now(),
           }).catch(() => undefined)
+          await new PurposeService(storage).recordExecutionSafely(threadId, `server:${userMessage.id}`, 'completed', toolCalls.map(call => {
+            const result = toolResults.find(item => item.toolCallId === call.id)
+            return result ? { ...call, result: result.result, isError: result.isError, protocol: result.protocol } : call
+          }), effectiveAgent.model)
           notifyRendererConversationChanged(threadId)
           s.memoryAgent.enqueue({
             conversationId: threadId,
@@ -501,6 +502,10 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
           releaseChatRunOwnership(runner, threadId)
         })
         .catch((err) => {
+          void new PurposeService(storage).recordExecutionSafely(threadId, `server:${userMessage.id}`, 'failed', toolCalls.map(call => {
+            const result = toolResults.find(item => item.toolCallId === call.id)
+            return result ? { ...call, result: result.result, isError: result.isError, protocol: result.protocol } : call
+          }), effectiveAgent.model)
           hub.broadcast({
             topic: 'turn',
             conversationId: threadId,

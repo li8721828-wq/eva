@@ -117,6 +117,8 @@ export interface GoalStepAttempt {
 }
 
 export interface GoalStepHandoff {
+  /** Current project purpose reference, refreshed at each step boundary; no parent transcript. */
+  purposeContext?: string
   goal: string
   step: string
   acceptanceCriteria: string[]

@@ -15,6 +15,11 @@ function redact(value: string, maxChars: number): string {
   return normalized.length <= maxChars ? normalized : `${normalized.slice(0, maxChars - 3)}...`
 }
 
+/** Common credential redaction for bounded auxiliary model requests and public drafts. */
+export function redactSensitiveText(value: string, maxChars: number): string {
+  return redact(value, maxChars)
+}
+
 function sanitizeToolCall(toolCall: MemoryEventToolSummary): MemoryEventToolSummary {
   return {
     name: redact(toolCall.name, 120),

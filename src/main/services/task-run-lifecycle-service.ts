@@ -1,6 +1,7 @@
 import type { TaskRunSnapshot } from '../../shared/types/task'
 import type { TaskQueueUpdate } from './task-execution-queue'
 import type { StorageManager } from '../storage'
+import { PurposeService } from './purpose-service'
 
 export class TaskRunLifecycleService {
   constructor(private readonly storage: StorageManager) {}
@@ -18,6 +19,12 @@ export class TaskRunLifecycleService {
       this.storage.taskRuns.get(conversationId),
     ])
     if (!conversation || !snapshot) return
+    if (conversation.purposeId && ['completed', 'failed', 'cancelled', 'interrupted'].includes(snapshot.status)) {
+      const steps = snapshot.progress?.steps || snapshot.plan?.subtasks || []
+      await new PurposeService(this.storage).recordExecutionSafely(conversationId, `task:${conversationId}:${snapshot.progress?.startedAt || snapshot.plan?.createdAt || 0}`, snapshot.status,
+        steps.flatMap(step => step.toolCalls || []), undefined,
+        steps.map(step => ({ title: 'description' in step ? step.description : '', status: step.status })))
+    }
     const goal = snapshot.goal || snapshot.plan?.goal || snapshot.progress?.goal
     if (!goal) return
     await this.storage.activePlans.syncTask({

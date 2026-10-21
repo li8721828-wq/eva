@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
+import { writeJsonAtomic } from './atomic-file'
 import type { ActivePlan, ActivePlanStatus, ActivePlanStep, ActivePlanTaskState } from '../../shared/types/active-plan'
 
 const MAX_PLANS = 160
@@ -72,7 +73,7 @@ export class ActivePlanStore {
       const currentStepId = steps.find((step) => step.status === 'in_progress')?.id || steps.find((step) => step.status === 'pending')?.id
 
       for (const other of Object.values(index.plans)) {
-        if (other.id !== plan?.id && other.scopeKey === scopeKey && other.status === 'active') {
+        if (status === 'active' && other.id !== plan?.id && other.scopeKey === scopeKey && other.status === 'active') {
           other.status = 'paused'
           other.updatedAt = now
         }
@@ -112,8 +113,7 @@ export class ActivePlanStore {
   private write(index: ActivePlanIndex): void {
     const plans = Object.values(index.plans).sort((left, right) => right.updatedAt - left.updatedAt).slice(0, MAX_PLANS)
     index.plans = Object.fromEntries(plans.map((plan) => [plan.id, plan]))
-    fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-    fs.writeFileSync(this.filePath, JSON.stringify(index, null, 2), 'utf-8')
+    writeJsonAtomic(this.filePath, index)
   }
 
   private enqueue<T>(work: () => T): Promise<T> {

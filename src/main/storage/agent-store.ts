@@ -1,5 +1,5 @@
 import fs from 'fs'
-import fsPromises from 'fs/promises'
+import { writeJsonAtomicAsync } from './atomic-file'
 import path from 'path'
 import { v4 as uuidv4 } from 'uuid'
 import type { AgentConfig } from '../../shared/types/agent'
@@ -55,15 +55,7 @@ export class AgentStore {
 
   private async writeAgents(agents: AgentConfig[]): Promise<void> {
     this.ensureDir()
-    const tmpPath = `${this.filePath}.${uuidv4()}.tmp`
-    const data = JSON.stringify(agents, null, 2)
-    await fsPromises.writeFile(tmpPath, data, 'utf-8')
-    try {
-      await fsPromises.rename(tmpPath, this.filePath)
-    } catch (error) {
-      await fsPromises.rm(tmpPath, { force: true }).catch(() => undefined)
-      throw error
-    }
+    await writeJsonAtomicAsync(this.filePath, agents)
   }
 
   // ─── CRUD ──────────────────────────────────────────────────────────────────
