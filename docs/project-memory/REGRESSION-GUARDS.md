@@ -141,6 +141,8 @@
 - 失败原因必须写在错误字符串的**第一行**：`userFacingRunError` 只取第一行落盘，`ChatPanel` 横幅也只渲染第一行（完整文本放 `title`）。供应商原始文本与 `[Request diagnostics: ...]` 只能排在其后——否则再详细的排查建议也没有用户能看到。runner 侧的失败文案同此契约：中文原因 + 下一步。
 - “重试本轮”只允许挂在最新一条持久化 assistant 行（`latestReplyMessageId`）：重跑会删除该轮提示词起的所有消息。流式气泡与停止留存副本必须 `showActions={false}`（它们的 `id` 是合成的 `streaming-*`，引用/复制/收藏指向不存在的行），且重试必须一并回填该轮的引用图与文档附件。
 
+- **普通聊天的轮数由模型驱动，`maxIterations` 只是安全阀**：循环在模型请求工具时继续、在模型给出文字答案时结束；不得再叠加「普通聊天专用的小轮数上限」。`MAX_NORMAL_TOOL_CYCLES = 4` 曾把每条用户消息截成 4 轮再强制无工具汇总（`maxIterations: 100` 被 `Math.min(…, 4)` 吃掉），用户看到的就是「做一点就交还、问下一步」——10-22 删除。保留的提前收束只有：相同工具批次原样重复、用户中止、到达 `maxIterations`。并行只读批次必须与串行路径一样清除 `pendingWriteVerifications`（写入后经并行批次回读也算验证），否则验证提示会白要一轮并把最终文本拼接两次。守测：`agent-runner-adaptive-budget.test.ts` 的「keeps running while the model keeps requesting tools instead of stopping at a fixed cycle count」与「ends the turn as soon as the model answers, without a forced extra round」。
+
 ## 工具、沙箱与网络
 
 - 所有生产 AgentRunner/GoalPlanner/TeamOrchestrator 构造入口必须显式接入 `execution-policy`，同时传递 automation 与审批回调。子任务不能因换入口丢掉父任务的沙箱/审批策略；无可用通道时需要审批的调用必须拒绝。`execution-policy.test.ts` 同时覆盖接线与真实子 runner 的批准/拒绝行为。

@@ -1,5 +1,13 @@
 # 工程记忆变更记录
 
+## 2026-10-22：普通聊天改为模型驱动的执行轮次——删掉 4 轮截断
+
+- 影响文件：`src/main/agent-engine/agent-runner.ts`（删 `MAX_NORMAL_TOOL_CYCLES = 4`，普通聊天 `toolCycleLimit` 直接用 `maxIterations`；并行只读批次补 `pendingWriteVerifications` 清除；写入未验证提示触发时重置 `completedResponse`，避免同段文字被拼接两次）、`tests/unit/agent-runner-adaptive-budget.test.ts`（+2 项）、`docs/project-memory/REGRESSION-GUARDS.md`（新守卫）。
+- 动因（他的原话「长时间的运行好像支持不了……执行一点就结束了然后再问客户下一步怎么办」）：普通聊天把 4 轮当成执行预算（9-11 发布 0.1.206 时从 12 降到 4），到顶后强制进入无工具汇总，而汇总提示词要求「证据不完整就给出最小下一步」；Coding Assistant 配的 `maxIterations: 100` 被 `Math.min(…, 4)` 吃掉，调大配置无效。他要的是模型驱动：需要更多轮就给，不需要就停。
+- 变化：普通聊天轮数上限只剩 `agentConfig.maxIterations`（Coding Assistant 100）作防失控安全阀；早停仅保留「相同工具批次原样重复」「用户中止」「到达绝对上限」。Goal 的检查点预算（16/20/36 后问 FINAL/CONTINUE）不变；`detailed` 逐步模式仍每轮只执行一个工具。
+- 验证：定向 `agent-runner-adaptive-budget.test.ts` 41 项通过；`npm run typecheck` exit 0；全量 **120 文件 / 911 项通过**（12:27 起跑，34.23s）。新增两项：模型连续 6 轮请求工具时全部执行后才收尾；模型给出答案即结束、不追加强制回合。删上限同时暴露并修复一个被它掩盖的缺陷：并行只读批次不清 `pendingWriteVerifications`，写入后并行回读仍被判未验证（两个既有测试由红转绿）。
+- 剩余风险：①模型若持续发起**不同**的工具调用，会一直跑到 100 轮才停，成本上限即此，靠用户中止兜底；②尚未用真实模型真机验证一次 >4 轮的长任务；③Goal 的检查点节奏未改。
+
 ## 2026-10-21：统一工作台、设置导航与状态表达
 
 - 影响文件：`renderer/App.tsx`、`stores/use-app-store.ts`、`components/{chat,sidebar,tasks,settings,agents,ui}` 下相应组件与 `index.css`；新增 `ui/Switch.tsx`、`lib/{agent-presentation,cost-presentation,settings-detail-copy,workspace-copy}.ts`，扩展 `floating-layer` 的非模态工作区支持。更新 `docs/PURPOSES.md`、架构与回归防护；新增成本/智能体显示测试及真实 App 浏览器夹具，扩充已有设置/主线验证。

@@ -1725,4 +1725,98 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(requestedTools).toEqual([['write_file'], ['write_file'], undefined])
     expect(events.find((event) => event.type === 'done')?.content).toBe('The write was already applied.')
   })
+
+  it('keeps running while the model keeps requesting tools instead of stopping at a fixed cycle count', async () => {
+    const registry = new ToolRegistry()
+    const executedQueries: string[] = []
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect a target.', parameters: { type: 'object' } },
+      execute: async (params) => {
+        executedQueries.push(String(params.query))
+        return `result for ${params.query}`
+      },
+    })
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: () => {
+        request += 1
+        if (request <= 6) {
+          return chunks({
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ index: 0, id: `call-${request}`, name: 'inspect', arguments: JSON.stringify({ query: `step ${request}` }) }],
+          })
+        }
+        return chunks({ content: 'Six steps completed.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 100 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '先做六步再汇报。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(executedQueries).toEqual(['step 1', 'step 2', 'step 3', 'step 4', 'step 5', 'step 6'])
+    expect(request).toBe(7)
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Six steps completed.')
+  })
+
+  it('ends the turn as soon as the model answers, without a forced extra round', async () => {
+    const registry = new ToolRegistry()
+    let executions = 0
+    registry.register({
+      definition: { name: 'inspect', description: 'Inspect a target.', parameters: { type: 'object' } },
+      execute: async () => {
+        executions += 1
+        return 'inspected'
+      },
+    })
+    const requestedTools: Array<string[] | undefined> = []
+    let request = 0
+    const provider = {
+      id: 'test-provider', name: 'Test provider', type: 'custom' as const, supportsReasoning: () => false,
+      chat: (params: { tools?: Array<{ name: string }> }) => {
+        request += 1
+        requestedTools.push(params.tools?.map((tool) => tool.name))
+        if (request === 1) {
+          return chunks({
+            content: '',
+            finishReason: 'tool_calls',
+            toolCalls: [{ index: 0, id: 'inspect-1', name: 'inspect', arguments: '{"query":"only"}' }],
+          })
+        }
+        return chunks({ content: 'Answer ready.', finishReason: 'stop' })
+      },
+    }
+    const runner = new AgentRunner({
+      agentConfig: { ...agent, tools: ['inspect'], maxIterations: 100 },
+      provider: provider as never,
+      toolRegistry: registry,
+      contextManager: new ContextManager(),
+      workspacePath: 'D:\\workspace',
+      fileService: {} as never,
+      terminalService: {} as never,
+    })
+
+    const events = []
+    for await (const event of runner.run({
+      messages: [],
+      newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '查一下就好。', timestamp: Date.now() },
+    })) events.push(event)
+
+    expect(executions).toBe(1)
+    expect(requestedTools).toEqual([['inspect'], ['inspect']])
+    expect(events.find((event) => event.type === 'done')?.content).toBe('Answer ready.')
+  })
 })

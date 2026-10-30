@@ -115,7 +115,6 @@ const ROLLING_TOOL_EVIDENCE_END = '--- End earlier completed tool evidence ---'
 // when it explicitly reports `length`; a natural `stop` must end the turn.
 const MAX_PROVIDER_CONTINUATIONS = 3
 const MAX_EMPTY_RESPONSE_RETRIES = 1
-const MAX_NORMAL_TOOL_CYCLES = 4
 const DEFAULT_AGENT_RESPONSE_TOKENS = 4_096
 const REASONING_AGENT_RESPONSE_TOKENS = 8_192
 const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal', 'load_skill'])
@@ -345,10 +344,11 @@ export class AgentRunner {
       const maxIter = adaptiveToolBudget
         ? Math.max(1, Math.min(configuredMaxIterations, adaptiveToolBudget.maxIterations))
         : configuredMaxIterations
-      // Normal chat follows only model-requested tool calls. It has a generous
-      // safety ceiling, while exact repeated tool batches terminate early to
-      // prevent a failed lookup from turning into an open-ended loop.
-      const toolCycleLimit = adaptiveToolBudget ? maxIter : Math.min(maxIter, MAX_NORMAL_TOOL_CYCLES)
+      // Normal chat is model-driven: the loop keeps running while the model
+      // requests tools and ends when it returns a text answer. maxIterations is
+      // only a runaway safety ceiling, never an execution budget; exact
+      // repeated tool batches still terminate early below.
+      const toolCycleLimit = maxIter
       const modelCapabilities = this.config.providerRegistry?.getModelCapabilities(this.config.provider.id, agentConfig.model)
         || inferModelCapabilities(this.config.provider.type, agentConfig.model)
       if (agentConfig.tools.length > 0 && modelCapabilities.supportsTools === false) {
@@ -628,6 +628,7 @@ export class AgentRunner {
           }
           if (pendingWriteVerifications.size > 0 && activeToolDefs.some((tool) => tool.name === 'read_file') && iteration < toolCycleLimit - 1) {
             messages.push({ role: 'assistant', content: response.content })
+            completedResponse = ''
             messages.push({
               role: 'user',
               content: `You wrote ${this.formatPaths(pendingWriteVerifications)} in this run but have not verified the saved contents. Before finalizing, call read_file for each changed path. Do not claim the file is correct or complete until that verification succeeds.`,
@@ -723,6 +724,8 @@ export class AgentRunner {
                 : 0
             }
             if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
+            const verifiedPath = this.resolveWorkspacePath(toolCall.arguments.path, workspacePath)
+            if (!result.isError && toolCall.name === 'read_file' && verifiedPath) pendingWriteVerifications.delete(verifiedPath)
             yield {
               type: 'tool_result',
               toolResult: {
