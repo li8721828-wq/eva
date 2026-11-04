@@ -1,5 +1,6 @@
 import { CONTEXT_WINDOW_TOKENS, getModelContextWindowTokens } from './constants'
 import type { ModelCapabilityProfile, ModelInfo, ModelProtocol, ProviderConfigEntry } from './types/provider'
+import { modelReasoningCapability } from './model-reasoning'
 
 const NON_CHAT_MODEL_PATTERN = /(?:embedding|embed(?:ding)?|rerank|moderation|whisper|transcri(?:be|ption)|tts|text-to-speech|dall-e|image-generation|video-generation)/i
 const DEEPSEEK_PATTERN = /deepseek(?:[-_](?:v4|chat|reasoner|coder)|$)/i
@@ -30,7 +31,8 @@ export function inferModelCapabilities(
   const protocol = declared?.protocol || protocolFor(providerType, normalized)
   const supportsTools = declared?.supportsTools ?? (nonChat ? false : providerType === 'custom' ? undefined : true)
   const supportsStreaming = declared?.supportsStreaming ?? (nonChat ? false : true)
-  const supportsReasoning = declared?.supportsReasoning ?? (DEEPSEEK_REASONING_PATTERN.test(normalized) || REASONING_PATTERN.test(normalized))
+  const reasoning = modelReasoningCapability(providerType, normalized, declared?.capabilities?.reasoning)
+  const supportsReasoning = declared?.supportsReasoning ?? (Boolean(reasoning) || DEEPSEEK_REASONING_PATTERN.test(normalized) || REASONING_PATTERN.test(normalized))
   const supportsVision = declared?.supportsVision ?? (!nonChat && VISION_PATTERN.test(normalized))
   // Provider model lists often omit capability metadata. In that case the
   // registration layer supplies a legacy 128K maxTokens value, which must not
@@ -50,6 +52,8 @@ export function inferModelCapabilities(
     supportsTools,
     supportsStreaming,
     supportsReasoning,
+    reasoningSource: declared?.capabilities?.reasoningSource ?? (declared?.supportsReasoning !== undefined ? 'declared' : 'inferred'),
+    ...(supportsReasoning && reasoning ? { reasoning } : {}),
     supportsVision,
     contextWindowTokens,
     source: declared ? 'declared' : 'inferred',

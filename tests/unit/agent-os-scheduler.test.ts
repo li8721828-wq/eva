@@ -5,8 +5,53 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentOsScheduler } from '../../src/main/services/agent-os-scheduler'
 import { RuntimeKernelStore } from '../../src/main/storage/runtime-kernel-store'
 import { RuntimeRunStore } from '../../src/main/storage/runtime-run-store'
+import { AgentRunEventStore } from '../../src/main/storage/agent-run-event-store'
 
 describe('AgentOsScheduler', () => {
+  it.each(['observation', 'action', 'missing'])('recovers interrupted work only with read-only execution evidence (%s)', async (effect) => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-safe-recovery-'))
+    try {
+      const runs = new RuntimeRunStore(dataDir)
+      const events = new AgentRunEventStore(dataDir)
+      await runs.save({
+        id: 'parent', conversationId: 'conversation', kind: 'goal', status: 'interrupted',
+        resourceKeys: [], recoveryMode: 'auto-queued', idempotencyKey: 'parent',
+        createdAt: 1, updatedAt: 1, recoveryCount: 0, payload: { goal: 'Continue' },
+      })
+      if (effect !== 'missing') {
+        await events.appendLifecycle('child', 'turn', 'run_started', undefined, { parentRunId: 'parent' })
+        await events.appendLifecycle('child', 'turn', 'tool_started', { id: 'tool', kind: 'tool_call', status: 'started', name: effect === 'action' ? 'execute_command' : 'read_file' }, { effect })
+      }
+      const scheduler = new AgentOsScheduler(new RuntimeKernelStore(dataDir), 1, runs, undefined, events)
+      const recover = vi.fn(async () => true)
+      scheduler.registerRecoveryHandler('goal', recover)
+      const recovered = await scheduler.recoverQueued({})
+      expect(recovered).toEqual(effect === 'observation' ? ['conversation'] : [])
+      expect(recover).toHaveBeenCalledTimes(effect === 'observation' ? 1 : 0)
+      if (effect !== 'observation') {
+        const persisted = JSON.parse(await fs.readFile(path.join(dataDir, 'runtime-runs.json'), 'utf8'))
+        expect(persisted.runs.parent).toMatchObject({ status: 'interrupted', recoveryMode: 'checkpointed-manual' })
+      }
+    } finally { await fs.rm(dataDir, { recursive: true, force: true }) }
+  })
+
+  it('passes its durable identity to the executor and suppresses task retry after child actions', async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-no-task-replay-'))
+    try {
+      const kernel = new RuntimeKernelStore(dataDir)
+      const events = new AgentRunEventStore(dataDir)
+      const scheduler = new AgentOsScheduler(kernel, 1, undefined, undefined, events)
+      const execute = vi.fn(async (_attempt: number, runId: string) => {
+        await events.appendLifecycle('child', 'turn', 'run_started', undefined, { parentRunId: runId })
+        await events.appendLifecycle('child', 'turn', 'tool_started', { id: 'action', kind: 'tool_call', status: 'started', name: 'execute_command' }, { effect: 'action' })
+        throw new Error('network failure after an action')
+      })
+      await scheduler.scheduleTask({ conversationId: 'task', kind: 'goal', runtimeKind: 'goal', resourceKey: 'workspace', summary: '', run: execute })
+      await vi.waitFor(async () => expect((await kernel.snapshot()).processes[0]?.status).toBe('failed'))
+      expect(execute).toHaveBeenCalledTimes(1)
+      expect(execute.mock.calls[0][1]).toBe((await kernel.snapshot()).processes[0].id)
+    } finally { await fs.rm(dataDir, { recursive: true, force: true }) }
+  })
   it('queues same-workspace task runs while allowing another workspace to proceed', async () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-agent-os-scheduler-'))
     try {

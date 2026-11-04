@@ -5,6 +5,7 @@ import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { AnthropicProvider } from './anthropic'
 import { OpenAIProvider } from './openai'
 import { withRetry } from './errors'
+import { reasoningCapabilityForModel, reasoningRequest, selectedReasoning } from '../../shared/model-reasoning'
 
 type OpenCodeRoute = ModelTransport
 
@@ -109,15 +110,16 @@ export class OpenCodeProvider implements LLMProvider {
   }
 
   supportsReasoning(model: string): boolean {
-    const normalized = model.toLowerCase()
-    return /^deepseek-v4-(?:flash|pro)(?:[-.]|$)/.test(normalized) || normalized.includes('reasoner') || /^o[1-9][-_]/.test(normalized)
+    return Boolean(reasoningCapabilityForModel('custom', model, this.options.models))
   }
+  getReasoningSelection(model: string) { return selectedReasoning('custom', model, this.options.models) }
 
   getConnectionDiagnostics(): { baseUrl: string } {
     return { baseUrl: this.baseUrl }
   }
 
   async *chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    params = { ...params, reasoning: params.reasoning ?? reasoningRequest(this.getReasoningSelection(params.model)) }
     const route = resolveOpenCodeRoute(params.model, this.options.models)
     const routedParams = { ...params, model: upstreamModelId(params.model) }
     if (route === 'chat-completions') {
@@ -137,8 +139,9 @@ export class OpenCodeProvider implements LLMProvider {
       input: toResponseInput(params.messages) as any,
       tools: toResponseTools(params.tools) as any,
       stream: true,
-      temperature: params.temperature,
+      ...(reasoningCapabilityForModel('custom', params.model, this.options.models)?.mode === 'openai-effort' ? {} : { temperature: params.temperature }),
       max_output_tokens: params.maxTokens,
+      ...(params.reasoning?.effort ? { reasoning: { effort: params.reasoning.effort } } : {}),
     } as any, { signal }), this.id)
 
     const functionCalls = new Map<string, { id: string; name: string; outputIndex: number }>()
@@ -169,6 +172,7 @@ export class OpenCodeProvider implements LLMProvider {
   }
 
   async chatComplete(params: ChatParams, signal?: AbortSignal): Promise<{ content: string; toolCalls?: Array<{ id: string; name: string; arguments: Record<string, unknown> }>; finishReason?: ChatChunk['finishReason']; usage?: ChatChunk['usage'] }> {
+    params = { ...params, reasoning: params.reasoning ?? reasoningRequest(this.getReasoningSelection(params.model)) }
     const route = resolveOpenCodeRoute(params.model, this.options.models)
     const routedParams = { ...params, model: upstreamModelId(params.model) }
     if (route === 'chat-completions') return this.chatProvider.chatComplete(routedParams, signal)
@@ -177,8 +181,9 @@ export class OpenCodeProvider implements LLMProvider {
       model: routedParams.model || this.options.defaultModel || 'gpt-4o',
       input: toResponseInput(routedParams.messages) as any,
       tools: toResponseTools(routedParams.tools) as any,
-      temperature: routedParams.temperature,
+      ...(reasoningCapabilityForModel('custom', routedParams.model, this.options.models)?.mode === 'openai-effort' ? {} : { temperature: routedParams.temperature }),
       max_output_tokens: routedParams.maxTokens,
+      ...(routedParams.reasoning?.effort ? { reasoning: { effort: routedParams.reasoning.effort } } : {}),
     } as any, { signal }), this.id)
     const toolCalls = (response.output || []).filter((item: any) => item.type === 'function_call').map((item: any) => ({
       id: item.call_id,

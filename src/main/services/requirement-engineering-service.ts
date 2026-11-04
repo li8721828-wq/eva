@@ -12,6 +12,7 @@ import { recordActivity } from './activity-log'
 import { RequirementRunRepository } from './requirement-run-repository'
 import * as requirementPrompts from './requirement-prompt-factory'
 import { DeterministicCodingService } from './deterministic-coding-service'
+import { defaultTargetModel, targetModelDocument } from './codegen'
 import { activeRunRegistry } from './run-registry'
 
 const QUALITY_THRESHOLD = 80
@@ -527,15 +528,23 @@ export class RequirementEngineeringService {
       onProgress?.({ conversationId: run.conversationId, runId: run.id, stage: 'coding', message: 'Semantic DSL package created', document: semanticDocument, phase: 'completed' })
 
       this.throwIfAborted(signal)
+      // The approved target model decides which generator runs. A missing model
+      // is filled in with the registry default; an existing one is verified
+      // against the registry, so an unknown generator or a bad option fails here
+      // rather than producing code under an unapproved declaration.
+      this.reportProgress(onProgress, run, 'coding', 'Resolving the approved target model and code generator')
       const targetModelPath = path.join(intermediateRoot, '02-generation-ir', 'target-model.yaml')
-      await this.deterministicCoding.writeImmutableFile(targetModelPath, `${JSON.stringify({
-        schema_version: '1.0',
-        target_id: `eva-${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}-reference`,
-        approval_status: 'approved-for-non-production-reference-output',
-        production_output: false,
-        java_package: `generated.${this.deterministicCoding.toJavaPackageSegment(parsedDsl.domain)}`,
-        overwrite_policy: 'refuse-non-empty-output',
-      }, null, 2)}\n`)
+      const existingTargetModel = await this.readOptionalJson(targetModelPath)
+      const targetModel = existingTargetModel === undefined
+        ? defaultTargetModel(
+            this.deterministicCoding.resolveGenerator(undefined),
+            parsedDsl.domain,
+          )
+        : this.deterministicCoding.parseTargetModel(existingTargetModel)
+      const generator = this.deterministicCoding.resolveGenerator(targetModel.generator)
+      if (existingTargetModel === undefined) {
+        await this.deterministicCoding.writeImmutableFile(targetModelPath, targetModelDocument(targetModel))
+      }
 
       this.reportProgress(onProgress, run, 'coding', 'Validating semantic DSL and building deterministic generation IR')
       const irPath = path.join(intermediateRoot, '02-generation-ir', 'generation-ir.yaml')
@@ -550,34 +559,64 @@ export class RequirementEngineeringService {
       onProgress?.({ conversationId: run.conversationId, runId: run.id, stage: 'coding', message: 'Generation IR validated', document: irDocument, phase: 'completed' })
 
       this.throwIfAborted(signal)
-      this.reportProgress(onProgress, run, 'coding', 'Generating isolated Java code with the deterministic adapter')
+      this.reportProgress(onProgress, run, 'coding', `Generating code with the deterministic ${generator.label}`)
       const generatedCodePath = path.join(outputRoot, '03-generated-code')
-      await this.deterministicCoding.generateJavaReferencePackage(generatedCodePath, parsedDsl)
-      const adapter = 'built-in Java reference adapter'
-      const verification = await this.deterministicCoding.verifyGeneratedPackage(generatedCodePath)
-      const generationResult = await fs.readFile(path.join(generatedCodePath, 'generation-result.yaml'), 'utf8')
-      const resultDocument = await this.addDocument(run, 'coding', 'generation-result', 'Generated Java code package', generationResult)
+      const packageResult = await this.deterministicCoding.generatePackage(
+        generatedCodePath,
+        parsedDsl,
+        generator,
+        targetModel.options,
+      )
+      const adapter = `${generator.label} (${generator.id}, target ${generator.target})`
+      const verification = packageResult.verification
+      const generationResult = await fs.readFile(packageResult.resultPath, 'utf8')
+      const resultDocument = await this.addDocument(
+        run,
+        'coding',
+        'generation-result',
+        `Generated ${generator.target} code package`,
+        generationResult,
+      )
       generatedDocuments.push(resultDocument)
+      const preserved = packageResult.manifest.requiresTargetAdapter
       const verificationContent = [
         '# Deterministic code generation verification',
         '',
         'AI involvement after DSL: none',
         `Source DSL SHA-256: \`${dslHash}\``,
+        `Target model: \`${targetModel.targetId}\` (generator \`${generator.id}\`, output kind ${generator.outputKind}).`,
+        `Options: ${Object.keys(targetModel.options).length ? Object.entries(targetModel.options).map(([key, value]) => `${key}=${value}`).join(', ') : 'none'}.`,
         `Semantic coverage: aggregates=${parsedDsl.aggregates.length}, commands=${parsedDsl.commands.length}, events=${parsedDsl.events.length}, states=${parsedDsl.states.length}, rules=${parsedDsl.rules.length}.`,
-        'The isolated reference adapter generates aggregate/field Java artifacts; commands, events, states, and rule definitions remain preserved in the semantic package and require a target-specific adapter for executable behavior.',
+        preserved.length
+          ? `The ${generator.id} generator produces ${packageResult.manifest.generated.join(', ')}; ${preserved.join(', ')} remain preserved in the semantic package and require a target-specific adapter for executable behavior.`
+          : `The ${generator.id} generator produces a complete ${generator.target} artifact; ${packageResult.manifest.preserved.join(', ')} remain documented in the semantic package.`,
         '',
         '## Commands',
         '',
         `- Semantic DSL validation: ${validation}`,
         `- DSL to generation IR: ${transform}`,
         `- IR validation: ${irValidation}`,
-        `- Java adapter: ${adapter}`,
-        `- Java verification: ${verification}`,
+        `- Adapter: ${adapter}`,
+        `- Package verification: ${verification}`,
       ].join('\n') + '\n'
       const verificationDocument = await this.addDocument(run, 'coding', 'verification', 'Code generation verification', verificationContent)
       generatedDocuments.push(verificationDocument)
 
-      manifest.content = `${JSON.stringify({ schemaVersion: '1.0', sourceDsl: dslPath, sourceDslSha256: dslHash, outputRoot, aiInvolvementAfterDsl: 'none', adapter: 'builtin-java-reference', generationCoverage: { generated: ['aggregates', 'fields'], preservedInSemanticPackage: ['commands', 'events', 'states', 'rules'], requiresTargetAdapterFor: ['commands', 'events', 'states', 'rules'] }, status: 'completed' }, null, 2)}\n`
+      manifest.content = `${JSON.stringify({
+        schemaVersion: '1.0',
+        sourceDsl: dslPath,
+        sourceDslSha256: dslHash,
+        outputRoot,
+        aiInvolvementAfterDsl: 'none',
+        adapter: generator.id,
+        targetModel: targetModel.targetId,
+        generationCoverage: {
+          generated: packageResult.manifest.generated,
+          preservedInSemanticPackage: packageResult.manifest.preserved,
+          requiresTargetAdapterFor: preserved,
+        },
+        status: 'completed',
+      }, null, 2)}\n`
       await fs.writeFile(manifest.path, manifest.content, 'utf8')
       if (manifest.workspacePath) await fs.writeFile(manifest.workspacePath, manifest.content, 'utf8')
       run.codingStatus = 'ready'
@@ -585,7 +624,7 @@ export class RequirementEngineeringService {
       await this.persistDocuments(conversation.id, generatedDocuments, 'Coding')
       await this.storage.conversations.addMessage(conversation.id, {
         id: randomUUID(), role: 'assistant', agentName: 'Coding',
-        content: `## Deterministic code generation completed\n\nNo model was called after DSL. The isolated aggregate/field Java reference package, semantic IR, manifest, and verification report are in \`${outputRoot}\`. Commands, events, states, and rule definitions are preserved in the semantic package; executable behavior for those constructs requires a target-specific adapter.`,
+        content: `## Deterministic code generation completed\n\nNo model was called after DSL. The \`${generator.id}\` generator wrote ${packageResult.manifest.generated.length} ${generator.target} artifact(s), the semantic IR, manifest, and verification report to \`${outputRoot}\`.${preserved.length ? ` ${preserved.join(', ')} are preserved in the semantic package; executable behavior for those constructs requires a target-specific adapter.` : ''}`,
         timestamp: Date.now(),
       })
       this.reportProgress(onProgress, run, 'complete', 'Deterministic code generation and verification completed')
@@ -604,6 +643,24 @@ export class RequirementEngineeringService {
     const relative = path.relative(path.resolve(directory), path.resolve(candidate))
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new Error(`Path escapes the project workspace: ${candidate}`)
+    }
+  }
+
+  /**
+   * Read a JSON document the run may not have written yet. A file that exists but
+   * is not JSON is an error: falling back to the default there would generate
+   * under settings nobody approved.
+   */
+  private async readOptionalJson(filePath: string): Promise<unknown | undefined> {
+    const raw = await fs.readFile(filePath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (raw === undefined) return undefined
+    try {
+      return JSON.parse(raw)
+    } catch {
+      throw new Error(`The approved target model at ${filePath} is not valid JSON. Fix or delete it before running /coding.`)
     }
   }
 

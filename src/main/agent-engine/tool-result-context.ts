@@ -48,7 +48,7 @@ export function compactCompletedToolTransactions(messages: ChatMessageInput[], r
   for (let index = 1; index < messages.length; index += 1) {
     const assistant = messages[index]
     if (assistant.role !== 'assistant' || !assistant.toolCalls?.length) continue
-    const callsById = new Map(assistant.toolCalls.map((call) => [call.id, call.name]))
+    const callsById = new Map(assistant.toolCalls.map((call) => [call.id, call]))
     const results: ChatMessageInput[] = []
     let cursor = index + 1
     while (cursor < messages.length && messages[cursor].role === 'tool' && callsById.has(messages[cursor].toolCallId || '')) {
@@ -57,8 +57,10 @@ export function compactCompletedToolTransactions(messages: ChatMessageInput[], r
     }
     if (results.length !== callsById.size || new Set(results.map((result) => result.toolCallId)).size !== callsById.size) continue
     const evidence = results.map((result) => {
-      const toolName = callsById.get(result.toolCallId || '') || 'tool'
-      return `${toolName}: ${compactEvidence(result.content, COMPACTED_TRANSACTION_MAX_CHARS)}`
+      const call = callsById.get(result.toolCallId || '')
+      const target = call?.arguments.path ?? call?.arguments.url
+      const location = typeof target === 'string' ? ` (${compactEvidence(target, 240)})` : ''
+      return compactEvidence(`${call?.name || 'tool'}${location} [${result.toolCallId || 'unknown'}]: ${result.content}`, COMPACTED_TRANSACTION_MAX_CHARS)
     }).join('\n')
     transactions.push({ start: index, end: cursor, evidence })
     index = cursor - 1

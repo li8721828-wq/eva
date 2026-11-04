@@ -1,3 +1,5 @@
+import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
+import { toolTargetPath } from '../../shared/tool-semantics'
 import fs from 'fs'
 import path from 'path'
 import { BrowserWindow } from 'electron'
@@ -29,6 +31,8 @@ import { resolveEffectiveAgentConfig } from '../services/effective-agent-config'
 import type { SymposiumContinueInput, SymposiumStartInput } from '../../shared/types/symposium'
 import { controlForegroundGoal } from './task'
 import { TurnProgressProjector, isAnswerLikeContent, stripProgressBlocks, toProgressSummaries, unwrapProgressTags } from './progress-protocol'
+import type { NativeAgentEvent } from '../../shared/types/native-agent'
+import { appendNativeEvent } from '../../shared/native-agent-transcript'
 import { registerBackgroundGoalController, type BackgroundGoalAction, type BackgroundGoalControlResult } from '../services/background-goal-control'
 import { generateConversationTitle, refreshLegacyConversationTitles } from '../services/conversation-title-service'
 import { buildDocumentAttachmentContext } from '../services/document-attachment-service'
@@ -326,7 +330,8 @@ async function runInternalTeamDelegation(
   conversation: Conversation,
   historyMessages: ChatMessage[],
   goal: string,
-  win: BrowserWindow
+  win: BrowserWindow,
+  executionEngine: ExecutionEngineConfig
 ): Promise<string> {
   const agents = await getStorage().agents.listAgents()
   const leader = agents.find((agent: AgentConfig) => agent.role === 'leader')
@@ -532,7 +537,9 @@ async function runInternalTeamDelegation(
     }
   }
   const orchestrator = new TeamOrchestrator({
-    ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversationId: conversation.id, workspaceId: conversation.workspaceId, window: win }),
+    executionEngine,
+    eventStore: services.storage.agentRunEvents,
+    ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversation, conversationId: conversation.id, workspaceId: conversation.workspaceId, window: win }),
     conversationId: conversation.id,
     leader,
     workers,
@@ -554,7 +561,7 @@ async function runInternalTeamDelegation(
   activeDelegatedTeamOrchestrators.set(conversation.id, orchestrator)
 
   try {
-    for await (const event of orchestrator.run({ goal, messages: historyMessages })) {
+    for await (const event of orchestrator.run({ goal, messages: historyMessages, parentRunId: runtimeProcess.id })) {
       applyTeamEvent(event)
       if (event.type === 'summary') finalSummary = event.summary || ''
       if (event.type === 'done' && event.cancelled) wasCancelled = true
@@ -585,6 +592,8 @@ async function runInternalTeamDelegation(
 
 function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
   switch (event.type) {
+    case 'native_event':
+      return { type: 'native_event', nativeEvent: event.nativeEvent }
     case 'text':
       return { type: 'text_delta', content: event.content }
     case 'text_reset':
@@ -908,12 +917,15 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const workspaceAccess = await getConversationAccess(conversation)
         const storedAutomation = getStorage().config.get('automation')
         const automation = resolveExecutionAutomation(storedAutomation)
+        const executionEngine = getStorage().config.get('executionEngine')
         const runnerWorkspacePath = conversationWorkspacePath(conversation, workspaceAccess.fullFilesystemAccess ? '' : getStorage().config.get('workspacePath'))
         const runTask = automation.task.enabled && automation.task.autoInvoke
           ? async (task: string): Promise<string> => {
               // A new nested task supersedes an older one for this conversation.
               activeTaskRunners.get(conversationId)?.abort()
               const worker = new AgentRunner({
+                executionEngine,
+                eventStore: services.storage.agentRunEvents,
                 conversationId,
                 agentConfig: effectiveAgentConfig,
                 provider,
@@ -927,6 +939,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 modelPools: getStorage().config.get('modelPools'),
                 providerRegistry: services.providerRegistry,
                 ...createLocalExecutionPolicy(automation, {
+                  conversation,
                   conversationId,
                   workspaceId: conversation.workspaceId,
                   window: win,
@@ -946,7 +959,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               let timeout: ReturnType<typeof setTimeout> | undefined
               try {
                 const execution = (async () => {
-                  for await (const event of worker.run({ messages: [], newMessage: taskMessage })) {
+                  for await (const event of worker.run({ messages: [], newMessage: taskMessage, parentRunId: runtimeProcessId || undefined })) {
                     if (event.type === 'text' && event.content) output += event.content
                     if (event.type === 'tool_result' && event.toolResult) output += `\n[${event.toolResult.name}] ${event.toolResult.result}`
                     if (event.type === 'error') throw new Error(event.error)
@@ -1004,7 +1017,9 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 : automation.goal.timeoutMinutes
               const timeout = configuredTimeoutMinutes * 60 * 1000
               const planner = new GoalPlanner({
-                ...createLocalExecutionPolicy(automation, { conversationId, workspaceId: conversation.workspaceId, window: win }),
+                executionEngine,
+                eventStore: services.storage.agentRunEvents,
+                ...createLocalExecutionPolicy(automation, { conversation, conversationId, workspaceId: conversation.workspaceId, window: win }),
                 conversationId,
                 agentConfig: effectiveAgentConfig,
                 provider,
@@ -1063,7 +1078,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               void (async () => {
                 let progress: GoalProgress | null = resumeProgress || null
                 try {
-                  for await (const goalEvent of planner.run({ goal, maxSteps: automation.goal.maxSteps, timeout, autoAdjust: true }, resumeProgress || undefined)) {
+                  for await (const goalEvent of planner.run({ goal, maxSteps: automation.goal.maxSteps, timeout, autoAdjust: true }, resumeProgress || undefined, runtimeProcess.id)) {
                     progress = applyGoalProgress(progress, goalEvent, conversationId)
                     await getStorage().taskRuns.save({
                       conversationId,
@@ -1179,6 +1194,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             }
           : undefined
         runner = new AgentRunner({
+          executionEngine,
           conversationId,
           agentConfig: effectiveAgentConfig,
           provider,
@@ -1197,7 +1213,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
             conversation,
             historyMessages,
             goal,
-            win
+            win,
+            executionEngine
           ) : undefined,
           runTask,
           runGoal,
@@ -1205,6 +1222,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           createExecutionPlan,
           applySpecTemplate,
           ...createLocalExecutionPolicy(automation, {
+            conversation,
             conversationId,
             workspaceId: conversation.workspaceId,
             window: win,
@@ -1259,6 +1277,8 @@ export function registerConversationHandlers(services?: ChatServices): void {
         // Ordinary response text must not wait for the model's final `done`
         // event, otherwise every provider appears to be non-streaming.
         const progressProjector = new TurnProgressProjector()
+        const nativeMode = executionEngine.id !== 'eva'
+        let nativeEvents: NativeAgentEvent[] = []
         // Keep provisional model text long enough to preserve it as a progress
         // entry when the runner replaces it with a tool call.
         let provisionalAssistantContent = ''
@@ -1271,6 +1291,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         const progressCharacterLimit = processOutput === 'detailed' ? 280 : 140
         const executionTimeline: ExecutionTimelineEntry[] = []
         const emitExecutionTimeline = (): void => {
+          if (nativeMode) return
           sendStreamEvent({
             type: 'execution_timeline',
             executionTimeline: executionTimeline.map((entry) => ({
@@ -1343,7 +1364,19 @@ export function registerConversationHandlers(services?: ChatServices): void {
               : skillContext,
           } : {}),
         }
-        for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage })) {
+        for await (const agentEvent of runner.run({ messages: runnerHistory, newMessage: runnerMessage, runId: runtimeProcess.id })) {
+          if (agentEvent.type === 'native_event' && agentEvent.nativeEvent) {
+            const event = agentEvent.nativeEvent
+            nativeEvents = appendNativeEvent(nativeEvents, event)
+            if (event.type === 'message_start' || event.type === 'tool_start') provisionalAssistantContent = ''
+            if (event.type === 'text_delta') provisionalAssistantContent += event.content || ''
+            if (event.type === 'message_end' && event.content !== undefined) provisionalAssistantContent = event.content
+            send(agentEvent)
+            continue
+          }
+          // Native events already own text boundaries and progress. Do not parse,
+          // shorten, or promote their narration through Eva's progress protocol.
+          if (nativeMode && ['text', 'text_reset', 'thinking', 'reasoning'].includes(agentEvent.type)) continue
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
             await streamTextDelta(agentEvent.content)
@@ -1459,7 +1492,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
               // If the model wrapped its actual answer inside eva-progress tags,
               // stripping them must not produce an empty reply; keep the tag
               // contents as plain text instead.
-              assistantContent = strippedContent || unwrapProgressTags(rawContent).trim()
+              assistantContent = nativeMode ? rawContent : strippedContent || unwrapProgressTags(rawContent).trim()
             }
             // Reattach answer-structured sections the model wrote before tool
             // cycles so the persisted reply keeps its beginning in order.
@@ -1511,7 +1544,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                   id: tc.id,
                   name: tc.name,
                   arguments: tc.arguments,
-                  result: result ? compactToolResult(result.result) : undefined,
+                  result: result ? (nativeMode ? result.result : compactToolResult(result.result)) : undefined,
                   isError: result?.isError,
                   protocol: result?.protocol,
                 }
@@ -1533,9 +1566,10 @@ export function registerConversationHandlers(services?: ChatServices): void {
           id: assistantMessageId,
           conversationId,
           role: 'assistant',
+          ...(nativeMode ? { nativeAgent: { engine: executionEngine.id as NativeAgentEvent['engine'], events: nativeEvents } } : {}),
           content: persistedContent,
           reasoningContent: assistantReasoningContent || undefined,
-          executionTimeline: transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
+          executionTimeline: !nativeMode && transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
           progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
           toolCalls: toolCallsForMessage,
           agentId: effectiveAgentConfig.id,
@@ -1558,7 +1592,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
             id: uuidv4(),
             conversationId,
             role: 'tool',
-            content: compactToolResult(tr.result),
+            content: nativeMode ? tr.result : compactToolResult(tr.result),
             toolCallId: tr.toolCallId,
             agentId: effectiveAgentConfig.id,
             agentName: effectiveAgentConfig.name,
@@ -1610,12 +1644,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
           assistantResult: assistantChatMessage.content,
           status: turnStatus,
           changedFiles: (toolCallsForMessage || []).flatMap((toolCall) => {
-            const value = toolCall.arguments.path
-            return typeof value === 'string' ? [value] : []
+            const value = toolTargetPath(toolCall.arguments)
+            return value ? [value] : []
           }),
           toolCalls: (toolCallsForMessage || []).map((toolCall) => ({
             name: toolCall.name,
-            target: typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : undefined,
+            target: toolTargetPath(toolCall.arguments),
             resultSummary: toolCall.result?.slice(0, 500),
             isError: toolCall.isError,
           })),

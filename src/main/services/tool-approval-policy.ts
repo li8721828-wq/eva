@@ -49,6 +49,10 @@ const WORKSPACE_WRITE_TOOLS = new Set([
 const TERMINAL_COMMAND_TOOLS = new Set([
   'execute_command',
   'write_terminal',
+  // A programmatic skill command is code with the same reach as a shell
+  // command: it runs an interpreter over a script the model picked by name.
+  // It is classified here so no approval policy can treat it as a read.
+  'run_skill_command',
 ])
 
 const BROWSER_CONTROL_TOOLS = new Set([
@@ -101,7 +105,16 @@ export function requiresApproval(
   }
 }
 
-function buildSummary(toolName: string, args: Record<string, unknown>, category: ApprovalCategory): { summary: string; detail?: string } {
+function buildSummary(toolName: string, args: Record<string, unknown>, category: ApprovalCategory, workspacePath: string): { summary: string; detail?: string } {
+  if (toolName === 'run_skill_command') {
+    const name = String(args.name || '(missing skill)')
+    const command = String(args.command || '(missing command)')
+    const values = args.arguments && typeof args.arguments === 'object' ? JSON.stringify(args.arguments) : ''
+    const detail = values && values !== '{}'
+      ? `Arguments: ${values.slice(0, 400)}. The interpreter and entry point come from the skill's own SKILL.md.`
+      : 'The interpreter and entry point come from the skill\'s own SKILL.md.'
+    return { summary: `Run skill command ${name}/${command}`, detail }
+  }
   if (toolName === 'write_skill_file') {
     const name = String(args.name || '(missing name)')
     const file = String(args.file || 'SKILL.md')
@@ -110,7 +123,7 @@ function buildSummary(toolName: string, args: Record<string, unknown>, category:
   }
   if (category === 'workspace-write' && (toolName === 'write_file' || toolName === 'edit_file')) {
     const target = String(args.path || '(missing path)')
-    return { summary: `${toolName === 'write_file' ? 'Write' : 'Edit'} ${target}`, detail: `Workspace: ${args.workspacePath || '(default)'}` }
+    return { summary: `${toolName === 'write_file' ? 'Write' : 'Edit'} ${target}`, detail: `Workspace: ${workspacePath || '(no workspace)'}` }
   }
   if (category === 'terminal-command') {
     const command = String(args.command || args.text || '(missing command)')
@@ -301,7 +314,7 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
     }
 
     const approvalId = uuidv4()
-    const { summary, detail } = buildSummary(request.toolCall.name, request.toolCall.arguments, category)
+    const { summary, detail } = buildSummary(request.toolCall.name, request.toolCall.arguments, category, request.workspacePath)
     const approvalPayload: ToolApprovalCard = {
       id: approvalId,
       toolCallId: request.toolCall.id,

@@ -17,6 +17,35 @@ vi.mock('../../src/main/services/supplier-pricing-service', () => ({ ensureProvi
 vi.mock('../../src/main/services/usage-pricing-service', () => ({ resolveConnectionPricingMode: () => ({}), resolveRateCardUsageCost: () => ({}) }))
 
 describe('execution policy composition', () => {
+  it.each(['safe', 'strict', 'paranoid'] as const)('full access overrides %s for all enabled tool categories without changing saved preferences', async (approvalPolicy) => {
+    const stored = { ...DEFAULT_AUTOMATION_CONFIG, toolApproval: { policy: approvalPolicy, timeoutMs: 1000 }, sandbox: { ...DEFAULT_AUTOMATION_CONFIG.sandbox, level: 'strict' as const } }
+    const policy = createLocalExecutionPolicy(stored, { conversationId: 'full', conversation: { permissionLevel: 'full-access' }, window: null })
+    const approve = executionApproval(policy)!
+    for (const name of ['read_file', 'write_file', 'execute_command', 'run_skill_command', 'browser_control', 'mcp__demo__apply']) {
+      await expect(approve({ toolCall: { id: name, name, arguments: {} }, workspacePath: 'C:/a' })).resolves.toEqual({ approved: true })
+    }
+    expect(policy.automation.sandbox.level).toBe('strict')
+    expect(stored.toolApproval.policy).toBe(approvalPolicy)
+    const limited = createLocalExecutionPolicy(stored, { conversationId: 'full', conversation: { permissionLevel: 'workspace' }, window: null })
+    await expect(executionApproval(limited)!({ toolCall: { id: 'write', name: 'write_file', arguments: {} }, workspacePath: 'C:/a' })).resolves.toMatchObject({ approved: false })
+  })
+  it('supports legacy full access but lets an explicit workspace permission restore approval', async () => {
+    const legacy = createLocalExecutionPolicy(undefined, { conversationId: 'legacy', conversation: { accessScope: 'full' }, window: null })
+    const restored = createLocalExecutionPolicy(undefined, { conversationId: 'legacy', conversation: { permissionLevel: 'workspace', accessScope: 'full' }, window: null })
+    const request = { toolCall: { id: 'write', name: 'write_file', arguments: {} }, workspacePath: 'C:/a' }
+    await expect(executionApproval(legacy)!(request)).resolves.toEqual({ approved: true })
+    await expect(executionApproval(restored)!(request)).resolves.toMatchObject({ approved: false })
+  })
+  it('keeps cancellation and plan mode authoritative with full access', async () => {
+    const context = { conversationId: 'plan-full', conversation: { permissionLevel: 'full-access' as const }, window: null }
+    const request = { toolCall: { id: 'write', name: 'write_file', arguments: {} }, workspacePath: 'C:/a' }
+    const plan = createLocalExecutionPolicy({ mode: 'plan' }, context)
+    await expect(executionApproval(plan)!(request)).resolves.toMatchObject({ approved: false, message: expect.stringContaining('Plan mode') })
+    const normal = createLocalExecutionPolicy(undefined, context)
+    const controller = new AbortController()
+    controller.abort()
+    await expect(executionApproval(normal)!({ ...request, signal: controller.signal })).resolves.toMatchObject({ approved: false, message: expect.stringContaining('cancelled') })
+  })
   it('propagates runner.abort through the dispatcher and terminal tool to an executing command', async () => {
     const registry = new ToolRegistry()
     for (const tool of createTerminalTools()) registry.register(tool)
@@ -43,7 +72,7 @@ describe('execution policy composition', () => {
     expect(commandSignal?.aborted).toBe(true)
     expect(executeCommand).toHaveBeenCalledTimes(1)
   })
-  it.each([['goal', true], ['goal', false], ['team', true], ['team', false]] as const)('%s child inherits sandbox and approval decision=%s', async (kind, approved) => {
+  it.each([['goal', true, false], ['goal', false, false], ['team', true, false], ['team', false, false], ['goal', true, true], ['team', true, true]] as const)('%s child inherits sandbox and approval decision=%s (full access=%s)', async (kind, approved, fullAccess) => {
     const execute = vi.fn(async () => {
       expect(currentSandboxScope()).toMatchObject({ level: 'strict', allowNetwork: false })
       return 'written'
@@ -59,7 +88,9 @@ describe('execution policy composition', () => {
       },
     }
     const agent = { id: 'test', name: 'Test', role: 'coder', tools: ['write_file'], model: 'test-model', providerId: 'test', maxIterations: 2, systemPrompt: '', temperature: 0 }
-    const requestToolApproval = vi.fn(async () => ({ approved, message: approved ? undefined : 'Denied by user' }))
+    const requestToolApproval = vi.fn(fullAccess
+      ? createLocalExecutionPolicy({ toolApproval: { policy: 'paranoid', timeoutMs: 1000 } }, { conversationId: 'child-full', conversation: { permissionLevel: 'full-access' }, window: null }).requestToolApproval
+      : async () => ({ approved, message: approved ? undefined : 'Denied by user' }))
     const base = {
       agentConfig: agent, provider, toolRegistry: registry, contextManager: new ContextManager(),
       workspacePath: process.cwd(), fileService: {}, terminalService: {}, requestToolApproval,
@@ -121,7 +152,14 @@ describe('execution policy composition', () => {
             const object = node.arguments?.[0]
             expect(object && ts.isObjectLiteralExpression(object), filename).toBeTruthy()
             if (object && ts.isObjectLiteralExpression(object)) {
-              const factory = object.properties.some(p => ts.isSpreadAssignment(p) && p.expression.getText(source).startsWith('createLocalExecutionPolicy('))
+              const factory = object.properties.some(p => {
+                if (!ts.isSpreadAssignment(p) || !ts.isCallExpression(p.expression) || p.expression.expression.getText(source) !== 'createLocalExecutionPolicy') return false
+                if (!filename.replaceAll('\\', '/').endsWith('/app-server/server.ts')) {
+                  const context = p.expression.arguments[1]
+                  expect(context && ts.isObjectLiteralExpression(context) && context.properties.some(field => field.name?.getText(source) === 'conversation'), `${filename}: local policy must receive the conversation permission snapshot`).toBe(true)
+                }
+                return true
+              })
               const fields = object.properties.map(p => p.name?.getText(source))
               expect(factory || (fields.includes('automation') && fields.includes('requestToolApproval')), `${filename}:${source.getLineAndCharacterOfPosition(node.pos).line + 1}`).toBe(true)
             }

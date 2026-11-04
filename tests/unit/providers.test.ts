@@ -20,7 +20,83 @@ vi.mock('electron', () => ({
 import { ProviderRegistry, createProvider } from '../../src/main/providers'
 import { OpenAIProvider } from '../../src/main/providers/openai'
 import { resolveOpenCodeRoute } from '../../src/main/providers/opencode'
+import { OpenCodeProvider } from '../../src/main/providers/opencode'
+import { AnthropicProvider } from '../../src/main/providers/anthropic'
 import type { ChatChunk, LLMProviderConfig } from '../../src/shared/types/provider'
+import { toOpenAIMessages } from '../../src/main/providers/base-provider'
+
+describe('reasoning request payloads', () => {
+  const params = { model: 'deepseek-flash', messages: [{ role: 'user' as const, content: 'Test.' }], maxTokens: 8192, temperature: 0.3 }
+  const stream = async function* () { yield { choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] } }
+  it.each(['low', 'high', 'max', 'none', 'default'] as const)('maps DeepSeek %s in streaming and nonstreaming requests', async (selection) => {
+    const provider = new OpenAIProvider('ds', 'DS', 'deepseek', { apiKey: 'fixture', models: [{ id: 'deepseek-flash', name: 'Flash', reasoningSelection: selection }] })
+    const create = vi.fn().mockResolvedValueOnce(stream()).mockResolvedValueOnce({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] })
+    ;(provider as any).client = { chat: { completions: { create } } }
+    for await (const _chunk of provider.chat(params)) { /* capture actual adapter */ }
+    await provider.chatComplete(params)
+    for (const [body] of create.mock.calls) {
+      expect(body.thinking).toEqual(selection === 'default' ? undefined : { type: selection === 'none' ? 'disabled' : 'enabled' })
+      expect(body.reasoning_effort).toBe(['default', 'none'].includes(selection) ? undefined : selection)
+    }
+  })
+  it('uses OpenAI effort and the completion budget without temperature or DeepSeek extensions', async () => {
+    const provider = new OpenAIProvider('oa', 'OA', 'openai', { apiKey: 'fixture', models: [{ id: 'o3', name: 'o3', reasoningSelection: 'high' }] })
+    const create = vi.fn().mockResolvedValue(stream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+    for await (const _chunk of provider.chat({ ...params, model: 'o3' })) { /* drain */ }
+    expect(create.mock.calls[0][0]).toMatchObject({ reasoning_effort: 'high', max_completion_tokens: 8192 })
+    expect(create.mock.calls[0][0]).not.toHaveProperty('thinking')
+    expect(create.mock.calls[0][0]).not.toHaveProperty('temperature')
+    expect(create.mock.calls[0][0]).not.toHaveProperty('max_tokens')
+  })
+  it('does not silently drop an explicit reasoning level rejected by a custom route', async () => {
+    const provider = new OpenAIProvider('gateway', 'Gateway', 'custom', { apiKey: 'fixture', models: [{ id: 'deepseek-flash', name: 'DS', reasoningSelection: 'max' }] })
+    const create = vi.fn().mockRejectedValue(Object.assign(new Error('reasoning_effort is unsupported'), { status: 400 }))
+    ;(provider as any).client = { chat: { completions: { create } } }
+    await expect((async () => { for await (const _chunk of provider.chat(params)) { /* drain */ } })()).rejects.toThrow()
+    expect(create).toHaveBeenCalledOnce()
+  })
+  it('reads supported reasoning levels from model metadata', async () => {
+    const provider = new OpenAIProvider('ds', 'DS', 'deepseek', { apiKey: 'fixture' })
+    ;(provider as any).client = { models: { list: async () => ({ async *[Symbol.asyncIterator]() { yield { id: 'private-ds', name: 'Private DS', effort: { supported_levels: ['low', 'max', 'garbage'] }, context_window: 1000000, input_modalities: ['text', 'image'] } } }) } }
+    expect((await provider.listModels())[0]).toMatchObject({ capabilities: { supportsReasoning: true, supportsVision: true, contextWindowTokens: 1000000, reasoning: { mode: 'deepseek-thinking', efforts: ['low', 'max'] } } })
+  })
+  it.each(['claude-sonnet-4-20250514', 'claude-opus-4-7'])('maps Anthropic %s to its supported thinking mode', async (model) => {
+    const provider = new AnthropicProvider('a', 'A', { apiKey: 'fixture', models: [{ id: model, name: model, reasoningSelection: 'high' }] })
+    const create = vi.fn().mockResolvedValueOnce({ async *[Symbol.asyncIterator]() {} }).mockResolvedValueOnce({ content: [], usage: { input_tokens: 1, output_tokens: 1 } })
+    ;(provider as any).client = { messages: { create } }
+    for await (const _chunk of provider.chat({ ...params, model, maxTokens: 4096 })) { /* drain */ }
+    await provider.chatComplete({ ...params, model, maxTokens: 4096 })
+    for (const [body] of create.mock.calls) {
+      if (model.includes('4-7')) expect(body).toMatchObject({ thinking: { type: 'adaptive' }, output_config: { effort: 'high' } })
+      else { expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 3072 }); expect(body).not.toHaveProperty('output_config') }
+      expect(body).not.toHaveProperty('temperature')
+    }
+  })
+  it('passes effort through the Responses transport', async () => {
+    const provider = new OpenCodeProvider('go', 'Go', { apiKey: 'fixture', models: [{ id: 'gpt-5', name: 'GPT', transport: 'responses', reasoningSelection: 'high' }] })
+    const create = vi.fn().mockResolvedValueOnce({ async *[Symbol.asyncIterator]() { yield { type: 'response.completed', response: {} } } }).mockResolvedValueOnce({ output: [], output_text: 'ok' })
+    ;(provider as any).client = { responses: { create } }
+    for await (const _chunk of provider.chat({ ...params, model: 'gpt-5' })) { /* drain */ }
+    await provider.chatComplete({ ...params, model: 'gpt-5' })
+    expect(create.mock.calls.every(([body]) => body.reasoning.effort === 'high')).toBe(true)
+    expect(create.mock.calls.every(([body]) => !('temperature' in body))).toBe(true)
+  })
+  it('recreates a connection after changing effort while active runs retain their provider snapshot', () => {
+    const registry = new ProviderRegistry()
+    registry.register({ id: 'ds', name: 'DS', type: 'deepseek', apiKey: 'fixture', models: [{ id: 'deepseek-flash', name: 'Flash', maxTokens: 128000, supportsTools: true, supportsStreaming: true, capabilities: { source: 'probed', supportsReasoning: false } as any }], defaultModel: 'deepseek-flash', isEnabled: true })
+    const previous = registry.get('ds')!
+    registry.setReasoningSelection('ds', 'deepseek-flash', 'max')
+    expect(registry.get('ds')?.getReasoningSelection?.('deepseek-flash')).toBe('max')
+    expect(previous.getReasoningSelection?.('deepseek-flash')).toBe('default')
+    expect(registry.getModelCapabilities('ds', 'deepseek-flash')).toMatchObject({ supportsReasoning: true, reasoning: { efforts: ['low', 'high', 'max'] }, reasoningSource: 'inferred' })
+  })
+})
+
+it('retains malformed native arguments as historical bytes for SDK recovery', () => {
+  const messages = toOpenAIMessages([{ role: 'assistant', content: '', toolCalls: [{ id: 'broken', name: 'write', arguments: {}, rawArguments: '{"path":' }] }])
+  expect(messages[0].tool_calls[0].function.arguments).toBe('{"path":')
+})
 
 describe('ProviderRegistry', () => {
   let registry: ProviderRegistry
@@ -145,7 +221,7 @@ describe('OpenAIProvider streaming tool calls', () => {
     const provider = new OpenAIProvider('test', 'Test', 'deepseek', { apiKey: 'test-key' })
     expect(provider.supportsReasoning('deepseek-reasoner')).toBe(true)
     expect(provider.supportsReasoning('deepseek-v4-flash-ga-260731')).toBe(true)
-    expect(provider.supportsReasoning('deepseek-chat')).toBe(false)
+    expect(provider.supportsReasoning('deepseek-chat')).toBe(true)
   })
 
   it('creates the OpenCode multi-transport adapter for an OpenCode URL', () => {
@@ -456,6 +532,22 @@ describe('OpenAIProvider streaming tool calls', () => {
         arguments: '{"command":"powershell -Command \\"Get-PSDrive C\\""}',
       }],
     })
+  })
+
+  it('does not promote legacy text envelopes into executable calls for native backends', async () => {
+    async function* legacyStream() {
+      yield { choices: [{ delta: { content: '<tool_call><function=run_command><parameter=command>Get-Date</parameter></function></tool_call>' }, finish_reason: 'stop' }] }
+    }
+    const provider = new OpenAIProvider('native-gateway', 'Native gateway', 'custom', { apiKey: 'test-key' })
+    const create = vi.fn().mockResolvedValue(legacyStream())
+    ;(provider as any).client = { chat: { completions: { create } } }
+    const chunks = []
+    for await (const chunk of provider.chat({ model: 'test-model', messages: [], nativeToolCallsOnly: true,
+      tools: [{ name: 'execute_command', description: '', parameters: { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] } }],
+    })) chunks.push(chunk)
+    expect(chunks.some((chunk) => chunk.toolCalls?.length)).toBe(false)
+    expect(chunks.at(-1).toolCallParseFailure).toContain('requires structured')
+    expect(create.mock.calls[0][0]).not.toHaveProperty('nativeToolCallsOnly')
   })
 
   it('converts the direct XML tool dialect and discards its premature prose', async () => {

@@ -474,7 +474,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           await persistQueueUpdate(update)
           if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, conversationId)
         },
-        run: async (attempt) => {
+        run: async (attempt, runId) => {
           if (attempt > 1) payload.resume = true
           let orchestrator: TeamOrchestrator | null = null
           let currentPlan: TaskPlan | undefined
@@ -673,7 +673,9 @@ export function registerTaskHandlers(services?: TaskServices): void {
 
         // 4. Create TeamOrchestrator
         orchestrator = new TeamOrchestrator({
-          ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversationId, workspaceId: conversation.workspaceId, window: win }),
+          executionEngine: getStorage().config.get('executionEngine'),
+          eventStore: getStorage().agentRunEvents,
+          ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversation, conversationId, workspaceId: conversation.workspaceId, window: win }),
           conversationId,
           leader,
           workers,
@@ -709,7 +711,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         let finalSummary: string | undefined
         let wasCancelled = false
         let executionFailed = false
-        for await (const teamEvent of orchestrator.run({ goal, messages: historyMessages, plan: currentPlan })) {
+        for await (const teamEvent of orchestrator.run({ goal, messages: historyMessages, plan: currentPlan, parentRunId: runId })) {
           if (teamEvent.type === 'plan_created') currentPlan = teamEvent.plan
           if (teamEvent.type === 'summary') finalSummary = teamEvent.summary
           if (teamEvent.type === 'done' && teamEvent.cancelled) wasCancelled = true
@@ -969,7 +971,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
           await persistQueueUpdate(update)
           if (!win.isDestroyed()) win.webContents.send(IPC.CONVERSATION_CHANGED, payload.conversationId)
         },
-        run: async (attempt) => {
+        run: async (attempt, runId) => {
           if (attempt > 1) payload.resume = true
           let planner: GoalPlanner | null = null
           let persistedProgress: GoalProgress | null = null
@@ -1041,7 +1043,9 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }
 
         planner = new GoalPlanner({
-          ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversationId: payload.conversationId, workspaceId: conversation.workspaceId, window: win }),
+          executionEngine: getStorage().config.get('executionEngine'),
+          eventStore: getStorage().agentRunEvents,
+          ...createLocalExecutionPolicy(getStorage().config.get('automation'), { conversation, conversationId: payload.conversationId, workspaceId: conversation.workspaceId, window: win }),
           conversationId: payload.conversationId,
           agentConfig: goalAgentConfig,
           provider,
@@ -1079,7 +1083,7 @@ export function registerTaskHandlers(services?: TaskServices): void {
         }, win)
 
         // 5. Execute and stream events
-        for await (const goalEvent of planner.run(goalConfig, persistedProgress || undefined)) {
+        for await (const goalEvent of planner.run(goalConfig, persistedProgress || undefined, runId)) {
           persistedProgress = applyGoalEventToSnapshot(persistedProgress, goalEvent, payload.conversationId)
           const checkpoint = checkpointForGoalEvent(goalEvent)
           if (checkpoint) checkpoints = upsertCheckpoint(checkpoints, checkpoint)

@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/use-app-store'
 import { EMPTY_EXPERT_TASK, useTaskStore } from '@/stores/use-task-store'
 import { useShallow } from 'zustand/react/shallow'
 import { shellCopy } from '@/lib/shell-copy'
+import { uiCopy } from '@/lib/ui-copy'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { MessageList } from './MessageList'
@@ -36,6 +37,7 @@ export function ChatPanel({ className }: ChatPanelProps) {
   const agents = useAgentStore(s => s.agents)
   const { workMode, terminalVisible, toggleTerminal, rightPanelVisible, toggleRightPanel, language } = useAppStore(useShallow(s => ({ workMode: s.workMode, terminalVisible: s.terminalVisible, toggleTerminal: s.toggleTerminal, rightPanelVisible: s.rightPanelVisible, toggleRightPanel: s.toggleRightPanel, language: s.language })))
   const copy = shellCopy[language]
+  const composerCopy = uiCopy[language].composer
   const workspaces = useWorkspaceStore(state => state.workspaces)
   const project = workspaces.find(item => item.id === currentConversation?.workspaceId || (!currentConversation?.workspaceId && item.path === currentConversation?.workspacePath))
   const expertTask = useTaskStore((state) => state.expertTasks[currentConversationId || ''] || EMPTY_EXPERT_TASK)
@@ -246,9 +248,9 @@ export function ChatPanel({ className }: ChatPanelProps) {
             </div>
           )}
           {(currentConversation?.permissionLevel === 'full-access' || (!currentConversation?.permissionLevel && currentConversation?.accessScope === 'full')) && (
-            <Badge variant="warning" className="gap-1" title="This conversation can access the full local filesystem">
+            <Badge variant="warning" className="gap-1" title={`${composerCopy.filePermission} · ${composerCopy.permissionFullAccess}\n${composerCopy.filePermissionHint}`}>
               <ShieldAlert className="h-3 w-3" />
-              Full access
+              {composerCopy.permissionFullAccess}
             </Badge>
           )}
         </div>

@@ -60,6 +60,8 @@ export async function executeRemoteConversationMessage(
   }, message, 12, { enabled: storage.personalPreferences.getSettings().injectionEnabled }), await new PurposeService(storage).context(conversationId)].filter(Boolean).join('\n\n')
   const automation = resolveExecutionAutomation(storage.config.get('automation'))
   const runner = new AgentRunner({
+    executionEngine: storage.config.get('executionEngine'),
+    eventStore: storage.agentRunEvents,
     automation,
     conversationId,
     agentConfig: effectiveAgent,

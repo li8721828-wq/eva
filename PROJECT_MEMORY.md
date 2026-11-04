@@ -24,3 +24,7 @@
 - [架构与边界](docs/project-memory/ARCHITECTURE.md)
 - [回归防护](docs/project-memory/REGRESSION-GUARDS.md)
 - [变更记录](docs/project-memory/CHANGELOG.md)
+- [Agent 宿主使用说明（当前）](docs/2026-11-04-Eva-Agent宿主使用说明.md)
+- [Agent 宿主实现与验证（当前）](docs/2026-11-04-Eva-Agent宿主实现与验证.md)
+- [多执行引擎使用说明](docs/2026-11-03-Eva-多引擎使用说明.md)
+- [多执行引擎实现与验证](docs/2026-11-03-Eva-多引擎实现与验证.md)

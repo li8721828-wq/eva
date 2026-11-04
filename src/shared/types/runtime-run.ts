@@ -81,6 +81,8 @@ export interface AgentRunRecoverySummary {
   runId: string
   lastTurnId?: string
   interrupted: boolean
+  /** Side effects were admitted, or no journal evidence could be recovered. */
+  requiresManualReview?: boolean
   incompleteItems: Array<{ id: string; kind: 'model_call' | 'tool_call' | 'approval' | 'assistant_output' | 'system'; name?: string }>
   lastEventType?: AgentRunEventType
   generatedAt: number

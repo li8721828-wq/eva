@@ -1,6 +1,8 @@
 import OpenAI from 'openai'
 import { net } from 'electron'
-import type { ChatParams, ChatChunk, ToolDefinition } from '../../shared/types/provider'
+import type { ChatParams, ChatChunk, ToolDefinition, ProviderModelOption } from '../../shared/types/provider'
+import { reasoningCapabilityForModel, reasoningRequest, selectedReasoning, REASONING_EFFORTS } from '../../shared/model-reasoning'
+import { inferModelCapabilities } from '../../shared/model-capabilities'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
 import { withRetry, classifyError } from './errors'
@@ -197,6 +199,7 @@ export class OpenAIProvider implements LLMProvider {
   private client: OpenAI
   private defaultModel?: string
   private baseUrl: string
+  private readonly models: ProviderModelOption[]
   // OpenAI-compatible gateways vary widely. Remember optional features that
   // this connection has rejected so later requests do not repeat a failed
   // probe before doing useful work.
@@ -208,6 +211,7 @@ export class OpenAIProvider implements LLMProvider {
     this.type = type
     this.defaultModel = options.defaultModel
     this.baseUrl = options.baseUrl || 'https://api.openai.com/v1'
+    this.models = options.models || []
 
     this.client = new OpenAI({
       apiKey: options.apiKey,
@@ -233,16 +237,25 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   supportsReasoning(model: string): boolean {
-    const normalized = model.trim().toLowerCase()
+    return Boolean(reasoningCapabilityForModel(this.type, model, this.models))
+  }
 
-    // DeepSeek V4 exposes provider-supplied reasoning through the same
-    // OpenAI-compatible `reasoning_content` field as DeepSeek Reasoner. A
-    // gateway may register it as `custom`, so capability detection must not
-    // depend only on the provider's local type label.
-    const isDeepSeekReasoningModel = normalized === 'deepseek-reasoner'
-      || /^deepseek-v4-(?:flash|pro)(?:[-.]|$)/.test(normalized)
+  getReasoningSelection(model: string) { return selectedReasoning(this.type, model, this.models) }
 
-    return (this.type === 'deepseek' || this.type === 'custom') && isDeepSeekReasoningModel
+  private reasoningFields(params: ChatParams, includeThinking: boolean): Record<string, unknown> {
+    const capability = reasoningCapabilityForModel(this.type, params.model, this.models)
+    const reasoning = params.reasoning
+    if (capability?.mode === 'openai-effort') return reasoning?.effort ? { reasoning_effort: reasoning.effort } : {}
+    if (reasoning && (this.type === 'deepseek' || this.type === 'custom') && (includeThinking || !reasoning.enabled && this.customStreamCapabilities.thinking)) {
+      return { thinking: { type: reasoning.enabled ? 'enabled' : 'disabled' }, ...(reasoning.enabled && reasoning.effort ? { reasoning_effort: reasoning.effort } : {}) }
+    }
+    return {}
+  }
+
+  private generationFields(params: ChatParams): Record<string, unknown> {
+    return reasoningCapabilityForModel(this.type, params.model, this.models)?.mode === 'openai-effort'
+      ? { max_completion_tokens: params.maxTokens }
+      : { temperature: params.temperature, max_tokens: params.maxTokens }
   }
 
   private mapUsage(usage?: {
@@ -293,6 +306,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *chat(params: ChatParams, signal?: AbortSignal): AsyncIterable<ChatChunk> {
+    params = { ...params, reasoning: params.reasoning ?? reasoningRequest(this.getReasoningSelection(params.model)) }
     const protocolAdapter = getProtocolAdapter(this.type, params.model)
     const toolCallsAccumulator: Map<
       number,
@@ -309,19 +323,8 @@ export class OpenAIProvider implements LLMProvider {
             // OpenAI-compatible gateways commonly return usage, and sometimes
             // their actual charge, only in this final stream chunk.
             ...(includeUsage ? { stream_options: { include_usage: true } } : {}),
-            temperature: params.temperature,
-            max_tokens: params.maxTokens,
-            ...(params.reasoning?.enabled && (this.type === 'deepseek' || this.type === 'custom') && includeThinking
-              ? { thinking: { type: 'enabled' } }
-              : {}),
-            // An explicit `{ enabled: false }` asks the route to stop spending
-            // its output budget on hidden reasoning. Omitting the field instead
-            // would leave the gateway's own default in force. Custom connections
-            // skip it once they have rejected the thinking extension.
-            ...(params.reasoning && !params.reasoning.enabled
-              && (this.type === 'deepseek' || (this.type === 'custom' && this.customStreamCapabilities.thinking))
-              ? { thinking: { type: 'disabled' } }
-              : {}),
+            ...this.generationFields(params),
+            ...this.reasoningFields(params, includeThinking),
           },
           { signal },
         )
@@ -335,6 +338,7 @@ export class OpenAIProvider implements LLMProvider {
     } catch (error) {
       if (!this.canDowngradeCustomRequest(error)) throw error
       const rejectedExtension = this.rejectedCustomExtension(error)
+      if (params.reasoning?.effort && rejectedExtension === 'thinking') throw error
       if (includeThinking && rejectedExtension === 'thinking') {
         this.customStreamCapabilities.thinking = false
         includeThinking = false
@@ -348,7 +352,7 @@ export class OpenAIProvider implements LLMProvider {
           error = retryError
         }
       }
-      if (!stream && includeThinking && this.canDowngradeCustomRequest(error)) {
+      if (!stream && includeThinking && !params.reasoning?.effort && this.canDowngradeCustomRequest(error)) {
         this.customStreamCapabilities.thinking = false
         includeThinking = false
         stream = await withRetry(() => createStream(false, false), this.id)
@@ -449,6 +453,11 @@ export class OpenAIProvider implements LLMProvider {
           arguments: acc.arguments,
         })),
       }
+    } else if (toolCallsAccumulator.size === 0 && params.nativeToolCallsOnly && protocolAdapter.textToolCalls) {
+      if (protocolAdapter.hasSuspectedTextToolCall(textContent, params.tools)) yield {
+        content: '', finishReason: 'error',
+        toolCallParseFailure: 'The native backend requires structured tool_calls; this gateway returned a legacy text tool envelope. No tool was executed.',
+      }
     } else if (toolCallsAccumulator.size === 0 && protocolAdapter.textToolCalls) {
       const parsedTextToolCalls = protocolAdapter.parseTextToolCalls(textContent, params.tools)
       if (parsedTextToolCalls.calls.length > 0) {
@@ -482,6 +491,7 @@ export class OpenAIProvider implements LLMProvider {
     finishReason?: ChatChunk['finishReason']
     usage?: ChatChunk['usage']
   }> {
+    params = { ...params, reasoning: params.reasoning ?? reasoningRequest(this.getReasoningSelection(params.model)) }
     const response = await withRetry(
       () =>
         this.client.chat.completions.create(
@@ -490,11 +500,8 @@ export class OpenAIProvider implements LLMProvider {
             messages: toOpenAIMessages(params.messages),
             tools: toOpenAITools(params.tools),
             stream: false,
-            ...(params.reasoning && (this.type === 'deepseek' || this.type === 'custom')
-              ? { thinking: { type: params.reasoning.enabled ? 'enabled' : 'disabled' } }
-              : {}),
-            temperature: params.temperature,
-            max_tokens: params.maxTokens,
+            ...this.reasoningFields(params, Boolean(params.reasoning?.enabled)),
+            ...this.generationFields(params),
           },
           { signal }
         ),
@@ -542,11 +549,20 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async listModels(): Promise<Array<{ id: string; name: string }>> {
+  async listModels(): Promise<ProviderModelOption[]> {
     const response = await withRetry(() => this.client.models.list(), this.id)
-    const models: Array<{ id: string; name: string }> = []
+    const models: ProviderModelOption[] = []
     for await (const model of response) {
-      models.push({ id: model.id, name: model.id })
+      const raw = model as unknown as { name?: string; effort?: { supported_levels?: unknown[] }; context_window?: number; input_modalities?: string[] }
+      const efforts = raw.effort?.supported_levels?.filter((value): value is typeof REASONING_EFFORTS[number] => REASONING_EFFORTS.includes(value as never))
+      const profile = inferModelCapabilities(this.type, model.id)
+      models.push({ id: model.id, name: raw.name || model.id, capabilities: {
+        ...profile,
+        ...(raw.effort || raw.context_window || raw.input_modalities ? { source: 'declared' as const } : {}),
+        ...(typeof raw.context_window === 'number' && raw.context_window > 0 ? { contextWindowTokens: raw.context_window } : {}),
+        ...(Array.isArray(raw.input_modalities) ? { supportsVision: raw.input_modalities.includes('image') } : {}),
+        ...(efforts?.length ? { supportsReasoning: true, reasoningSource: 'declared' as const, reasoning: { mode: profile.reasoning?.mode || (this.type === 'deepseek' ? 'deepseek-thinking' : 'openai-effort'), efforts, canDisable: profile.reasoning?.canDisable || this.type === 'deepseek' } } : {}),
+      } })
     }
     return models.sort((a, b) => a.id.localeCompare(b.id))
   }

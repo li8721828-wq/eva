@@ -73,6 +73,7 @@ build_chibi_maid.py
 
 # Working-tree scratch (QA research, docx renders, ad-hoc scripts)
 tmp/
+.tmp-design/
 *.docx
 step*.py
 create_*docx.py

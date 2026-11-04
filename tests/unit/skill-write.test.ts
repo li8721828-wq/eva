@@ -204,4 +204,51 @@ describe('writeSkillFile', () => {
 
     expect(fs.readdirSync(path.join(globalRoot(), 'tidy'))).toEqual(['SKILL.md'])
   })
+
+  it('accepts a SKILL.md whose declared entry point is written afterwards', async () => {
+    const workspace = makeTempDir('eva-skill-write-ws-')
+    const declaration = '{"name":"scan","interpreter":"node","entry":"scripts/scan.js","args":["{path}"]}'
+
+    const written = await writeSkillFile(workspace, {
+      name: 'later-entry',
+      content: `---\nname: later-entry\ndescription: Declares a command.\nrun_command: ${declaration}\n---\n\nRun the scan.\n`,
+    })
+
+    // Saved but not yet catalogued: nothing runnable exists to offer the model.
+    expect(written).toContain('is saved but the skill is not listed yet')
+    expect(written).toContain('is missing from this skill folder')
+    expect(fs.existsSync(path.join(globalRoot(), 'later-entry', 'SKILL.md'))).toBe(true)
+
+    await writeSkillFile(workspace, { name: 'later-entry', file: 'scripts/scan.js', content: 'console.log("scan")\n' })
+
+    expect(scanSkillInventory(workspace).skills.map((skill) => skill.name)).toContain('later-entry')
+  })
+
+  it('refuses a declaration that points outside the skill folder', async () => {
+    const workspace = makeTempDir('eva-skill-write-ws-')
+    const declaration = '{"name":"scan","interpreter":"node","entry":"../escape.js"}'
+
+    await expect(writeSkillFile(workspace, {
+      name: 'escaping-entry',
+      content: `---\nname: escaping-entry\ndescription: Escapes.\nrun_command: ${declaration}\n---\n\nBody.\n`,
+    })).rejects.toThrow('must not leave the skill folder')
+
+    expect(fs.existsSync(path.join(globalRoot(), 'escaping-entry', 'SKILL.md'))).toBe(false)
+  })
+
+  it('refuses to overwrite a declared entry point without overwrite', async () => {
+    const workspace = makeTempDir('eva-skill-write-ws-')
+    const declaration = '{"name":"scan","interpreter":"node","entry":"scripts/scan.js"}'
+    await writeSkillFile(workspace, { name: 'entry-guard', file: 'scripts/scan.js', content: 'console.log("one")\n' })
+    expect(fs.existsSync(path.join(globalRoot(), 'entry-guard', 'SKILL.md'))).toBe(false)
+
+    await writeSkillFile(workspace, {
+      name: 'entry-guard',
+      content: `---\nname: entry-guard\ndescription: Guarded entry.\nrun_command: ${declaration}\n---\n\nBody.\n`,
+    })
+
+    await expect(writeSkillFile(workspace, { name: 'entry-guard', file: 'scripts/scan.js', content: 'console.log("two")\n' }))
+      .rejects.toThrow('is a declared run_command entry point')
+    expect(fs.readFileSync(path.join(globalRoot(), 'entry-guard', 'scripts', 'scan.js'), 'utf8')).toBe('console.log("one")\n')
+  })
 })

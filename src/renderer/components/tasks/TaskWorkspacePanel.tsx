@@ -38,6 +38,7 @@ import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import type { RequirementDocument, RequirementRun } from '../../../shared/types/requirement-engineering'
 import { ProjectKnowledgePanel } from '@/components/settings/ProjectKnowledgePanel'
 import { PurposePanel } from './PurposePanel'
+import { NativeAgentView } from '@/components/chat/NativeAgentView'
 
 type StepItem = {
   id: string
@@ -189,9 +190,12 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
   // count: falling back to the previous reply would show finished ticks before
   // this round has published anything.
   const liveStream = currentConversationId ? streamingByConversation[currentConversationId] : undefined
-  const roundChecklist = useMemo(() => buildPlanChecklist(liveStream?.isStreaming
+  const latestResponse = [...messages].reverse().find(message => message.role === 'assistant' && !message.progressKind)
+  const nativeTranscript = liveStream?.isStreaming ? liveStream.nativeAgent : latestResponse?.nativeAgent
+  const nativeSummary = nativeTranscript ? { ...nativeTranscript, events: nativeTranscript.events.filter(event => ['session', 'goal', 'todo', 'retry', 'compaction_start', 'compaction_end'].includes(event.type)) } : undefined
+  const roundChecklist = useMemo(() => nativeTranscript ? null : buildPlanChecklist(liveStream?.isStreaming
     ? liveStream.progressUpdates
-    : [...messages].reverse().find((message) => message.role === 'assistant' && !message.progressKind && message.progressUpdates?.length)?.progressUpdates || []), [liveStream, messages])
+    : latestResponse?.progressUpdates || []), [liveStream, latestResponse, nativeTranscript])
   const activePlanScopeKey = activeWorkspaceId
     ? `workspace:${activeWorkspaceId}`
     : resolvedWorkspacePath?.trim()
@@ -240,8 +244,8 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
   const contextRate = contextBudget > 0 ? Math.min(100, (contextTokens / contextBudget) * 100) : 0
   const cacheRate = usageTotals.prompt > 0 ? (usageTotals.cached / usageTotals.prompt) * 100 : 0
   useEffect(() => {
-    onCompactChange?.(rightPanelTab === 'tasks' && taskView === 'plan' && !loading && !loadError && !hasTaskRun && !roundChecklist && artifacts.length === 0)
-  }, [onCompactChange, rightPanelTab, taskView, loading, loadError, hasTaskRun, roundChecklist, artifacts.length])
+    onCompactChange?.(rightPanelTab === 'tasks' && taskView === 'plan' && !nativeTranscript && !loading && !loadError && !hasTaskRun && !roundChecklist && artifacts.length === 0)
+  }, [onCompactChange, rightPanelTab, taskView, loading, loadError, hasTaskRun, roundChecklist, nativeTranscript, artifacts.length])
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current
@@ -622,6 +626,7 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {nativeTranscript && taskStatus && <span className="text-[11px] text-zinc-400">Eva 扩展</span>}
               {taskStatus && <span className={cn('eva-status', taskStatus === 'completed' ? 'eva-status--success' : taskStatus === 'failed' ? 'eva-status--error' : taskStatus ? 'eva-status--active' : 'eva-status--neutral')}>
                 {t(statusLabel(taskStatus))}
               </span>}
@@ -642,7 +647,12 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
             </section>
           )}
 
-          {!hasTaskRun ? (
+          {nativeSummary && <section className="border-b border-indigo-100/80 py-4">
+            <NativeAgentView transcript={nativeSummary} finalContent="" streaming={Boolean(liveStream?.isStreaming)} renderMarkdown={content => <p>{content}</p>} />
+          </section>}
+          {nativeSummary && hasTaskRun && <p className="mt-3 text-xs text-zinc-400">Eva 扩展任务记录</p>}
+
+          {!hasTaskRun ? nativeTranscript ? null : (
             loading ? <p className="py-6 text-sm text-zinc-500">{language === 'zh' ? '正在读取执行记录…' : language === 'ja' ? '実行記録を読み込み中…' : 'Loading execution records…'}</p> : loadError ? null : currentConversation?.parentConversationId ? (
               <div className="border-b border-indigo-100/80 py-4">
                 <div className="flex items-start gap-2 rounded-md bg-violet-50/70 px-3 py-3 text-xs leading-5 text-zinc-600">

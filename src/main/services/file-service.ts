@@ -85,6 +85,15 @@ function isBinaryBuffer(buffer: Buffer): boolean {
   return false
 }
 
+/** Authorization only: external native tools perform their own filesystem I/O. */
+export async function resolveAuthorizedFileOperation(
+  filePath: string, workspacePath: string, grants: FileAccessGrant[] = [],
+  operation: 'read' | 'write' = 'read', fullFilesystemAccess = false,
+): Promise<string> {
+  const resolved = await normalizeAndValidate(filePath, workspacePath, grants, operation === 'write', fullFilesystemAccess)
+  return fullFilesystemAccess ? canonicalizePath(resolved) : resolved
+}
+
 export class FileServiceImpl implements FileService {
   /**
    * Canonicalize a path and confirm it stays inside an authorized root.

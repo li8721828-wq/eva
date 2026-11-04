@@ -1,5 +1,6 @@
 import type { ChatUsage, ResponseTiming } from './conversation'
 import type { ExecutionEnvelope } from './execution-protocol'
+import type { NativeAgentEvent } from './native-agent'
 
 export type AgentRole = 'leader' | 'researcher' | 'coder' | 'reviewer' | 'tester' | 'custom'
 export type AgentModelPreference = 'reasoning' | 'coding' | 'research' | 'fast'
@@ -77,7 +78,8 @@ export interface AgentConfig {
 }
 
 export interface AgentEvent {
-  type: 'text' | 'text_reset' | 'reasoning' | 'tool_call' | 'tool_result' | 'thinking' | 'error' | 'done'
+  type: 'text' | 'text_reset' | 'reasoning' | 'tool_call' | 'tool_result' | 'thinking' | 'error' | 'done' | 'native_event'
+  nativeEvent?: NativeAgentEvent
   content?: string
   /** Drop provisional streamed text instead of retaining it as a progress update. */
   discardProvisionalText?: boolean

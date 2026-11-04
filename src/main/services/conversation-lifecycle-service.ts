@@ -2,6 +2,7 @@ import type { ChatMessage, Conversation } from '../../shared/types/conversation'
 import type { StorageManager } from '../storage'
 import { ensureProviderPricing } from './supplier-pricing-service'
 import { hydrateUsagePricing } from './usage-pricing-service'
+import { invalidateNativeSessions } from '../agent-engine/native-session'
 
 export type CreateConversationInput = {
   title?: string
@@ -49,6 +50,7 @@ export class ConversationLifecycleService {
   async delete(id: string): Promise<Conversation | null> {
     const conversation = await this.storage.conversations.getConversation(id)
     await this.storage.conversations.deleteConversation(id)
+    await invalidateNativeSessions(id)
     return conversation
   }
 
@@ -81,7 +83,8 @@ export class ConversationLifecycleService {
     return this.storage.conversations.updateMessage(conversationId, messageId, data)
   }
 
-  deleteMessages(conversationId: string, messageId: string): Promise<void> {
-    return this.storage.conversations.deleteMessages(conversationId, messageId)
+  async deleteMessages(conversationId: string, messageId: string): Promise<void> {
+    await this.storage.conversations.deleteMessages(conversationId, messageId)
+    await invalidateNativeSessions(conversationId)
   }
 }

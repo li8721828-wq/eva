@@ -23,6 +23,9 @@ const REGISTERED_MUTATING_TOOLS = [
   'execute_command',
   'write_terminal',
   'browser_control',
+  // A programmatic skill command runs an interpreter over a script the model
+  // chose by name, so it must ask like any other command launch.
+  'run_skill_command',
   'mcp__myserver__do_thing',
 ]
 
@@ -43,6 +46,23 @@ const REGISTERED_READ_ONLY_TOOLS = [
 ]
 
 describe('tool approval policy', () => {
+  it.each(['write_file', 'edit_file'])('shows the host workspace for %s instead of a model-supplied workspace', async (name) => {
+    const conversationId = `workspace-summary-${name}`
+    const approve = createLocalToolApproval({ conversationId, window: null, config: { policy: 'safe', timeoutMs: 1000 } })
+    const relay = vi.fn((card) => {
+      resolvePendingApproval(card.id, false)
+      return true
+    })
+    setApprovalRelay(conversationId, relay)
+    try {
+      await expect(approve({ toolCall: { id: 'write', name, arguments: { path: 'C:/desktop/a.html', workspacePath: 'C:/model-claimed' } }, workspacePath: 'C:/actual-project' })).resolves.toMatchObject({ approved: false })
+      expect(relay).toHaveBeenCalledOnce()
+      expect(relay.mock.calls[0][0].detail).toBe('Workspace: C:/actual-project')
+    } finally {
+      rejectAllPendingApprovalsForConversation(conversationId, 'cleanup')
+      setApprovalRelay(conversationId, null)
+    }
+  })
   it.each(['relay', 'observer'] as const)('releases the approval slot when the %s throws', async (source) => {
     const conversationId = `throwing-${source}`
     let id: string | undefined
@@ -118,6 +138,14 @@ describe('tool approval policy', () => {
     it('requires approval for terminal commands', () => {
       expect(requiresApproval('execute_command', 'safe')).toBe('terminal-command')
       expect(requiresApproval('write_terminal', 'safe')).toBe('terminal-command')
+    })
+
+    it('never treats a programmatic skill command as a read', () => {
+      expect(requiresApproval('run_skill_command', 'safe')).toBe('terminal-command')
+      expect(requiresApproval('run_skill_command', 'strict')).toBe('terminal-command')
+      expect(requiresApproval('run_skill_command', 'paranoid')).toBe('terminal-command')
+      // `off` is the user's explicit choice to run without asking.
+      expect(requiresApproval('run_skill_command', 'off')).toBeNull()
     })
 
     it('requires approval for MCP tools', () => {

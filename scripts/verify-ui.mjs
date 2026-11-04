@@ -25,7 +25,7 @@ try {
   env.EVA_UI_CHECK_USER_DATA = userData
   const child = spawn(
     require('electron'),
-    [path.join(root, 'tests/browser/runner.cjs'), `http://127.0.0.1:${port}/tests/browser/index.html`],
+    [path.join(root, process.argv.includes('--reading') ? 'tests/browser/reading-runner.cjs' : 'tests/browser/runner.cjs'), `http://127.0.0.1:${port}/tests/browser/index.html`],
     { cwd: root, env, windowsHide: true, stdio: 'inherit' }
   )
   const result = await new Promise((resolve, reject) => {

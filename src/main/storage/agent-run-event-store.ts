@@ -1,4 +1,4 @@
-import fs from 'fs'
+import fs from 'fs/promises'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import type { AgentRunEvent, AgentRunEventType, AgentRunRecoverySummary } from '../../shared/types/runtime-run'
@@ -7,17 +7,30 @@ import type { AgentRunEvent, AgentRunEventType, AgentRunRecoverySummary } from '
 export class AgentRunEventStore {
   private readonly filePath: string
   private writeLock: Promise<void> = Promise.resolve()
+  private sequence: number | undefined
+  private needsSeparator = false
 
   constructor(dataDir: string) {
     this.filePath = path.join(dataDir, 'agent-run-events.jsonl')
   }
 
   async append(input: Omit<AgentRunEvent, 'id' | 'sequence' | 'timestamp'> & { timestamp?: number }): Promise<AgentRunEvent> {
-    return this.enqueue(() => {
-      const events = this.read()
-      const event: AgentRunEvent = { ...input, id: randomUUID(), sequence: (events.at(-1)?.sequence || 0) + 1, timestamp: input.timestamp || Date.now() }
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true })
-      fs.appendFileSync(this.filePath, JSON.stringify(event) + '\n', 'utf8')
+    return this.enqueue(async () => {
+      if (this.sequence === undefined) {
+        const contents = await this.readContents()
+        this.sequence = this.parse(contents).reduce((max, event) => Math.max(max, event.sequence), 0)
+        this.needsSeparator = contents.length > 0 && !contents.endsWith('\n')
+      }
+      const event: AgentRunEvent = { ...input, id: randomUUID(), sequence: this.sequence + 1, timestamp: input.timestamp ?? Date.now() }
+      await fs.mkdir(path.dirname(this.filePath), { recursive: true })
+      try {
+        await fs.appendFile(this.filePath, `${this.needsSeparator ? '\n' : ''}${JSON.stringify(event)}\n`, 'utf8')
+      } catch (error) {
+        this.sequence = undefined
+        throw error
+      }
+      this.sequence = event.sequence
+      this.needsSeparator = false
       return event
     })
   }
@@ -27,12 +40,19 @@ export class AgentRunEventStore {
   }
 
   async list(runId?: string, turnId?: string): Promise<AgentRunEvent[]> {
-    return this.enqueue(() => this.read().filter((event) => (!runId || event.runId === runId) && (!turnId || event.turnId === turnId)))
+    return this.enqueue(async () => this.parse(await this.readContents()).filter((event) => (!runId || event.runId === runId) && (!turnId || event.turnId === turnId)))
   }
 
   async recoverySummary(runId: string): Promise<AgentRunRecoverySummary> {
-    return this.enqueue(() => {
-      const events = this.read().filter((event) => event.runId === runId)
+    return this.enqueue(async () => {
+      const allEvents = this.parse(await this.readContents())
+      const relatedRuns = new Set([runId])
+      // Parents start before children. Include descendant execution evidence
+      // without mixing unrelated tasks sharing a conversation.
+      for (const event of allEvents) {
+        if (typeof event.metadata?.parentRunId === 'string' && relatedRuns.has(event.metadata.parentRunId)) relatedRuns.add(event.runId)
+      }
+      const events = allEvents.filter((event) => relatedRuns.has(event.runId))
       const items = new Map<string, NonNullable<AgentRunEvent['item']>>()
       let interrupted = false
       for (const event of events) {
@@ -46,6 +66,7 @@ export class AgentRunEventStore {
         runId,
         lastTurnId: last?.turnId,
         interrupted,
+        requiresManualReview: events.length === 0 || events.some((event) => event.type === 'tool_started' && event.metadata?.effect !== 'observation'),
         incompleteItems: Array.from(items.values()).map((item) => ({ id: item.id, kind: item.kind, name: item.name })),
         lastEventType: last?.type,
         generatedAt: Date.now(),
@@ -53,16 +74,22 @@ export class AgentRunEventStore {
     })
   }
 
-  private read(): AgentRunEvent[] {
-    if (!fs.existsSync(this.filePath)) return []
-    return fs.readFileSync(this.filePath, 'utf8').split(/\r?\n/).filter(Boolean).flatMap((line) => {
-      try { return [JSON.parse(line) as AgentRunEvent] } catch { return [] }
+  private async readContents(): Promise<string> {
+    try { return await fs.readFile(this.filePath, 'utf8') }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error }
+  }
+
+  private parse(contents: string): AgentRunEvent[] {
+    return contents.split(/\r?\n/).filter(Boolean).flatMap((line) => {
+      try {
+        const event = JSON.parse(line) as AgentRunEvent
+        return typeof event.runId === 'string' && Number.isSafeInteger(event.sequence) && event.sequence > 0 ? [event] : []
+      } catch { return [] }
     })
   }
 
-  private enqueue<T>(work: () => T): Promise<T> {
-    const run = async (): Promise<T> => { await this.writeLock; return work() }
-    const result = run()
+  private enqueue<T>(work: () => T | Promise<T>): Promise<T> {
+    const result = this.writeLock.then(work)
     this.writeLock = result.then(() => undefined, () => undefined)
     return result
   }

@@ -4,8 +4,11 @@ import type { RequirementProgress } from '../../shared/types/requirement-enginee
 import { useWorkspaceStore } from './use-workspace-store'
 import { useTaskStore } from './use-task-store'
 import { dropQueuedItemsFor } from '../lib/stream-reveal-queue'
+import type { NativeAgentTranscript } from '../../shared/types/native-agent'
+import { appendNativeEvent } from '../../shared/native-agent-transcript'
 
 export interface ConversationStreamState {
+  nativeAgent?: NativeAgentTranscript
   isStreaming: boolean
   agentId?: string
   agentName?: string
@@ -685,6 +688,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       ? { agentId: event.agentId, agentName: event.agentName }
       : {}
     switch (event.type) {
+      case 'native_event': {
+        const nativeEvent = event.nativeEvent
+        if (!nativeEvent) break
+        set(s => {
+          const existing = s.streamingByConversation[conversationId]
+          if (existing && !existing.isStreaming) return s
+          const stream = existing || createIdleStream()
+          const events = stream.nativeAgent?.events || []
+          const nextEvents = appendNativeEvent(events, nativeEvent)
+          if (nextEvents === events) return s
+          let content = stream.content
+          if (nativeEvent.type === 'message_start' || nativeEvent.type === 'tool_start') content = ''
+          if (nativeEvent.type === 'text_delta') content += nativeEvent.content || ''
+          if (nativeEvent.type === 'message_end' && nativeEvent.content !== undefined) content = nativeEvent.content
+          return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: {
+            ...stream, ...agentIdentity, isStreaming: true, content,
+            nativeAgent: { engine: nativeEvent.engine, events: nextEvents },
+          } } }
+        })
+        break
+      }
       case 'thinking': {
         set((s) => {
           const existingStream = s.streamingByConversation[conversationId]
@@ -957,6 +981,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             conversationId,
             role: 'assistant',
             content: finalContent,
+            nativeAgent: stream.nativeAgent,
             reasoningContent: stream.reasoningContent || undefined,
             executionTimeline: transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
             progressUpdates: stream.progressUpdates.length > 0 ? stream.progressUpdates : undefined,

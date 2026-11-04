@@ -1,58 +1,64 @@
 import { promises as fs } from 'fs'
 import path from 'path'
+import {
+  DEFAULT_CODE_GENERATOR_ID,
+  listCodeGenerators,
+  parseFieldType,
+  readTargetModel,
+  resolveCodeGenerator,
+  validateGeneratorOptions,
+  writeGeneratedFile,
+  writeGeneratedPackage,
+  type CodeGenerator,
+  type GeneratedManifest,
+  type ParsedDomainDsl,
+  type TargetModel,
+} from './codegen'
 
-export interface ParsedDslField {
-  name: string
-  type: string
-}
+export type { ParsedDslAggregate, ParsedDslBlock, ParsedDslField, ParsedDomainDsl } from './codegen'
 
-export interface ParsedDslAggregate {
-  name: string
-  fields: ParsedDslField[]
-}
-
-export interface ParsedDslBlock {
-  name: string
-  body: string
-}
-
-export interface ParsedDomainDsl {
-  domain: string
-  aggregates: ParsedDslAggregate[]
-  rules: string[]
-  ruleDefinitions: Array<{ name: string; definition: string }>
-  commands: ParsedDslBlock[]
-  events: ParsedDslBlock[]
-  states: ParsedDslBlock[]
+export interface DslParseResult {
+  parsed: ParsedDomainDsl
+  /** Non-fatal notes: unknown field types are kept as an error to surface, never guessed. */
+  warnings: string[]
 }
 
 /** Owns the deterministic, no-model portion of the requirement-to-code flow. */
 export class DeterministicCodingService {
+  /**
+   * Parse the persisted DSL.
+   *
+   * Field types are resolved against the declared set. An unknown type is a
+   * hard failure: the previous implementation defaulted it to `String`, which
+   * produced classes whose declarations did not match the DSL.
+   */
   parseDomainDsl(content: string): ParsedDomainDsl {
     const domainMatch = content.match(/^\s*domain\s+([A-Za-z][A-Za-z0-9]*)\s*$/im)
     if (!domainMatch) throw new Error('The DSL must start with a valid ASCII domain identifier.')
-    const aggregates: ParsedDslAggregate[] = []
+    const aggregates: ParsedDomainDsl['aggregates'] = []
     const seenAggregates = new Set<string>()
     const entityPattern = /^\s*entity\s+([A-Za-z][A-Za-z0-9]*)\s*\{([\s\S]*?)^\s*\}/gim
     for (const match of content.matchAll(entityPattern)) {
       const name = match[1]
       if (seenAggregates.has(name)) throw new Error(`Duplicate DSL entity: ${name}`)
       seenAggregates.add(name)
-      const fields: ParsedDslField[] = []
+      const fields: ParsedDomainDsl['aggregates'][number]['fields'] = []
       const seenFields = new Set<string>()
       for (const line of match[2].split(/\r?\n/)) {
         const field = line.trim().match(/^([A-Za-z][A-Za-z0-9_]*)\s*:\s*([A-Za-z][A-Za-z0-9_<>?,]*)/)
         if (!field || ['trace', 'description'].includes(field[1].toLowerCase())) continue
         if (seenFields.has(field[1])) throw new Error(`Duplicate field '${field[1]}' in entity ${name}`)
         seenFields.add(field[1])
-        fields.push({ name: field[1], type: field[2] })
+        const type = parseFieldType(field[2])
+        if (!type.ok) throw new Error(`${type.error} (entity ${name}, field ${field[1]})`)
+        fields.push({ name: field[1], type: type.type })
       }
       aggregates.push({ name, fields })
     }
     if (aggregates.length === 0) throw new Error('The DSL does not define any entity blocks to generate code from.')
     const ruleDefinitions = [...content.matchAll(/^\s*rule\s+([A-Za-z][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$/gim)].map((match) => ({ name: match[1], definition: match[2].trim() }))
     const rules = ruleDefinitions.map((rule) => rule.name)
-    const parseBlocks = (keywords: string): ParsedDslBlock[] => [...content.matchAll(new RegExp(`^\\s*(?:${keywords})\\s+([A-Za-z][A-Za-z0-9_]*)\\s*\\{([\\s\\S]*?)^\\s*\\}`, 'gim'))]
+    const parseBlocks = (keywords: string): ParsedDomainDsl['commands'] => [...content.matchAll(new RegExp(`^\\s*(?:${keywords})\\s+([A-Za-z][A-Za-z0-9_]*)\\s*\\{([\\s\\S]*?)^\\s*\\}`, 'gim'))]
       .map((match) => ({ name: match[1], body: match[2].trim() }))
     return {
       domain: domainMatch[1],
@@ -76,13 +82,14 @@ export class DeterministicCodingService {
       })),
       excluded_capabilities: [], asset_constraints: [],
     }
+    const allowedCapabilities = this.generatorCapabilities()
     const manifest = {
       schema_version: '1.0',
       package: { package_id: `DSL-${this.toJavaPackageSegment(parsed.domain).toUpperCase()}-001`, module: parsed.domain, source_spec_release: 'implementation-ready', status: 'approved-for-core-generation-ir' },
       inputs: { required: ['domain-language.dsl'] }, input_sha256: { 'domain-language.dsl': sourceHash },
       artifacts: { domain: 'domain.yaml', state_machine: 'state-machine.yaml', rules: 'rules.yaml', authorization: 'authorization.yaml', integration: 'integration.yaml', generation_map: 'generation-map.yaml' },
       open_item_gates: [{ id: 'OPEN-001', description: 'No physical production target is approved.' }],
-      generation_scope: { allowed: ['isolated-reference-java'], prohibited: ['production-write', 'schema-migration'] },
+      generation_scope: { allowed: allowedCapabilities, prohibited: ['production-write', 'schema-migration'] },
       traceability: { required_chain: 'SPEC-* -> DSL-* -> GEN-* -> CODE-* -> TEST-*' },
     }
     const rules = { rules: parsed.ruleDefinitions.map((rule, index) => ({ id: `DSL-RULE-${String(index + 1).padStart(3, '0')}`, name: rule.name, definition: rule.definition, trace_to: ['SPEC-001'] })) }
@@ -90,7 +97,7 @@ export class DeterministicCodingService {
     const events = parsed.events.map((event, index) => ({ id: `DSL-EVENT-${String(index + 1).padStart(3, '0')}`, name: event.name, body: event.body, trace_to: ['SPEC-001'] }))
     const states = parsed.states.map((state, index) => ({ id: `DSL-STATE-${String(index + 1).padStart(3, '0')}`, name: state.name, body: state.body, trace_to: ['SPEC-001'] }))
     const generationMap = {
-      targets: domain.aggregates.map((aggregate, index) => ({ id: `GEN-${String(index + 1).padStart(3, '0')}`, dsl_elements: [aggregate.id, ...aggregate.semantic_fields.map((field) => field.id)], blocked_by: [], generator_capabilities: ['isolated-reference-java'], required_ir_sections: ['aggregates'], trace_to: ['SPEC-001'] })),
+      targets: domain.aggregates.map((aggregate, index) => ({ id: `GEN-${String(index + 1).padStart(3, '0')}`, dsl_elements: [aggregate.id, ...aggregate.semantic_fields.map((field) => field.id)], blocked_by: [], generator_capabilities: allowedCapabilities, required_ir_sections: ['aggregates'], trace_to: ['SPEC-001'] })),
       semantic_inputs: { commands, events, states, rules: rules.rules },
       non_generatable: [{ id: 'GEN-OPEN-001', blocked_by: 'OPEN-001', reason: 'Production delivery requires a separately approved target model.' }],
     }
@@ -115,54 +122,61 @@ export class DeterministicCodingService {
       schema_version: '1.0', source_dsl_sha256: sourceHash, domain: parsed.domain,
       aggregates: parsed.aggregates, commands: parsed.commands, events: parsed.events,
       states: parsed.states, rules: parsed.ruleDefinitions,
-      generation_scope: { allowed: ['isolated-reference-java'], prohibited: ['production-write', 'schema-migration'] },
+      generation_scope: { allowed: this.generatorCapabilities(), prohibited: ['production-write', 'schema-migration'] },
     }
     await this.writeImmutableFile(irPath, `${JSON.stringify(ir, null, 2)}\n`)
     return irPath
   }
 
-  async generateJavaReferencePackage(outputDirectory: string, parsed: ParsedDomainDsl): Promise<string> {
-    const packageName = `generated.${this.toJavaPackageSegment(parsed.domain)}`
-    for (const aggregate of parsed.aggregates) {
-      const fields = aggregate.fields.map((field) => `  private ${this.toJavaType(field.type)} ${field.name};`).join('\n')
-      const source = `package ${packageName};\n\npublic final class ${aggregate.name} {\n${fields}\n}\n`
-      await this.writeImmutableFile(path.join(outputDirectory, `${aggregate.name}.java`), source)
-    }
-    const result = { schema_version: '1.0', adapter: 'builtin-java-reference', package: packageName, generated: parsed.aggregates.map((aggregate) => `${aggregate.name}.java`), preserved: ['commands', 'events', 'states', 'rules'] }
-    const resultPath = path.join(outputDirectory, 'generation-result.yaml')
-    await this.writeImmutableFile(resultPath, `${JSON.stringify(result, null, 2)}\n`)
-    return resultPath
+  /** Resolve the generator a run will use, or explain why none can be used. */
+  resolveGenerator(requested: string | undefined): CodeGenerator {
+    const lookup = resolveCodeGenerator(requested, DEFAULT_CODE_GENERATOR_ID)
+    if (!lookup.ok) throw new Error(lookup.error)
+    return lookup.generator
   }
 
-  async verifyGeneratedPackage(outputDirectory: string): Promise<string> {
+  /** Parse and validate an approved target model against the registry. */
+  parseTargetModel(document: unknown): TargetModel {
+    const read = readTargetModel(document)
+    if (!read.ok) throw new Error(read.error)
+    const optionsError = validateGeneratorOptions(this.resolveGenerator(read.model.generator), read.model.options)
+    if (optionsError) throw new Error(optionsError)
+    return read.model
+  }
+
+  /**
+   * Generate and write one package. The generator decides the files; this
+   * method only owns the directory and the manifest.
+   */
+  async generatePackage(
+    outputDirectory: string,
+    parsed: ParsedDomainDsl,
+    generator: CodeGenerator,
+    options: Record<string, string> = {},
+  ): Promise<{ manifest: GeneratedManifest; resultPath: string; verification: string }> {
+    const optionsError = validateGeneratorOptions(generator, options)
+    if (optionsError) throw new Error(optionsError)
+    return writeGeneratedPackage(generator, parsed, outputDirectory, options)
+  }
+
+  async verifyGeneratedPackage(outputDirectory: string, generatorId?: string): Promise<string> {
+    const generator = this.resolveGenerator(generatorId)
     const resultPath = path.join(outputDirectory, 'generation-result.yaml')
     const result = JSON.parse(await fs.readFile(resultPath, 'utf8')) as { generated?: string[] }
     for (const file of result.generated || []) {
-      const stat = await fs.stat(path.join(outputDirectory, file))
-      if (!stat.isFile()) throw new Error(`Generated artifact is missing: ${file}`)
+      const stat = await fs.stat(path.join(outputDirectory, file)).catch(() => undefined)
+      if (!stat?.isFile()) throw new Error(`Generated artifact is missing: ${file}`)
     }
-    return `verified ${result.generated?.length || 0} generated artifact(s)`
+    return `verified ${result.generated?.length || 0} generated artifact(s) for ${generator.id}`
   }
 
-  private toJavaType(type: string): string {
-    const normalized = type.toLowerCase()
-    if (normalized.includes('int')) return 'int'
-    if (normalized.includes('decimal') || normalized.includes('float') || normalized.includes('double')) return 'double'
-    if (normalized.includes('bool')) return 'boolean'
-    return 'String'
+  /** Every capability name the registry can produce, for the semantic package. */
+  private generatorCapabilities(): string[] {
+    return listCodeGenerators().flatMap((generator) => [...generator.capabilities])
   }
 
   async writeImmutableFile(filePath: string, content: string): Promise<void> {
-    try {
-      const existing = await fs.readFile(filePath, 'utf8')
-      if (existing !== content) throw new Error(`Existing deterministic artifact differs: ${filePath}`)
-      return
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Existing deterministic artifact differs:')) throw error
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    await fs.mkdir(path.dirname(filePath), { recursive: true })
-    await fs.writeFile(filePath, content, 'utf8')
+    return writeGeneratedFile(filePath, content)
   }
 
   toJavaPackageSegment(value: string): string {

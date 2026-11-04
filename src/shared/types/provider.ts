@@ -1,3 +1,5 @@
+import type { ReasoningCapability, ReasoningEffort, ReasoningSelection } from '../model-reasoning'
+
 export interface ProviderConfigEntry {
   id: string
   name: string
@@ -21,6 +23,7 @@ export interface ProviderTestConfig {
 }
 
 export interface ProviderModelOption {
+  reasoningSelection?: ReasoningSelection
   id: string
   name: string
   /** Optional upstream API family for gateways that expose more than one protocol. */
@@ -34,6 +37,9 @@ export type ModelTransport = 'chat-completions' | 'responses' | 'anthropic-messa
 export type ModelProtocol = 'openai-tools' | 'anthropic-tools' | 'deepseek-dsml' | 'unknown'
 
 export interface ModelCapabilityProfile {
+  reasoning?: ReasoningCapability
+  /** A tool-calling probe does not verify reasoning support. */
+  reasoningSource?: 'inferred' | 'declared'
   providerType: ProviderConfigEntry['type']
   modelId: string
   protocol: ModelProtocol
@@ -79,6 +85,7 @@ export interface LLMProviderConfig {
 }
 
 export interface ModelInfo {
+  reasoningSelection?: ReasoningSelection
   id: string
   name: string
   maxTokens: number
@@ -93,6 +100,8 @@ export interface ModelInfo {
 }
 
 export interface ChatParams {
+  /** Native backends skip Eva's legacy text-to-tool repair. */
+  nativeToolCallsOnly?: boolean
   model: string
   messages: ChatMessageInput[]
   tools?: ToolDefinition[]
@@ -101,6 +110,7 @@ export interface ChatParams {
   stream?: boolean
   reasoning?: {
     enabled: boolean
+    effort?: 'none' | ReasoningEffort
     budgetTokens?: number
   }
 }
@@ -119,6 +129,8 @@ export interface ChatMessageInput {
     id: string
     name: string
     arguments: Record<string, unknown>
+    /** Exact malformed argument bytes retained for native framework error recovery. */
+    rawArguments?: string
   }>
   toolCallId?: string
 }

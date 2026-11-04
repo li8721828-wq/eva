@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "./styles/typography.css";
 
 /* Project purposes: an open work ledger, with a single progress rail. */
 .purpose-panel { padding: 20px 16px; color: var(--text-primary); overflow-wrap: anywhere; font-size: 13px; line-height: 1.65; }
@@ -74,14 +75,14 @@
 .purpose-draft-notes { padding: 10px 0; color: var(--text-secondary); font-size: 12px; }
 .purpose-draft-notes summary { margin-bottom: 8px; cursor: pointer; }
 
-/* 聊天区排版基线：统一字体栈与层级字重（400 正文 / 500 标签 / 600 标题）。
-   MiSans / HarmonyOS Sans SC 在已安装的机器上自动生效，未安装则回退系统字体。 */
+/* Prefer an available CJK outline face before generic system fallback.
+   Eva Sans maps the locally installed HarmonyOS Regular and Medium faces. */
 @theme {
   --text-xs: 0.857143rem;
   --text-xs--line-height: 1.5;
   --text-sm: 0.928571rem;
   --text-sm--line-height: 1.5;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "MiSans", "HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+  --font-sans: "Eva Sans", "HarmonyOS Sans SC", "MiSans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Noto Sans SC", "Segoe UI Variable Text", "Segoe UI", sans-serif;
   /* Pointers only: @theme inlines a literal shadow into the utility, which would
      defeat the dark/starlight overrides. Keep every value in :root. */
   --shadow-float: var(--ui-shadow-float);
@@ -602,6 +603,15 @@ html, body, #root {
   margin: 0 0 1rem;
   color: #687386;
 }
+
+/* Native content keeps the shared canvas palette readable on dark themes. */
+:root:is([data-theme='dark'], [data-theme='starlight']) [data-native-engine] .chat-message-markdown:not(.conversation-reading) {
+  color: var(--text-primary);
+  --classic-text-color: var(--text-primary);
+  --classic-heading-color: var(--text-primary);
+}
+:root:is([data-theme='dark'], [data-theme='starlight']) .native-agent-feed { color: var(--text-secondary); }
+:root:is([data-theme='dark'], [data-theme='starlight']) [data-native-engine] .chat-message-markdown:not(.conversation-reading) :is(h1, h2, h3, h4, strong) { color: inherit; }
 
 .execution-feed__reports,
 .execution-feed__timeline {

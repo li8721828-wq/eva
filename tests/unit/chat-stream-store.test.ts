@@ -21,6 +21,30 @@ function streamingForeground(content: string, startedAt: number) {
 const refreshConversationLive = useChatStore.getState().refreshConversation
 
 describe('chat stream state', () => {
+  it('retains native narration and tool boundaries without Eva progress conversion', () => {
+    useChatStore.setState({ currentConversationId: 'native-chat', messages: [], streamingByConversation: {}, loadConversations: vi.fn(async () => {}) })
+    const append = useChatStore.getState().appendStreamEvent
+    let sequence = 0
+    const send = (type: string, extra: Record<string, unknown> = {}) => append({ type: 'native_event', conversationId: 'native-chat', nativeEvent: {
+      engine: 'deepseek-harness', runId: 'native-run', sequence: ++sequence, timestamp: sequence, type, ...extra,
+    } })
+    const narration = '<eva-progress kind="plan">Literal native content</eva-progress>' + '文字'.repeat(200)
+    send('message_start', { messageId: 'm1' })
+    send('text_delta', { messageId: 'm1', content: narration })
+    expect(useChatStore.getState().streamingByConversation['native-chat'].content).toBe(narration)
+    send('tool_start', { toolCallId: 't1', name: 'read', data: { arguments: { file_path: 'a.txt' } } })
+    expect(useChatStore.getState().streamingByConversation['native-chat'].content).toBe('')
+    send('tool_end', { toolCallId: 't1', name: 'read', content: 'native feedback', data: { isError: false } })
+    send('message_start', { messageId: 'm2' })
+    send('text_delta', { messageId: 'm2', content: 'Native answer.' })
+    append({ conversationId: 'native-chat', type: 'done', content: 'Native answer.', messageId: 'stored-native' })
+    const message = useChatStore.getState().messages[0]
+    expect(message.content).toBe('Native answer.')
+    expect(message.nativeAgent?.events.some(event => event.content === narration)).toBe(true)
+    expect(message.progressUpdates).toBeUndefined()
+    send('text_delta', { messageId: 'm2', content: 'late text' })
+    expect(useChatStore.getState().messages[0].content).toBe('Native answer.')
+  })
   beforeEach(() => {
     useChatStore.setState({
       currentConversationId: 'foreground',

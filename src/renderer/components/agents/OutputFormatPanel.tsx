@@ -3,6 +3,7 @@ import { AlignLeft, BookOpenText, BrainCircuit, Check, CircleSlash, FileCode2, G
 import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, AgentProcessOutput } from '../../../shared/types'
 import { Textarea } from '@/components/ui/Textarea'
 import { cn } from '@/lib/utils'
+import { READING_FONT_SIZES } from '@/lib/reading-typography'
 
 export interface OutputFormatPanelProps {
   outputFormat: AgentOutputFormat
@@ -51,7 +52,7 @@ const visualStyles: Array<{ value: AgentOutputStyle; label: string; description:
 ]
 
 const fontOptions: Array<{ value: AgentOutputFont; label: string; className: string }> = [
-  { value: 'system', label: '系统无衬线', className: '' },
+  { value: 'system', label: '柔和无衬线', className: '' },
   { value: 'macos', label: 'macOS 原生', className: '' },
   { value: 'serif', label: '阅读衬线', className: 'font-serif' },
   { value: 'mono', label: '技术等宽', className: 'font-mono' },
@@ -65,14 +66,14 @@ const colorOptions: Array<{ value: AgentOutputColor; label: string; swatch: stri
   { value: 'claude', label: 'Claude 暖橙', swatch: 'bg-orange-600' },
 ]
 
-const fontSizes: Array<{ value: AgentOutputFontSize; label: string; sample: string }> = [
-  { value: 'xsmall', label: '特小', sample: '13 px' },
-  { value: 'small', label: '小', sample: '14 px' },
-  { value: 'medium', label: '默认', sample: '15 px' },
-  { value: 'large', label: '大', sample: '16 px' },
-  { value: 'xlarge', label: '特大', sample: '17 px' },
-  { value: '2xlarge', label: '超大', sample: '18 px' },
-  { value: '3xlarge', label: '巨型', sample: '20 px' },
+const fontSizes: Array<{ value: AgentOutputFontSize; label: string }> = [
+  { value: 'xsmall', label: '特小' },
+  { value: 'small', label: '小' },
+  { value: 'medium', label: '默认' },
+  { value: 'large', label: '大' },
+  { value: 'xlarge', label: '特大' },
+  { value: '2xlarge', label: '超大' },
+  { value: '3xlarge', label: '巨型' },
 ]
 
 const textEffects: Array<{ value: AgentOutputTextEffect; label: string; sampleClassName: string }> = [
@@ -83,8 +84,8 @@ const textEffects: Array<{ value: AgentOutputTextEffect; label: string; sampleCl
 ]
 
 const markdownRenderers: Array<{ value: AgentMarkdownRenderer; label: string; description: string; icon: React.ElementType }> = [
-  { value: 'enhanced', label: '当前增强', description: '强化表格容器、深色代码面板与单段复制操作。', icon: Sparkles },
-  { value: 'classic', label: '经典文档', description: '恢复 8 月 12 日的开放式正文、标题、列表与表格节奏；保留代码复制。', icon: BookOpenText },
+  { value: 'enhanced', label: '当前增强', description: '支持表格容器、代码高亮与单段复制。', icon: Sparkles },
+  { value: 'classic', label: '经典文档', description: '兼容已有文档渲染，保留代码复制。', icon: BookOpenText },
   { value: 'streamdown', label: 'Streamdown 流式', description: '针对模型逐段生成优化，平稳处理未闭合表格、链接和代码块。', icon: Gauge },
 ]
 
@@ -99,10 +100,9 @@ function ChoiceRow({ selected, icon: Icon, label, description, onClick }: { sele
 export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, allowEmojiSymbols, markdownRenderer, processOutput, onOutputFormatChange, onOutputFormatInstructionsChange, onOutputStyleChange, onOutputFontChange, onOutputColorChange, onOutputFontSizeChange, onOutputTextEffectChange, onAllowEmojiSymbolsChange, onMarkdownRendererChange, onProcessOutputChange }: OutputFormatPanelProps) {
   return <div className="space-y-8">
     <section>
-      <div><h2 className="text-base font-semibold text-zinc-900">Markdown 渲染器</h2><p className="mt-1 text-sm leading-6 text-zinc-500">决定回复在对话中的视觉排版，不改变模型生成的内容。</p></div>
+      <div><h2 className="text-base font-semibold text-zinc-900">Markdown 渲染器</h2><p className="mt-1 text-sm leading-6 text-zinc-500">选择 Markdown 的渲染方式。对话共用统一的标题、强调、间距和主题色，原始内容完整保留。</p></div>
       <div className="mt-4 grid gap-2 sm:grid-cols-2">{markdownRenderers.map((renderer) => <ChoiceRow key={renderer.value} selected={markdownRenderer === renderer.value} icon={renderer.icon} label={renderer.label} description={renderer.description} onClick={() => onMarkdownRendererChange(renderer.value)} />)}</div>
-      {markdownRenderer === 'classic' ? <p className="mt-3 text-xs leading-5 text-zinc-500">经典文档保留开放式排版与浅色代码主题；阅读样式、字体、色调和字号仍按此智能体的设置生效。</p> : null}
-      {markdownRenderer === 'streamdown' ? <p className="mt-3 text-xs leading-5 text-zinc-500">所有流式回复都会采用逐字墨迹显现；选择此项可让回复完成后也保留 Streamdown 的文档排版与未闭合 Markdown 修复能力。</p> : null}
+      {markdownRenderer === 'streamdown' ? <p className="mt-3 text-xs leading-5 text-zinc-500">流式回复使用 Streamdown 处理未闭合 Markdown；选择此项后，完成的回复也继续使用此渲染器。</p> : null}
     </section>
 
     <section>
@@ -116,20 +116,22 @@ export function OutputFormatPanel({ outputFormat, outputFormatInstructions, outp
       </button>
     </section>
 
-    {markdownRenderer !== 'streamdown' ? <section className="border-t border-zinc-100 pt-7">
-      <div><h2 className="text-base font-semibold text-zinc-900">阅读样式</h2><p className="mt-1 text-sm leading-6 text-zinc-500">统一正文、标题、列表、表格和代码的密度，避免同一段回复忽大忽小。</p></div>
-      <div className="mt-4 grid gap-2 sm:grid-cols-2">{visualStyles.map((style) => <ChoiceRow key={style.value} selected={outputStyle === style.value} label={style.label} description={style.description} onClick={() => onOutputStyleChange(style.value)} />)}</div>
+    <section className="border-t border-zinc-100 pt-7">
+      <div><h2 className="text-base font-semibold text-zinc-900">阅读偏好</h2><p className="mt-1 text-sm leading-6 text-zinc-500">字体与字号应用于所有对话渲染器，代码使用等宽字体。</p></div>
       <div className="mt-4 flex flex-wrap gap-2">{fontOptions.map((font) => <button key={font.value} type="button" onClick={() => onOutputFontChange(font.value)} className={cn('rounded-md border px-3 py-2 text-sm transition-colors', outputFont === font.value ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300', font.className)}>{font.label}</button>)}</div>
-      <div className="mt-4"><p className="mb-2 text-xs font-medium text-zinc-600">正文字号</p><div className="grid grid-cols-4 gap-1 rounded-md bg-zinc-100/80 p-1 sm:grid-cols-7">{fontSizes.map((size) => <button key={size.value} type="button" onClick={() => onOutputFontSizeChange(size.value)} className={cn('min-w-0 rounded px-2.5 py-1.5 text-left transition-colors', outputFontSize === size.value ? 'bg-white text-violet-700 shadow-sm' : 'text-zinc-500 hover:text-zinc-700')}><span className="block text-xs font-medium">{size.label}</span><span className="block text-[10px] leading-4 text-zinc-400">{size.sample}</span></button>)}</div></div>
-      <div className="mt-4"><p className="mb-2 text-xs font-medium text-zinc-600">艺术字效果</p><div className="flex flex-wrap gap-2">{textEffects.map((effect) => <button key={effect.value} type="button" onClick={() => onOutputTextEffectChange(effect.value)} className={cn('min-w-16 rounded-md border px-3 py-2 text-sm transition-colors', outputTextEffect === effect.value ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300')}><span className={cn('text-effect-preview', effect.sampleClassName)}>{effect.label}</span></button>)}</div><p className="mt-1.5 text-xs leading-5 text-zinc-500">仅作用于回复标题和加粗强调，正文与代码保持清晰。</p></div>
+      <div className="mt-4"><p className="mb-2 text-xs font-medium text-zinc-600">正文字号</p><div className="grid grid-cols-4 gap-1 rounded-md bg-zinc-100/80 p-1 sm:grid-cols-7">{fontSizes.map((size) => <button key={size.value} type="button" onClick={() => onOutputFontSizeChange(size.value)} className={cn('min-w-0 rounded px-2.5 py-1.5 text-left transition-colors', outputFontSize === size.value ? 'bg-white text-violet-700 shadow-sm' : 'text-zinc-500 hover:text-zinc-700')}><span className="block text-xs font-medium">{size.label}</span><span className="block text-[10px] leading-4 text-zinc-400">{READING_FONT_SIZES[size.value]} px</span></button>)}</div></div>
+      <details className="mt-5 text-sm text-zinc-500"><summary className="cursor-pointer">旧版外观偏好</summary>
+      <p className="mt-2 text-xs leading-5">保留已有设置供兼容使用。当前对话的标题、强调、间距与色彩由统一阅读规范控制。</p>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">{visualStyles.map((style) => <ChoiceRow key={style.value} selected={outputStyle === style.value} label={style.label} description={style.description} onClick={() => onOutputStyleChange(style.value)} />)}</div>
+      <div className="mt-4"><p className="mb-2 text-xs font-medium text-zinc-600">艺术字效果</p><div className="flex flex-wrap gap-2">{textEffects.map((effect) => <button key={effect.value} type="button" onClick={() => onOutputTextEffectChange(effect.value)} className={cn('min-w-16 rounded-md border px-3 py-2 text-sm transition-colors', outputTextEffect === effect.value ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300')}><span className={cn('text-effect-preview', effect.sampleClassName)}>{effect.label}</span></button>)}</div></div>
       <div className="mt-4"><p className="mb-2 text-xs font-medium text-zinc-600">文字色调</p><div className="flex flex-wrap gap-2">{colorOptions.map((color) => <button key={color.value} type="button" onClick={() => onOutputColorChange(color.value)} className={cn('inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm transition-colors', outputColor === color.value ? 'border-violet-200 bg-violet-50 text-violet-700' : 'border-zinc-200 bg-white text-zinc-600 hover:border-zinc-300')}><span className={cn('h-3 w-3 rounded-full', color.swatch)} />{color.label}</button>)}</div></div>
-      <p className="mt-2 text-xs leading-5 text-zinc-500">代码块始终使用等宽字体。后续的艺术字体会作为这里的视觉主题添加，不改变模型提示词。</p>
-    </section> : null}
+      </details>
+    </section>
 
     <section className="border-t border-zinc-100 pt-7">
-      <div><h2 className="text-base font-semibold text-zinc-900">过程输出</h2><p className="mt-1 text-sm leading-6 text-zinc-500">控制用户在对话中看到的处理过程，不改变工具执行本身。</p></div>
+      <div><h2 className="text-base font-semibold text-zinc-900">过程输出</h2><p className="mt-1 text-sm leading-6 text-zinc-500">调整 Eva 模式的过程汇报详细程度。执行记录默认收起，可展开查看；Pi 和 Harness 保留各自的原生过程。</p></div>
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
-        <ChoiceRow selected={processOutput === 'off'} icon={CircleSlash} label="关闭" description="只保留最终回复与执行动效。" onClick={() => onProcessOutputChange('off')} />
+        <ChoiceRow selected={processOutput === 'off'} icon={CircleSlash} label="关闭" description="省略过程汇报，保留答复与工具记录。" onClick={() => onProcessOutputChange('off')} />
         <ChoiceRow selected={processOutput === 'compact'} icon={Gauge} label="简洁" description="仅在阶段变化时显示短进度。" onClick={() => onProcessOutputChange('compact')} />
         <ChoiceRow selected={processOutput === 'detailed'} icon={BrainCircuit} label="逐步" description="按判断、单个操作、结果和下一步逐段展示，不展开模型私有思考。" onClick={() => onProcessOutputChange('detailed')} />
       </div>

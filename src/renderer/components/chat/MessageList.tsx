@@ -97,6 +97,7 @@ export function MessageList({ className }: MessageListProps) {
     latestMessage?.role === 'assistant' &&
     latestMessage.content === streamingContent
   )
+  const streamingNativeEventCount = stream?.nativeAgent?.events.length || 0
   const streamingReasoningContent = stream?.reasoningContent || ''
   const streamingAgentId = stream?.agentId
   const streamingAgentName = stream?.agentName
@@ -106,7 +107,7 @@ export function MessageList({ className }: MessageListProps) {
   // Every terminal path resets the stream, so a settled stream that still holds
   // answer text is one the user stopped: keep it on screen until the cancelled
   // reply row arrives. A stop during a tool cycle persists no reply to retire.
-  const holdsStoppedStreamCopy = !isStreaming && Boolean(streamingContent)
+  const holdsStoppedStreamCopy = !isStreaming && Boolean(streamingContent || stream?.nativeAgent?.events.length)
   const goalConfirmation = stream?.goalConfirmation
   const toolApproval = stream?.toolApproval
   const askUser = stream?.askUser
@@ -520,7 +521,7 @@ export function MessageList({ className }: MessageListProps) {
     // tool rows and reasoning blocks that grow outside the virtual list.
     if (
       isStreaming &&
-      (streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
+      (streamingNativeEventCount || streamingContent || streamingReasoningContent || streamingToolCalls.length > 0 || streamingExecutionTimeline.length > 0 || streamingProgressUpdates.length > 0) &&
       scrollController.isFollowing()
     ) {
       const frame = requestAnimationFrame(pinToBottom)
@@ -533,6 +534,7 @@ export function MessageList({ className }: MessageListProps) {
     pinToBottom,
     streamingContent,
     streamingReasoningContent,
+    streamingNativeEventCount,
     streamingExecutionTimeline.length,
     streamingProgressUpdates.length,
     streamingToolCalls.length,
@@ -682,6 +684,7 @@ export function MessageList({ className }: MessageListProps) {
                 id: `streaming-${currentConversationId || 'message'}`,
                 conversationId: currentConversationId || '',
                 role: 'assistant',
+                nativeAgent: stream?.nativeAgent,
                 content: streamingContent,
                 agentId: streamingAgentId,
                 agentName: streamingAgentName,

@@ -8,7 +8,7 @@ import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Sparkles, Square, X } from 'lucide-react'
+import { Bot, Brain, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Sparkles, Square, X } from 'lucide-react'
 import { uiCopy } from '@/lib/ui-copy'
 import type { ConversationPermissionLevel } from '../../../shared/types'
 import type { ProviderConfigEntry } from '../../../shared/types/provider'
@@ -17,6 +17,8 @@ import { activeSlashCommand, buildSlashPopoverItems, type ChatSlashCommand, type
 import { useChatAttachments } from '@/hooks/use-chat-attachments'
 import { pushToast } from '@/stores/use-toast-store'
 import { shellCopy } from '@/lib/shell-copy'
+import { reasoningCapabilityForModel, selectedReasoning, type ReasoningSelection } from '../../../shared/model-reasoning'
+import { reasoningCopy } from '@/lib/reasoning-copy'
 
 export interface InputBarProps {
   className?: string
@@ -224,6 +226,13 @@ export function InputBar({ className }: InputBarProps) {
   const activeModelChoice = modelChoices.find((choice) => (
     choice.providerId === activeProviderId && choice.modelId === activeModel
   ))?.value || ''
+
+  const reasoningProvider = savedProviders.find(provider => provider.id === activeProviderId)
+  const reasoningCapability = reasoningProvider ? reasoningCapabilityForModel(reasoningProvider.type, activeModel, reasoningProvider.models) : undefined
+  const reasoningSelection = reasoningProvider ? selectedReasoning(reasoningProvider.type, activeModel, reasoningProvider.models) || 'default' : 'default'
+  const thinkingCopy = reasoningCopy[language]
+  const reasoningOptions = (['default', ...(reasoningCapability?.canDisable ? ['none'] : []), ...(reasoningCapability?.efforts || [])] as ReasoningSelection[])
+    .map(value => ({ value, label: thinkingCopy[value] }))
 
   const modelChoiceOptions = modelChoices.length > 0
     ? modelChoices.map(({ value, label }) => ({ value, label }))
@@ -549,20 +558,23 @@ export function InputBar({ className }: InputBarProps) {
     requestAnimationFrame(() => textareaRef.current?.focus())
   }, [setAttachedSkill, setInputText])
 
-  const saveModelSelection = async (providerId: string, model: string) => {
-    if (providerId === activeProviderId && model === activeModel) return
+  const saveModelSelection = async (providerId: string, model: string, selection?: ReasoningSelection) => {
+    if (providerId === activeProviderId && model === activeModel && (selection === undefined || selection === reasoningSelection)) return
     if (modelSavingRef.current) return
     modelSavingRef.current = true
     setModelSaving(true)
     try {
-      await window.eva.config.selectModel(providerId, model)
+      await window.eva.config.selectModel(providerId, model, selection)
+      if (selection !== undefined) setSavedProviders(providers => providers.map(provider => provider.id === providerId ? { ...provider, models: provider.models?.some(item => item.id === model)
+        ? provider.models.map(item => item.id === model ? { ...item, reasoningSelection: selection } : item)
+        : [...(provider.models || []), { id: model, name: model, reasoningSelection: selection }] } : provider))
       setActiveProvider(providerId)
       setActiveModel(model)
     } catch (error) {
       console.error('Failed to save active model:', error)
       const copy = shellCopy[language]
       pushToast({ kind: 'error', title: copy.saveFailed, description: copy.saveHint, durationMs: 0,
-        actions: [{ label: copy.retry, onClick: () => { void saveModelSelection(providerId, model) } }] })
+        actions: [{ label: copy.retry, onClick: () => { void saveModelSelection(providerId, model, selection) } }] })
     } finally {
       modelSavingRef.current = false
       setModelSaving(false)
@@ -828,8 +840,8 @@ export function InputBar({ className }: InputBarProps) {
 
           {attachmentError && <div className="border-t border-red-100 bg-red-50 px-4 py-2 text-xs text-red-700">{attachmentError}</div>}
 
-          <div className="flex min-h-10 items-center justify-between gap-3 rounded-b-[7px] border-t border-zinc-100 bg-zinc-50/70 px-4 py-1.5 text-xs text-zinc-500">
-            <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-h-10 flex-wrap items-center justify-between gap-3 rounded-b-[7px] border-t border-zinc-100 bg-zinc-50/70 px-4 py-1.5 text-xs text-zinc-500">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               {isSymposiumConversation ? (
                 <span className="inline-flex items-center gap-2 text-xs font-medium text-violet-600"><Bot className="h-3.5 w-3.5 text-violet-500" />Discussion models are fixed for this Symposium</span>
               ) : (
@@ -848,6 +860,20 @@ export function InputBar({ className }: InputBarProps) {
                     />
                 </div>
               )}
+              {!isSymposiumConversation && reasoningCapability && <Select
+                value={reasoningSelection}
+                options={reasoningOptions}
+                onChange={event => void saveModelSelection(activeProviderId, activeModel, event.target.value as ReasoningSelection)}
+                disabled={modelSaving || isSymposiumRunning}
+                triggerIcon={<span className="inline-flex items-center gap-1.5"><Brain className="h-3.5 w-3.5" /><span>{thinkingCopy[reasoningSelection]}</span></span>}
+                aria-label="Select model reasoning level"
+                title={`${thinkingCopy.label} · ${thinkingCopy[reasoningSelection]}\n${reasoningCapability.mode === 'anthropic-budget' ? thinkingCopy.budget : thinkingCopy.hint}`}
+                menuWidth={160}
+                className="h-7 w-auto rounded-md border border-transparent bg-[var(--ui-surface)] px-2 text-xs font-medium text-[var(--text-secondary)] shadow-none hover:bg-[var(--bg-hover)] focus-visible:ring-0"
+                menuClassName="border-[var(--ui-border)] bg-[var(--ui-surface)]"
+                optionClassName="text-xs text-[var(--text-primary)] hover:bg-[var(--bg-hover)]"
+                selectedOptionClassName="bg-[var(--bg-hover)] text-[var(--text-primary)]"
+              />}
             </div>
             <div className="flex shrink-0 items-center gap-2">
               {!isSymposiumConversation && (
@@ -861,7 +887,7 @@ export function InputBar({ className }: InputBarProps) {
                   menuClassName="border-[rgba(99,102,115,0.13)] bg-[#fcfcfe]/95 shadow-[0_16px_36px_-26px_rgba(39,42,58,0.38),0_5px_12px_-10px_rgba(39,42,58,0.1)]"
                   optionClassName="text-xs font-medium text-zinc-600 hover:bg-violet-50/55 hover:text-zinc-800"
                   selectedOptionClassName="bg-violet-50/75 text-xs font-medium text-zinc-800"
-                  aria-label="Conversation file permission"
+                  aria-label="Conversation permissions"
                   title={permissionTitle}
                 />
               )}

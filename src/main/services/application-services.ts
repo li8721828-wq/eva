@@ -41,6 +41,8 @@ export function createApplicationServices(storage: StorageManager, providerRegis
       models: (config.models || []).map((model) => ({
         id: model.id,
         name: model.name,
+        reasoningSelection: model.reasoningSelection,
+        transport: model.transport,
         maxTokens: model.capabilities?.contextWindowTokens || getModelContextWindowTokens(model.id),
         supportsTools: model.capabilities?.supportsTools !== false,
         supportsStreaming: model.capabilities?.supportsStreaming !== false,

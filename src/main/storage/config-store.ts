@@ -16,11 +16,14 @@ import type { ModelPool, ModelPoolEntry } from '../../shared/types/model-pool'
 import { DEFAULT_NETWORK_CONFIG, type NetworkConfig } from '../../shared/types/network'
 import { DEFAULT_ENVIRONMENT_RULES, type EnvironmentRulesConfig } from '../../shared/types/environment-rules'
 import { CredentialStore } from './credential-store'
+import { DEFAULT_EXECUTION_ENGINE, isExecutionEngineConfig, type ExecutionEngineConfig } from '../../shared/types/execution-engine'
+import { isReasoningSelection, reasoningCapabilityForModel, supportsReasoningSelection, type ReasoningSelection } from '../../shared/model-reasoning'
 
 export type { ProviderConfigEntry }
 export type AppTheme = 'light' | 'dark' | 'starlight'
 
 export interface AppConfig {
+  executionEngine: ExecutionEngineConfig
   // General
   theme: AppTheme
   language: 'en' | 'zh' | 'ja'
@@ -81,6 +84,7 @@ const DEFAULT_PROVIDERS: ProviderConfigEntry[] = [
 ]
 
 const DEFAULTS: AppConfig = {
+  executionEngine: DEFAULT_EXECUTION_ENGINE,
   theme: 'light',
   language: 'en',
   workspacePath: '',
@@ -152,6 +156,7 @@ export class ConfigStore {
     const isProviderList = (value: unknown): boolean =>
       Array.isArray(value) && value.every((entry) => isRecord(entry) && typeof (entry as { id?: unknown }).id === 'string')
     const checks: Array<[keyof AppConfig, (value: unknown) => boolean]> = [
+      ['executionEngine', isExecutionEngineConfig],
       ['providers', isProviderList],
       ['fileAccessGrants', Array.isArray],
       ['modelPools', Array.isArray],
@@ -209,12 +214,23 @@ export class ConfigStore {
     this.store.set(config)
   }
 
-  selectModel(providerId: string, model: string): void {
+  selectModel(providerId: string, model: string, reasoningSelection?: ReasoningSelection): void {
     if (typeof providerId !== 'string' || typeof model !== 'string' || Boolean(providerId.trim()) !== Boolean(model.trim())) {
       throw new Error('A connection and model are required.')
     }
-    // One electron-store write: the pair must never be partially persisted.
-    this.store.set({ activeProviderId: providerId, activeModel: model })
+    const selection = { activeProviderId: providerId, activeModel: model }
+    if (reasoningSelection === undefined) { this.store.set(selection); return }
+    const providers = this.store.get('providers')
+    const provider = providers.find(item => item.id === providerId)
+    if (!provider || !model || !isReasoningSelection(reasoningSelection) || !supportsReasoningSelection(reasoningSelection, reasoningCapabilityForModel(provider.type, model, provider.models))) {
+      throw new Error('This model connection does not support the selected reasoning level.')
+    }
+    const models = provider.models || []
+    const nextModels = models.some(item => item.id === model)
+      ? models.map(item => item.id === model ? { ...item, reasoningSelection } : item)
+      : [...models, { id: model, name: model, reasoningSelection }]
+    // Keep the connection, model and its preference in one atomic store write.
+    this.store.set({ ...selection, providers: providers.map(item => item.id === providerId ? { ...item, models: nextModels } : item) })
   }
 
   // Provider configuration management
@@ -233,8 +249,8 @@ export class ConfigStore {
     const providers = this.store.get('providers')
     const apiKey = provider.apiKey.trim()
     if (apiKey) this.credentials.set(this.providerCredentialKey(provider.id), apiKey)
-    const storedProvider = { ...provider, apiKey: '' }
     const index = providers.findIndex((p) => p.id === provider.id)
+    const storedProvider = { ...provider, apiKey: '', models: provider.models?.map(model => ({ ...model, reasoningSelection: model.reasoningSelection ?? providers[index]?.models?.find(previous => previous.id === model.id)?.reasoningSelection })) }
     if (index >= 0) {
       providers[index] = storedProvider
     } else {

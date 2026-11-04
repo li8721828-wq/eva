@@ -2,7 +2,9 @@ import type { AgentConfig } from './agent'
 import type { FileAccessGrant } from './file-access'
 import type { AgentSymposium } from './symposium'
 import type { ExecutionEnvelope } from './execution-protocol'
+import type { NativeAgentEvent, NativeAgentTranscript } from './native-agent'
 
+/** Full access grants local filesystem scope and approval-free enabled tools. */
 export type ConversationPermissionLevel = 'workspace' | 'granted-folders' | 'full-access'
 export type ConversationExecutionStatus = 'running' | 'paused' | 'completed' | 'failed' | 'cancelled'
 export type ConversationTitleSource = 'auto' | 'manual' | 'system'
@@ -58,6 +60,7 @@ export interface Conversation {
 }
 
 export interface ChatMessage {
+  nativeAgent?: NativeAgentTranscript
   id: string
   conversationId: string
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -287,12 +290,13 @@ export interface AskUserRequest {
 }
 
 export interface ChatStreamEvent {
+  nativeEvent?: NativeAgentEvent
   /** The conversation that owns this stream event. */
   conversationId?: string
   /** The Agent actually selected for this response by the main process. */
   agentId?: string
   agentName?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'ask_user_request' | 'done' | 'error'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'ask_user_request' | 'done' | 'error' | 'native_event'
   messageId?: string
   content?: string
   /** True only when provisional text was protocol markup and must be discarded. */

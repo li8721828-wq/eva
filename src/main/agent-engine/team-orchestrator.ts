@@ -1,3 +1,4 @@
+import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
 import type { LLMProvider } from '../providers/base-provider'
 import type { ToolRegistry, FileService, TerminalService } from '../tools/index'
 import type { AgentConfig, AgentModelCandidate, AgentModelPreference } from '../../shared/types/agent'
@@ -13,6 +14,8 @@ import type { ModelPool } from '../../shared/types/model-pool'
 import type { ProviderRegistry } from '../providers'
 import { inferModelCapabilities } from '../../shared/model-capabilities'
 import XLSX from 'xlsx'
+import type { AgentRunEventStore } from '../storage/agent-run-event-store'
+import { toolRuntimePolicy } from './tool-runtime-policy'
 
 export function validateTextArtifact(filePath: string, content: string, needsSources = false): string[] {
   const failures: string[] = []
@@ -45,6 +48,8 @@ export function validateTextArtifact(filePath: string, content: string, needsSou
 }
 
 export interface TeamOrchestratorConfig extends ExecutionPolicy {
+  executionEngine?: ExecutionEngineConfig
+  eventStore?: AgentRunEventStore
   conversationId?: string
   leader: AgentConfig
   workers: AgentConfig[]
@@ -73,6 +78,7 @@ export interface TeamOrchestratorConfig extends ExecutionPolicy {
 }
 
 export interface TeamRunParams {
+  parentRunId?: string
   goal: string
   messages?: ChatMessage[]
   /** Reuse the persisted plan so completed subtasks are never run again. */
@@ -92,16 +98,8 @@ export class TeamOrchestrator {
   private dynamicWorkers: Map<string, AgentConfig> = new Map()
   private feedback: Array<{ content: string; createdAt: number }> = []
   private isPaused = false
+  private parentRunId: string | undefined
 
-  private static readonly MUTATING_TOOLS = new Set([
-    'write_file',
-    'edit_file',
-    'open_terminal',
-    'write_terminal',
-    'execute_command',
-    'close_terminal',
-    'spreadsheet',
-  ])
 
   constructor(config: TeamOrchestratorConfig) {
     this.config = config
@@ -122,6 +120,7 @@ export class TeamOrchestrator {
     }
 
     this.isRunning = true
+    this.parentRunId = params.parentRunId
     this.abortController = new AbortController()
     this.assignmentCursor.clear()
     this.dynamicWorkers.clear()
@@ -332,7 +331,7 @@ export class TeamOrchestrator {
   }
 
   private isReadOnlyWorker(worker: AgentConfig): boolean {
-    return !worker.tools.some((tool) => TeamOrchestrator.MUTATING_TOOLS.has(tool))
+    return !worker.tools.some((tool) => toolRuntimePolicy(tool).mutatesWorkspace)
   }
 
   private resourceKeysFor(subtask: SubTask, worker: AgentConfig): Set<string> {
@@ -499,7 +498,9 @@ export class TeamOrchestrator {
         return
       }
 
-      if (attempt < maxAttempts && this.isRetryableSubtaskFailure(failure)) {
+      const attemptedAction = subtask.toolCalls?.some((call) => toolRuntimePolicy(call.name, call.arguments).kind === 'action')
+      if (attemptedAction || !this.isRetryableSubtaskFailure(failure)) break
+      if (attempt < maxAttempts) {
         yield {
           type: 'task_progress',
           subtaskId: subtask.id,
@@ -902,6 +903,8 @@ Rules:
     }
 
     const runner = new AgentRunner({
+      executionEngine: this.config.executionEngine,
+      eventStore: this.config.eventStore,
       automation: this.config.automation,
       requestToolApproval: this.config.requestToolApproval,
       conversationId: this.config.conversationId,
@@ -960,6 +963,7 @@ claim the task is complete when the required artifact has not been written.
 
     try {
       for await (const event of runner.run({
+        parentRunId: this.parentRunId,
         messages: [],
         newMessage: {
           id: uuidv4(),
@@ -969,6 +973,9 @@ claim the task is complete when the required artifact has not been written.
           timestamp: Date.now(),
         },
       })) {
+        if (event.type === 'tool_call' && event.toolCall) {
+          subtask.toolCalls = [...(subtask.toolCalls || []), { ...event.toolCall }]
+        }
         // Text deltas can arrive hundreds or thousands of times for a long
         // response. Persisting every delta blocks the Electron main process
         // because conversation storage rewrites the complete JSON history.

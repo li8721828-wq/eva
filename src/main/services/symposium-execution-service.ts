@@ -207,7 +207,9 @@ export class SymposiumExecutionService {
           timestamp: Date.now(),
         }
         const runner = new AgentRunner({
-          ...createLocalExecutionPolicy(storage.config.get('automation'), { conversationId: input.conversationId, workspaceId: conversation.workspaceId, window: win }),
+          executionEngine: storage.config.get('executionEngine'),
+          eventStore: storage.agentRunEvents,
+          ...createLocalExecutionPolicy(storage.config.get('automation'), { conversation, conversationId: input.conversationId, workspaceId: conversation.workspaceId, window: win }),
           conversationId: input.conversationId,
           agentConfig: effectiveAgent,
           provider,

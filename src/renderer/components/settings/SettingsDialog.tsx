@@ -1,4 +1,5 @@
 import { settingsDetailText } from '@/lib/settings-detail-copy'
+import { ExecutionEnginePanel } from './ExecutionEnginePanel'
 import React, { useEffect, useState, useRef } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
@@ -693,6 +694,7 @@ export function SettingsDialog() {
               <h2 className="text-base font-semibold text-zinc-900">{copy.general}</h2>
               <p className="text-sm text-zinc-500">{pageCopy.generalHint}</p>
             </header>
+            <ExecutionEnginePanel />
             <section className="settings-form-section" aria-labelledby="general-appearance-title">
               <h3 id="general-appearance-title" className="settings-form-section-title">
                 <Eye className="h-4 w-4" />

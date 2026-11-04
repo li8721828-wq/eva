@@ -18,6 +18,7 @@ import { ModelRouter } from '../services/model-router'
 import { applyNetworkConfig, normalizeNetworkConfig, testNetworkConnection } from '../services/network-settings-service'
 import type { NetworkConfig } from '../../shared/types/network'
 import { getModelContextWindowTokens } from '../../shared/constants'
+import { isExecutionEngineConfig } from '../../shared/types/execution-engine'
 
 const terminalWorkspaces = new Map<string, string>()
 const terminalOutputUnsubscribers = new Map<string, () => void>()
@@ -38,7 +39,7 @@ const RENDERER_CONFIG_KEYS = new Set([
   'taskNoteHeight', 'explorerHeight', 'workspacePath', 'fileAccessGrants',
   'rightPanelVisible', 'terminalVisible', 'terminalHeight', 'terminalWidth',
   'primaryChatAgentId', 'activeProviderId', 'activeModel', 'environmentRules',
-  'automation',
+  'automation', 'executionEngine',
   // Only a preferred loopback port and a boolean: no token or key material. The
   // Settings App-Server panel edits it through the same generic config path.
   'appServer',
@@ -245,6 +246,7 @@ export function registerSystemHandlers(
 
   ipcMain.handle(IPC.CONFIG_SET, async (_event, key: string, value: unknown): Promise<void> => {
     assertRendererConfigKey(key)
+    if (key === 'executionEngine' && !isExecutionEngineConfig(value)) throw new Error('Invalid execution engine configuration')
     getStorage().config.set(key as never, value as never)
   })
 
@@ -252,8 +254,9 @@ export function registerSystemHandlers(
     return rendererConfig()
   })
 
-  ipcMain.handle(IPC.CONFIG_SELECT_MODEL, async (_event, providerId: string, model: string): Promise<void> => {
-    getStorage().config.selectModel(providerId, model)
+  ipcMain.handle(IPC.CONFIG_SELECT_MODEL, async (_event, providerId: string, model: string, reasoningSelection?: import('../../shared/model-reasoning').ReasoningSelection): Promise<void> => {
+    getStorage().config.selectModel(providerId, model, reasoningSelection)
+    if (reasoningSelection !== undefined) providerRegistry?.setReasoningSelection(providerId, model, reasoningSelection)
   })
 
   ipcMain.handle(IPC.NETWORK_GET_CONFIG, (): NetworkConfig => getStorage().config.get('network'))
@@ -312,6 +315,7 @@ export function registerSystemHandlers(
 
   ipcMain.handle(IPC.PROVIDER_CONFIG, async (_event, provider: ProviderConfigEntry): Promise<void> => {
     getStorage().config.saveProvider(provider)
+    provider = getStorage().config.getProvider(provider.id) || provider
 
     if (!providerRegistry) return
 
@@ -322,6 +326,8 @@ export function registerSystemHandlers(
         models: (provider.models || []).map((model) => ({
           id: model.id,
           name: model.name,
+          reasoningSelection: model.reasoningSelection,
+          transport: model.transport,
           maxTokens: model.capabilities?.contextWindowTokens || getModelContextWindowTokens(model.id),
           supportsTools: model.capabilities?.supportsTools !== false,
           supportsStreaming: model.capabilities?.supportsStreaming !== false,
@@ -384,7 +390,7 @@ export function registerSystemHandlers(
         const provider = createProvider({ ...config, models: [], isEnabled: true })
         const models = (await provider.listModels()).map((model) => ({
           ...model,
-          capabilities: inferModelCapabilities(config.type, model.id),
+          capabilities: model.capabilities || inferModelCapabilities(config.type, model.id),
         }))
         if (models.length === 0) {
           return { success: false, models: [], message: 'No models were returned by this provider.' }

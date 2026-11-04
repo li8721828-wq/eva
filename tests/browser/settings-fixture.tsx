@@ -6,6 +6,7 @@ import { SettingsDialog } from '@/components/settings/SettingsDialog'
 import { useAppStore } from '@/stores/use-app-store'
 import { DEFAULT_APP_SERVER_CONFIG, DEFAULT_AUTOMATION_CONFIG } from '../../src/shared/types/automation'
 import { DEFAULT_NETWORK_CONFIG } from '../../src/shared/types/network'
+import { DEFAULT_EXECUTION_ENGINE } from '../../src/shared/types/execution-engine'
 
 // Only fixture data is available: this renderer has no production preload bridge.
 const providers = [
@@ -49,8 +50,9 @@ testWindow.setQqScenario = (scenario: string) => {
 testWindow.settingsWrites = []
 testWindow.eva = {
   config: {
-    get: async (key: string) => key === 'appServer' ? DEFAULT_APP_SERVER_CONFIG : DEFAULT_AUTOMATION_CONFIG,
+    get: async (key: string) => key === 'executionEngine' ? DEFAULT_EXECUTION_ENGINE : key === 'appServer' ? DEFAULT_APP_SERVER_CONFIG : DEFAULT_AUTOMATION_CONFIG,
     set: async (key: string, value: unknown) => {
+      if (key === 'executionEngine' && testWindow.engineSaveFails) throw new Error('Engine save failed in test')
       testWindow.settingsWrites.push({ key, value })
     },
   },

@@ -12,9 +12,9 @@ const unsubscribe = () => () => {}
 const project = { id: 'project', name: '订单服务', path: 'D:/demo/orders', createdAt: 1, updatedAt: 1 }
 const conversation = { id: 'current', title: '订单退款与幂等处理', agentId: 'demo', mode: 'normal' as const, workspaceId: project.id, workspacePath: project.path, createdAt: 1, updatedAt: 1, messageCount: 2 }
 const writes: unknown[] = []
-const providers = [{ id: 'demo', name: '开发连接', type: 'custom', isEnabled: true, defaultModel: 'coding-demo', models: [{ id: 'coding-demo', name: '编程模型' }] }]
+const providers = [{ id: 'demo', name: '开发连接', type: 'custom', isEnabled: true, defaultModel: 'coding-demo', models: [{ id: 'coding-demo', name: '编程模型' }] }, { id: 'reasoning-demo', name: '思考连接', type: 'deepseek', apiKey: 'fixture-only', isEnabled: true, defaultModel: 'deepseek-flash', models: [{ id: 'deepseek-flash', name: 'DeepSeek Flash' }] }]
 const api: Record<string, unknown> = {
-  config: { set: async (key: string, value: unknown) => { writes.push({ key, value }) } },
+  config: { set: async (key: string, value: unknown) => { writes.push({ key, value }) }, selectModel: async (providerId: string, model: string, reasoningSelection?: string) => { writes.push({ key: 'modelSelection', providerId, model, reasoningSelection }); const entry = providers.find(provider => provider.id === providerId)?.models.find(item => item.id === model); if (entry && reasoningSelection !== undefined) (entry as any).reasoningSelection = reasoningSelection } },
   chat: { onStream: unsubscribe }, goal: { onStream: unsubscribe }, symposium: { onStream: unsubscribe },
   conversation: { onChanged: unsubscribe }, terminal: { onPanelVisibility: unsubscribe },
   task: { onStream: unsubscribe, getSnapshot: async (id: string) => {
@@ -43,5 +43,7 @@ testWindow.workspaceState = () => useAppStore.getState()
 testWindow.useOtherProject = () => useWorkspaceStore.setState({ workspaces: [project, { ...project, id: 'other', name: '其他项目', path: 'D:/demo/other' }], activeWorkspaceId: 'other' })
 testWindow.switchFixtureConversation = (id: string) => useChatStore.setState({ currentConversationId: id, conversations: [conversation, { ...conversation, id }], messages: [] })
 testWindow.setTestTheme = (theme: 'light' | 'dark' | 'starlight') => useAppStore.setState({ theme })
+testWindow.setFullFilesystemAccess = () => useChatStore.setState({ conversations: [{ ...conversation, permissionLevel: 'full-access' }] })
+testWindow.setReasoningRoute = (enabled: boolean) => useAppStore.setState({ activeProviderId: enabled ? 'reasoning-demo' : 'demo', activeModel: enabled ? 'deepseek-flash' : 'coding-demo' })
 createRoot(document.getElementById('root')!).render(<App />)
 setTimeout(() => { testWindow.uiReady = true }, 400)

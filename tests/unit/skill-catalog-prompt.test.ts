@@ -89,7 +89,41 @@ describe('the skill catalog in the system prompt', () => {
     const block = catalogBlock(contextManager.buildSystemPrompt(agent, workspace, undefined, false, []))
 
     expect(block).toContain('call load_skill with its exact name')
-    expect(block).toContain('Skills never execute code')
+    expect(block).toContain('Loading a skill only reads text')
+  })
+
+  it('mentions run_skill_command only when the agent actually has that tool', () => {
+    const workspace = makeTempDir('eva-skill-prompt-ws-')
+    writeSkill(path.join(workspace, '.eva', 'skills'), 'pdf-forms', 'Fill PDF forms.')
+
+    const withoutTool = catalogBlock(contextManager.buildSystemPrompt(agent, workspace, undefined, false, []))
+    const withTool = catalogBlock(contextManager.buildSystemPrompt(agent, workspace, undefined, false, [
+      { name: 'run_skill_command', description: 'Run a declared command', parameters: { type: 'object', properties: {} } },
+    ]))
+
+    expect(withoutTool).not.toContain('Skills marked with run_skill_command can execute')
+    expect(withTool).toContain('Skills marked with run_skill_command can execute')
+  })
+
+  it('marks a programmatic skill in the catalog line with its declared commands', () => {
+    const workspace = makeTempDir('eva-skill-prompt-ws-')
+    const dir = path.join(workspace, '.eva', 'skills', 'invoice-scan')
+    fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'scripts', 'scan.py'), 'print("ok")\n', 'utf8')
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), [
+      '---',
+      'name: invoice-scan',
+      'description: Extract invoice totals.',
+      'run_command: {"name":"scan","interpreter":"python","entry":"scripts/scan.py","args":["--file","{path}"]}',
+      '---',
+      '',
+      'Read the output.',
+      '',
+    ].join('\n'), 'utf8')
+
+    const block = catalogBlock(contextManager.buildSystemPrompt(agent, workspace, undefined, false, []))
+
+    expect(block).toContain('- invoice-scan: Extract invoice totals. [runs: scan]')
   })
 
   it('drops whole catalog lines instead of truncating one', () => {

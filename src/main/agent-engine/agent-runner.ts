@@ -1,4 +1,5 @@
 import type { LLMProvider } from '../providers/base-provider'
+import { resolveProviderReasoning } from '../providers/base-provider'
 import fs from 'fs'
 import path from 'path'
 import type { ToolExecutor, ToolContext, ToolRegistry, FileService, TerminalService, ToolResultImage } from '../tools'
@@ -6,7 +7,7 @@ import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ChatMessage, ChatUsage, ModelCallTiming, ResponseTiming, ToolCallTiming } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
 import type { AskUserOutcome, AskUserPrompt } from '../services/ask-user-policy'
-import { ContextManager } from './context'
+import { ContextManager, chatMessageToInput } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel } from './tool-result-context'
 import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
@@ -26,8 +27,17 @@ import { resolveSandboxPolicy } from '../services/sandbox/policy'
 import { openSandboxScope, closeSandboxScope } from '../services/sandbox/scope'
 import { ToolDispatcher } from '../services/tool-dispatcher'
 import { executionApproval } from '../services/execution-policy'
+import { RunJournal } from './run-journal'
+import { RunWorkingState } from './run-working-state'
+import { concurrentToolResults, toolCallSignature, toolRuntimePolicy, ToolObservationCache } from './tool-runtime-policy'
+import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
+import { ExecutionEngineError } from './execution-engine-worker'
+import { runNativeEngine } from './native-engine-runner'
 
 export interface AgentRunnerConfig {
+  /** Optional test/embedding override; production defaults to Eva userData. */
+  nativeSessionRoot?: string
+  executionEngine?: ExecutionEngineConfig
   conversationId?: string
   agentConfig: AgentConfig
   provider: LLMProvider
@@ -93,6 +103,9 @@ export interface ToolApprovalDecision {
 export interface RunParams {
   messages: ChatMessage[]
   newMessage: ChatMessage
+  /** Scheduler identity for a top-level run; children retain their own identity. */
+  runId?: string
+  parentRunId?: string
 }
 
 interface CompletedToolCall {
@@ -117,29 +130,6 @@ const MAX_PROVIDER_CONTINUATIONS = 3
 const MAX_EMPTY_RESPONSE_RETRIES = 1
 const DEFAULT_AGENT_RESPONSE_TOKENS = 4_096
 const REASONING_AGENT_RESPONSE_TOKENS = 8_192
-const PARALLEL_SAFE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page', 'read_terminal', 'load_skill'])
-/** Identity of one concrete tool invocation, used to detect repeated batches and calls. */
-function toolCallSignature(name: string, toolArguments: Record<string, unknown>): string {
-  return `${name}:${JSON.stringify(toolArguments)}`
-}
-// Directory/search results commonly identify the next file to read, so they
-// remain in the bounded loop. A concrete read is usually sufficient to
-// synthesize immediately.
-function isFastSynthesisReadTool(name: string): boolean {
-  return ['read_file', 'read_terminal', 'read_web_page', 'inspect_runtime'].includes(name)
-}
-// Reads of local files are only valid for the workspace state they observed.
-const LOCAL_FILE_READ_TOOL_NAMES = new Set(['read_file', 'list_directory', 'search_files'])
-const WORKSPACE_MUTATION_TOOL_NAMES = new Set(['write_file', 'edit_file', 'execute_command'])
-// A lone successful read usually answers the request, but the same shape also
-// opens work that still needs an action. Ask the model itself before closing.
-const LONE_READ_CHECKPOINT_PROMPT = `You have the content you asked for. Decide whether the user's request can now be completed with the evidence already collected.
-
-Reply with exactly one of:
-FINAL: followed by the concise, complete answer for the user.
-CONTINUE: followed by the specific action that is still required.
-
-Choose CONTINUE whenever the request needs a change, a command, or a verification that has not happened yet. Never present unperformed work as complete.`
 const SEARCH_UNAVAILABLE_MARKER = '[SEARCH_UNAVAILABLE]'
 // Tool-generated screenshots need an independent bound from user attachments.
 const MAX_TOOL_REVIEW_IMAGE_BYTES = 32 * 1024 * 1024
@@ -283,6 +273,8 @@ export class AgentRunner {
   private teamDelegationUsed = false
   private currentRunId = ''
   private currentTurnId = ''
+  private workingState: RunWorkingState | undefined
+  private readonly completedCalls = new Map<string, { signature: string; result: CompletedToolResult }>()
 
   constructor(config: AgentRunnerConfig) {
     this.config = config
@@ -294,17 +286,41 @@ export class AgentRunner {
     })
   }
 
-  /**
-   * Execute one direct tool batch for ordinary chat, then synthesize its
-   * results. Goal steps opt into the bounded ReAct loop because dependent
-   * actions such as inspect -> edit -> verify need later tool decisions.
-   */
+  /** Drive the selected engine until a natural answer, cancellation or safety boundary. */
   async *run(params: RunParams): AsyncGenerator<AgentEvent> {
     if (this.isRunning) {
       yield { type: 'error', error: '上一个任务仍在同一个执行器中运行，本次请求未发送。请等待它完成，或先停止上一轮。' }
       return
     }
 
+    this.currentRunId = params.runId || randomUUID()
+    this.currentTurnId = randomUUID()
+    const journal = new RunJournal(this.config.eventStore, this.currentRunId, this.currentTurnId)
+    let terminal = false
+    const execution = this.runInternal(params)
+    try {
+      let next = await execution.next()
+      while (!next.done) {
+        const event = next.value
+        if (event.type === 'error') {
+          terminal = true
+          await journal.settle(this.abortController?.signal.aborted ? 'cancelled' : 'failed', event.error)
+        } else if (event.type === 'done') {
+          terminal = true
+          await journal.settle(this.abortController?.signal.aborted ? 'cancelled' : 'completed', event.content)
+        }
+        yield event
+        next = await execution.next()
+      }
+    } finally {
+      // Cancel abandoned streams before closing their in-flight read iterators.
+      if (!terminal) this.abortController?.abort()
+      await execution.return(undefined)
+      if (!terminal) await journal.settle('cancelled')
+    }
+  }
+
+  private async *runInternal(params: RunParams): AsyncGenerator<AgentEvent> {
     this.isRunning = true
     this.teamDelegationUsed = false
     this.abortController = new AbortController()
@@ -312,8 +328,7 @@ export class AgentRunner {
     this.contextBuildMs = 0
     this.modelCallTimings = []
     this.toolCallTimings = []
-    this.currentRunId = randomUUID()
-    this.currentTurnId = randomUUID()
+    this.completedCalls.clear()
 
     // Bind the sandbox context for the duration of this run. The context is
     // derived from the automation config and includes the workspace + grants
@@ -324,7 +339,9 @@ export class AgentRunner {
 
     try {
       const userMessage = normalizePendingUserMessage(params.newMessage)
-      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_started')
+      this.workingState = new RunWorkingState(userMessage.content, this.config.workspacePath)
+      await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_started', undefined,
+        { ...(params.parentRunId ? { parentRunId: params.parentRunId } : {}), executionEngine: this.config.executionEngine?.id || 'eva' })
       await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_started')
 
       // Synchronize the active supplier connection before any model call so a
@@ -412,17 +429,15 @@ export class AgentRunner {
       // Repeated read-only requests are common when a model re-evaluates a tool
       // result. Reuse the result during one ReAct run instead of re-reading the
       // same file/page/search result over and over.
-      const readOnlyToolCache = new Map<string, CompletedToolResult>()
+      const readOnlyToolCache = new ToolObservationCache<CompletedToolResult>()
       // A successful workspace mutation invalidates earlier local reads so a
       // verification read can never be served pre-edit content from the cache.
       let workspaceRevision = 0
       const readOnlyCacheKey = (toolName: string, toolArguments: Record<string, unknown>): string => {
-        const fingerprint = `${toolName}:${JSON.stringify(toolArguments)}`
-        return LOCAL_FILE_READ_TOOL_NAMES.has(toolName) ? `rev${workspaceRevision}:${fingerprint}` : fingerprint
-      }
-      const mutatesWorkspace = (toolName: string, toolArguments: Record<string, unknown>): boolean => {
-        if (WORKSPACE_MUTATION_TOOL_NAMES.has(toolName)) return true
-        return toolName === 'spreadsheet' && (toolArguments.action === 'create' || toolArguments.action === 'update')
+        const policy = toolRuntimePolicy(toolName, toolArguments)
+        if (policy.cache === 'none') return ''
+        const fingerprint = toolCallSignature(toolName, toolArguments)
+        return policy.cache === 'workspace' ? `rev${workspaceRevision}:${fingerprint}` : fingerprint
       }
       let mustReadWebPageBeforeMoreSearch = false
       const pendingWriteVerifications = new Set<string>()
@@ -443,10 +458,12 @@ export class AgentRunner {
       let continuationDirectiveAttempts = 0
       let latestProtocolResults: NonNullable<CompletedToolResult['protocol']>[] = []
       let rollingToolEvidence = ''
+      let workingReference: ChatMessageInput | undefined
       // A repeated tool batch only ends the loop while the workspace state its
       // earlier result observed is unchanged; the value is the revision that
       // was current when the batch last ran.
       const previousNormalToolBatches = new Map<string, number>()
+      const failedReadBatches = new Map<string, { revision: number; attempts: number }>()
       // Every call this run has actually executed. The synthesis recovery batch
       // consults it so a repeated call cannot run a mutation a second time.
       const executedToolSignatures = new Set<string>()
@@ -460,6 +477,44 @@ export class AgentRunner {
         ? '\n\n--- Spreadsheet attachment policy ---\nA spreadsheet attachment is present. Use the structured `spreadsheet` tool first. Make one `inspect` call without a `sheet` argument to get the workbook and sheet overview; inspect an individual sheet only when the first result shows it is necessary. Use `create` or `update` only when the user explicitly requests a file change. Do not write Python, PowerShell, Node, or other scripts for spreadsheet work unless the spreadsheet tool returns an error or explicitly reports that the requested operation is unsupported. If fallback is needed, report the spreadsheet tool failure before using `execute_command`. Do not repeat an identical spreadsheet call.\n'
         : ''
       const modelCapabilityPolicy = this.buildModelCapabilityPolicy(modelCapabilities, activeToolDefs.length > 0)
+      if (this.config.executionEngine && this.config.executionEngine.id !== 'eva') {
+        const nativeHistory = safeAllHistory.filter((message) => !message.progressKind).map(chatMessageToInput)
+        const nativeRole = !agentConfig.isBuiltIn || agentConfig.systemPromptCustomized ? agentConfig.systemPrompt : ''
+        const instructions = [nativeRole, contextManager.getNativeReferenceContext(),
+          this.config.allowedWritePaths?.length ? `Only these exact files may be modified: ${this.config.allowedWritePaths.join(', ')}.` : '',
+          fileAccessGrants?.length ? `Additional authorized folders: ${fileAccessGrants.map((grant) => `${grant.path} (${grant.access})`).join(', ')}.` : '',
+        ].filter(Boolean).join('\n\n')
+        for await (const event of runNativeEngine({
+          config: this.config, engine: { ...this.config.executionEngine }, history: nativeHistory, instructions,
+          userMessageIds: [...params.messages, params.newMessage].filter(message => message.role === 'user').map(message => message.id),
+          tools: activeToolDefs, contextWindow: modelCapabilities.contextWindowTokens || 128_000,
+          supportsVision: primarySupportsVision, signal: this.abortController.signal,
+          sandbox: buildSandboxContext(this.config), runId: this.currentRunId, turnId: this.currentTurnId,
+          onUsage: (usage, timing) => {
+            this.modelCallTimings.push(timing)
+            const priced = usage ? { ...usage, ...resolveConnectionPricingMode(this.config.provider.id),
+              ...resolveRateCardUsageCost(this.config.provider.id, agentConfig.model, usage) } : undefined
+            accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, priced)
+          },
+          onTool: (timing) => this.toolCallTimings.push(timing),
+          executeExtension: async (call, transcript) => {
+            const result = await this.executeTool(call, {
+              conversationId: this.config.conversationId, workspacePath, fileAccessGrants, fullFilesystemAccess,
+              supportsVisionInput: primarySupportsVision, requestUserChoice: this.config.requestUserChoice,
+              fileService: this.config.fileService, terminalService: this.config.terminalService,
+              allowedModelPoolIds: agentConfig.modelPoolIds, visualAttachments: recentVisualAttachments,
+              agentContext: this.buildModelPoolContext(transcript, new Map()),
+            })
+            if (result.images?.length) recentVisualAttachments = dedupeToolImages([...recentVisualAttachments, ...result.images]).slice(-8)
+            const modelImages = primarySupportsVision ? await this.loadToolImages([call], new Map([[call.id, result]]), [call.name]) : []
+            return { ...result, modelImages }
+          },
+        })) {
+          yield event.type === 'done' ? { ...event, usage: accumulatedUsage, timing: this.buildResponseTiming() } : event
+        }
+        return
+      }
+
       const contextBuildStartedAt = Date.now()
       let activeSystemPrompt = contextManager.buildSystemPrompt(
         agentConfig,
@@ -504,7 +559,7 @@ export class AgentRunner {
         // the UI and tool protocol do not show or execute it repeatedly.
         const seenToolCallSignatures = new Set<string>()
         response.toolCalls = response.toolCalls.filter((toolCall) => {
-          const signature = `${toolCall.name}:${JSON.stringify(toolCall.arguments)}`
+          const signature = toolCallSignature(toolCall.name, toolCall.arguments)
           if (seenToolCallSignatures.has(signature)) return false
           seenToolCallSignatures.add(signature)
           return true
@@ -581,6 +636,9 @@ export class AgentRunner {
             yield { type: 'thinking', content: `已识别待完成事项：${continuationDirective.slice(0, 180)}` }
             continue
           }
+          // After tools have run, recover an empty answer through the flattened
+          // synthesis path instead of retrying the same native transcript.
+          if (!response.content.trim() && executedToolSignatures.size > 0) break
           if (!response.content.trim() && emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
             emptyResponseRetries += 1
             // Retrying the identical request reproduces the identical failure.
@@ -638,8 +696,6 @@ export class AgentRunner {
           // Text chunks were already emitted by executeLLMCall. The done event
           // supplies the canonical, complete content for persistence.
           const finalResponseContent = completedResponse.replace(/^FINAL\s*:\s*/i, '').trim()
-          await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_completed', { id: randomUUID(), kind: 'assistant_output', status: 'completed', content: finalResponseContent })
-          await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_completed')
           yield { type: 'done', content: finalResponseContent || completedResponse, finishReason: response.finishReason, usage: accumulatedUsage, timing: this.buildResponseTiming() }
           return
         }
@@ -676,8 +732,21 @@ export class AgentRunner {
         // The workspace state this batch observed, captured before any of its
         // own mutations run; repeat detection below compares against it.
         const batchStartRevision = workspaceRevision
+        const batchSignature = response.toolCalls.map((call) => toolCallSignature(call.name, call.arguments)).sort().join('|')
+        const deferredForPageRead = mustReadWebPageBeforeMoreSearch && response.toolCalls.some((call) => call.name === 'web_search')
+        const liveObservation = executableToolCalls.some((call) => toolRuntimePolicy(call.name, call.arguments).live)
+        const requestedMutation = executableToolCalls.some((call) => toolRuntimePolicy(call.name, call.arguments).mutatesWorkspace)
+        const previousFailure = failedReadBatches.get(batchSignature)
+        if (previousFailure?.revision === workspaceRevision && previousFailure.attempts >= 2) break
+        const expiredObservation = executableToolCalls.some((call) => {
+          const key = readOnlyCacheKey(call.name, call.arguments)
+          return key && readOnlyToolCache.get(key) === undefined
+        })
+        // Check before dispatch: a repeated mutation must not be applied a
+        // second time just to discover afterwards that the batch was repeated.
+        if ((requestedMutation || (!liveObservation && !expiredObservation)) && !deferredForPageRead && previousNormalToolBatches.get(batchSignature) === batchStartRevision) break
         const parallelReadBatch = !mustReadWebPageBeforeMoreSearch && executableToolCalls.length > 1
-          && executableToolCalls.every((toolCall) => PARALLEL_SAFE_READ_TOOL_NAMES.has(toolCall.name))
+          && executableToolCalls.every((toolCall) => toolRuntimePolicy(toolCall.name, toolCall.arguments).parallel)
         if (parallelReadBatch) {
           const visualAttachments = dedupeToolImages(recentVisualAttachments)
           const baseContext: ToolContext = {
@@ -700,22 +769,21 @@ export class AgentRunner {
             }
           }
           const inFlightReadExecutions = new Map<string, Promise<CompletedToolResult>>()
-          const completedBatch = await Promise.all(executableToolCalls.map(async (toolCall) => {
+          const executeRead = async (toolCall: CompletedToolCall): Promise<CompletedToolResult> => {
             const cacheKey = readOnlyCacheKey(toolCall.name, toolCall.arguments)
-            let execution = inFlightReadExecutions.get(cacheKey)
+            let execution = cacheKey ? inFlightReadExecutions.get(cacheKey) : undefined
             if (!execution) {
               execution = Promise.resolve(readOnlyToolCache.get(cacheKey))
                 .then(async (cached) => cached || this.normalizeToolResult(await this.executeTool(toolCall, baseContext)))
                 .then((result) => {
-                  readOnlyToolCache.set(cacheKey, result)
+                  if (cacheKey && !result.isError) readOnlyToolCache.set(cacheKey, result)
                   return result
                 })
-              inFlightReadExecutions.set(cacheKey, execution)
+              if (cacheKey) inFlightReadExecutions.set(cacheKey, execution)
             }
-            const result = await execution
-            return { toolCall, result }
-          }))
-          for (const { toolCall, result } of completedBatch) {
+            return execution
+          }
+          for await (const { item: toolCall, result } of concurrentToolResults(executableToolCalls, executeRead, this.abortController.signal)) {
             toolResults.set(toolCall.id, result)
             executedToolSignatures.add(toolCallSignature(toolCall.name, toolCall.arguments))
             if (toolCall.name === 'web_search') {
@@ -736,6 +804,12 @@ export class AgentRunner {
                 protocol: result.protocol,
               },
             }
+          }
+          for (const toolCall of executableToolCalls) {
+            if (toolResults.has(toolCall.id)) continue
+            const result = { result: 'Error: The run was cancelled before this queued read started.', isError: true }
+            toolResults.set(toolCall.id, result)
+            yield { type: 'tool_result', toolResult: { toolCallId: toolCall.id, name: toolCall.name, ...result } }
           }
         } else {
           for (const toolCall of executableToolCalls) {
@@ -792,8 +866,7 @@ export class AgentRunner {
             agentContext: this.buildModelPoolContext(messages, toolResults),
           }
           let result: CompletedToolResult
-          const cacheable = ['read_file', 'list_directory', 'search_files', 'web_search', 'read_web_page'].includes(toolCall.name)
-          const cacheKey = cacheable ? readOnlyCacheKey(toolCall.name, toolCall.arguments) : ''
+          const cacheKey = readOnlyCacheKey(toolCall.name, toolCall.arguments)
           const cached = cacheKey ? readOnlyToolCache.get(cacheKey) : undefined
           const rawResult = cached || await this.executeTool(toolCall, toolContext)
           result = this.normalizeToolResult(rawResult)
@@ -802,7 +875,7 @@ export class AgentRunner {
               ? consecutiveSearchFailures + 1
               : 0
           }
-          if (cacheKey && !cached) readOnlyToolCache.set(cacheKey, result)
+          if (cacheKey && !cached && !result.isError) readOnlyToolCache.set(cacheKey, result)
           if (result.isError) learnEnvironmentRuleFromFailure(toolCall.name, toolCall.arguments, result.result)
           toolResults.set(toolCall.id, result)
           executedToolSignatures.add(toolCallSignature(toolCall.name, toolCall.arguments))
@@ -811,7 +884,9 @@ export class AgentRunner {
           }
 
           const targetPath = this.resolveWorkspacePath(toolCall.arguments.path, workspacePath)
-          if (!result.isError && mutatesWorkspace(toolCall.name, toolCall.arguments)) workspaceRevision += 1
+          // Even a failed command may have partially changed files. Invalidate
+          // conservatively; unknown/MCP/Skill actions share this same policy.
+          if (toolRuntimePolicy(toolCall.name, toolCall.arguments).mutatesWorkspace) workspaceRevision += 1
           if (!result.isError && (toolCall.name === 'write_file' || toolCall.name === 'edit_file') && targetPath) pendingWriteVerifications.add(targetPath)
           if (!result.isError && toolCall.name === 'read_file' && targetPath) pendingWriteVerifications.delete(targetPath)
 
@@ -886,6 +961,11 @@ export class AgentRunner {
 
         const compactedHistory = compactCompletedToolTransactions(messages)
         messages = compactedHistory.messages
+        if (compactedHistory.evidence.length > 0 || workingReference) {
+          messages = messages.filter((message) => message !== workingReference)
+          workingReference = this.workingState.message()
+          messages.push(workingReference)
+        }
         rollingToolEvidence = appendRollingToolEvidence(rollingToolEvidence, compactedHistory.evidence)
         if (rollingToolEvidence && messages[0]?.role === 'system') {
           messages[0] = {
@@ -894,71 +974,20 @@ export class AgentRunner {
           }
         }
 
-        const batchSignature = response.toolCalls
-          .map((toolCall) => toolCallSignature(toolCall.name, toolCall.arguments))
-          .sort()
-          .join('|')
-        // Providers sometimes replay the same batch after a long tool result
-        // (especially in hidden Goal-step conversations). Do not start another
-        // tool-planning turn while the earlier result is already in `messages`
-        // and still valid: move directly to synthesis. The recorded revision is
-        // the batch's own post-execution revision, so an identical batch
-        // repeated after a later mutation (a verification re-read after a
-        // write, a command re-run after an edit) is a new observation and runs
-        // again. A deferred search is intentionally allowed once so the
-        // read_web_page guard can take effect.
-        const deferredForPageRead = mustReadWebPageBeforeMoreSearch
-          && response.toolCalls.some((toolCall) => toolCall.name === 'web_search')
-        const batchRevision = previousNormalToolBatches.get(batchSignature)
-        if (batchRevision !== undefined && batchRevision === batchStartRevision && !deferredForPageRead) break
-        previousNormalToolBatches.set(batchSignature, workspaceRevision)
-
-        // A lone successful read in normal chat must not start another
-        // open-ended tool-planning turn: when it already answers the request,
-        // the shared tool-free synthesis below is substantially faster. The
-        // same shape also opens work that still needs an action ("read the
-        // file, then fix it"), so the model itself decides the next step at a
-        // tool-free checkpoint instead of a hard stop.
-        const onlyOneExecutableRead = !adaptiveToolBudget
-          && executableToolCalls.length === 1
-          && isFastSynthesisReadTool(executableToolCalls[0].name)
-          && !toolResults.get(executableToolCalls[0].id)?.isError
-        if (onlyOneExecutableRead) {
-          if (iteration + 1 >= toolCycleLimit) break
-          // Reading something else must not finalize unverified writes; reuse
-          // the loop's verification nudge instead of closing the turn.
-          if (pendingWriteVerifications.size > 0 && activeToolDefs.some((tool) => tool.name === 'read_file')) {
-            messages.push({
-              role: 'user',
-              content: `You wrote ${this.formatPaths(pendingWriteVerifications)} in this run but have not verified the saved contents. Before finalizing, call read_file for each changed path. Do not claim the file is correct or complete until that verification succeeds.`,
-            })
-            continue
-          }
-          yield { type: 'thinking', content: 'Reviewing whether the request is complete...' }
-          const checkpoint = yield* this.executeLLMCall(
-            this.buildFinalSynthesisMessages([
-              ...messages,
-              { role: 'user', content: LONE_READ_CHECKPOINT_PROMPT },
-            ]),
-            [],
-          )
-          accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, checkpoint.usage)
-          const checkpointContent = checkpoint.content.trim()
-          if (checkpoint.toolCalls.length > 0 || /^CONTINUE\s*:/i.test(checkpointContent)) {
-            if (checkpointContent) messages.push({ role: 'assistant', content: checkpointContent })
-            messages.push({
-              role: 'user',
-              content: 'The remaining step is still required. Complete it now with the available tools; do not report it as done until it has actually executed.',
-            })
-            continue
-          }
-          const checkpointFinal = checkpointContent.replace(/^FINAL\s*:\s*/i, '').trim()
-          if (checkpointFinal && !checkpoint.protocolTextDetected && !checkpoint.toolCallParseFailure) {
-            yield { type: 'done', content: checkpointFinal, usage: accumulatedUsage, timing: this.buildResponseTiming() }
-            return
-          }
-          break
+        // Record post-action state for the next batch's pre-dispatch guard.
+        // Failed actions may have partial effects; only failed observations
+        // get a bounded retry. Live output may change without a file write.
+        const hasFailures = Array.from(toolResults.values()).some((result) => result.isError)
+        const hasMutation = requestedMutation
+        if (hasMutation || (!liveObservation && !hasFailures)) {
+          previousNormalToolBatches.set(batchSignature, workspaceRevision)
         }
+        if (hasFailures && !hasMutation) {
+          failedReadBatches.set(batchSignature, {
+            revision: workspaceRevision,
+            attempts: previousFailure?.revision === workspaceRevision ? previousFailure.attempts + 1 : 1,
+          })
+        } else failedReadBatches.delete(batchSignature)
 
         // Goal steps should not blindly consume their maximum tool budget. At
         // each checkpoint the model first decides whether the evidence is
@@ -993,9 +1022,8 @@ export class AgentRunner {
         }
       }
 
-      // Tool calls can legitimately take several passes in a Goal, but normal
-      // chat intentionally stops after its first tool batch. In both cases,
-      // give the model a final synthesis turn. Some gateways ignore the
+      // A safety ceiling or unchanged repeated batch needs a final synthesis.
+      // Some gateways ignore the
       // tool-free instruction and return one last DSML/native call; allow one
       // bounded recovery batch instead of reporting that the task failed.
       const finalVerificationNotice = pendingWriteVerifications.size > 0
@@ -1172,26 +1200,21 @@ export class AgentRunner {
       yield { type: 'done', content: '', timing: this.buildResponseTiming() }
     } catch (err: any) {
       if (this.abortController?.signal.aborted) {
-        await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'turn_interrupted', {
-          id: randomUUID(), kind: 'system', status: 'cancelled', content: 'Execution was interrupted before the current model or tool action completed.',
-        }).catch(() => undefined)
         yield { type: 'done', content: '', timing: this.buildResponseTiming() }
       } else {
-        const errorMsg = formatProviderRequestFailure(
+        const errorMsg = err instanceof ExecutionEngineError ? err.message : formatProviderRequestFailure(
           err,
           this.config.provider,
           this.config.agentConfig.model,
           this.config.requestSource || 'chat',
         )
         yield { type: 'error', error: errorMsg }
-        await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'run_failed', {
-          id: randomUUID(), kind: 'system', status: 'failed', error: errorMsg.slice(0, 1000),
-        }).catch(() => undefined)
         if (!(err instanceof InvalidRequestError)) yield { type: 'done', content: '', timing: this.buildResponseTiming() }
       }
     } finally {
       this.isRunning = false
       this.abortController = null
+      this.workingState = undefined
       // Release only this run's sandbox scope so a concurrent run keeps its own.
       closeSandboxScope(sandboxScopeToken)
     }
@@ -1289,11 +1312,9 @@ export class AgentRunner {
             ? REASONING_AGENT_RESPONSE_TOKENS
             : DEFAULT_AGENT_RESPONSE_TOKENS,
           stream: true,
-          reasoning: options?.disableReasoning || !this.shouldRequestProviderReasoning(agentConfig)
-            ? { enabled: false }
-            : provider.supportsReasoning(agentConfig.model)
-              ? { enabled: true, budgetTokens: 1024 }
-              : undefined,
+          reasoning: options?.disableReasoning ? { enabled: false } : resolveProviderReasoning(provider, agentConfig.model,
+            !this.shouldRequestProviderReasoning(agentConfig) ? { enabled: false }
+              : provider.supportsReasoning(agentConfig.model) ? { enabled: true, budgetTokens: 1024 } : undefined),
         },
         signal
       )
@@ -1606,12 +1627,25 @@ export class AgentRunner {
     toolCall: CompletedToolCall,
     toolContext: ToolContext
   ): Promise<CompletedToolResult> {
+    const signature = toolCallSignature(toolCall.name, toolCall.arguments)
+    const policy = toolRuntimePolicy(toolCall.name, toolCall.arguments)
+    const protectReplay = policy.mutatesWorkspace || (!policy.parallel && policy.cache === 'none')
+    const previous = protectReplay ? this.completedCalls.get(toolCall.id) : undefined
+    if (previous) {
+      return previous.signature === signature ? previous.result : {
+        result: 'Error: this tool call ID was already used with different arguments. No additional action was executed.', isError: true,
+      }
+    }
     const startedAt = Date.now()
     const itemId = randomUUID()
-    await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'tool_started', { id: itemId, kind: 'tool_call', status: 'started', name: toolCall.name })
+    await this.config.eventStore?.appendLifecycle(this.currentRunId, this.currentTurnId, 'tool_started', { id: itemId, kind: 'tool_call', status: 'started', name: toolCall.name }, {
+      toolCallId: toolCall.id, signature, effect: policy.kind,
+    })
     let result: CompletedToolResult | undefined
     try {
-      result = await this.executeToolInternal(toolCall, toolContext)
+      result = this.normalizeToolResult(await this.executeToolInternal(toolCall, toolContext))
+      if (protectReplay) this.completedCalls.set(toolCall.id, { signature, result })
+      this.workingState?.observe(toolCall, result)
       await this.config.eventStore?.appendLifecycle(
         this.currentRunId,
         this.currentTurnId,
@@ -1621,6 +1655,8 @@ export class AgentRunner {
           operationId: result.protocol?.operationId || null,
           protocolStatus: result.protocol?.status || null,
           durationMs: result.protocol?.durationMs || null,
+          toolCallId: toolCall.id,
+          signature: toolCallSignature(toolCall.name, toolCall.arguments),
         },
       ).catch(() => undefined)
       return result
@@ -1795,6 +1831,7 @@ export class AgentRunner {
 
   private normalizeToolResult(result: CompletedToolResult): CompletedToolResult {
     if (result.isError) return result
+    if (result.protocol?.status === 'failed' || result.protocol?.status === 'rejected') return { ...result, isError: true }
     // Some legacy executors return a textual failure instead of throwing. Do
     // not let that be mistaken for evidence that the requested action worked.
     if (/^(?:error|failed|failure|mouse control failed)\b/i.test(result.result.trim())) {

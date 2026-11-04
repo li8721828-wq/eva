@@ -1,10 +1,39 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import fs from 'fs/promises'
 import os from 'os'
 import path from 'path'
 import { AgentRunEventStore } from '../../src/main/storage/agent-run-event-store'
 
 describe('AgentRunEventStore', () => {
+  it('recovers its sequence once, serializes concurrent appends, and tolerates a torn trailing record', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-journal-'))
+    try {
+      const file = path.join(dir, 'agent-run-events.jsonl')
+      const first = new AgentRunEventStore(dir)
+      await first.appendLifecycle('old', 'turn', 'run_started')
+      await fs.appendFile(file, '{"partial":')
+      const store = new AgentRunEventStore(dir)
+      const read = vi.spyOn(fs, 'readFile')
+      try {
+        await Promise.all(Array.from({ length: 100 }, (_, index) => store.appendLifecycle(`run-${index}`, 'turn', 'run_started')))
+        expect(read).toHaveBeenCalledTimes(1)
+      } finally { read.mockRestore() }
+      expect((await store.list()).map((entry) => entry.sequence)).toEqual(Array.from({ length: 101 }, (_, index) => index + 1))
+      const restarted = new AgentRunEventStore(dir)
+      expect((await restarted.appendLifecycle('next', 'turn', 'run_started')).sequence).toBe(102)
+    } finally { await fs.rm(dir, { recursive: true, force: true }) }
+  })
+
+  it('recovers its write queue and sequence after an append fails', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-journal-error-'))
+    try {
+      const store = new AgentRunEventStore(dir)
+      const append = vi.spyOn(fs, 'appendFile').mockRejectedValueOnce(new Error('write failed'))
+      try { await expect(store.appendLifecycle('run', 'turn', 'run_started')).rejects.toThrow('write failed') }
+      finally { append.mockRestore() }
+      expect((await store.appendLifecycle('run', 'turn', 'run_started')).sequence).toBe(1)
+    } finally { await fs.rm(dir, { recursive: true, force: true }) }
+  })
   it('appends ordered run, turn, and item events and filters by run', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-run-events-'))
     try {

@@ -3,6 +3,7 @@ import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
 import type { ToolContext, ToolExecutionResult, ToolExecutor, ToolRegistry } from '../tools'
 import { createExecutionEnvelope } from '../tools'
 import { validateToolArguments } from '../agent-engine/tool-dispatch'
+import { toolRuntimePolicy } from '../agent-engine/tool-runtime-policy'
 
 export interface ToolApprovalRequest {
   signal?: AbortSignal
@@ -41,25 +42,8 @@ export interface ToolDispatcherConfig {
   allowedWritePaths?: string[]
 }
 
-const READ_ONLY_TOOLS = new Set([
-  'read_file',
-  'list_directory',
-  'search_files',
-  'file_info',
-  'search_code',
-  'search_by_regex',
-  'project_search',
-  'project_index_status',
-  'read_web_page',
-  'web_search',
-  'read_terminal',
-  'inspect_runtime',
-  'diagnose_runtime',
-  'load_skill',
-])
-
 function errorEnvelope(toolName: string, message: string, retryable = false): ExecutionEnvelope {
-  return createExecutionEnvelope(READ_ONLY_TOOLS.has(toolName) ? 'observation' : 'action', 'failed', {
+  return createExecutionEnvelope(toolRuntimePolicy(toolName).kind, 'failed', {
     tool: toolName,
   }, {
     error: {
@@ -102,7 +86,7 @@ function isExactWritePathAllowed(requestedPath: unknown, workspacePath: string, 
 }
 
 function defaultProtocol(tool: ToolExecutor, startedAt: number): ExecutionEnvelope {
-  const observed = READ_ONLY_TOOLS.has(tool.definition.name)
+  const observed = toolRuntimePolicy(tool.definition.name).kind === 'observation'
   const completedAt = new Date().toISOString()
   const envelope = createExecutionEnvelope(observed ? 'observation' : 'action', observed ? 'observed' : 'applied', {
     tool: tool.definition.name,

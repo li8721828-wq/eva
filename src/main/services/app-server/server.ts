@@ -283,6 +283,7 @@ function buildMethodHandlers(deps: ServerDeps): Map<RpcMethod, RpcMethodHandler>
       const storedAutomation = storage.config.get('automation') ?? DEFAULT_AUTOMATION_CONFIG
 
       const runner = new AgentRunner({
+        executionEngine: storage.config.get('executionEngine'),
         conversationId: threadId,
         agentConfig: effectiveAgent,
         provider,

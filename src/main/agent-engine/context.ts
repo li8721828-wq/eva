@@ -89,7 +89,7 @@ export interface ContextManagerOptions {
 /**
  * Convert a stored ChatMessage to the LLM input format.
  */
-function chatMessageToInput(msg: ChatMessage): ChatMessageInput {
+export function chatMessageToInput(msg: ChatMessage): ChatMessageInput {
   const imageNotice = msg.images?.length
     ? `\n\nAttached reference images (use these exact paths when a visual tool or model route requires them):\n${msg.images.map((image) => `- ${image.path}`).join('\n')}`
     : ''
@@ -133,6 +133,9 @@ export class ContextManager {
   createStepContext(): ContextManager {
     return new ContextManager({ environmentRules: this.options.environmentRules })
   }
+
+  /** Business references only; native engines build their own prompts and history. */
+  getNativeReferenceContext(): string { return this.options.durableMemory?.trim() || '' }
 
   getLastDiagnostics(): ContextDiagnostics | undefined {
     return this.lastDiagnostics ? { ...this.lastDiagnostics } : undefined
@@ -494,6 +497,12 @@ export class ContextManager {
     if (skillLines.length) {
       // Only the catalog stub stays resident; load_skill fetches a body when the model needs one.
       const catalog = [...SKILL_CATALOG_HEADER]
+      // The run_skill_command note is only true when the model can actually call
+      // it, so it is appended just before the listing rather than baked into the
+      // shared header.
+      if (tools.some((tool) => tool.name === 'run_skill_command')) {
+        catalog.push('Skills marked with run_skill_command can execute a declared command; skills without that tool stay readable instructions only.')
+      }
       // Hold back room for the omission note so the segment never exceeds its published budget.
       const budget = SKILL_CATALOG_MAX_TOKENS - SKILL_CATALOG_NOTE_RESERVE_TOKENS
       for (const line of skillLines) {

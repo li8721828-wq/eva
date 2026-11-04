@@ -1,0 +1,17 @@
+/* Local outline fonts only: no network request or machine-wide font install.
+   HarmonyOS registers Medium as a separate family on Windows. Map its real
+   face into our UI family instead of asking Chromium to synthesize bold. */
+@font-face {
+  font-family: "Eva Sans";
+  src: local("HarmonyOS Sans SC"), local("HarmonyOS Sans SC Regular");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Eva Sans";
+  src: local("HarmonyOS Sans SC Medium");
+  font-style: normal;
+  font-weight: 500 700;
+  font-display: swap;
+}

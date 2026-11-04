@@ -1,4 +1,5 @@
 import type { ToolDefinition } from '../../shared/types/provider'
+import { TOOL_RUNTIME_POLICIES } from './tool-runtime-policy'
 
 const MAX_DISPATCH_CALLS = 8
 const MAX_DESCRIPTION_LENGTH = 120
@@ -47,21 +48,9 @@ export const DISPATCH_TOOLS_DEFINITION: ToolDefinition = {
   },
 }
 
-export const PARALLEL_SAFE_DISPATCH_TOOLS = new Set([
-  'read_file',
-  'list_directory',
-  'search_files',
-  'search_code',
-  'search_by_regex',
-  'project_search',
-  'project_index_status',
-  'web_search',
-  'read_web_page',
-  'read_terminal',
-  'inspect_runtime',
-  'diagnose_runtime',
-  'load_skill',
-])
+export const PARALLEL_SAFE_DISPATCH_TOOLS = new Set(
+  Object.entries(TOOL_RUNTIME_POLICIES).filter(([, policy]) => policy.parallel).map(([name]) => name),
+)
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)

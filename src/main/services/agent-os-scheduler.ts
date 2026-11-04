@@ -22,7 +22,7 @@ export interface AgentOsTaskInput {
   maxAttempts?: number
   recoveryPayload?: RuntimeRunPayload
   idempotencyKey?: string
-  run: (attempt: number) => Promise<TaskQueueResult>
+  run: (attempt: number, runId: string) => Promise<TaskQueueResult>
   onUpdate?: (update: TaskQueueUpdate) => void | Promise<void>
 }
 
@@ -102,7 +102,21 @@ export class AgentOsScheduler {
       kind: input.kind,
       resourceKey: input.resourceKey,
       maxAttempts: input.maxAttempts,
-      run: input.run,
+      run: async (attempt) => {
+        let result: TaskQueueResult
+        try { result = await input.run(attempt, process.id) }
+        catch (error) { result = { status: 'failed', error: error instanceof Error ? error.message : String(error) } }
+        if (result.status === 'failed' && this.agentRunEvents) {
+          try {
+            const summary = await this.agentRunEvents.recoverySummary(process.id)
+            if (summary.requiresManualReview) return { ...result, retryable: false }
+          } catch {
+            // A failed evidence read cannot authorize replay of a failed job.
+            return { ...result, retryable: false }
+          }
+        }
+        return result
+      },
       onUpdate: async (update) => {
         activeRunRegistry.transition('scheduler-task', input.conversationId, this.toRegistryStatus(update.state), this.detailForUpdate(update))
         await input.onUpdate?.(update)
@@ -266,7 +280,16 @@ export class AgentOsScheduler {
       this.recoveringRuns.add(run.id)
       try {
         if (this.agentRunEvents && run.status === 'interrupted') {
-          run.payload = { ...run.payload, recoverySummary: await this.agentRunEvents.recoverySummary(run.id) }
+          const summary = await this.agentRunEvents.recoverySummary(run.id)
+          run.payload = { ...run.payload, recoverySummary: summary }
+          if (summary.requiresManualReview) {
+            await this.runtimeRuns.save({
+              ...run, recoveryMode: 'checkpointed-manual',
+              detail: '中断前的操作可能已生效，或执行日志不完整。请先核对实际结果，再从任务检查点手动继续；本次未自动重跑。',
+            })
+            this.recoveringRuns.delete(run.id)
+            continue
+          }
         }
         accepted = await handler(run, context)
       } catch (error) {

@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { ChatParams, ChatChunk, ChatMessageInput, ToolDefinition } from '../../shared/types/provider'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { withRetry, classifyError } from './errors'
+import { reasoningCapabilityForModel, reasoningRequest, selectedReasoning } from '../../shared/model-reasoning'
 
 export class AnthropicProvider implements LLMProvider {
   readonly id: string
@@ -11,6 +12,7 @@ export class AnthropicProvider implements LLMProvider {
   private apiKey: string
   private baseUrl: string
   private defaultModel?: string
+  private readonly models: ProviderCreateOptions['models']
 
   constructor(id: string, name: string, options: ProviderCreateOptions) {
     this.id = id
@@ -18,6 +20,7 @@ export class AnthropicProvider implements LLMProvider {
     this.apiKey = options.apiKey
     this.baseUrl = options.baseUrl || 'https://api.anthropic.com'
     this.defaultModel = options.defaultModel
+    this.models = options.models || []
 
     this.client = new Anthropic({
       apiKey: options.apiKey,
@@ -26,8 +29,21 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   supportsReasoning(model: string): boolean {
-    const normalized = model.trim().toLowerCase()
-    return normalized.includes('claude-3-7-sonnet') || /claude-(sonnet|opus)-4(?:[-.]|$)/.test(normalized)
+    return Boolean(reasoningCapabilityForModel('anthropic', model, this.models))
+  }
+
+  getReasoningSelection(model: string) { return selectedReasoning('anthropic', model, this.models) }
+
+  private reasoningFields(params: ChatParams): Record<string, unknown> {
+    const reasoning = params.reasoning ?? reasoningRequest(this.getReasoningSelection(params.model))
+    if (!reasoning?.enabled) return { temperature: params.temperature, ...(reasoning?.effort === 'none' ? { thinking: { type: 'disabled' } } : {}) }
+    if (reasoningCapabilityForModel('anthropic', params.model, this.models)?.mode === 'anthropic-adaptive')
+      return { thinking: { type: 'adaptive' }, ...(reasoning.effort ? { output_config: { effort: reasoning.effort } } : {}) }
+    const maxTokens = params.maxTokens || 4096
+    if (maxTokens <= 1024) throw new Error('Thinking requires an output limit above 1024 tokens.')
+    const budgets = { minimal: 1024, low: 1024, medium: 4096, high: 8192, xhigh: 16384, max: 32768, none: 1024 }
+    const requested = reasoning.budgetTokens || budgets[reasoning.effort || 'low']
+    return { thinking: { type: 'enabled', budget_tokens: Math.min(requested, Math.max(1024, maxTokens - 1024)) } }
   }
 
   getConnectionDiagnostics(): { baseUrl: string } {
@@ -121,9 +137,7 @@ export class AnthropicProvider implements LLMProvider {
             messages: this.convertMessages(userMessages),
             tools: this.convertTools(params.tools),
             stream: true,
-            ...(params.reasoning?.enabled
-              ? { thinking: { type: 'enabled', budget_tokens: params.reasoning.budgetTokens || 1024 } }
-              : { temperature: params.temperature }),
+            ...this.reasoningFields(params),
           } as any,
           { signal }
         ),
@@ -244,7 +258,7 @@ export class AnthropicProvider implements LLMProvider {
             messages: this.convertMessages(userMessages),
             tools: this.convertTools(params.tools),
             stream: false,
-            temperature: params.temperature,
+            ...this.reasoningFields(params),
           },
           { signal }
         ),

@@ -5,6 +5,7 @@ import { AnthropicProvider } from './anthropic'
 import { OpenCodeProvider } from './opencode'
 import { inferModelCapabilities } from '../../shared/model-capabilities'
 import type { ModelCapabilityProfile } from '../../shared/types/provider'
+import { reasoningCapabilityForModel, type ReasoningSelection } from '../../shared/model-reasoning'
 
 /**
  * Default base URLs for various providers.
@@ -113,12 +114,28 @@ export class ProviderRegistry {
     return this.configs.get(providerId)?.defaultModel
   }
 
+  /** Recreate the provider so already-running requests retain their snapshot. */
+  setReasoningSelection(providerId: string, model: string, reasoningSelection: ReasoningSelection): void {
+    const config = this.configs.get(providerId)
+    if (!config) return
+    const models = config.models.some(item => item.id === model)
+      ? config.models.map(item => item.id === model ? { ...item, reasoningSelection } : item)
+      : [...config.models, { id: model, name: model, maxTokens: 128000, supportsTools: true, supportsStreaming: true, reasoningSelection }]
+    this.register({ ...config, models })
+  }
+
   /** Return the persisted profile when available, otherwise a conservative inference. */
   getModelCapabilities(providerId: string, modelId: string): ModelCapabilityProfile | undefined {
     const config = this.configs.get(providerId)
     if (!config) return undefined
     const declared = config.models.find((model) => model.id === modelId)
-    if (declared?.capabilities) return declared.capabilities
+    if (declared?.capabilities) {
+      const profile = declared.capabilities
+      const reasoning = reasoningCapabilityForModel(config.type, modelId, config.models)
+      if (reasoning && profile.reasoningSource !== 'declared' && (profile.source === 'inferred' || profile.source === 'probed'))
+        return { ...profile, supportsReasoning: true, reasoning, reasoningSource: profile.reasoningSource || 'inferred' }
+      return profile
+    }
     return inferModelCapabilities(config.type, modelId, declared)
   }
 }

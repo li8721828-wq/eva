@@ -1,5 +1,5 @@
 import type { ToolContext, ToolExecutor } from './index'
-import { loadSkill, writeSkillFile } from '../services/skill-service'
+import { loadSkill, runSkillCommand, writeSkillFile } from '../services/skill-service'
 
 export function createSkillTools(): ToolExecutor[] {
   return [{
@@ -23,8 +23,44 @@ export function createSkillTools(): ToolExecutor[] {
     },
   }, {
     definition: {
+      name: 'run_skill_command',
+      description: 'Run one programmatic command that a skill declares in its SKILL.md frontmatter. The command, its interpreter and its entry point all come from that file; this tool only chooses which declared command to run and fills the arguments the declaration names. Read the skill with load_skill first. Long-running or destructive commands should be avoided unless the user asked for them, and a run is only real once this tool returns its output.',
+      parameters: {
+        type: 'object',
+        required: ['name', 'command'],
+        properties: {
+          name: { type: 'string', description: 'Exact skill name from the Available Skills list.' },
+          command: { type: 'string', description: 'One declared command name listed by load_skill for that skill.' },
+          arguments: {
+            type: 'object',
+            description: 'Values for the declaration\'s placeholders, keyed by placeholder name. Only the placeholders the declaration names are accepted; every one of them is required.',
+          },
+          timeout_ms: { type: 'number', description: 'Optional shorter timeout in milliseconds. The command declaration sets the ceiling.' },
+        },
+      },
+    },
+    async execute(params: Record<string, unknown>, context: ToolContext): Promise<string> {
+      const name = typeof params.name === 'string' ? params.name.trim() : ''
+      if (!name) throw new Error('name is required and must be an exact skill name from the Available Skills list.')
+      const command = typeof params.command === 'string' ? params.command.trim() : ''
+      if (!command) throw new Error('command is required and must be one of the declared commands of that skill.')
+      const args = params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments)
+        ? params.arguments as Record<string, unknown>
+        : undefined
+      const result = await runSkillCommand({
+        name,
+        command,
+        arguments: args,
+        timeoutMs: typeof params.timeout_ms === 'number' ? params.timeout_ms : undefined,
+        workspacePath: context.workspacePath,
+        signal: context.signal,
+      })
+      return result.content
+    },
+  }, {
+    definition: {
       name: 'write_skill_file',
-      description: 'Write one text file into an installed-skills folder so a skill can be authored or updated. The target is always the given skill name plus a file path inside it, under either the machine-wide skills folder or this workspace\'s .eva/skills folder; the workspace file sandbox does not cover either, so read_file and write_file cannot reach these paths and this tool must be used instead. Writing SKILL.md requires a frontmatter name equal to the skill name, a description, and instructions after the frontmatter. The result is registered in the skill catalog immediately. This writes text only and never runs anything.',
+      description: 'Write one text file into an installed-skills folder so a skill can be authored or updated. The target is always the given skill name plus a file path inside it, under either the machine-wide skills folder or this workspace\'s .eva/skills folder; the workspace file sandbox does not cover either, so read_file and write_file cannot reach these paths and this tool must be used instead. Writing SKILL.md requires a frontmatter name equal to the skill name, a description, and instructions after the frontmatter. A SKILL.md may also declare run_command entries to make the skill programmatic: a declared entry point must be a script file inside the skill folder and must exist before the skill is listed. The result is registered in the skill catalog immediately. This writes text only and never runs anything.',
       parameters: {
         type: 'object',
         required: ['name', 'content'],

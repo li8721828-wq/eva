@@ -39,6 +39,18 @@ describe('ConfigStore startup recovery', () => {
     fs.rmSync(state.userDataDir, { recursive: true, force: true })
   })
 
+  it('defaults old configs to Eva and persists an explicit engine selection', () => {
+    const store = new ConfigStore()
+    expect(store.get('executionEngine')).toEqual({ id: 'eva', nodePath: 'node' })
+    store.set('executionEngine', { id: 'deepseek-harness', nodePath: 'D:\\node\\node.exe' })
+    expect(new ConfigStore().get('executionEngine')).toEqual({ id: 'deepseek-harness', nodePath: 'D:\\node\\node.exe' })
+  })
+
+  it('repairs invalid stored execution engine settings', () => {
+    fs.writeFileSync(path.join(state.userDataDir, 'config.json'), JSON.stringify({ executionEngine: { id: 'unknown', nodePath: 'node' } }))
+    expect(new ConfigStore().get('executionEngine')).toEqual({ id: 'eva', nodePath: 'node' })
+  })
+
   it('starts from defaults and backs up an unreadable config file', () => {
     fs.writeFileSync(path.join(state.userDataDir, 'config.json'), '{ this is not json', 'utf-8')
 
@@ -91,5 +103,26 @@ describe('ConfigStore startup recovery', () => {
     store.selectModel('', '')
     expect(store.get('activeProviderId')).toBe('')
     expect(store.get('activeModel')).toBe('')
+  })
+
+  it('persists reasoning per connection and model, and keeps the atomic selection on failure', () => {
+    const store = new ConfigStore()
+    const provider = { id: 'ds', name: 'DS', type: 'deepseek' as const, apiKey: '', isEnabled: true, models: [{ id: 'deepseek-flash', name: 'Flash' }, { id: 'deepseek-v4-pro', name: 'Pro' }] }
+    store.saveProvider(provider)
+    store.saveProvider({ ...provider, id: 'other' })
+    store.selectModel('ds', 'deepseek-flash', 'max')
+    store.selectModel('ds', 'deepseek-v4-pro', 'low')
+    store.selectModel('other', 'deepseek-flash', 'high')
+    const reloaded = new ConfigStore()
+    expect(reloaded.getProvider('ds')?.models?.map(model => model.reasoningSelection)).toEqual(['max', 'low'])
+    expect(reloaded.getProvider('other')?.models?.[0].reasoningSelection).toBe('high')
+    reloaded.saveProvider(provider)
+    expect(reloaded.getProvider('ds')?.models?.[0].reasoningSelection).toBe('max')
+    const before = fs.readFileSync(path.join(state.userDataDir, 'config.json'), 'utf8')
+    expect(() => reloaded.selectModel('ds', 'deepseek-flash', 'medium')).toThrow('does not support')
+    const write = vi.spyOn((reloaded as any).store, 'set').mockImplementationOnce(() => { throw new Error('disk full') })
+    expect(() => reloaded.selectModel('ds', 'deepseek-flash', 'none')).toThrow('disk full')
+    expect(write).toHaveBeenCalledOnce()
+    expect(fs.readFileSync(path.join(state.userDataDir, 'config.json'), 'utf8')).toBe(before)
   })
 })

@@ -113,7 +113,7 @@ describe('AgentRunner adaptive tool budget', () => {
     })) events.push(event)
     expect(execute).toHaveBeenCalledTimes(1)
     expect(chat).toHaveBeenCalledTimes(2)
-    expect(chat.mock.calls[1][0].tools).toBeUndefined()
+    expect(chat.mock.calls[1][0].tools?.map((tool: { name: string }) => tool.name)).toEqual(['read_file'])
     expect(events).toContainEqual(expect.objectContaining({ type: 'error', error: expect.stringContaining('invalid_request') }))
     expect(events.some((event) => event.type === 'done')).toBe(false)
   })
@@ -208,11 +208,10 @@ describe('AgentRunner adaptive tool budget', () => {
       messages: [], newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '进行改造吧', timestamp: Date.now() },
     })) events.push(event)
 
-    // The full authorized catalog is present on the first request; the lone read
-    // then goes through the tool-free synthesis checkpoint, so the second
-    // request intentionally carries no tools.
+    // The model keeps its authorized tools after a read and can either finish
+    // or perform the next action without a separate completion checkpoint.
     expect(toolSets[0]).toEqual(['read_file', 'write_file'])
-    expect(toolSets[1]).toBeUndefined()
+    expect(toolSets[1]).toEqual(['read_file', 'write_file'])
     expect(executed).toEqual(['read_file'])
     expect(events).toContainEqual(expect.objectContaining({ type: 'tool_result', toolResult: expect.objectContaining({ name: 'read_file', isError: false }) }))
     expect(events.find((event) => event.type === 'done')?.content).toBe('README inspected.')
@@ -406,7 +405,7 @@ describe('AgentRunner adaptive tool budget', () => {
         if (params.tools?.length) {
           return chunks({
             content: '',
-            toolCalls: [{ index: 0, id: `inspect-${request}`, name: 'inspect', arguments: '{}' }],
+            toolCalls: [{ index: 0, id: `inspect-${request}`, name: 'inspect', arguments: JSON.stringify({ pass: request }) }],
             finishReason: 'tool_calls',
           })
         }
@@ -672,7 +671,7 @@ describe('AgentRunner adaptive tool budget', () => {
 
     expect(executions).toBe(1)
     expect(requestedTools).toEqual([['web_search'], ['web_search'], undefined])
-    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(2)
+    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(1)
     expect(events.find((event) => event.type === 'done')?.content).toContain('available evidence')
   })
 
@@ -930,7 +929,7 @@ describe('AgentRunner adaptive tool budget', () => {
     }
 
     expect(requestedTools[0]).toEqual(toolNames)
-    expect(requestedTools[1]).toBeUndefined()
+    expect(requestedTools[1]).toEqual(toolNames)
   })
 
   it('prioritizes the structured spreadsheet tool for workbook attachments', async () => {
@@ -1179,18 +1178,18 @@ describe('AgentRunner adaptive tool budget', () => {
       chat: (params: { reasoning?: unknown }) => {
         reasoningParams.push(params.reasoning)
         request += 1
-        // 1: the read tool call. 2: the lone-read checkpoint. 3: the empty
-        // synthesis. 4: the synthesis retry, which must drop hidden reasoning.
+        // 1: read. 2: empty synthesis at the safety ceiling. 3: recovery
+        // disables hidden reasoning and returns the visible answer.
         if (request === 1) {
           return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read', name: 'read_file', arguments: '{"path":"README.md"}' }] })
         }
-        return request === 4
+        return request === 3
           ? chunks({ content: 'Recovered from completed tool results.', finishReason: 'stop' })
           : chunks({ content: '', finishReason: 'stop' })
       },
     }
     const runner = new AgentRunner({
-      agentConfig: { ...agent, model: 'deepseek-v4-flash', showThinking: true, tools: ['read_file'] },
+      agentConfig: { ...agent, model: 'deepseek-v4-flash', showThinking: true, tools: ['read_file'], maxIterations: 1 },
       provider: provider as never,
       toolRegistry: registry,
       contextManager: new ContextManager(),
@@ -1205,8 +1204,8 @@ describe('AgentRunner adaptive tool budget', () => {
       newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '检查 README.md', timestamp: Date.now() },
     })) events.push(event)
 
-    expect(request).toBe(4)
-    expect(reasoningParams[3]).toEqual({ enabled: false })
+    expect(request).toBe(3)
+    expect(reasoningParams[2]).toEqual({ enabled: false })
     expect(events.find((event) => event.type === 'done')?.content).toBe('Recovered from completed tool results.')
     expect(events.some((event) => event.type === 'error')).toBe(false)
   })
@@ -1236,7 +1235,7 @@ describe('AgentRunner adaptive tool budget', () => {
       },
     }
     const runner = new AgentRunner({
-      agentConfig: { ...agent, tools: ['read_file'] },
+      agentConfig: { ...agent, tools: ['read_file'], maxIterations: 1 },
       provider: provider as never,
       toolRegistry: registry,
       contextManager: new ContextManager(),
@@ -1307,11 +1306,10 @@ describe('AgentRunner adaptive tool budget', () => {
       newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '写入 notes.md。', timestamp: Date.now() },
     })) events.push(event)
 
-    // The loop itself tolerates one repeated batch, so the write runs twice
-    // there. The synthesis turn must not add a third execution of the same
-    // call: its result is already in the conversation.
-    expect(writeExecutions).toBe(2)
-    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(2)
+    // Both the repeated normal batch and the synthesis replay must be
+    // declined before a second side effect can happen.
+    expect(writeExecutions).toBe(1)
+    expect(events.filter((event) => event.type === 'tool_call')).toHaveLength(1)
     expect(synthesisNotices.some((content) => content.includes('already performed them'))).toBe(true)
     expect(events.find((event) => event.type === 'done')?.content).toBe('The write was already applied.')
     expect(events.some((event) => event.type === 'error')).toBe(false)
@@ -1339,20 +1337,18 @@ describe('AgentRunner adaptive tool budget', () => {
       supportsReasoning: () => false,
       chat: () => {
         request += 1
-        // 1: read a file. 2: tool-free completion checkpoint. 3: the final
-        // synthesis, which asks for the one action this run has not performed.
+        // 1: read. 2: final synthesis asks for one missing action.
         if (request === 1) {
           return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-1', name: 'read_file', arguments: '{"path":"README.md"}' }] })
         }
-        if (request === 2) return chunks({ content: '', finishReason: 'stop' })
-        if (request === 3) {
+        if (request === 2) {
           return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'write-1', name: 'write_file', arguments: '{"path":"notes.md","content":"x"}' }] })
         }
         return chunks({ content: 'Answer from the evidence already collected.', finishReason: 'stop' })
       },
     }
     const runner = new AgentRunner({
-      agentConfig: { ...agent, tools: ['read_file', 'write_file'] },
+      agentConfig: { ...agent, tools: ['read_file', 'write_file'], maxIterations: 1 },
       provider: provider as never,
       toolRegistry: registry,
       contextManager: new ContextManager(),
@@ -1453,7 +1449,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.find((event) => event.type === 'done')?.content).toBe('Updated and verified.')
   })
 
-  it('decides a lone successful read at a tool-free checkpoint instead of forcing synthesis', async () => {
+  it('lets the model finish directly after a read with tools still available', async () => {
     const registry = new ToolRegistry()
     let readExecutions = 0
     registry.register({
@@ -1491,12 +1487,12 @@ describe('AgentRunner adaptive tool budget', () => {
       newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '查看 notes.ts 的版本号。', timestamp: Date.now() },
     })) events.push(event)
 
-    expect(requestedTools).toEqual([['read_file'], undefined])
+    expect(requestedTools).toEqual([['read_file'], ['read_file']])
     expect(readExecutions).toBe(1)
     expect(events.find((event) => event.type === 'done')?.content).toBe('notes.ts exports version 1.')
   })
 
-  it('keeps acting after a lone read when the checkpoint reports pending work', async () => {
+  it('reads, modifies, verifies and answers in four requests without continuation checkpoints', async () => {
     const registry = new ToolRegistry()
     let readExecutions = 0
     const readResults: string[] = []
@@ -1527,12 +1523,9 @@ describe('AgentRunner adaptive tool budget', () => {
           return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-1', name: 'read_file', arguments: '{"path":"notes.ts"}' }] })
         }
         if (request === 2) {
-          return chunks({ content: 'CONTINUE: notes.ts still needs the version bump.', finishReason: 'stop' })
-        }
-        if (request === 3) {
           return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'write-1', name: 'write_file', arguments: '{"path":"notes.ts","content":"export const version = 2"}' }] })
         }
-        if (request === 4) {
+        if (request === 3) {
           return chunks({ content: '', finishReason: 'tool_calls', toolCalls: [{ index: 0, id: 'read-2', name: 'read_file', arguments: '{"path":"notes.ts"}' }] })
         }
         return chunks({ content: 'FINAL: notes.ts is now version 2.', finishReason: 'stop' })
@@ -1556,10 +1549,9 @@ describe('AgentRunner adaptive tool budget', () => {
 
     expect(requestedTools).toEqual([
       ['read_file', 'write_file'],
-      undefined,
       ['read_file', 'write_file'],
       ['read_file', 'write_file'],
-      undefined,
+      ['read_file', 'write_file'],
     ])
     expect(readExecutions).toBe(2)
     expect(readResults).toEqual(['export const version = 1', 'export const version = 2'])
@@ -1721,7 +1713,7 @@ describe('AgentRunner adaptive tool budget', () => {
       newMessage: { id: 'message', conversationId: 'conversation', role: 'user', content: '写入 a.ts。', timestamp: Date.now() },
     })) events.push(event)
 
-    expect(writeExecutions).toBe(2)
+    expect(writeExecutions).toBe(1)
     expect(requestedTools).toEqual([['write_file'], ['write_file'], undefined])
     expect(events.find((event) => event.type === 'done')?.content).toBe('The write was already applied.')
   })

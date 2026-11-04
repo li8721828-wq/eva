@@ -30,7 +30,7 @@ export interface IpcContract {
   [IPC.TASK_SNAPSHOT]: { args: [conversationId: string]; result: TaskRunSnapshot | null }
   [IPC.CONFIG_GET]: { args: [key: string]; result: unknown }
   [IPC.CONFIG_SET]: { args: [key: string, value: unknown]; result: void }
-  [IPC.CONFIG_SELECT_MODEL]: { args: [providerId: string, model: string]; result: void }
+  [IPC.CONFIG_SELECT_MODEL]: { args: [providerId: string, model: string, reasoningSelection?: import('./model-reasoning').ReasoningSelection]; result: void }
   [IPC.CONFIG_GET_ALL]: { args: []; result: Record<string, unknown> }
   [IPC.CHAT_TOOL_APPROVAL_DECIDE]: {
     args: [payload: { conversationId: string; approvalId: string; approved: boolean; rememberScope?: 'once' | 'session' }]

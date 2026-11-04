@@ -204,7 +204,7 @@ export interface EvaAPI {
   config: {
     get<T = unknown>(key: string): Promise<T>
     set(key: string, value: unknown): Promise<void>
-    selectModel(providerId: string, model: string): Promise<void>
+    selectModel(providerId: string, model: string, reasoningSelection?: import('../shared/model-reasoning').ReasoningSelection): Promise<void>
     getAll(): Promise<Record<string, unknown>>
   }
 
@@ -534,7 +534,7 @@ const evaAPI: EvaAPI = {
   config: {
     get: <T = unknown>(key: string) => invokeContract(IPC.CONFIG_GET, key) as Promise<T>,
     set: (key, value) => invokeContract(IPC.CONFIG_SET, key, value),
-    selectModel: (providerId, model) => invokeContract(IPC.CONFIG_SELECT_MODEL, providerId, model),
+    selectModel: (providerId, model, reasoningSelection) => invokeContract(IPC.CONFIG_SELECT_MODEL, providerId, model, reasoningSelection),
     getAll: () => invokeContract(IPC.CONFIG_GET_ALL),
   },
 

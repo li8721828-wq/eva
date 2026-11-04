@@ -1,5 +1,6 @@
 import type { ChatParams, ChatChunk, ToolDefinition, ChatMessageInput, ProviderModelOption } from '../../shared/types/provider'
 import { sanitizeUnicode } from '../utils/unicode'
+import { reasoningRequest, type ReasoningSelection } from '../../shared/model-reasoning'
 
 export interface LLMProvider {
   readonly id: string
@@ -16,6 +17,7 @@ export interface LLMProvider {
 
   /** Whether this exact model can return provider-supplied reasoning content. */
   supportsReasoning(model: string): boolean
+  getReasoningSelection?(model: string): ReasoningSelection | undefined
 
   /**
    * 非流式聊天 - 返回完整响应
@@ -38,7 +40,13 @@ export interface LLMProvider {
   /**
    * 获取可用模型列表
    */
-  listModels(): Promise<Array<{ id: string; name: string }>>
+  listModels(): Promise<ProviderModelOption[]>
+}
+
+/** Explicit model choice takes precedence over legacy display-driven settings. */
+export function resolveProviderReasoning(provider: LLMProvider, model: string, legacy?: ChatParams['reasoning']): ChatParams['reasoning'] {
+  const selection = provider.getReasoningSelection?.(model)
+  return selection === undefined ? legacy : reasoningRequest(selection)
 }
 
 export interface ProviderCreateOptions {
@@ -92,7 +100,7 @@ export function toOpenAIMessages(messages: ChatMessageInput[]): any[] {
         type: 'function',
         function: {
           name: tc.name,
-          arguments: JSON.stringify(tc.arguments),
+          arguments: tc.rawArguments ?? JSON.stringify(tc.arguments),
         },
       }))
     }

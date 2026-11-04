@@ -1,5 +1,23 @@
 # 工程记忆变更记录
 
+## 2026-10-29：确定性代码生成改为生成器插件（1 个 → 4 个目标）
+
+- 影响文件：新增 `src/main/services/codegen/{types,index,java-reference,java-maven,json-schema,sql-ddl}.ts`、`docs/确定性代码生成流程说明.md`；重写 `src/main/services/deterministic-coding-service.ts`（改为委托注册表，保留 `parseDomainDsl` / `writeSemanticDslPackage` / `writeGenerationIr` / `writeImmutableFile`）；修改 `src/main/services/requirement-engineering-service.ts`（`/coding` 读 target model → 解析生成器 → 按目标生成 → 报告随生成器变化；新增私有 `readOptionalJson`）；测试 `tests/unit/deterministic-coding-service.test.ts`（4 → 36 项）。
+- 动因：`/coding` 原来只有一个写死的 `builtin-java-reference`，用户要用别的目标必须改流水线；且 DSL 写了未知字段类型会被**静默**当成 `String`，验证器只 `stat` 文件是否存在。
+- 变化：`CodeGenerator` 契约（`id`/`label`/`target`/`outputKind`/`capabilities`/`options`/`generate`）是纯函数，注册表提供 `getCodeGenerator` / `resolveCodeGenerator` / `validateGeneratorOptions`。已注册 4 个：`java-reference`（字节输出与重构前完全一致，磁盘上已有的 content-addressed 包仍验证通过）、`java-maven`（Maven 目录树 + `pom.xml` + 每实体单测，选项 `useRecords` / `nativeTypes`）、`json-schema`（draft 2020-12，`production`）、`sql-ddl`（PostgreSQL DDL，标 `migration-approval`）。`/coding` 从 `<intermediate>/02-generation-ir/target-model.yaml` 读批准声明：文件缺失才写入默认（默认值显式写死为 `java-reference`，不是「取第一个注册的」）；文件存在但不是 JSON、`generator` 不存在、`options` 有未声明键或非法值、`production_output: true` 但生成器是 `reference`、`output_kind` 与生成器不一致——五种情况全部整轮失败，不回落到默认。产物含 `generation-result.yaml`（`adapter` / `generated` / `preserved` / `requires_target_adapter` / `details`），验证检查 adapter 一致、`generated` 非空、包内除 result 外还有文件。写入一律 `writeGeneratedFile`（内容不同即抛 `Existing deterministic artifact differs`），越界路径（`../x`）在 `writeGeneratedPackage` 被拒。
+- 类型严格化：`parseFieldType` 归一化 `String/Str/Varchar`→`string`、`Money/Decimal/Double`→`decimal`、`GUID`→`uuid` 等；未知类型报错并列出可用集合，**不再退化为 `String`**。`decimal` 的 Java 落点由 `double` 改为 `java.math.BigDecimal`（精度语义，属有意变更）。
+- 验证：`npm run typecheck` 通过（node + web）；全量 `npm test` **122 文件 / 1006 项通过**（32 项为本次新增）。`deterministic-coding-service.test.ts` 覆盖：同一 DSL 两次输出字节相同、四个生成器各自通过 verification、选项拼写/取值被拒、target model 五种拒绝路径、`java-reference` 字节兼容（固定文本断言）、越界写入被拒、空包（只有 result）不通过验证、SQL 主键/保留字引用/无 id 表不加键、JSON Schema 的 `required` 列表与 `requireAllFields` 开关。
+- 剩余风险：①验证是结构性的，不编译不跑测试；要确认 Java 可编译需接 `mvn`/`javac`，涉及 sandbox 与耗时。②`sql-ddl` 是 PostgreSQL 方言（`timestamptz`、双引号标识符），MySQL 需另写生成器，不要把方言差异塞进 option。③`generated` 存的是 DSL 构件名（`Invoice`、`sales_orders`）而非文件名，前端若展示文件列表应读目录。④XCERP/MyBatis/Maven overlay/交付审批仍只在外部 Python 流水线（`docs/code-production-pipeline架构说明.md`）里，未移植。⑤`/coding` 复用检查仍比对 `codegen-manifest.json` 的 `status` + `sourceDslSha256`，**不比对 generator**：在同一个 DSL 上把 target model 换成另一个生成器会命中复用分支。确需换目标时应同时变更 DSL 或清理 `coding/output/runs/<hash>`。
+
+## 2026-10-29：程序化 Skill——声明式入口 + 受控执行通道
+
+- 影响文件：新增 `src/main/tools/skill-command.ts`（声明解析与参数校验，纯函数）、`tests/unit/skill-command.test.ts`（33 项）、`tests/unit/skill-run.test.ts`（19 项）、`docs/程序化Skill说明.md`；修改 `src/main/tools/skill-frontmatter.ts`（重复键收集为数组、双引号 `\"`/`\\` 反转义）、`src/main/services/skill-service.ts`（发现期校验入口、`SkillEntryPointError`、`loadSkill` 输出声明命令、`runSkillCommand` 执行通道）、`src/main/tools/skill-tools.ts`（新增 `run_skill_command`，更新 `write_skill_file` 描述）、`src/main/services/tool-approval-policy.ts`（`terminal-command` 分类 + 卡片摘要）、`src/shared/types/skill.ts`（`SkillRecord.commands`、`SkillCommandSummary`）、`src/shared/tool-catalog.ts`（新条目，版本 34→35）、`src/shared/constants.ts`（Coding Assistant 加入工具）、`src/main/agent-engine/context.ts`（按工具可用性追加一行说明）；测试补充 `skill-catalog-prompt`（+2）、`skill-write`（+3）、`tool-approval-policy`（+1）、`tool-catalog`（+1）。
+- 动因：Skill 此前只有文本形态，`load_skill` / `write_skill_file` 的描述明确写着「never executes anything」，与「Skill 有程序化控制」的定位不符，也没有可信的执行边界。
+- 变化：`SKILL.md` frontmatter 可声明 `run_command`（JSON 对象或数组，也可重复写），字段为 `name` / `interpreter` / `entry` / `args` / `approval` / `timeout_ms` / `description`。命令、解释器、入口全部来自该文件——工具参数里没有 command 字符串，模型只能选「跑哪一条」并填声明过的 `{placeholder}`。执行前完成：Skill 存在且启用 → 命令已声明 → 参数只允许声明过的槽位且拒绝 shell 元字符/前导 `-`/`..`/盘符/超长 → 目录与入口重新 `realpath` 且必须在 Skill 目录内、非目录、非二进制 → 当前 Agent 的沙箱判定（`evaluateSkillCommandSandbox`，Skill 目录仅在该次判定加入允许集）→ `spawn(argv, { shell: false })`。每次运行把入口复制到临时目录再执行（运行中的脚本改不了下次要跑的代码），结束即删；`cwd` 为 Skill 目录；超时/取消 `SIGKILL` 并有 2 秒兜底 resolve；stdout/stderr 各截断 10000 字符。发现期就会拒绝入口缺失/越界/二进制的 Skill（记为诊断，不进目录），避免模型被提供一个「批了也跑不起来」的命令。`run_skill_command` 归入 `terminal-command` 审批类别，`approval: none` 不绕过全局策略。
+- 创作顺序：先写声明为合法的 `SKILL.md`，再写入口脚本。前者会以「已保存但未列出：入口缺失」返回并暂不进目录；已存在的入口再次写入必须 `overwrite: true`，防止悄悄替换一个已被批准过的声明所运行的代码。
+- 验证：`npm run typecheck` 通过（node + web）；全量 `npm test` **122 文件 / 974 项通过**。`skill-run.test.ts`（23 项）用真实 `node` 进程验证了成功执行、失败退出码、300ms 超时终止、「运行中改写入口不影响磁盘副本」，以及沙箱边界（strict 下全局 Skill 可跑、被拒规则在 spawn 前返回、模型参数不能借 Skill 目录越界）。链接越界测试在无法创建符号链接的环境会跳过。
+- 剩余风险：①沙箱判定只覆盖 `evaluateCommand`（危险命令黑名单 + 平台路径启发），没有包一层 OS 级隔离（`wrap` 未参与），因为 `spawn` 不经过终端服务；真要 AppContainer/bwrap 级别需要把运行改走包装后的 argv。②沙箱后端在 `initializeSandbox()` 探测前是放行 noop，单元测试需显式探测才能测到拒绝分支。③解释器按 `py/python/python3`（Windows）或 `python3/python` 顺序探测，只把 `ENOENT` 当作继续下一个；找到的解释器版本由机器决定。④`approval: none` 目前只影响声明意图与展示，不改审批结果，尚未提供让用户按 Skill 免询问的入口。⑤Skill 尚未提供图形化的「运行」按钮，只能经模型调用 `run_skill_command`。⑥`bash` 在本机通过 WSL 解析，路径会被转换，跨平台脚本兼容性取决于用户环境。
+
 ## 2026-10-22：普通聊天改为模型驱动的执行轮次——删掉 4 轮截断
 
 - 影响文件：`src/main/agent-engine/agent-runner.ts`（删 `MAX_NORMAL_TOOL_CYCLES = 4`，普通聊天 `toolCycleLimit` 直接用 `maxIterations`；并行只读批次补 `pendingWriteVerifications` 清除；写入未验证提示触发时重置 `completedResponse`，避免同段文字被拼接两次）、`tests/unit/agent-runner-adaptive-budget.test.ts`（+2 项）、`docs/project-memory/REGRESSION-GUARDS.md`（新守卫）。
@@ -7,6 +25,12 @@
 - 变化：普通聊天轮数上限只剩 `agentConfig.maxIterations`（Coding Assistant 100）作防失控安全阀；早停仅保留「相同工具批次原样重复」「用户中止」「到达绝对上限」。Goal 的检查点预算（16/20/36 后问 FINAL/CONTINUE）不变；`detailed` 逐步模式仍每轮只执行一个工具。
 - 验证：定向 `agent-runner-adaptive-budget.test.ts` 41 项通过；`npm run typecheck` exit 0；全量 **120 文件 / 911 项通过**（12:27 起跑，34.23s）。新增两项：模型连续 6 轮请求工具时全部执行后才收尾；模型给出答案即结束、不追加强制回合。删上限同时暴露并修复一个被它掩盖的缺陷：并行只读批次不清 `pendingWriteVerifications`，写入后并行回读仍被判未验证（两个既有测试由红转绿）。
 - 剩余风险：①模型若持续发起**不同**的工具调用，会一直跑到 100 轮才停，成本上限即此，靠用户中止兜底；②尚未用真实模型真机验证一次 >4 轮的长任务；③Goal 的检查点节奏未改。
+
+## 2026-10-21：补充当日功能说明与技术交接文档
+
+- 新增 `docs/2026-10-21-Eva-功能成果说明.md`、`docs/2026-10-21-Eva-技术实现与验证记录.md`，分别面向使用者与开发维护人员，整理主线/交接、AI 起草、界面统一、验证与剩余边界；区分当天工作和此前积累的稳定性整改。
+- 代码已提交为 `ffcaec1` 并推送 `origin/develop`，版本仍为 0.1.206，未生成安装包；下方各工作阶段的“未提交/推送”描述保留为当时状态。本次两份文档为该提交后的补充。
+- 验证：核对既有工程记录、提交范围、版本与最终 120 文件/909 项测试日志；检查 Markdown 本地链接和差异格式。仅修改文档，未重新运行应用测试，也未新增运行协议或回归约束。真实账号与在线多人协作仍未验收。
 
 ## 2026-10-21：统一工作台、设置导航与状态表达
 
@@ -683,3 +707,113 @@
 - 工具执行展示使用真实 timeline/progress 事件，不保留人工拼装的假执行轨迹。
 - 最终回复长度达到 provider 上限时，从截断位置续写，避免半句结束。
 - 项目级知识和用户级长期记忆在产品运行时统一管理，但开发记录仍保存在本仓库工程记忆中。
+
+## 2026-10-30：运行引擎的执行可靠性、调度与日志优化
+
+- 影响文件：新增 `agent-engine/{run-journal,run-working-state,tool-runtime-policy}.ts`；修改 `agent-engine/{agent-runner,goal-planner,team-orchestrator,tool-dispatch,tool-result-context}.ts`、`services/{agent-os-scheduler,tool-dispatcher,remote-conversation-executor,symposium-execution-service}.ts`、`storage/agent-run-event-store.ts`、`ipc/{conversation,task}.ts`、`shared/types/runtime-run.ts`；新增 `tests/unit/{agent-runner-reliability,orchestrator-reliability,run-working-state,tool-runtime-policy}.test.ts`，更新既有 runner/事件存储/调度器/上下文压缩测试。更新架构、回归防护并新增 `docs/2026-10-30-Eva-运行引擎优化说明.md`。
+- 执行：重复批次判断前移至派发前，调用参数采用键序无关的哈希签名；当前 run 内的操作调用 ID 防重放，失败操作保守停止，失败观察不缓存且最多原样重试一次。普通聊天读取后直接保留工具继续，不再额外发起无工具的完成检查；Goal 阶段预算检查保留。受控「读、改、回读、回答」由五次模型请求减少为四次。
+- 调度与上下文：统一观察/操作、并发、缓存和工作区失效策略；审批仍独立校验。最多四个只读操作在途，按完成顺序回传，取消后不启动排队读取；消费者关闭先取消再等待。缓存限 128 项 / 30 秒，实时状态不缓存，潜在修改操作即使失败也失效文件缓存。旧事务压缩后注入有界工作参考，保留原请求、真实观察、待回读文件及证据定位，不持久化或替代验收。
+- 生命周期与恢复：统一所有终态日志，调度器 ID 和子运行 `parentRunId` 接通；QQ、群聊及嵌套执行接入日志。JSONL 首次恢复序号后异步串行追加，兼容破损尾部且失败不毒化队列。已中断任务若存在操作记录或缺失日志，保留检查点手动继续；有只读证据时仍可自动恢复。Goal/Team 和队列不在操作后整步重试；修正 Team 不可重试错误仍进入下一次尝试、Goal 有失败步骤仍标完成的路径。
+- 验证：先定向测试，再 `npm run typecheck`（node/web），最终全量 `npm test` **126 文件 / 1034 项通过**，较本轮开始新增 28 项。`npm run verify:ipc-boundary`、115 项打包文件规则、`git diff --check` 与 `npm run build` 均通过；构建保留既有 streamdown `use client` 忽略提示。测试覆盖真实临时 JSONL 的 100 次并发追加只读一次历史、写失败/破损尾部/重启序号、真实执行器的请求次数/取消/失败状态/缓存失效，以及 Goal/Team 在操作后的网络失败不重放。
+- 剩余边界：模型测试使用受控 provider，未调用用户账号，不能宣称真实模型延迟、成本或长任务完成率已经改善。去重限当前运行，未提供跨进程外部副作用 exactly-once；恢复采用检查点手动继续保护不确定操作。日志仍假定单进程写入，首次载入/恢复查询仍读取历史，未增加归档/数据库/独立运行进程。工作参考为有界确定性整理，不等于语义总结或任务验收。保留本轮开始前全部未提交改动；未提交、推送或生成安装包。
+
+## 2026-10-30：补充当日功能成果与技术交接文档
+
+- 新增 `docs/2026-10-30-Eva-功能成果说明.md` 与 `docs/2026-10-30-Eva-技术实现与验证记录.md`，分别说明用户可感知的行为变化，以及执行循环、调度、日志、恢复、上下文和测试边界。
+- 核对当前基线 `4541030`、代码实现、测试文件及本轮已完成的 126 文件 / 1034 项验证记录；区分今日基线中提交的既有循环修复、本轮未提交的优化和 10 月 29 日已有工作，不将全部工作区差异归为今日新增。
+- 验证：检查两份 Markdown 的本地链接、内容与代码记录一致性及差异格式。本次仅新增文档并更新工程变更记录，未修改代码或新增运行约束，不重复运行应用测试。
+- 剩余边界：真实模型长任务、实际耗时与费用对照仍未验收；未提交、推送或生成安装包。
+
+## 2026-11-03：接入 Pi / DeepSeek Harness 与执行引擎切换层
+
+- 新增真实框架引擎：Pi core / pi-ai 1.5.0、DeepSeek Harness core 0.2.1-rc.5、Cordis 4.0.5；全局配置默认 Eva，在通用设置中切换，新运行生效，子任务继承父运行快照。模型、上下文、工具授权、审批沙箱、流式事件、用量与日志继续由 Eva 管理，不加载框架原生 shell/凭据插件，不在失败后静默换引擎重试。
+- 文件：新增 `shared/types/execution-engine.ts`、`main/agent-engine/execution-engine-worker.ts`、`resources/execution-engines/worker.mjs`、`renderer/components/settings/ExecutionEnginePanel.tsx`；修改 runner、Goal/Team、conversation/task/system IPC、config-store、App Server、远程会话、群聊与 SettingsDialog，所有生产 runner/orchestrator 构造均显式传入引擎。新增构建/独立探测脚本并更新 package/lock；新增引擎集成测试，更新配置与隔离浏览器检查。
+- 运行：外部 Node >=22.19.0 独立进程承载框架循环，JSON 行回调模型和工具；API Key、完整输入历史及供应商私有思考保留主进程。外部工具串行，沿用共用观察缓存、失效/实时策略、详细模式、写后回读、截断续写、失败操作防重放、Goal 阶段检查和上下文压缩；模型请求有硬上限，取消结束框架进程。`run_started` 元数据记录引擎 ID，统一终态日志保留。
+- 验证：先定向测试，再 Node/Web 类型检查，最终全量 **127 文件 / 1071 项通过**，其中新增真实框架集成测试 35 项、配置测试 2 项。三主题/宽窄 Electron 浏览器检查、受信 IPC 检查、115 项打包文件规则、生产构建及差异格式检查通过。构建生成包含 120 个已安装包的 asar 外资源，两框架在仓库外临时目录完成「模型 → 工具 → 模型 → 结束」。首轮并行检查有一个既有 ACP 测试 5 秒超时，18 项定向复测及最终全量均通过；未放宽超时。保留既有 streamdown 指令忽略提示。
+- 文档：新增 `docs/2026-11-03-Eva-多引擎使用说明.md`、`docs/2026-11-03-Eva-多引擎实现与验证.md`，更新 PROJECT_MEMORY 索引、架构及回归防护。系统 npm 11.19.1 启动异常，使用忽略目录内的 npm 10.9.4 CLI 验证，未修改系统安装。
+- 剩余边界：仅验证 Windows / Node 24.22.1，Node 可执行文件由用户环境提供；未生成安装包、未测试其他操作系统。测试运行真实框架但模型响应受控，未调用用户账号，不能宣称长任务完成率、延迟或费用已改善。框架会话按运行重建，不迁移在途状态，不提供完整 Pi coding-agent / DSH CLI 或跨进程副作用 exactly-once。保留既有未提交改动；未提交或推送。
+
+## 2026-11-03：Pi / Harness 原生提示词、上下文与核心工具接管
+
+- 用户要求切换引擎后使用框架自己的核心执行实现。原生分流前移到 Eva 提示词/ContextManager 构建之前；Pi 使用 coding-agent 原生提示词、Agent、内存 SessionManager、compaction、read/edit/write/ls 和平台 shell；Harness 使用原生 Session/Projection、文件工具/观察策略、平台 shell/Subprocess、附件和 compaction-basic。Eva 保留界面、模型连接/密钥、权限、审批、沙箱、统一日志及显式扩展工具；Eva 模式保持原逻辑。
+- 影响文件：新增 `main/agent-engine/{native-engine-runner,native-tool-policy}.ts`、`shared/tool-semantics.ts`、`resources/execution-engines/{pi,harness,model-codecs}.mjs`；改造 `agent-runner.ts`、`context.ts`、`execution-engine-worker.ts`、worker、`file-service.ts`、`providers/{base-provider,openai}.ts`、`shared/types/provider.ts`、`tool-runtime-policy.ts`、conversation IPC、MessageBubble、ToolCallView 和 ExecutionEnginePanel。更新构建/独立探测脚本、package/lock、引擎集成及 provider/工具语义测试，新增原生权限和来源展示测试；同步两份多引擎文档、架构和回归防护。
+- 边界：真实原生 I/O 先经过能力、canonical 路径/链接、只读目录、精确可写范围及审批检查；命令使用沙箱包装后的 argv，由 SDK 执行，精确文件范围运行不提供 shell。Harness 在解析和实际写入分别重检。无项目会话提供运行 cwd，但不新增目录授权；根 AGENTS.md 经授权、有界读取。保留 Pi PowerShell UTF-8 初始化。原生模式不使用 Eva 的文本工具信封修复、缓存、截批、强制回读或完成探针；网页/MCP/表格等 Eva 扩展仍明确标识。
+- 恢复和记录：损坏或非对象工具 JSON 交给原生参数错误处理并继续本轮，历史传输保留原始参数，禁止执行补猜参数；同时验证无必填参数的扩展不会被误调用。原生/扩展来源来自真实协议，不由所选引擎猜测。保留失败操作/调用 ID 防重放、供应商诊断和上层 Goal/Team。原始模型响应可在框架内部回放，API Key 不进入 worker，也不把思考写成执行证据或工程记忆。
+- 验证：先定向测试，再 Node/Web 类型检查，最终全量 **129 文件 / 1104 项通过**（`--maxWorkers=2 --minWorkers=1`），其中真实原生后端集成 55 项、独立权限 6 项、来源展示 4 项。测试把 Eva 核心执行体替换为抛错函数，仍由 SDK 实际读改文件、运行命令，并覆盖图片、原生压缩、越界/审批、参数同轮恢复、消费者关闭及切换。完整回归发现 Windows 强制取消过早返回的竞态，修正为有界等待 taskkill 收尾；保留真实 PID 退出和延迟写入不存在的断言，未放宽测试超时。受信 IPC、115 项打包规则、格式检查、隔离 Electron 浏览器检查和生产构建通过；构建包含 217 个已安装依赖包及全部 worker 模块，保留既有 streamdown 指令提示。构建使用忽略目录内 npm 10 CLI，未改系统 npm。
+- 剩余边界：所有模型响应受控，未调用用户模型账号，不能据此承诺真实长任务完成率、延迟或费用；仅验证 Windows / Node 24.22.1。Node 本身仍需外部安装；原生会话按运行重建，未自动载入完整 CLI 配置、用户插件或独立凭据，不提供在途状态互迁及跨进程副作用 exactly-once。未生成安装包、提交或推送，保留既有未提交工作；当前已启动的 Eva 需重启才能加载新主进程。
+- 独立产物：最终构建复制到仓库外临时目录后，Pi 和 Harness 均通过「原生读取 → 编辑 → 原生命令 → 回读验证 → 结束」探测，校验真实修改及命令生成文件，未借用开发仓库的依赖。
+
+## 2026-11-04：Agent 宿主的原生会话、公开事件与前端适配
+
+- 问题：此前虽已调用原生核心工具，但会话仍逐轮重建，适配器收齐响应后才发原生流，桌面 IPC 仍重组为 Eva 进度摘要；默认角色、轮数、并发和缺少原生长任务插件也会影响体验。本轮以 Eva 画板/插件宿主为边界，让执行与公开展示语义来自所选 SDK。
+- 运行和持久化：改造 `resources/execution-engines/{worker,pi,harness,model-codecs}.mjs`、`agent-engine/{agent-runner,native-engine-runner,execution-engine-worker,native-tool-policy}.ts`，新增 `native-session.ts`。模型传输与原生事件并行推进，终态等待用量收尾；Pi SessionManager 文件、Harness JSONL/附件/检查点保留原生状态。游标在正式模型请求通过 SDK 检查点后确认，原生续接不重建渲染历史；生命周期服务在删除/截断时失效状态。原生预算默认 1000 次/16384 输出 Token，显式内部预算保留；不强制 SDK 串行，显示设置不关闭慢思考，未修改内置角色不注入原生模式。
+- Harness：增挂原生 todo、goal/goal-round-driver/tool-goal、llm-retry 和持久化插件。原生目标/待办替换相应 Eva 入口，连续回合由 SDK 驱动；临时模型请求重试不重放工具。工具结果取最终 `tools/result`，工具展示定义来自 `presentCall/presentResult`。更新 package/lock，SDK 版本继续固定为 Pi 1.5.0 / Harness 0.2.1-rc.5。
+- 公开展示：新增 `shared/types/native-agent.ts`、`shared/native-agent-transcript.ts`、`chat/NativeAgentView.tsx`；修改共享 Agent/会话/引擎类型、tool-semantics、conversation IPC、chat-store、MessageBubble、MessageList、TaskWorkspacePanel、ExecutionEnginePanel 和局部主题 CSS。公开文字不经 Eva 摘要或源文本重写，消息/工具 ID 隔离并保留重复尝试，连续增量无损合并。原生 Goal/待办在聊天和任务区显示，旧 Eva 扩展记录另行标识；过程限高、最新事件跟随及用户上滑优先，答复独立呈现，暗色原生正文使用主题文字色。布局状态不持久化，私有推理不进入公开事件。
+- Windows 兼容：新增 `resources/execution-engines/windows-fs-compat.mjs`，定位到 SDK 在读后立即编辑时可能返回 ReplaceFileW 1175。仅在原/暂存文件元数据身份不变时，以累计不足一秒的有界退避重试未提交的原子发布，保留零标志/DACL 与 SDK 读改/版本逻辑；1176/1177、未知错误、文件变化和取消不重试。没有切回 Eva 文件执行器或重跑整个编辑动作。
+- 验证：定向测试后 Node/Web 类型检查通过，最终全量 **132 文件 / 1134 项通过**（`--maxWorkers=2 --minWorkers=1`）。原生集成由 55 增至 68 项，新增展示投影/卡片 8 项、游标 3 项、原子发布 5 项及流状态 1 项；真实 SDK 验证跨轮续接、供应商结束前文字到达、Goal 无需新用户消息自动续轮、待办、网络恢复且写入只执行一次、原生展示定义、权限/图片/压缩/取消。受信 IPC、115 项打包规则通过；隔离 Electron 浏览器验证现有设置/工作台及两后端三主题、360/620px、完整输出、答复分区、对比度和用户上滑优先，并目视复核截图。Windows 发布错误与模型用量收尾竞态在回归中修复，未放宽旧测试超时。
+- 文档：新增 `docs/2026-11-04-Eva-Agent宿主使用说明.md` 与 `docs/2026-11-04-Eva-Agent宿主实现与验证.md`；旧多引擎说明标记历史版本并链接当前说明，更新 PROJECT_MEMORY、架构及回归防护。
+- 最终产物验证：更新 `scripts/{prepare-execution-engines,verify-execution-engines}.mjs`，生产构建通过，包含 234 个依赖包及 5 个 worker 模块；正常仓库外探测 exit 0，资源与用户项目分别位于独立临时目录，Pi/Harness 各完成 6 次模型请求、5 次原生工具调用并核对实际文件内容。首轮独立探测曾复现 1175，累计 100ms 退避不足；最终累计 910ms、相同身份检查和取消保护下，重新通过全量 132/1134、类型检查、构建及独立探测。未确定临时发布拒绝的具体来源，未扩大可重试错误范围。
+- 剩余边界：模型响应受控，未使用用户账号测真实长任务完成率、耗时或费用；不是完整 Pi TUI/Harness Web 与所有插件、凭据、CLI 配置或附件展示组件的移植。仅验证本机 Windows / Node 24.22.1，Node 仍外部安装；SDK 文件发布接口升级须复核，不提供跨进程副作用 exactly-once。保留既有未提交工作，未提交、推送或制作安装包；运行中的旧 Eva 主进程需要重启。
+
+## 2026-11-04：澄清全部磁盘与工具审批，修正审批目录显示
+
+- 根因：会话 `full-access` 只控制文件访问范围，全局审批默认 `safe`；标题栏固定英文 `Full access` 容易被理解为所有工具免确认。原生工具仍走 Eva 宿主审批，不是 Harness 自行重复询问。
+- 修改 `chat/ChatPanel.tsx`、`renderer/lib/ui-copy.ts`：标题栏复用输入框的本地化文件范围文案，提示独立的工具审批入口和沙箱限制。修改 `services/tool-approval-policy.ts`：写入/编辑卡片使用宿主请求的工作目录，忽略模型参数里的同名字段，避免真实工作区显示成 `(default)`。未改用户配置、审批默认值或权限语义。
+- 测试：`native-tool-policy.test.ts` 新增 Pi/Harness 各自全部磁盘范围下 `safe` 拒绝、`off` 不出卡的 4 项；`tool-approval-policy.test.ts` 新增 2 项真实请求目录展示，防止模型参数误导。浏览器夹具验证标题栏中文文案及审批说明；更新宿主使用说明和回归防护。
+- 验证：定向 3 文件 / 51 项及 Node/Web 类型检查通过；全量 **132 文件 / 1140 项通过**（`--maxWorkers=2 --minWorkers=1`）。隔离 Electron 验证文件范围标签和审批说明，既有设置/工作台及原生展示检查均通过，并目视核对截图；首轮界面检查被文档保存触发开发服务重载打断，文件静止后按原断言重跑通过。生产构建（234 个依赖包）与 `git diff --check` 通过，保留既有 streamdown 指令提示。
+- 剩余边界：审批和沙箱按运行快照生效，修改配置不会替已经展示的卡片作决定；启用沙箱仍会组合出至少 `safe` 的审批，规划模式仍只读。未更改正在运行的用户会话。
+
+## 2026-11-04：按用户要求将完全访问扩展为工具免审批
+
+- 需求变更：用户明确要求权限菜单的完全访问同时放行工具，取代上一条记录中“仅文件范围”的语义。本地 `full-access` 会话的已启用文件、命令、浏览器、MCP/技能等工具免逐次审批；其他档位恢复全局策略。
+- 文件：`services/execution-policy.ts` 根据本地会话快照生成独立审批配置；`ipc/{conversation,task}.ts`、`symposium-execution-service.ts` 接入所有本地运行入口，子 runner 沿现有通道继承。`shared/types/conversation.ts`、InputBar、ui-copy 更新权限语义/名称/说明；同步浏览器夹具、执行策略及原生集成测试和两份宿主文档、架构、防护。
+- 边界：只覆盖本次运行的审批，原始文件授权布尔值不能触发覆盖；不改全局偏好、不增加 session 类别授权。沙箱、规划只读、精确路径、禁用工具及取消保留；App Server/ACP 与 QQ 的远程审批未放宽。切换按下一次运行生效，旧 `accessScope` 兼容但显式档位优先。
+- 验证：定向 5 文件 / 132 项、Node/Web 类型检查、全量 **132 文件 / 1149 项**、隔离 Electron 界面检查及生产构建（234 个依赖包）通过，`git diff --check` 通过。新增 7 项策略/继承测试及 2 项真实原生 SDK 集成，验证文件、命令、扩展免审批、切回恢复、全局配置不变、规划/取消与子 runner；同步接线守卫要求所有本地入口提供会话快照。目视核对「完全访问」标签；保留既有 streamdown 指令提示。未主动决定用户在途审批，未调用真实模型账号、提交或推送。
+
+## 2026-11-04：模型选择旁增加实际生效的思考档位
+
+- 新增 `shared/model-reasoning.ts` 与 `renderer/lib/reasoning-copy.ts`；扩展 provider 类型/能力、typed IPC/preload、ConfigStore、ProviderRegistry 和各协议适配器。InputBar 按连接能力显示档位并保存，编辑连接保留偏好；注册/热更新保留 transport、思考元数据。原子保存连接/模型/档位，替换 provider 使在途运行保持快照。
+- 修改 Eva runner 与 native runner，选择独立于过程显示，默认不强制接口参数；OpenAI/Responses effort、DeepSeek thinking+effort、Anthropic 自适应/预算分别转换。预算不超输出上界，网关拒绝显式档位不静默删除；未知能力不展示同一套按钮。上游模型列表的真实 effort 元数据优先，DeepSeek 新别名及旧别名按已核对文档支持思考。
+- 新增 `model-reasoning.test.ts`，扩展 provider/config/真实 SDK 集成及浏览器夹具，验证参数、存储恢复/隔离/失败、协议差异、provider 快照、三个引擎与窄布局。初轮定向暴露夹具缺少 Anthropic usage、测试环境安全存储不可用以及旧 DeepSeek 别名断言，修正测试输入/预期后相关 67 项通过，原生 78 项通过；没有放宽执行断言。
+- 更新两份宿主文档、架构及回归防护。官方接口参考见技术文档；未调用用户模型账号、未改凭据或全局工具授权。完整验证收尾后补记。
+- 兼容：发现旧工具探测留下 `source: probed / supportsReasoning: false`，但未测试思考；以独立 `reasoningSource` 刷新推断，保留明确声明，菜单和运行档案同步。首轮浏览器夹具只记录保存调用、未在再次读取时返回保存值，补齐模拟存储后按原断言重跑。
+- 界面回归发现通用 Select 的图标模式隐藏当前标签，思考控件改为图标与档位文字一同显示，保留切回模型后能看见已保存档位的断言。
+- 最终验证：Node/Web 类型检查、受信 IPC、115 项打包规则、隔离 Electron 界面检查及生产构建（234 个依赖包）通过。最终独立全量 **133 文件 / 1173 项通过**（`--maxWorkers=1 --minWorkers=1`）；没有放宽超时、权限或工具效果断言。浏览器覆盖档位菜单、保存/切回、三主题、360/620px 与 4.5:1 文字对比度，已目视核对亮色窄屏和暗色菜单截图。
+- 仍需观察：一次并行全量在既有 Harness 文件编辑上复现 ReplaceFileW 1175；两引擎的 2 项实际读改回读定向复验及最终独立全量均通过，未修改原子发布守卫或扩大重试范围。不能据此声称 Windows 间歇性发布拒绝已根除；真实模型延迟、费用和思考质量仍未使用用户账号验收。未提交、推送或生成安装包。
+
+## 2026-11-04：统一对话阅读规范，保留各引擎原始结果
+
+- 用户边界：只治理前端展示，不修改 Eva/Pi/Harness 的执行、提示词、公开事件或原始答复。新增 `docs/CONVERSATION-READING.md` 固定层级、间距、强调、引用、表格、代码及执行记录规则；不从关键词猜测重点，不生成语义摘要。
+- 影响文件：新增 `chat/ExecutionDetails.tsx`、`styles/conversation-reading.css`、`tests/unit/conversation-reading.test.ts`；修改 `chat/{MessageBubble,NativeAgentView,ToolCallView}.tsx`、`agents/OutputFormatPanel.tsx`、原生浏览器夹具与 runner，同步架构和回归防护。新阅读作用域仅用于聊天正文/公开汇报/原生旁白，其他 Markdown 文档视图保持独立。
+- 三种静态渲染器与流式展示共用主题文字色、标题比例、600 强调字重、统一间距和中性边线；保留字体与字号，聊天不再叠加旧艺术字/配色/格式装饰。处理 Streamdown 使用 span 表示强调及自带表格/列表/代码容器的差异；代码限高滚动并统一主题配色。目检修正浅色代码文字和深色表头继承旧主题导致的对比度问题。
+- 执行记录与用量/耗时默认折叠，运行中正文持续可见。展开保留完整工具参数、反馈、公开旁白和原生来源，原生活动继续限高滚动并保留用户上滑优先；侧栏的原生目标/待办不折叠。展开状态仅属 DOM/renderer，不改会话和 SDK 日志；复制返回原始 Markdown。摘要只统计工具调用、报错和停止后的未确认项，不据此宣称任务完成；已结束未确认工具不转圈，空字符串结果不误判为执行中。
+- 设置：所有渲染器均提供字体/字号；旧外观偏好保留并折叠，说明当前聊天由统一规范控制。只修改展示文案和布局，没有写回用户配置或改变生成规则。
+- 验证：定向 **4 文件 / 28 项**、Node/Web 类型检查、全量 **134 文件 / 1182 项**（单 worker）、受信 IPC、115 项打包规则及生产构建通过，构建仍含 234 个引擎依赖包，保留既有 Streamdown use-client 提示。确认生产 CSS 包含最终规范。隔离 Electron 检查 Eva/Pi/Harness × 三渲染器 × 三主题 × 360/620px，验证计算样式一致、表头/代码主题配色、无横向溢出、默认收起、源数据/复制不变、流式正文可见、字体字号及原生活动跟随。最终截图 `tmp/ui-check/reading-{renderer}-{theme}-{width}.png`，已目检深色窄屏与静态/流式浅色宽屏；早期断言修正为实际元素可见性及应用 rem 基准，没有放宽原始内容和执行断言。
+- 边界：原文自身冗长或强调结构欠佳时仍完整保留；前端不能替代引擎做语义取舍。界面使用受控公开事件，未调用用户模型账号，不代表真实任务质量验收；既有 Windows 原子发布风险不因展示回归通过而消失。本轮未提交、推送、生成安装包或重启用户正在运行的 Eva。
+
+## 2026-11-04：柔和对话字体与真实字号
+
+- 问题：Windows 下原标题实际落到 MicrosoftYaHei-Bold；默认字号标签为 15px，正文却在 14px 应用根上使用 0.9375rem（实际约 13px）。原生深色配色规则还会覆盖新阅读墨色，形成更强亮度。此次只调整前端字体/字级/字重/墨色/留白，不修改引擎、提示词或原始内容。
+- 新增 `styles/typography.css`，用 local 字体映射本机 HarmonyOS Sans SC Regular 与独立 Medium 字体族；UI 默认栈优先真实 CJK 字形，未安装时回退平台无衬线。阅读正文 400，标题/强调/表头 500，关闭合成字重；正文默认 15px，行高 1.88、微量字距及 70ch 阅读宽度，正文石墨色/深色雾白色。没有使用模糊、描边或阴影处理字形。
+- 新增 `lib/reading-typography.ts`，由聊天与 OutputFormatPanel 共同消费实际 13/14/15/16/17/18/20px；不更改应用根 14px 或写回用户字体配置。更新 `index.css`、`conversation-reading.css`、MessageBubble、OutputFormatPanel；原生旧深色规则排除统一阅读作用域，显式衬线/等宽/macOS 偏好保留。同步展示规范、架构与回归防护。
+- 验证：定向 **4 文件 / 29 项**、Node/Web 类型检查、全量 **134 文件 / 1183 项**（单 worker）、完整隔离 Electron 界面检查通过。增加 `reading-runner.cjs` 与 `verify-ui.mjs --reading`，通过 Chromium 实际 glyph 字体验证三渲染器/三主题/360与760px：标题实际 HarmonyOS_Sans_SC_Medium，正文实际 HarmonyOS_Sans_SC；400/500 字重、禁用合成、实际15px、根14px及统一墨色均有断言。完整界面检查继续覆盖 Eva/Pi/Harness、原始复制、布局与360/620px；已目检亮色宽屏和深色窄屏。截图及字形记录为 `tmp/ui-check/typography-{theme}-{width}.png` 和 `typography-fonts.json`，保留前版截图供对照。
+- 生产构建通过（234 个引擎依赖包），保留既有 Streamdown use-client 提示；确认输出 CSS 包含本地字体映射，`git diff --check` 通过。
+- 边界：使用本机字体，不下载、安装或打包字体文件；其他机器的字形会受已安装字体影响。界面夹具不代表真实模型质量验收；未提交、推送、生成安装包或重启用户现有会话。
+
+## 2026-11-04：公开说明与连续工具批次交替展示
+
+- 按用户提供的简约工具行参考调整展示：移除整轮执行面板，公开说明始终位于工具列表外；说明之后的工具另起一组，只有相邻工具合并。每组独立折叠/限高滚动，工具与命令使用无卡片边框的轻量行，命令摘要保持原样，完整参数、SDK 卡片/原始反馈及真实来源仍可展开。保留已调整的字体规范。
+- 文件：新增 `renderer/lib/execution-activity.ts`、`chat/ToolActivityList.tsx`、`tests/unit/execution-activity.test.ts`；修改 NativeAgentView、MessageBubble、ExecutionDetails、ToolCallView、conversation-reading.css、原生浏览器夹具/runner/reading-runner，扩展 native-tool-view 测试，同步展示规范、架构和回归防护。
+- 原生显示沿用已有 SDK 消息/工具投影顺序；Eva 公开汇报与工具用已有时间戳合并，同刻汇报优先、各流保持原顺序。分组键取首个工具，追加不会重建已有列表。每组独立跟随新增工具，用户上滑优先；说明不进入滚动/折叠容器，侧栏原生目标/待办继续直接显示。私有供应商推理不进入公开链路，未改变引擎、工具执行、提示词、授权、原始事件或会话 schema。
+- 验证：定向 **5 文件 / 48 项**、Node/Web 类型检查、完整隔离 Electron 检查及最终 `--reading` 检查通过。新场景覆盖三引擎 × 三主题 × 360/620px，断言“说明/工具组/说明/工具组/说明”顺序、说明不被折叠、独立展开、命令摘要、原始对象不变、无横向溢出和无卡片边框；30 个工具的真实滚动夹具验证内部限高、跟随及用户上滑。目检 `tmp/ui-check/activity-{engine}-{theme}-{width}.png`，补齐 Eva 命令摘要并让其文字继承可读的次要文字色。源文本、复制、字体与既有工作台检查继续通过。
+- 全量结果：**135 文件中 134 通过，1190 项中 1189 通过**；Harness 的真实 read/edit/read 再次遇到此前记录的 Windows ReplaceFileW 1175。随后两引擎的同名真实读改回读定向 **2 项通过**；未修改 SDK/原子发布守卫，未放宽断言，不能据单项复验宣称间歇故障消失。其余前端/运行回归通过。
+- 生产构建（234 个引擎依赖包）与 `git diff --check` 通过，保留既有 Streamdown use-client 提示；新工具列表与分段规则已进入生产产物。
+- 边界：历史记录缺少更细顺序时仅使用已有时间戳，不伪造新执行序号；“思考放外面”指原本公开的说明，不展示模型私有思维链。界面为受控事件验收，未调用真实模型账号；未提交、推送、生成安装包或重启用户正在运行的会话。
+
+## 2026-11-04：整理本地改动并提交至 develop
+
+- 按用户要求提交并推送本地项目工作：范围覆盖此前尚未提交的原生 Pi/Harness 引擎与会话、执行可靠性、权限与思考档位、技能/确定性代码生成、对话阅读及分段工具展示、测试和相应文档。版本保持 0.1.206，不生成安装包或标签。
+- 提交准备基于 `4541030`，当前 develop 与新获取的 origin/develop 一致；沿用现有远程分支，使用普通推送。
+- `.gitignore` 增加 `.tmp-design/`，排除与产品代码无关的本地文档设计脚本、图片和 Python 缓存；文件保留本地。候选共 144 个文本文件，约 3.3 MB；检查未发现疑似凭据，构建输出、依赖和临时验证产物继续忽略，差异空白检查通过。
+- 复用本轮既有验证，不宣称重新运行：48 项定向、Node/Web 类型检查、隔离界面和生产构建通过；全量 1189/1190 通过，Harness Windows ReplaceFileW 1175 的单项复验两引擎均通过。该间歇风险未解决，详细记录保留在上一条。
+- 暂存检查补齐两份 2026-10-21 文档的格式：元信息行的双空格换行改为显式 Markdown 换行，保留渲染效果；144 个暂存文件的空白检查与候选凭据扫描通过。

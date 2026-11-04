@@ -1,4 +1,5 @@
 import { agentDisplayName } from '@/lib/agent-presentation'
+import { canonicalToolName } from '../../../shared/tool-semantics'
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -8,6 +9,9 @@ import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOut
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView, ToolCallView } from './ToolCallView'
+import { NativeAgentView } from './NativeAgentView'
+import { ToolActivityList } from './ToolActivityList'
+import { groupToolActivity } from '@/lib/execution-activity'
 import { PlanChecklist } from './PlanChecklist'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
 import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info, CircleDot, RefreshCw, Sparkles } from 'lucide-react'
@@ -19,6 +23,8 @@ import { normalizeChatMarkdown, normalizeStreamingMarkdown } from '@/lib/markdow
 import { isFilePathLikeCodeSpan } from '@/lib/file-path-chip'
 import { buildProcessFeed, isInternalToolLifecycleUpdate, isStructuredReport, processReportLabel, type ProcessFeed, type ProcessReportEntry } from '@/lib/process-report'
 import { FilePathChip } from './FilePathChip'
+import '@/styles/conversation-reading.css'
+import { READING_FONT_SIZES } from '@/lib/reading-typography'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -202,60 +208,17 @@ function ReasoningPanel({ content, streaming = false }: { content: string; strea
   )
 }
 
-interface TimelineEntryGroup {
-  kind: ExecutionTimelineEntry['kind']
-  entries: ExecutionTimelineEntry[]
-}
-
-function groupTimelineEntries(entries: ExecutionTimelineEntry[]): TimelineEntryGroup[] {
-  const groups: TimelineEntryGroup[] = []
-  for (const entry of entries) {
-    const last = groups[groups.length - 1]
-    if (last?.kind === entry.kind) last.entries.push(entry)
-    else groups.push({ kind: entry.kind, entries: [entry] })
-  }
-  return groups
-}
-
-function TimelineToolGroup({ entries, streaming = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean }) {
-  // A running step is exactly what the user is watching for, so its rows start
-  // expanded and fall back to the summary once the round is done. Tool activity
-  // is background material though: it stays deliberately quieter than the work
-  // report above it.
-  const [open, setOpen] = useState(streaming)
+function TimelineToolGroup({ entries, streaming = false }: { entries: readonly { toolCall?: ToolCall }[]; streaming?: boolean }) {
   const toolCalls = entries.flatMap((entry) => entry.toolCall ? [entry.toolCall] : [])
   if (toolCalls.length === 0) return null
-  const isRunning = toolCalls.some((toolCall) => !toolCall.result && !toolCall.isError)
-  const hasError = toolCalls.some((toolCall) => toolCall.isError)
-  const singleLabel = toolCalls.length === 1 ? executionToolActivityLabel(toolCalls[0]) : undefined
-
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        className="inline-flex max-w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs font-normal text-zinc-500 transition-colors hover:bg-zinc-50"
-      >
-        <ChevronDown className={cn('h-3.5 w-3.5 shrink-0 text-zinc-300 transition-transform', open && 'rotate-180')} />
-        <Wrench className="h-3.5 w-3.5 shrink-0 text-zinc-300" />
-        <span className="min-w-0 truncate">{singleLabel ? singleLabel.title : `已执行 ${toolCalls.length} 项操作`}</span>
-        {singleLabel?.detail && <span className="min-w-0 truncate text-xs font-normal text-zinc-400">{singleLabel.detail}</span>}
-        <span className="shrink-0">
-          {isRunning
-            ? <Loader2 className="h-3 w-3 animate-spin text-violet-400" />
-            : hasError
-              ? <XCircle className="h-3 w-3 text-red-400" />
-              : <CheckCircle2 className="h-3 w-3 text-emerald-400" />}
-        </span>
-      </button>
-      {open && (
-        <div className="ml-4 mt-0.5 space-y-0.5 border-l border-zinc-100 pl-2">
-          {toolCalls.map((toolCall) => <ToolCallView key={toolCall.id} toolCall={toolCall} />)}
-        </div>
-      )}
-    </div>
-  )
+  const hasUnconfirmed = toolCalls.some((toolCall) => toolCall.result === undefined && !toolCall.isError)
+  const isRunning = streaming && hasUnconfirmed
+  return <ToolActivityList toolCount={toolCalls.length} streaming={isRunning}
+    errorCount={toolCalls.filter(tool => tool.isError).length}
+    unconfirmedCount={streaming ? 0 : toolCalls.filter(tool => tool.result === undefined && !tool.isError).length}
+    commandsOnly={toolCalls.every(tool => canonicalToolName(tool.name) === 'execute_command')}>
+    {toolCalls.map(toolCall => <ToolCallView compact key={toolCall.id} toolCall={toolCall} active={streaming} />)}
+  </ToolActivityList>
 }
 
 function TimelineNoteRow({ content }: { content: string }) {
@@ -264,19 +227,6 @@ function TimelineNoteRow({ content }: { content: string }) {
       <Info className="h-3.5 w-3.5 shrink-0 text-zinc-400" />
       <span className="min-w-0">{content}</span>
     </div>
-  )
-}
-
-function ExecutionTimelineView({ entries, streaming = false }: { entries: ExecutionTimelineEntry[]; streaming?: boolean }) {
-  const groups = groupTimelineEntries(entries).filter((group) => group.kind === 'tool' || group.kind === 'note')
-  if (!groups.length) return null
-
-  return (
-    <section className="execution-feed__timeline" aria-label="执行活动">
-      {groups.map((group) => group.kind === 'tool'
-        ? <TimelineToolGroup key={group.entries[0].id} entries={group.entries} streaming={streaming} />
-        : group.entries.map((entry) => <TimelineNoteRow key={entry.id} content={entry.content || ''} />))}
-    </section>
   )
 }
 
@@ -312,6 +262,7 @@ type ProgressMarkdownOptions = {
 function ProgressMarkdown({ content, streaming, markdownOptions }: { content: string; streaming: boolean; markdownOptions: ProgressMarkdownOptions }) {
   return (
     <MarkdownMessageContent
+      readingStandard
       content={content}
       isStreaming={streaming}
       conversationId={markdownOptions.conversationId}
@@ -328,17 +279,9 @@ function ProgressMarkdown({ content, streaming, markdownOptions }: { content: st
 
 function ProcessReportRow({ entry, streaming, markdownOptions }: { entry: ProcessReportEntry; streaming: boolean; markdownOptions: ProgressMarkdownOptions }) {
   if (!isStructuredReport(entry.kind)) {
-    // Legacy free-form updates keep their compact row so old conversations
-    // render exactly as before.
     return (
-      <div className="execution-feed__update">
-        <span className="execution-feed__update-icon" aria-hidden="true">
-          {entry.kind === 'thinking' && streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : entry.kind === 'issue' ? <XCircle className="h-3.5 w-3.5" /> : <CircleDot className="h-3.5 w-3.5" />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <span className="execution-feed__update-label">{processReportLabel(entry)}</span>
-          <ProgressMarkdown content={entry.content} streaming={streaming} markdownOptions={markdownOptions} />
-        </div>
+      <div className="activity-narration" data-public-report={entry.id}>
+        <ProgressMarkdown content={entry.content} streaming={streaming} markdownOptions={markdownOptions} />
       </div>
     )
   }
@@ -346,7 +289,7 @@ function ProcessReportRow({ entry, streaming, markdownOptions }: { entry: Proces
   // The work report is the main narrative of the run, so it is typeset like
   // the answer body while the tool rows around it stay deliberately quieter.
   return (
-    <div className={cn('execution-feed__report', entry.kind === 'plan' && 'execution-feed__report--plan')}>
+    <div className={cn('execution-feed__report', entry.kind === 'plan' && 'execution-feed__report--plan')} data-public-report={entry.id}>
       <span className="execution-feed__report-header">{processReportLabel(entry)}</span>
       <ProgressMarkdown content={entry.content} streaming={streaming} markdownOptions={markdownOptions} />
     </div>
@@ -371,19 +314,6 @@ function ProcessReportsView({ feed, streaming = false, markdownOptions }: { feed
   )
 }
 
-function executionToolActivityLabel(toolCall: ToolCall): { title: string; detail?: string } {
-  const path = typeof toolCall.arguments.path === 'string' ? toolCall.arguments.path : undefined
-  const command = typeof toolCall.arguments.command === 'string'
-    ? toolCall.arguments.command
-    : typeof toolCall.arguments.text === 'string' ? toolCall.arguments.text : undefined
-  if (toolCall.name === 'read_file' || toolCall.name === 'list_directory' || toolCall.name === 'search_files' || toolCall.name === 'search_code') return { title: '已读取文件', detail: path }
-  if (toolCall.name === 'write_file' || toolCall.name === 'edit_file' || toolCall.name === 'apply_patch') return { title: '已编辑文件', detail: path }
-  if (toolCall.name === 'execute_command' || toolCall.name === 'write_terminal') return { title: '已运行命令', detail: command }
-  if (toolCall.name === 'web_search') return { title: '已搜索资料', detail: typeof toolCall.arguments.query === 'string' ? toolCall.arguments.query : undefined }
-  if (toolCall.name === 'read_web_page') return { title: '已读取网页', detail: typeof toolCall.arguments.url === 'string' ? toolCall.arguments.url : undefined }
-  return { title: '已执行操作', detail: toolCall.name }
-}
-
 function ExecutionFeedView({
   message,
   streaming = false,
@@ -398,11 +328,9 @@ function ExecutionFeedView({
   const feed = buildProcessFeed(message.progressUpdates || [])
   const allTimelineEntries = message.executionTimeline || []
   // Status notes ("正在汇总已验证的结果。") are live progress. Once the round has
-  // settled they claim work that already ended, so a finished bubble keeps only
-  // tool evidence — including rows persisted before they stopped being written.
-  const timelineEntries = allTimelineEntries
-    .filter((entry) => entry.kind !== 'reasoning')
-    .filter((entry) => streaming || entry.kind !== 'note')
+  // settled they claim work that already ended. Keep their ordering boundaries
+  // so tool batches do not merge, but render the notes only while streaming.
+  const timelineEntries = allTimelineEntries.filter((entry) => entry.kind !== 'reasoning')
   // Raw reasoning travels either as timeline entries or as the message-level
   // accumulator, depending on when it arrived.
   const reasoningContent = allTimelineEntries
@@ -411,15 +339,30 @@ function ExecutionFeedView({
     .join('\n\n')
     .trim() || message.reasoningContent || ''
   const hasReports = Boolean(feed.plan || feed.entries.length)
-  const hasTimeline = timelineEntries.length > 0
+  const hasTimeline = timelineEntries.some(entry => entry.kind === 'tool' || streaming)
   const hasReasoning = Boolean(shouldShowReasoning && reasoningContent)
   const hasActivity = hasReports || hasTimeline || hasReasoning
   if (!hasActivity) return null
 
+  type ActivityEntry = { id: string; kind: 'tool' | 'note' | 'report'; timestamp: number; toolCall?: ToolCall; content?: string; report?: ProcessReportEntry }
+  const updates = new Map((message.progressUpdates || []).map(update => [update.id, update]))
+  const reports = [...(feed.plan ? [feed.plan] : []), ...feed.entries]
+  // Existing timestamps are the common ordering signal for Eva's separate
+  // public-report and tool streams. Ties keep report publication order first.
+  const activity: ActivityEntry[] = [
+    ...reports.map(report => ({ id: `report:${report.id}`, kind: 'report' as const, timestamp: updates.get(report.id)?.timestamp || 0, report })),
+    ...timelineEntries.map(entry => ({ ...entry, kind: entry.kind as 'tool' | 'note' })),
+  ].sort((a, b) => a.timestamp - b.timestamp)
   return (
-    <section className="execution-feed" aria-label="工作进展" aria-live={streaming ? 'polite' : undefined}>
-      {hasReports ? <ProcessReportsView feed={feed} streaming={streaming} markdownOptions={markdownOptions} /> : null}
-      {hasTimeline ? <ExecutionTimelineView entries={timelineEntries} streaming={streaming} /> : null}
+    <section className="execution-feed chronological-activity" aria-label="工作进展" aria-live={streaming ? 'polite' : undefined}>
+      {groupToolActivity(activity).map(group => group.kind === 'tools'
+        ? <TimelineToolGroup key={group.id} entries={group.items} streaming={streaming} />
+        : group.item.kind === 'report' && group.item.report
+          ? group.item.report === feed.plan && feed.checklist
+            ? <PlanChecklist key={group.id} checklist={feed.checklist} streaming={streaming} className="execution-feed__report execution-feed__report--plan"
+                renderItemText={text => <ProgressMarkdown content={text} streaming={streaming} markdownOptions={markdownOptions} />} />
+            : <ProcessReportRow key={group.id} entry={group.item.report} streaming={streaming} markdownOptions={markdownOptions} />
+          : streaming ? <TimelineNoteRow key={group.id} content={group.item.content || ''} /> : null)}
       {hasReasoning ? <ReasoningPanel content={reasoningContent} streaming={streaming} /> : null}
     </section>
   )
@@ -474,15 +417,21 @@ function safeStreamdownUrl(url: string): string {
     : ''
 }
 
-export function MarkdownMessageContent({ content, className, isStreaming = false, conversationId, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced' }: { content: string; className?: string; isStreaming?: boolean; conversationId?: string; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer }) {
-  const markdownContent = isStreaming ? normalizeStreamingMarkdown(content) : normalizeChatMarkdown(content)
-  const markdownClassName = cn('chat-message-markdown max-w-none', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, className)
+export function MarkdownMessageContent({ content, className, isStreaming = false, conversationId, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced', preserveSource = false, readingStandard = false }: { content: string; className?: string; isStreaming?: boolean; conversationId?: string; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer; preserveSource?: boolean; readingStandard?: boolean }) {
+  const markdownContent = preserveSource ? content : isStreaming ? normalizeStreamingMarkdown(content) : normalizeChatMarkdown(content)
+  const markdownClassName = cn('chat-message-markdown max-w-none', readingStandard && 'conversation-reading', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, className)
+  const readingStyle = readingStandard ? { '--reading-size': `${READING_FONT_SIZES[outputFontSize]}px` } as React.CSSProperties : undefined
 
   // Path-like inline code becomes a clickable chip only once the reply is
   // complete: mid-stream the backtick span is still being auto-closed, so
   // chipping live text would flicker and mislabel partial tokens.
   const streamdownComponents = useMemo(() => ({
     ...streamdownBaseComponents,
+    ...(readingStandard ? {
+      // Streamdown normally renders emphasis as a span. Use the same semantic
+      // element as the static renderers so the reading contract applies to both.
+      strong: ({ children }: React.ComponentPropsWithoutRef<'strong'>) => <strong>{children}</strong>,
+    } : {}),
     inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<'code'> & { node?: unknown }) => {
       const inlineText = markdownNodeText(children)
       if (!isStreaming && isFilePathLikeCodeSpan(inlineText)) {
@@ -490,20 +439,21 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
       }
       return <code className="markdown-inline-code" {...props}>{children}</code>
     },
-  }), [isStreaming, conversationId])
+  }), [isStreaming, conversationId, readingStandard])
 
   // Streamdown is used for every live reply because it can animate only the
   // newly appended characters. Once complete, the user's chosen renderer
   // takes over for the stable, fully formatted document.
   if (isStreaming || markdownRenderer === 'streamdown') {
     return (
-      <div className={markdownClassName} aria-busy={isStreaming || undefined}>
+      <div className={markdownClassName} style={readingStyle} data-reading-standard={readingStandard || undefined} aria-busy={isStreaming || undefined}>
         <React.Suspense fallback={<div className="whitespace-pre-wrap">{markdownContent}</div>}>
           <StreamdownRenderer
             mode={isStreaming ? "streaming" : "static"}
             isAnimating={isStreaming}
             animated={false}
             parseIncompleteMarkdown
+            lineNumbers={readingStandard ? false : undefined}
             skipHtml
             urlTransform={safeStreamdownUrl}
             controls={{ code: { copy: true, download: false }, table: false, mermaid: false }}
@@ -518,7 +468,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
   }
 
   return (
-    <div className={markdownClassName} aria-busy={isStreaming || undefined}>
+    <div className={markdownClassName} style={readingStyle} data-reading-standard={readingStandard || undefined} aria-busy={isStreaming || undefined}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={isStreaming ? [] : [rehypeHighlight]}
@@ -697,7 +647,7 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   }
 
   return (
-    <article className={cn('group flex items-start gap-3', className)}>
+    <article className={cn('group flex items-start gap-3', className)} data-native-engine={message.nativeAgent?.engine}>
       {/* Avatar */}
       <div
         aria-busy={isStreaming || undefined}
@@ -722,16 +672,22 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
               </Badge>
             </div>
           )}
-          <ExecutionFeedView
+          {message.nativeAgent ? <NativeAgentView collapsible transcript={message.nativeAgent} finalContent={message.content} streaming={isStreaming}
+            renderMarkdown={(content) => <MarkdownMessageContent readingStandard preserveSource content={content} conversationId={message.conversationId} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} />} /> : <ExecutionFeedView
             message={message}
             streaming={isStreaming}
             shouldShowReasoning={shouldShowReasoning}
             markdownOptions={{ conversationId: message.conversationId, outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
-          />
-          {isStreaming && !message.content.trim() ? <ExecutionStatusIndicator key={message.id} /> : null}
-          <MarkdownMessageContent content={message.content} isStreaming={isStreaming} conversationId={message.conversationId} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
-          {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
-          {message.timing ? <TimingSummary timing={message.timing} /> : null}
+          />}
+          {isStreaming && !message.nativeAgent && !message.content.trim() ? <ExecutionStatusIndicator key={message.id} /> : null}
+          <div className="conversation-answer" data-conversation-answer>
+          <MarkdownMessageContent readingStandard preserveSource={Boolean(message.nativeAgent)} content={message.content} isStreaming={isStreaming} conversationId={message.conversationId} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
+          </div>
+          {(message.usage || message.timing) && <details className="conversation-metrics">
+            <summary>{language === 'zh' ? '用量与耗时' : language === 'ja' ? '使用量と時間' : 'Usage and timing'}</summary>
+            {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
+            {message.timing ? <TimingSummary timing={message.timing} /> : null}
+          </details>}
         </div>
 
         {!isStreaming && !isTool && showActions && (

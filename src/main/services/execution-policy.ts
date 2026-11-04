@@ -2,6 +2,7 @@ import { DEFAULT_AUTOMATION_CONFIG, type AutomationConfig } from '../../shared/t
 import { resolveSandboxPolicy } from './sandbox/policy'
 import { createLocalToolApproval, requiresApproval, type ApprovalFactoryContext } from './tool-approval-policy'
 import type { ToolApprovalRequest, ToolApprovalDecision } from './tool-dispatcher'
+import type { Conversation } from '../../shared/types/conversation'
 
 export interface ExecutionPolicy {
   automation?: AutomationConfig
@@ -29,10 +30,20 @@ export function resolveExecutionAutomation(stored?: Partial<AutomationConfig>): 
 
 export function createLocalExecutionPolicy(
   stored: Partial<AutomationConfig> | undefined,
-  context: Omit<ApprovalFactoryContext, 'config'>,
+  context: Omit<ApprovalFactoryContext, 'config'> & {
+    /** Trusted local conversation snapshot; network callers do not supply this. */
+    conversation?: Pick<Conversation, 'permissionLevel' | 'accessScope'>
+  },
 ): Required<ExecutionPolicy> {
   const automation = resolveExecutionAutomation(stored)
-  return { automation, requestToolApproval: createLocalToolApproval({ ...context, config: automation.toolApproval }) }
+  const { conversation, ...approvalContext } = context
+  const fullAccess = conversation?.permissionLevel
+    ? conversation.permissionLevel === 'full-access'
+    : conversation?.accessScope === 'full'
+  // This is a conversation grant, never a write to the global preferences.
+  // Keep sandbox enforcement and the runner's plan-mode gate independent.
+  if (fullAccess) automation.toolApproval.policy = 'off'
+  return { automation, requestToolApproval: createLocalToolApproval({ ...approvalContext, config: automation.toolApproval }) }
 }
 
 /** A configured run must not silently lose approvals when no human-facing transport is available. */

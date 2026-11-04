@@ -1,9 +1,11 @@
 import React, { useState } from 'react'
 import type { ToolCall } from '../../../shared/types'
+import { canonicalToolName, toolImplementationLabel, toolTargetPath } from '../../../shared/tool-semantics'
 import { cn } from '@/lib/utils'
-import { ChevronRight, FileCode, Terminal, Search, Loader2, CheckCircle2, XCircle, Wrench, ExternalLink } from 'lucide-react'
+import { ChevronRight, FileCode, Terminal, Search, Loader2, CheckCircle2, XCircle, CircleDot, Wrench, ExternalLink } from 'lucide-react'
 
 function getToolIcon(name: string) {
+  name = canonicalToolName(name)
   if (name === 'dispatch_tools') return <Wrench className="h-3.5 w-3.5" />
   if (name.includes('file') || name.includes('read') || name.includes('write'))
     return <FileCode className="h-3.5 w-3.5" />
@@ -15,6 +17,9 @@ function getToolIcon(name: string) {
 }
 
 export function getToolLabel(toolCall: ToolCall): { title: string; detail?: string; resultCount?: number } {
+  if (canonicalToolName(toolCall.name) === 'execute_command') {
+    return { title: toolCall.name, detail: typeof toolCall.arguments.command === 'string' ? toolCall.arguments.command : undefined }
+  }
   if (toolCall.name === 'dispatch_tools') {
     const calls = Array.isArray(toolCall.arguments.calls) ? toolCall.arguments.calls : []
     const names = Array.from(new Set(calls.flatMap((call) => typeof call === 'object' && call && typeof (call as Record<string, unknown>).name === 'string'
@@ -47,7 +52,7 @@ export function getToolLabel(toolCall: ToolCall): { title: string; detail?: stri
     }
   }
 
-  return { title: toolCall.name }
+  return { title: toolCall.name, detail: toolTargetPath(toolCall.arguments) }
 }
 
 interface SearchSource {
@@ -100,6 +105,8 @@ function dispatchCallSummary(value: unknown): string | undefined {
 export interface ToolCallViewProps {
   toolCall: ToolCall
   className?: string
+  active?: boolean
+  compact?: boolean
 }
 
 export interface ToolCallGroupViewProps {
@@ -118,49 +125,57 @@ export function ToolCallGroupView({ toolCalls, className }: ToolCallGroupViewPro
   )
 }
 
-export function ToolCallView({ toolCall, className }: ToolCallViewProps) {
+export function ToolCallView({ toolCall, className, active = true, compact = false }: ToolCallViewProps) {
   const [expanded, setExpanded] = useState(false)
-  const isRunning = !toolCall.result && !toolCall.isError
+  const isPending = toolCall.result === undefined && !toolCall.isError
+  const isRunning = active && isPending
   const label = getToolLabel(toolCall)
   const searchSources = toolCall.name === 'web_search' ? parseSearchSources(toolCall.result) : []
   const protocolStatus = toolCall.protocol?.status
+  const implementation = toolImplementationLabel(toolCall.protocol?.data)
 
   return (
     <div className={cn('tool-call-item max-w-full', className)}>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="tool-call-item__trigger flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-normal text-zinc-500 transition-colors"
+        aria-expanded={expanded}
+        title={`${toolCall.name} ${label.detail || ''}`}
+        className={cn('tool-call-item__trigger flex max-w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-normal transition-colors', !compact && 'text-zinc-500')}
       >
         <ChevronRight
-          className={cn('h-3 w-3 text-zinc-300 transition-transform', expanded && 'rotate-90')}
+          className={cn('h-3 w-3 transition-transform', compact ? 'text-zinc-500' : 'text-zinc-300', expanded && 'rotate-90')}
         />
-        <span className="text-zinc-300">{getToolIcon(toolCall.name)}</span>
-        <span className="text-xs font-normal text-zinc-500">{label.title}</span>
+        <span className={compact ? 'text-zinc-500' : 'text-zinc-300'}>{getToolIcon(toolCall.name)}</span>
+        <span className={cn('text-xs font-normal', !compact && 'text-zinc-500')}>{label.title}</span>
+        {!compact && implementation && <span className="shrink-0 text-[10px] text-zinc-400">{implementation}</span>}
         {label.detail && (
-          <span className="min-w-0 truncate text-xs text-zinc-400" title={label.detail}>
+          <span className={cn('min-w-0 truncate text-xs', !compact && 'text-zinc-400')} data-tool-detail title={label.detail}>
             {label.detail}
           </span>
         )}
-        {label.resultCount !== undefined && !isRunning && !toolCall.isError && (
+        {label.resultCount !== undefined && !isPending && !toolCall.isError && (
           <span className="rounded-full bg-zinc-200/60 px-1.5 py-0.5 text-xs text-zinc-500">
             {label.resultCount} 个来源
           </span>
         )}
-        <span className="ml-auto">
+        {(!compact || isPending || toolCall.isError) && <span className="ml-auto">
           {isRunning ? (
             <Loader2 className="h-3 w-3 text-blue-500 animate-spin" />
           ) : toolCall.isError ? (
             <XCircle className="h-3 w-3 text-red-500" />
+          ) : isPending ? (
+            <CircleDot className="h-3 w-3 text-zinc-400" aria-label="结果未确认" />
           ) : (
             protocolStatus === 'unknown' || protocolStatus === 'dispatched' || protocolStatus === 'applied'
               ? <Wrench className="h-3 w-3 text-amber-500" />
               : <CheckCircle2 className="h-3 w-3 text-green-500" />
           )}
-        </span>
+        </span>}
       </button>
 
       {expanded && (
         <div className="tool-call-item__details mt-1.5 ml-4 max-w-[42rem] space-y-2 pl-3 pb-1">
+          {compact && implementation && <div className="text-xs text-zinc-400" data-tool-source>{implementation}</div>}
           {toolCall.name === 'web_search' && searchSources.length > 0 ? (
             <>
               <div className="tool-call-detail__query">

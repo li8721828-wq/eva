@@ -30,6 +30,10 @@ describe('tool catalog', () => {
     expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'load_skill', category: 'Search', risk: 'read' }))
   })
 
+  it('separates a programmatic skill run from loading its instructions', () => {
+    expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'run_skill_command', category: 'Execution', risk: 'system' }))
+  })
+
   it('classifies every catalog identifier inside the approval policy', () => {
     const source = fs.readFileSync(path.join(root, 'src/main/services/tool-approval-policy.ts'), 'utf8')
     const classified = new Set<string>()

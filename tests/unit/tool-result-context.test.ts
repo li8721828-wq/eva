@@ -24,7 +24,7 @@ describe('tool result context', () => {
     const messages = [
       { role: 'system' as const, content: 'System' },
       { role: 'user' as const, content: 'Find evidence' },
-      { role: 'assistant' as const, content: '', toolCalls: [{ id: 'old', name: 'search_files', arguments: {} }] },
+      { role: 'assistant' as const, content: '', toolCalls: [{ id: 'old', name: 'search_files', arguments: { path: 'src/domain' } }] },
       { role: 'tool' as const, toolCallId: 'old', content: `old-result-${'x'.repeat(2_000)}` },
       { role: 'assistant' as const, content: '', toolCalls: [{ id: 'latest', name: 'read_file', arguments: {} }] },
       { role: 'tool' as const, toolCallId: 'latest', content: 'latest-result' },
@@ -36,6 +36,8 @@ describe('tool result context', () => {
     expect(compacted.messages.some((message) => message.toolCallId === 'latest')).toBe(true)
     expect(compacted.evidence).toHaveLength(1)
     expect(compacted.evidence[0]).toContain('search_files')
+    expect(compacted.evidence[0]).toContain('src/domain')
+    expect(compacted.evidence[0]).toContain('[old]')
     expect(compacted.evidence[0].length).toBeLessThanOrEqual(1_300)
   })
 

@@ -1,3 +1,4 @@
+import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
 import type { LLMProvider } from '../providers/base-provider'
 import { classifyError } from '../providers/errors'
 import type { ToolRegistry, FileService, TerminalService } from '../tools/index'
@@ -14,6 +15,8 @@ import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { ModelPool } from '../../shared/types/model-pool'
 import type { ProviderRegistry } from '../providers'
 import { formatProviderRequestFailure } from '../services/provider-request-diagnostics'
+import type { AgentRunEventStore } from '../storage/agent-run-event-store'
+import { toolRuntimePolicy } from './tool-runtime-policy'
 
 const GOAL_ABSOLUTE_MAX_ITERATIONS = 100
 export const GOAL_STEP_MAX_ATTEMPTS = 2
@@ -85,6 +88,8 @@ export type GoalEvent =
   | { type: 'error'; error: string }
 
 export interface GoalPlannerConfig extends ExecutionPolicy {
+  executionEngine?: ExecutionEngineConfig
+  eventStore?: AgentRunEventStore
   conversationId?: string
   agentConfig: AgentConfig
   provider: LLMProvider
@@ -110,6 +115,7 @@ export class GoalPlanner {
   private abortController: AbortController | null = null
   private isRunning: boolean = false
   private currentRunner: AgentRunner | null = null
+  private parentRunId: string | undefined
   private isPaused: boolean = false
   private feedback: Array<{ content: string; createdAt: number }> = []
 
@@ -117,7 +123,8 @@ export class GoalPlanner {
     this.config = config
   }
 
-  async *run(goalConfig: GoalConfig, resumeProgress?: GoalProgress): AsyncGenerator<GoalEvent> {
+  async *run(goalConfig: GoalConfig, resumeProgress?: GoalProgress, parentRunId?: string): AsyncGenerator<GoalEvent> {
+    this.parentRunId = parentRunId
     this.isRunning = true
     this.abortController = new AbortController()
     this.isPaused = false
@@ -264,7 +271,10 @@ export class GoalPlanner {
           step.attempts = (step.attempts || []).map((entry) => entry.attempt === attempt
             ? { ...entry, status: 'failed', completedAt, error: stepResult }
             : entry)
-          const retryable = shouldRetryGoalStepError(stepResult, this.config.provider.id)
+          // A transient model failure after a command/write must not replay
+          // the entire step and apply its side effects again.
+          const attemptedAction = step.toolCalls?.some((call) => toolRuntimePolicy(call.name, call.arguments).kind === 'action')
+          const retryable = !attemptedAction && shouldRetryGoalStepError(stepResult, this.config.provider.id)
           if (!retryable || attempt === GOAL_STEP_MAX_ATTEMPTS) {
             stepFailed = true
             break
@@ -328,7 +338,7 @@ export class GoalPlanner {
         yield { type: 'done', progress }
         return
       }
-      progress.status = 'completed'
+      progress.status = steps.length > 0 && steps.every((step) => step.status === 'completed') ? 'completed' : 'failed'
       progress.completedAt = Date.now()
       const summary = await this.generateSummary(goalConfig.goal, completedSteps)
       progress.summary = summary
@@ -551,6 +561,8 @@ Rules:
     }
 
     const runner = new AgentRunner({
+      executionEngine: this.config.executionEngine,
+      eventStore: this.config.eventStore,
       automation: this.config.automation,
       requestToolApproval: this.config.requestToolApproval,
       conversationId: this.config.conversationId,
@@ -575,7 +587,7 @@ Rules:
     let lastContent = ''
 
     try {
-      for await (const event of runner.run({ messages: stepMessages, newMessage: stepMessage })) {
+      for await (const event of runner.run({ messages: stepMessages, newMessage: stepMessage, parentRunId: this.parentRunId })) {
         if (event.type === 'text' && event.content) {
           lastContent += event.content
           const stepEvent: GoalEvent = { type: 'step_progress', stepId: step.id, content: event.content }
