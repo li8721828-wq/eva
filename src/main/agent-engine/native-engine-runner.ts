@@ -13,6 +13,7 @@ import type {
   ChatUsage,
   ModelCallTiming,
   ToolCallTiming,
+  ToolResultImageRef,
 } from '../../shared/types/conversation'
 import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
 import {
@@ -40,6 +41,7 @@ interface NativeResult {
   result: string
   isError: boolean
   protocol?: ExecutionEnvelope
+  images?: ToolResultImageRef[]
   modelImages?: ChatMessageInput['images']
 }
 interface Options {
@@ -557,7 +559,11 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
           toolCallId: call.id,
           name: call.name,
           content: result.result,
-          data: { isError: result.isError, protocol },
+          data: {
+            isError: result.isError,
+            protocol,
+            ...(result.images?.length ? { images: result.images } : {}),
+          },
         })
         yield {
           type: 'tool_result',
@@ -567,6 +573,7 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
             result: result.result,
             isError: result.isError,
             protocol,
+            ...(result.images?.length ? { images: result.images } : {}),
           },
         }
         request.respond(result)

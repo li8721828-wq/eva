@@ -125,4 +125,34 @@ describe('ConfigStore startup recovery', () => {
     expect(write).toHaveBeenCalledOnce()
     expect(fs.readFileSync(path.join(state.userDataDir, 'config.json'), 'utf8')).toBe(before)
   })
+
+  it('reopens a route whose unsupported-tools verdict came from a gateway incident', () => {
+    const profile = (lastError: string, supportsTools: boolean | undefined) => ({
+      providerType: 'custom', modelId: 'gpt-image-2.6', protocol: 'unknown', contextWindowTokens: 128000,
+      source: 'probed', checkedAt: 1, probeStatus: supportsTools === false ? 'unsupported' : 'inconclusive', lastError,
+      ...(supportsTools === undefined ? {} : { supportsTools }),
+    })
+    fs.writeFileSync(path.join(state.userDataDir, 'config.json'), JSON.stringify({
+      providers: [{
+        id: 'img', name: 'Image gateway', type: 'custom', apiKey: '', isEnabled: true,
+        models: [
+          { id: 'gpt-image-2.6', name: 'gpt-image-2.6', maxTokens: 128000, supportsTools: true, supportsStreaming: true, capabilities: profile('HTTP 503 服务暂时不可用', false) },
+          { id: 'text-only', name: 'text-only', maxTokens: 128000, supportsTools: false, supportsStreaming: true, capabilities: profile('tools are not supported for this model', false) },
+        ],
+      }],
+    }))
+
+    const models = new ConfigStore().get('providers')[0].models!
+    expect(models[0].capabilities?.supportsTools).toBeUndefined()
+    expect(models[0].capabilities?.probeStatus).toBe('inconclusive')
+    expect(models[0].capabilities?.lastError).toContain('503')
+    expect(models[1].capabilities).toMatchObject({ probeStatus: 'unsupported', supportsTools: false })
+  })
+
+  it('round-trips the image generation route without storing credentials with it', () => {
+    const store = new ConfigStore()
+    expect(store.get('imageGeneration')).toBeUndefined()
+    store.set('imageGeneration', { providerId: 'img', model: 'gpt-image-2' })
+    expect(new ConfigStore().get('imageGeneration')).toEqual({ providerId: 'img', model: 'gpt-image-2' })
+  })
 })

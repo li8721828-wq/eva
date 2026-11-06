@@ -375,6 +375,8 @@ function markdownNodeText(node: ReactNode): string {
   return ''
 }
 
+const MarkdownBlockCodeContext = React.createContext(false)
+
 function MarkdownCodeBlock({ children, language }: { children: ReactNode; language?: string }) {
   const [copied, setCopied] = useState(false)
   const code = markdownNodeText(children).replace(/\n$/, '')
@@ -394,7 +396,7 @@ function MarkdownCodeBlock({ children, language }: { children: ReactNode; langua
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
-      <pre>{children}</pre>
+      <pre><MarkdownBlockCodeContext.Provider value={true}>{children}</MarkdownBlockCodeContext.Provider></pre>
     </div>
   )
 }
@@ -432,7 +434,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
       // element as the static renderers so the reading contract applies to both.
       strong: ({ children }: React.ComponentPropsWithoutRef<'strong'>) => <strong>{children}</strong>,
     } : {}),
-    inlineCode: ({ children, ...props }: React.ComponentPropsWithoutRef<'code'> & { node?: unknown }) => {
+    inlineCode: ({ children, node: _node, ...props }: React.ComponentPropsWithoutRef<'code'> & { node?: unknown }) => {
       const inlineText = markdownNodeText(children)
       if (!isStreaming && isFilePathLikeCodeSpan(inlineText)) {
         return <FilePathChip text={inlineText} conversationId={conversationId} />
@@ -479,8 +481,9 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
             const language = codeClassName?.match(/language-([^\s]+)/)?.[1]
             return <MarkdownCodeBlock language={language}>{children}</MarkdownCodeBlock>
           },
-          code({ children, className: codeClassName, ...props }) {
-            if (!codeClassName) {
+          code({ children, className: codeClassName, node: _node, ...props }) {
+            const insideBlock = React.useContext(MarkdownBlockCodeContext)
+            if (!insideBlock && !codeClassName) {
               const inlineText = markdownNodeText(children)
               if (!isStreaming && isFilePathLikeCodeSpan(inlineText)) {
                 return <FilePathChip text={inlineText} conversationId={conversationId} />

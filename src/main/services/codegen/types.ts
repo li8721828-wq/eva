@@ -1,3 +1,5 @@
+import type { SpecContract } from '../spec-contract'
+
 /**
  * Deterministic code generators.
  *
@@ -21,23 +23,27 @@ export type DslFieldType =
 export interface ParsedDslField {
   name: string
   type: DslFieldType
+  trace?: string[]
 }
 
 export interface ParsedDslAggregate {
   name: string
   fields: ParsedDslField[]
+  trace?: string[]
+  description?: string
 }
 
 export interface ParsedDslBlock {
   name: string
   body: string
+  trace?: string[]
 }
 
 export interface ParsedDomainDsl {
   domain: string
   aggregates: ParsedDslAggregate[]
   rules: string[]
-  ruleDefinitions: Array<{ name: string; definition: string }>
+  ruleDefinitions: Array<{ name: string; definition: string; trace?: string[] }>
   commands: ParsedDslBlock[]
   events: ParsedDslBlock[]
   states: ParsedDslBlock[]
@@ -80,6 +86,7 @@ export interface GenerateContext {
    * one that keeps the declared spelling (SQL, Protocol Buffers) reads it here.
    */
   declaredTypes: Readonly<Record<string, DslFieldType>>
+  specContract?: SpecContract
 }
 
 export interface CodeGenerator {
@@ -148,7 +155,7 @@ export function resolveCodeGenerator(requested: string | undefined, fallback: st
  */
 export function validateGeneratorOptions(generator: CodeGenerator, options: Readonly<Record<string, string>>): string | undefined {
   for (const [key, value] of Object.entries(options)) {
-    const accepted = generator.options[key]
+    const accepted = Object.hasOwn(generator.options, key) ? generator.options[key] : undefined
     if (!accepted) {
       const declared = Object.keys(generator.options)
       return `Generator "${generator.id}" does not support the option "${key}". It accepts: ${declared.length ? declared.join(', ') : 'no options'}.`
@@ -183,7 +190,7 @@ export const DSL_FIELD_TYPES: readonly DslFieldType[] = ['string', 'text', 'int'
 /** Parse one declared type, returning an error instead of guessing. */
 export function parseFieldType(raw: string): { ok: true; type: DslFieldType } | { ok: false; error: string } {
   const normalized = raw.trim().toLowerCase()
-  const type = TYPE_ALIASES[normalized]
+  const type = Object.hasOwn(TYPE_ALIASES, normalized) ? TYPE_ALIASES[normalized] : undefined
   if (type) return { ok: true, type }
   return {
     ok: false,

@@ -1,17 +1,15 @@
 # 回归防护清单
 
-## 确定性代码生成的生成器边界（2026-10-29）
+## RMSD 阶段发布与确定性生成（2026-11-06）
 
-- **`/coding` 之后不得再调用模型**：`deterministic-coding-service.ts` 与 `codegen/` 里不得出现 provider / prompt / 网络调用。这条是整条流水线的卖点，一旦被打破，「确定性」就只剩措辞。
-- **生成器必须是纯函数**：`generate(parsed, context)` 只读入参，不读时钟、不随机、不隐式 I/O。`deterministic-coding-service.test.ts` 的「produces byte-identical output for the same DSL and options」是守卫；任何把时间戳/UUID 写进产物的改动都会让它变红。
-- **未知字段类型必须报错，不得退化**：`parseFieldType` 对未声明类型抛错并列出可用集合。曾经的 `String` 兜底会产出与 DSL 不一致的声明，这是被专门修掉的缺陷，不要以「容错」为名恢复。
-- **`java-reference` 的字节输出是兼容契约**：已有 content-addressed 包按 DSL 哈希落盘，改动它的输出会让历史包验证失败。测试里有一段固定文本断言，改它之前要想清楚是否需要迁移既有产物。
-- **生成器不得写出输出目录之外**：`writeGeneratedPackage` 解析每个相对路径并拒绝 `..`/绝对路径。新生成器必须只返回相对路径；去掉这个检查等于把任意写文件的能力交给一个配置项。
-- **产物写入拒绝覆盖**：同目录已有不同字节就抛 `Existing deterministic artifact differs`。改成静默覆盖会让两次不同结果声称同一地址，历史包不可复现。
-- **target model 的五种拒绝不得回落到默认**：文件存在但不是 JSON、`generator` 不存在、`options` 有未声明键、`options` 取值非法、`production_output: true` 但生成器是 `reference`、`output_kind` 与生成器自报不一致——都必须让这一轮失败。默认值只在文件**缺失**时使用，且显式写死为 `java-reference`（不依赖注册顺序）。
-- **`outputKind: 'reference'` 不等于可交付**：`java-reference` / `java-maven` / `sql-ddl` 都要在 manifest 与验证报告里写清「需要 target adapter」或「需要 migration-approval」。把 reference 产物描述成生产代码属于误导。
-- **验证是结构性的，不要谎称已编译**：验证器只检查 adapter 一致、`generated` 非空、包内除 `generation-result.yaml` 之外还有文件。报告措辞不得写成「compiled」「tests passed」。
-- **复用检查不看生成器**：`buildCoding` 的复用分支比对 `status` + `sourceDslSha256`，不比对 generator。换 target model 而 DSL 不变时会命中复用——这是已知缺口，改动这里之前先加生成器比对。
+- **阶段只能消费已放行的上游**。校验归属工作树、运行状态、发布文档 ID、上游 ID 和发布内容 SHA-256。重跑上游立即失效下游；用户取消、草稿、错误或较早运行不可用于隐式放行。
+- **需求输入禁止静默截断**。超出处理边界时显式失败，保留原始文字；附件解析不完整时停止。Spec 最终文本和 DSL 均需复核。高评分加阻塞项仍阻断。DSL 逐行校验字段、闭合块、未决项与规格编号。
+- **工作树与写入隔离**。运行及会话互斥；后端持久化取消和原子清单。拒绝跨工作树、目录联接和符号链接，不信任仅按 workspaceId 返回的索引证据。
+- **`/coding` 后模型调用为零**。生成器是纯函数；`java-reference` 的主源文件字节保持兼容。未知类型、非法选项、拒绝的目标和未经明确批准的生产配置均失败。
+- **生成键绑定完整输入**。生成契约、Spec、DSL、独立验收与规范化目标配置决定输出目录。每次核对实际文件清单与摘要，允许重建缺失文件，拒绝覆盖不同字节。生产输出需要目标实现声明行为。
+- **验证报告只陈述实际结果**。`java-domain` 需在独立目录通过真实 JDK 编译及验收测试。Java 参考目标只验证主源文件编译，其余参考目标明确适配边界。运行失败与中断的目录不能标记完成。
+- **独立验收基于已发布的 Spec 契约**。每条 FR 恰有一项，AT 编号全局唯一。契约和 Spec 共同放行，之后按发布哈希读取，DSL 和代码生成不能改写预期结果。已标明人工验收的规则阻断 Java 生产发布。等于审批阈值的用例必须识别 `>=` 变成 `>` 的回归。
+- **检查点与成功基线职责分离**。检查点只在未完成的同一尝试中复用，绑定模型、输入和两份产物摘要。放行审查重新执行。变更影响只对比同目标上次验证成功的产物，未通过发布验证的生成不推进基线。
 
 ## 程序化 Skill 的执行边界（2026-10-29）
 
@@ -243,6 +241,10 @@
 - **anthropic 家族免声明放行**是刻意的例外（`VISION_PATTERN` 认不出 `claude-opus-4-6-thinking` 这类 id，去掉豁免会打断已在用的 Claude 连接）。它是按 provider 家族而非模型判定，新增豁免必须以「该 API 家族一直接受 image 部件」为条件，不能拿它当「猜名字」的旁路。
 - **主模型判 false 时才走视觉池代看**，且代看注入的是文字描述：`imageContext` 非空时 `runnerMessage.images` 必须剥掉（`conversation.ts`），不得让同一张图既由池子模型描述又原样发给不支持图的主模型。历史轮同理，`primarySupportsVision` 为 false 时 `runnerHistory` 里带图的旧消息必须整个剥掉 `images`。
 - **判 false 且池子里没有 Vision/Image 路由时宁可拒绝也不静默丢图**：拒绝文案必须是中文并给出可操作路径（挂池或换主模型），且不得声称「该模型不支持图片」为事实断言之外的能力结论——它只表示这条路由的档案未确认可收图。
+- **只有「确定性拒绝」才能把工具能力判成不支持（2026-11-06）**：`isDefinitiveToolRejection` 仅接受 400/404/422 且响应明确提及 tools 并带拒绝措辞；超时、429、5xx、网络错误及任何含糊响应一律记为 `inconclusive` 并保留 `lastError`，绝不写 `supportsTools: false`。运行器只拦 `supportsTools === false`，所以一次瞬时失败若被错记为不支持，会让整轮工具调用被静默拦截——用户 2026-11-06 实测「接入生图模型却显示不支持工具调用」正是此路径。
+- **已落盘的瞬时误判必须能自愈**：`config-store.ts` 的 `repairTransientProbeVerdicts()` 在启动迁移时把错误可归类为瞬时的 `probeStatus: 'unsupported'` 改为 `inconclusive` 并去掉 `supportsTools: false`。新增探测错误分类时，必须同步检查这个迁移的判据，不能让历史误判永久留在用户配置里。
+- **生图连接与聊天连接是两条独立路由**：`generate_image` 只读全局 `imageGeneration`（`providerId` + `model`），不得回退到当前会话模型或聊天路由；未配置时必须给可操作提示而不是静默失败。工具只接受供应商返回的真实图片字节（魔数 png/jpeg/webp），写入工作区 `.eva/generated-images/` 并走 `workspace-write` 审批。
+- **工具结果图片必须在收起状态下仍可见**：`ToolCall.images` 由 `toolResultImages` 落盘；原生路径的扩展工具结果必须在 `tool_end`/`tool_result` 两处都携带 `images`；`projectNativeTranscript` 对同一 `runId`+`toolCallId` 的多个 `tool_end` 必须**合并** `data`/`resultView` 而不是覆盖（SDK 后到的完成帧不得抹掉 Eva 结果里的图片）。renderer 的缩略图渲染在折叠工具组之外（`ToolActivityList` 的 `attachments` 槽），不许只放在展开内容里。
 
 ## 技能（Skill）系统
 
@@ -320,3 +322,10 @@
 - 对话字级使用 `lib/reading-typography.ts` 的 CSS px 数值，设置标注与正文共用一份数据：13/14/15/16/17/18/20px，默认实际 15px。应用根字号仍为 14px；不能通过放大根字号改变工作区几何尺寸，也不能再次把名义 15px 写成在 14px 根上缩小的 rem。
 - 默认无衬线优先使用本地 HarmonyOS Regular/Medium 映射，未安装时回退平台 CJK 无衬线；显式衬线/等宽/macOS 偏好保留。正文 400、标题/强调 500，关闭合成字重，不用模糊、描边或阴影伪造柔和。浏览器验证必须核对实际 glyph 字体，不能仅凭 CSS family 字符串宣称字体已生效。
 - 原生深色旧配色规则必须排除 `conversation-reading`，避免覆盖统一阅读墨色，使 Eva/Pi/Harness 的深色正文重新出现不同亮度。原生非阅读规范内容继续保留原配色保护。
+
+## 实际聊天画布与版本一致性（2026-11-05）
+
+- 最外层 App 必须是唯一画布背景所有者；浅色使用 `--conversation-canvas`，ChatPanel、workspace、桌面右栏及展开工作区透明。不能在各列重复同一渐变（坐标会重启）、用近白底盖住它，或叠加深色半透明底。输入框/紧凑便签、窄屏模态抽屉有自己的可读表面；不能靠给助手消息加嵌套卡片伪造质感。验收包含实际 App/MessageList 链路与右栏可见状态，比较字体/墨色/围栏，检查打开/关闭、缩放、展开及聊天与右栏空白边界像素连续，不能只截图收起右栏的消息。
+- 连续画布还须保留用户指定的淡紫/冰蓝透光层次与明亮底色，不能以均匀灰蓝替代。颜色验收在真实桌面布局及缩放后取样背景空白，避开文字、头像、滚动条和便签阴影，配合整页截图目检；不得仅凭背景样式一致或数字断言宣称主观质感完全相同。
+- 普通代码围栏不以 language class 是否存在来判断是否行内；MarkdownCodeBlock 用上下文标识块级，避免未标语言代码叠加 markdown-inline-code 灰底或被变成文件路径标签。原始代码和复制语义保持不变，真正的行内路径继续可点击。
+- 每批交付更新递增版本号，package.json、lockfile 顶层/根包和 APP_VERSION 必须一致；窗口标签与应用元数据不能各显示不同版本。源码验证/普通构建与 NSIS 安装包生成分开，后者只按用户明确要求执行；仅将已验收版本制作成安装包时保留该版本。

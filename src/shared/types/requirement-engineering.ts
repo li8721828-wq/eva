@@ -15,6 +15,7 @@ export interface RequirementDocument {
   workspacePath?: string
   content: string
   createdAt: string
+  checkpoint?: { inputHash: string; sha256: string }
 }
 
 export interface RequirementEvaluation {
@@ -79,6 +80,12 @@ export interface RequirementRun {
   documents: RequirementDocument[]
   evaluations: RequirementEvaluation[]
   clarificationQuestions: RequirementClarificationQuestion[]
+  /** Canonical worktree that owns the package. */
+  workspaceRoot?: string
+  /** Published stage outputs and the exact upstream revision each consumed. */
+  releases?: Partial<Record<RequirementReleaseStage, RequirementRelease>>
+  revision?: number
+  draftAttempts?: Partial<Record<'specification' | 'dsl', string>>
   /** Project-local RMSD run root: <workspace>/.eva/RMSD/<requirement-name>/runs/<run-id>. */
   workspacePackagePath?: string
   /** Fixed workspace directory for this requirement package's specification artifacts. */
@@ -88,10 +95,23 @@ export interface RequirementRun {
   dslStatus?: 'idle' | 'generating' | 'ready' | 'failed'
   /** Content-addressed fixed output directory used by deterministic code generation. */
   codingOutputPath?: string
+  verifiedCoding?: Record<string, { specContract?: RequirementArtifactReceipt; files: Array<{ path: string; sha256: string }> }>
   codingStatus?: 'idle' | 'generating' | 'ready' | 'failed'
   createdAt: string
   updatedAt: string
   error?: string
+}
+
+export type RequirementReleaseStage = 'requirement' | 'modeling' | 'specification' | 'dsl'
+
+export interface RequirementArtifactReceipt {
+  documentId: string
+  sha256: string
+}
+
+export interface RequirementRelease extends RequirementArtifactReceipt {
+  upstreamDocumentId?: string
+  specContract?: RequirementArtifactReceipt
 }
 
 export interface SubmitRequirementInput {
@@ -108,6 +128,7 @@ export interface SubmitClarificationAnswersInput {
 
 export interface SubmitRequirementModelingInput {
   conversationId: string
+  runId?: string
 }
 
 export interface SubmitSpecificationInput {
@@ -126,6 +147,7 @@ export interface SubmitCodingInput {
   conversationId: string
   /** Explicit requirement run to continue; omitted only for legacy recovery. */
   runId?: string
+  generator?: string
 }
 
 export interface SubmitSpecificationResolutionInput {

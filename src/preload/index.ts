@@ -320,7 +320,7 @@ export interface EvaAPI {
     dsl(input: SubmitDslInput): Promise<RequirementRun>
     coding(input: SubmitCodingInput): Promise<RequirementRun>
     resolveSpec(input: SubmitSpecificationResolutionInput): Promise<RequirementRun>
-    abort(conversationId: string): Promise<void>
+    abort(conversationId: string, runId?: string): Promise<void>
     showDocumentContextMenu(document: Pick<RequirementDocument, 'path'>): Promise<void>
     onProgress(callback: EventCallback<RequirementProgress>): Unsubscribe
   }
@@ -650,7 +650,7 @@ const evaAPI: EvaAPI = {
     dsl: (input) => invokeContract(IPC.REQUIREMENT_DSL_SUBMIT, input),
     coding: (input) => invokeContract(IPC.REQUIREMENT_CODING_SUBMIT, input),
     resolveSpec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
-    abort: (conversationId) => invokeContract(IPC.REQUIREMENT_RUN_ABORT, conversationId),
+    abort: (conversationId, runId) => invokeContract(IPC.REQUIREMENT_RUN_ABORT, conversationId, runId),
     showDocumentContextMenu: (document) => invokeContract(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, document),
     onProgress: (callback) => onStream(IPC.REQUIREMENT_PROGRESS, callback),
   },

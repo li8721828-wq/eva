@@ -7,8 +7,49 @@ import {
   type NativeTranscriptItem,
 } from '../../../shared/native-agent-transcript'
 import { ToolActivityList } from './ToolActivityList'
+import { ReferenceImagePreview, type PreviewImage } from './ReferenceImagePreview'
 import { groupToolActivity } from '@/lib/execution-activity'
 import { canonicalToolName } from '../../../shared/tool-semantics'
+
+const RESULT_IMAGE_TYPES: PreviewImage['mediaType'][] = ['image/png', 'image/jpeg', 'image/webp']
+
+/** Extension tools such as generate_image attach result files to their native event. */
+function nativeResultImages(items: NativeTranscriptItem[]): PreviewImage[] {
+  const seen = new Set<string>()
+  const images: PreviewImage[] = []
+  for (const item of items) {
+    const raw = item.data?.images
+    if (!Array.isArray(raw)) continue
+    for (const candidate of raw) {
+      if (!candidate || typeof candidate !== 'object') continue
+      const image = candidate as { path?: unknown; name?: unknown; mediaType?: unknown }
+      if (typeof image.path !== 'string' || !image.path || seen.has(image.path)) continue
+      if (!RESULT_IMAGE_TYPES.includes(image.mediaType as PreviewImage['mediaType'])) continue
+      seen.add(image.path)
+      images.push({
+        path: image.path,
+        name: typeof image.name === 'string' && image.name ? image.name : image.path.split(/[\\/]/).pop() || 'image',
+        mediaType: image.mediaType as PreviewImage['mediaType'],
+      })
+    }
+  }
+  return images
+}
+
+function NativeResultImages({ images }: { images: PreviewImage[] }) {
+  if (!images.length) return null
+  return (
+    <div className="mt-1.5 flex max-w-full flex-wrap gap-2 pb-1" data-native-result-images>
+      {images.map((image) => (
+        <ReferenceImagePreview
+          key={image.path}
+          image={image}
+          className="h-24 w-24 shrink-0 overflow-hidden rounded-md border border-zinc-200"
+        />
+      ))}
+    </div>
+  )
+}
 
 const useActivityLayoutEffect =
   typeof window === 'undefined' ? useEffect : useLayoutEffect
@@ -271,6 +312,7 @@ export function NativeAgentView({
     <div ref={activity} data-native-activity className="max-h-[28rem] space-y-3 overflow-y-auto overscroll-contain pr-1"
       onScroll={event => { const el = event.currentTarget; following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24 }}>
       {items.map(renderItem)}
+      <NativeResultImages images={nativeResultImages(items)} />
     </div>
   </section>
   if (!hasDetails && !streaming) return null
@@ -281,7 +323,8 @@ export function NativeAgentView({
           streaming={streaming && group.items.some(item => item.status === 'running')}
           errorCount={group.items.filter(item => item.status === 'failed' || item.status === 'rejected').length}
           unconfirmedCount={streaming ? 0 : group.items.filter(item => item.status === 'running').length}
-          commandsOnly={group.items.every(item => canonicalToolName(item.name || '') === 'execute_command')}>
+          commandsOnly={group.items.every(item => canonicalToolName(item.name || '') === 'execute_command')}
+          attachments={<NativeResultImages images={nativeResultImages(group.items)} />}>
           {group.items.map(renderItem)}
         </ToolActivityList>
       : renderItem(group.item))}

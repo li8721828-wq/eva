@@ -102,6 +102,7 @@ async function fixture(
     noWorkspace?: boolean
     fullFilesystemAccess?: boolean
     localFullAccess?: boolean
+    withImageExtension?: boolean
     responseFor?: (request: Request, index: number) => ChatChunk | Error
   } = {},
 ) {
@@ -144,6 +145,19 @@ async function fixture(
     },
     execute: extension,
   })
+  if (options.withImageExtension) {
+    registry.register({
+      definition: {
+        name: 'generate_image',
+        description: 'Generate a test image',
+        parameters: { type: 'object', properties: {} },
+      },
+      execute: async () => ({
+        content: 'Generated a test image.',
+        images: [{ path: path.join(dir, 'generated.png'), name: 'generated.png', mediaType: 'image/png' as const }],
+      }),
+    })
+  }
   const requests: Request[] = []
   let calls = 0
   const store = new AgentRunEventStore(path.join(dir, 'journal'))
@@ -259,6 +273,21 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         const events = await collect(f.runner)
         expect(events.filter(event => event.type === 'error')).toEqual([])
         expect(f.requests[0].reasoning).toEqual(reasoningSelection === 'default' ? undefined : { enabled: reasoningSelection !== 'none', effort: reasoningSelection })
+      } finally { await f.close() }
+    }, 15_000)
+    it('carries extension image results into the native feed and the tool result', async () => {
+      const f = await fixture(engine, [call('generate_image', 'img-1', {}), answer], {
+        allowedTools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'execute_command', 'inspect_runtime', 'generate_image'],
+        withImageExtension: true,
+      })
+      try {
+        const events = await collect(f.runner)
+        expect(events.filter((event) => event.type === 'error')).toEqual([])
+        const expected = [{ path: path.join(f.dir, 'generated.png'), name: 'generated.png', mediaType: 'image/png' }]
+        const toolResult = events.find((event): event is Extract<AgentEvent, { type: 'tool_result' }> => event.type === 'tool_result')
+        expect(toolResult?.toolResult.images).toEqual(expected)
+        const ends = events.filter((event) => event.type === 'native_event' && event.nativeEvent?.type === 'tool_end')
+        expect(ends.map((event) => event.type === 'native_event' ? event.nativeEvent?.data?.images : undefined)).toContainEqual(expected)
       } finally { await f.close() }
     }, 15_000)
     it.each([false, true])(

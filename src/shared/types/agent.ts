@@ -1,4 +1,4 @@
-import type { ChatUsage, ResponseTiming } from './conversation'
+import type { ChatUsage, ResponseTiming, ToolResultImageRef } from './conversation'
 import type { ExecutionEnvelope } from './execution-protocol'
 import type { NativeAgentEvent } from './native-agent'
 
@@ -96,6 +96,8 @@ export interface AgentEvent {
     result: string
     isError: boolean
     protocol?: ExecutionEnvelope
+    /** Image files produced by the tool, shown inline in the conversation. */
+    images?: ToolResultImageRef[]
   }
   error?: string
   /** Provider termination reason. `length` means the response hit a provider limit. */

@@ -20,6 +20,8 @@ const REGISTERED_MUTATING_TOOLS = [
   'write_file',
   'edit_file',
   'spreadsheet',
+  // Writes into the workspace and spends a paid image-provider call.
+  'generate_image',
   'execute_command',
   'write_terminal',
   'browser_control',

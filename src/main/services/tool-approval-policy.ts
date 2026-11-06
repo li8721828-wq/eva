@@ -44,6 +44,8 @@ const WORKSPACE_WRITE_TOOLS = new Set([
   'edit_file',
   'spreadsheet',
   'write_skill_file',
+  // Writes an image file into the workspace and spends a paid provider call.
+  'generate_image',
 ])
 
 const TERMINAL_COMMAND_TOOLS = new Set([
@@ -120,6 +122,13 @@ function buildSummary(toolName: string, args: Record<string, unknown>, category:
     const file = String(args.file || 'SKILL.md')
     const scope = args.scope === 'project' ? 'project skills' : 'installed skills'
     return { summary: `Write skill file ${name}/${file}`, detail: `Target folder: ${scope}. Replaces an existing file only when the tool asks to.` }
+  }
+  if (toolName === 'generate_image') {
+    const prompt = String(args.prompt || '(missing prompt)')
+    return {
+      summary: 'Generate an image',
+      detail: `${prompt.length > 200 ? `${prompt.slice(0, 200)}…` : prompt}${typeof args.size === 'string' && args.size ? ` (size ${args.size})` : ''}`,
+    }
   }
   if (category === 'workspace-write' && (toolName === 'write_file' || toolName === 'edit_file')) {
     const target = String(args.path || '(missing path)')

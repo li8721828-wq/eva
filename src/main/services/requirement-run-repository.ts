@@ -2,6 +2,7 @@ import { app } from 'electron'
 import fs from 'fs/promises'
 import path from 'path'
 import type { RequirementRun } from '../../shared/types/requirement-engineering'
+import { writeJsonAtomicAsync, writeTextAtomicAsync } from '../storage/atomic-file'
 
 /** Filesystem persistence for Requirement Engineering runs, isolated from orchestration and LLM policy. */
 export class RequirementRunRepository {
@@ -25,8 +26,7 @@ export class RequirementRunRepository {
   }
 
   async writeManifest(run: RequirementRun): Promise<void> {
-    await fs.mkdir(this.directory(run.id), { recursive: true })
-    await fs.writeFile(path.join(this.directory(run.id), 'manifest.json'), JSON.stringify(run, null, 2), 'utf8')
+    await writeJsonAtomicAsync(path.join(this.directory(run.id), 'manifest.json'), run)
   }
 
   async readManifest(runId: string): Promise<RequirementRun | null> {
@@ -39,8 +39,7 @@ export class RequirementRunRepository {
 
   async writeDocument(runId: string, fileName: string, content: string): Promise<string> {
     const filePath = path.join(this.directory(runId), fileName)
-    await fs.mkdir(path.dirname(filePath), { recursive: true })
-    await fs.writeFile(filePath, content, 'utf8')
+    await writeTextAtomicAsync(filePath, content)
     return filePath
   }
 }

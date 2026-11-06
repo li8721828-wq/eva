@@ -1,4 +1,12 @@
-import type { ChatParams, ChatChunk, ToolDefinition, ChatMessageInput, ProviderModelOption } from '../../shared/types/provider'
+import type {
+  ChatParams,
+  ChatChunk,
+  ToolDefinition,
+  ChatMessageInput,
+  ProviderModelOption,
+  ImageGenerationRequest,
+  GeneratedImage,
+} from '../../shared/types/provider'
 import { sanitizeUnicode } from '../utils/unicode'
 import { reasoningRequest, type ReasoningSelection } from '../../shared/model-reasoning'
 
@@ -41,6 +49,9 @@ export interface LLMProvider {
    * 获取可用模型列表
    */
   listModels(): Promise<ProviderModelOption[]>
+
+  /** Generate one image. Only providers exposing an image endpoint implement this. */
+  generateImage?(request: ImageGenerationRequest, signal?: AbortSignal): Promise<GeneratedImage>
 }
 
 /** Explicit model choice takes precedence over legacy display-driven settings. */

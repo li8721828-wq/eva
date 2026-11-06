@@ -93,17 +93,17 @@ export const javaMavenGenerator: CodeGenerator = {
   },
 }
 
-function typeOf(type: ParsedDslField['type'], nativeTypes: boolean): string {
+export function javaFieldType(type: ParsedDslField['type'], nativeTypes: boolean): string {
   if (nativeTypes && PRIMITIVE_TYPES[type]) return PRIMITIVE_TYPES[type]!
   return BOXED_TYPES[type]
 }
 
 function classSource(packageName: string, aggregate: ParsedDslAggregate, nativeTypes: boolean): string {
   const fields = aggregate.fields
-    .map((field) => `    private ${typeOf(field.type, nativeTypes)} ${field.name};`)
+    .map((field) => `    private ${javaFieldType(field.type, nativeTypes)} ${field.name};`)
     .join('\n')
   const accessors = aggregate.fields.map((field) => {
-    const type = typeOf(field.type, nativeTypes)
+    const type = javaFieldType(field.type, nativeTypes)
     const capitalized = field.name.charAt(0).toUpperCase() + field.name.slice(1)
     return [
       `    public ${type} get${capitalized}() {`,
@@ -133,7 +133,7 @@ function classSource(packageName: string, aggregate: ParsedDslAggregate, nativeT
 
 function recordSource(packageName: string, aggregate: ParsedDslAggregate, nativeTypes: boolean): string {
   const components = aggregate.fields
-    .map((field) => `${typeOf(field.type, nativeTypes)} ${field.name}`)
+    .map((field) => `${javaFieldType(field.type, nativeTypes)} ${field.name}`)
     .join(', ')
   return [
     `package ${packageName};`,

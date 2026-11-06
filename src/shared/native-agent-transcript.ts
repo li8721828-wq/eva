@@ -82,14 +82,19 @@ export function projectNativeTranscript(
     } else if (event.type === 'tool_update') {
       obtain(id, 'tool').content = event.content || ''
     } else if (event.type === 'tool_end') {
-      Object.assign(obtain(id, 'tool'), {
-        content: event.content || '',
+      // An extension tool can be described twice: Eva's own result (which may
+      // carry result images) and the SDK's completion frame. Merge so the
+      // later frame cannot erase evidence the earlier one owns.
+      const item = obtain(id, 'tool')
+      Object.assign(item, {
+        content: event.content || item.content,
         status: event.data?.rejected
           ? 'rejected'
           : event.data?.isError
             ? 'failed'
             : 'completed',
-        resultView: event.data?.resultView,
+        resultView: event.data?.resultView ?? item.resultView,
+        data: { ...item.data, ...event.data },
       })
     } else if (event.type === 'todo') {
       Object.assign(obtain(`${event.runId}:todos`, 'todo'), {

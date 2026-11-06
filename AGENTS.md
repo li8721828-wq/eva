@@ -26,3 +26,8 @@ After a change:
 - Keep renderer layout state separate from persisted conversation data.
 - Do not represent simulated model reasoning as real execution evidence.
 - Run the narrowest relevant tests first, then `npm run typecheck`; run the full suite for shared runtime or renderer changes.
+
+## Version discipline
+
+- Each delivered project update must increment the application version. Keep `package.json`, the root and root-package versions in `package-lock.json`, and `src/shared/constants.ts` in sync.
+- Generate an installer only when the user requests packaging. Ordinary source validation does not imply packaging authorization; the user explicitly resumed Windows packaging for 0.1.209 on 2026-11-05.

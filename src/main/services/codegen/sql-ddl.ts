@@ -59,13 +59,24 @@ export const sqlDdlGenerator: CodeGenerator = {
       '',
     ]
 
+    const tableNames = new Set<string>()
     for (const aggregate of parsed.aggregates) {
       const table = pluralize(snakeCase(aggregate.name))
+      if (tableNames.has(table) || table.length > 58) {
+        throw new Error(`Ambiguous or overlong PostgreSQL table name: ${table}`)
+      }
+      tableNames.add(table)
       lines.push(`-- ${aggregate.name}`)
       lines.push(`create table ${quote(schema, alwaysQuote)}.${quote(table, alwaysQuote)} (`)
+      const columnNames = new Set<string>()
       const columns = aggregate.fields.map((field) => {
+        const column = snakeCase(field.name)
+        if (!column || columnNames.has(column) || column.length > 63) {
+          throw new Error(`Ambiguous or overlong PostgreSQL column in ${table}: ${column}`)
+        }
+        columnNames.add(column)
         const nullable = field.name === 'id' ? ' not null' : ''
-        return `  ${quote(snakeCase(field.name), alwaysQuote)} ${SQL_TYPES[field.type]}${nullable}`
+        return `  ${quote(column, alwaysQuote)} ${SQL_TYPES[field.type]}${nullable}`
       })
       // Every table needs a stable key. The DSL models `id` as an ordinary
       // field, so the constraint is added here and reported in the manifest.

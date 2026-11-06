@@ -38,7 +38,7 @@ import type { AutomationConfig, HiddenCapabilityId, ToolApprovalPolicy } from '.
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import type { NetworkConfig, NetworkTestResult } from '../../../shared/types/network'
 import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
-import { inferModelCapabilities } from '../../../shared/model-capabilities'
+import { inferModelCapabilities, mergeProbedCapabilities } from '../../../shared/model-capabilities'
 import { PluginCenter } from './PluginCenter'
 import { McpPanel } from './McpPanel'
 import { SkillPanel } from './SkillPanel'
@@ -47,6 +47,7 @@ import { AppServerPanel } from './AppServerPanel'
 import { AgentManagementWorkspace } from '@/components/agents/AgentManagementWorkspace'
 import { CostCenter } from '@/components/cost/CostCenter'
 import { ModelPoolPanel } from './ModelPoolPanel'
+import { ImageGenerationPanel } from './ImageGenerationPanel'
 import { RuntimeIntrospectionPanel } from './RuntimeIntrospectionPanel'
 import { pushToast } from '@/stores/use-toast-store'
 import { settingsPageCopy } from '@/lib/settings-page-copy'
@@ -578,13 +579,22 @@ export function SettingsDialog() {
     setModelsMessage(null)
     try {
       const result = await window.eva.provider.probeCapabilities({ provider: config, model: modelId })
-      setAvailableModels((current) => current.map((model) => model.id === modelId ? { ...model, capabilities: result.profile } : model))
+      setAvailableModels((current) => current.map((model) => model.id === modelId
+        ? { ...model, capabilities: mergeProbedCapabilities(model.capabilities, result.profile) }
+        : model))
       setModelsMessage(result.message)
     } catch (error) {
       setModelsMessage(error instanceof Error ? error.message : 'Capability detection failed.')
     } finally {
       setProbingModelId(null)
     }
+  }
+
+  const handleClearProbe = (modelId: string) => {
+    setAvailableModels((current) => current.map((model) => model.id === modelId
+      ? { ...model, capabilities: inferModelCapabilities(providerType, model.id) }
+      : model))
+    setModelsMessage(`Cleared the stored capability result for ${modelId}; inferred values are used until the next probe.`)
   }
 
   const handleContextWindowChange = (modelId: string, value: string) => {
@@ -940,6 +950,8 @@ export function SettingsDialog() {
 
               <ModelPoolPanel providers={savedProviders} />
 
+              <ImageGenerationPanel providers={savedProviders} />
+
               {providerEditorOpen && <Dialog open={providerEditorOpen} onOpenChange={setProviderEditorOpen} className="settings-dialog__provider-editor">
                 <DialogClose onClose={() => setProviderEditorOpen(false)} />
                 <DialogHeader>
@@ -1080,7 +1092,10 @@ export function SettingsDialog() {
                           />
                           <span className="truncate">{model.name}</span>
                           <span className="settings-dialog__model-meta">
-                            {model.capabilities && <span className={`settings-dialog__model-capability ${model.capabilities.supportsTools === false ? 'is-error' : model.capabilities.probeStatus === 'supported' ? 'is-success' : ''}`}>{model.capabilities.probeStatus === 'supported' ? '工具已验证' : model.capabilities.supportsTools === false ? '不支持工具' : '未探测'}</span>}
+                            {model.capabilities && <span
+                              className={`settings-dialog__model-capability ${model.capabilities.supportsTools === false ? 'is-error' : model.capabilities.probeStatus === 'supported' ? 'is-success' : ''}`}
+                              title={model.capabilities.lastError || undefined}
+                            >{model.capabilities.probeStatus === 'supported' ? '工具已验证' : model.capabilities.supportsTools === false ? '不支持工具' : '未确认'}</span>}
                             <select
                               className="settings-dialog__model-context"
                               aria-label={`Context window for ${model.name || model.id}`}
@@ -1092,6 +1107,7 @@ export function SettingsDialog() {
                               ))}
                             </select>
                             <button type="button" className="settings-dialog__model-probe" onClick={(event) => { event.preventDefault(); void handleProbeModel(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>{probingModelId === model.id ? '探测中…' : '探测能力'}</button>
+                            {model.capabilities && <button type="button" className="settings-dialog__model-probe" title="删除已保存的能力探测结果，改为推导值" aria-label={`清除 ${model.name || model.id} 的能力探测结果`} onClick={(event) => { event.preventDefault(); handleClearProbe(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>清除</button>}
                           </span>
                         </label>
                       )) : (

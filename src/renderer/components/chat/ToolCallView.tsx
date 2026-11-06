@@ -2,11 +2,13 @@ import React, { useState } from 'react'
 import type { ToolCall } from '../../../shared/types'
 import { canonicalToolName, toolImplementationLabel, toolTargetPath } from '../../../shared/tool-semantics'
 import { cn } from '@/lib/utils'
-import { ChevronRight, FileCode, Terminal, Search, Loader2, CheckCircle2, XCircle, CircleDot, Wrench, ExternalLink } from 'lucide-react'
+import { ChevronRight, FileCode, Terminal, Search, Loader2, CheckCircle2, XCircle, CircleDot, Wrench, ExternalLink, Image as ImageIcon } from 'lucide-react'
+import { ReferenceImagePreview } from './ReferenceImagePreview'
 
 function getToolIcon(name: string) {
   name = canonicalToolName(name)
   if (name === 'dispatch_tools') return <Wrench className="h-3.5 w-3.5" />
+  if (name === 'generate_image') return <ImageIcon className="h-3.5 w-3.5" />
   if (name.includes('file') || name.includes('read') || name.includes('write'))
     return <FileCode className="h-3.5 w-3.5" />
   if (name.includes('execute') || name.includes('terminal') || name.includes('command'))
@@ -35,6 +37,11 @@ export function getToolLabel(toolCall: ToolCall): { title: string; detail?: stri
     const poolId = typeof toolCall.arguments.poolId === 'string' ? toolCall.arguments.poolId : ''
     const capability = typeof toolCall.arguments.capability === 'string' ? toolCall.arguments.capability : ''
     return { title: 'Model pool', detail: [poolId, capability].filter(Boolean).join(' / ') || 'Delegated model' }
+  }
+
+  if (toolCall.name === 'generate_image') {
+    const prompt = typeof toolCall.arguments.prompt === 'string' ? toolCall.arguments.prompt : ''
+    return { title: 'Generate image', detail: prompt.length > 60 ? `${prompt.slice(0, 60)}…` : prompt }
   }
 
   if (toolCall.name === 'web_search') {
@@ -172,6 +179,18 @@ export function ToolCallView({ toolCall, className, active = true, compact = fal
           )}
         </span>}
       </button>
+
+      {toolCall.images?.length ? (
+        <div className="mt-1.5 ml-4 flex max-w-full flex-wrap gap-2 pb-1">
+          {toolCall.images.map((image) => (
+            <ReferenceImagePreview
+              key={image.path}
+              image={image}
+              className="h-24 w-24 shrink-0 overflow-hidden rounded-md border border-zinc-200"
+            />
+          ))}
+        </div>
+      ) : null}
 
       {expanded && (
         <div className="tool-call-item__details mt-1.5 ml-4 max-w-[42rem] space-y-2 pl-3 pb-1">

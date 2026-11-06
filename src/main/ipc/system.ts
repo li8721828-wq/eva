@@ -19,6 +19,7 @@ import { applyNetworkConfig, normalizeNetworkConfig, testNetworkConnection } fro
 import type { NetworkConfig } from '../../shared/types/network'
 import { getModelContextWindowTokens } from '../../shared/constants'
 import { isExecutionEngineConfig } from '../../shared/types/execution-engine'
+import { failedProbeProfile } from '../services/model-capability-probe'
 
 const terminalWorkspaces = new Map<string, string>()
 const terminalOutputUnsubscribers = new Map<string, () => void>()
@@ -43,6 +44,8 @@ const RENDERER_CONFIG_KEYS = new Set([
   // Only a preferred loopback port and a boolean: no token or key material. The
   // Settings App-Server panel edits it through the same generic config path.
   'appServer',
+  // A provider id and model id only; the credential stays on the provider entry.
+  'imageGeneration',
 ])
 
 function assertRendererConfigKey(key: string): void {
@@ -155,7 +158,25 @@ export function registerSystemHandlers(
     try {
       const clipboardDirectory = path.join(app.getPath('userData'), 'clipboard-images')
       const resolvedPath = await fs.promises.realpath(filePath)
-      if (!isWithinDirectory(resolvedPath, clipboardDirectory)) return null
+      // Generated images and other workspace artifacts need the same preview as
+      // user attachments, but the renderer must not be able to read arbitrary
+      // files: the path has to resolve inside a registered workspace.
+      const roots = [clipboardDirectory]
+      const configuredWorkspace = getStorage().config.get('workspacePath')
+      if (configuredWorkspace) roots.push(configuredWorkspace)
+      for (const workspace of await getStorage().workspaces.list()) roots.push(workspace.path)
+      let allowed = false
+      for (const root of roots) {
+        try {
+          if (isWithinDirectory(resolvedPath, await fs.promises.realpath(root))) {
+            allowed = true
+            break
+          }
+        } catch {
+          // A missing or unreadable workspace is not a preview root.
+        }
+      }
+      if (!allowed) return null
       const stats = await fs.promises.stat(resolvedPath)
       if (!stats.isFile() || stats.size > MAX_PREVIEW_IMAGE_BYTES) return null
       const base64 = await fs.promises.readFile(resolvedPath, 'base64')
@@ -454,11 +475,14 @@ export function registerSystemHandlers(
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Capability detection failed.'
+        const profile = failedProbeProfile(inferred, error, message)
         return {
           success: false,
           model,
-          profile: { ...inferred, source: 'probed', probeStatus: 'unsupported', checkedAt: Date.now(), lastError: message, supportsTools: false },
-          message: `Tool calling probe failed for ${model}: ${message}`,
+          profile,
+          message: profile.probeStatus === 'unsupported'
+            ? `The model rejected tool calls: ${message}`
+            : `Tool calling could not be confirmed for ${model}; the request failed before the model answered. Previous capability results were kept unchanged. ${message}`,
         }
       } finally {
         clearTimeout(timeout)

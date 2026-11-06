@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { RequirementEngineeringService } from '../../src/main/services/requirement-engineering-service'
 
 describe('RequirementEngineeringService document integrity', () => {
@@ -21,10 +21,6 @@ describe('RequirementEngineeringService document integrity', () => {
     (service as unknown as {
       documentOutputContract: (stage: string, dimension: string) => string
     }).documentOutputContract(stage, dimension)
-  const continuationSummary = (prompt: string): string =>
-    (service as unknown as {
-      continuationTaskSummary: (prompt: string) => string
-    }).continuationTaskSummary(prompt)
 
   it('accepts a complete BDD scenario without terminal punctuation', () => {
     const content = [
@@ -106,16 +102,15 @@ describe('RequirementEngineeringService document integrity', () => {
     expect(codeAware).toContain('不得展开接口定义、数据库表设计')
   })
 
-  it('keeps the original task instructions when requesting a continuation', () => {
-    const summary = continuationSummary([
-      '分析维度：范围与目标',
-      '请输出：已确认事实、业务规则、缺失信息、边界条件、验收标准。',
-      '# 原始需求',
-      '这里是可能很长的需求正文。',
-    ].join('\n'))
-
-    expect(summary).toContain('分析维度：范围与目标')
-    expect(summary).toContain('验收标准')
-    expect(summary).not.toContain('这里是可能很长的需求正文')
+  it('preserves the source facts and rejects an empty response after truncation', async () => {
+    const prompt = '分析维度：范围与目标\n# 原始需求\n最后一条规则要求双签。'
+    const chatComplete = vi.fn()
+      .mockResolvedValueOnce({ content: '未完成正文', finishReason: 'length' })
+      .mockResolvedValueOnce({ content: '', finishReason: 'stop' })
+    const service = new RequirementEngineeringService({ get: () => ({ chatComplete }) } as never, undefined, {
+      storage: { config: { get: () => 'fixture', getActiveModel: () => 'fixture' } } as never,
+    }) as unknown as { complete: (prompt: string) => Promise<string> }
+    await expect(service.complete(prompt)).rejects.toThrow('自动续写未返回正文')
+    expect(chatComplete.mock.calls[1][0].messages.at(-1).content).toContain(prompt)
   })
 })

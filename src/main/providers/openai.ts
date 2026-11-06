@@ -1,6 +1,13 @@
 import OpenAI from 'openai'
 import { net } from 'electron'
-import type { ChatParams, ChatChunk, ToolDefinition, ProviderModelOption } from '../../shared/types/provider'
+import type {
+  ChatParams,
+  ChatChunk,
+  ToolDefinition,
+  ProviderModelOption,
+  ImageGenerationRequest,
+  GeneratedImage,
+} from '../../shared/types/provider'
 import { reasoningCapabilityForModel, reasoningRequest, selectedReasoning, REASONING_EFFORTS } from '../../shared/model-reasoning'
 import { inferModelCapabilities } from '../../shared/model-capabilities'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
@@ -28,6 +35,21 @@ type LegacyTextToolCall = {
   id: string
   name: string
   arguments: Record<string, unknown>
+}
+
+const IMAGE_GENERATION_TIMEOUT_MS = 120_000
+
+/** Identify the actual image format instead of trusting the response headers. */
+function detectImageMediaType(buffer: Buffer): GeneratedImage['mediaType'] | undefined {
+  if (buffer.length >= 8 && buffer.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]))) return 'image/png'
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg'
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp'
+  return undefined
+}
+
+function summarizeProviderError(text: string): string {
+  const collapsed = text.replace(/\s+/g, ' ').trim()
+  return collapsed.length > 400 ? `${collapsed.slice(0, 400)}…` : collapsed
 }
 
 /**
@@ -199,6 +221,7 @@ export class OpenAIProvider implements LLMProvider {
   private client: OpenAI
   private defaultModel?: string
   private baseUrl: string
+  private apiKey: string
   private readonly models: ProviderModelOption[]
   // OpenAI-compatible gateways vary widely. Remember optional features that
   // this connection has rejected so later requests do not repeat a failed
@@ -211,6 +234,7 @@ export class OpenAIProvider implements LLMProvider {
     this.type = type
     this.defaultModel = options.defaultModel
     this.baseUrl = options.baseUrl || 'https://api.openai.com/v1'
+    this.apiKey = options.apiKey
     this.models = options.models || []
 
     this.client = new OpenAI({
@@ -547,6 +571,80 @@ export class OpenAIProvider implements LLMProvider {
       const providerErr = classifyError(err, this.id)
       return { success: false, error: providerErr.message, latency: Date.now() - start }
     }
+  }
+
+  /**
+   * OpenAI-compatible image endpoint. The chat route is never reused: callers
+   * must pass an explicit image model, and the response is validated by its
+   * magic bytes before it can be written or shown.
+   */
+  async generateImage(request: ImageGenerationRequest, signal?: AbortSignal): Promise<GeneratedImage> {
+    const controller = new AbortController()
+    let timedOut = false
+    const onAbort = () => controller.abort()
+    if (signal?.aborted) controller.abort()
+    else signal?.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, IMAGE_GENERATION_TIMEOUT_MS)
+
+    const endpoint = `${this.baseUrl.replace(/\/+$/, '')}/images/generations`
+    try {
+      const response = await net.fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: request.model,
+          prompt: request.prompt,
+          n: 1,
+          ...(request.size ? { size: request.size } : {}),
+          response_format: 'b64_json',
+        }),
+        signal: controller.signal,
+      })
+      const bodyText = await response.text()
+      if (!response.ok) {
+        throw new Error(`${this.name} rejected the image request (HTTP ${response.status}): ${summarizeProviderError(bodyText)}`)
+      }
+
+      let payload: { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> }
+      try {
+        payload = JSON.parse(bodyText)
+      } catch {
+        throw new Error(`${this.name} returned an unreadable image response.`)
+      }
+      const item = payload.data?.find((entry) => entry.b64_json || entry.url)
+      if (!item) throw new Error(`${this.name} returned no image data.`)
+
+      const buffer = item.b64_json
+        ? Buffer.from(item.b64_json, 'base64')
+        : await this.downloadImage(item.url as string, controller.signal)
+      const mediaType = detectImageMediaType(buffer)
+      if (!mediaType) throw new Error(`${this.name} returned data that is not a PNG, JPEG, or WebP image.`)
+      return {
+        base64: buffer.toString('base64'),
+        mediaType,
+        ...(item.revised_prompt ? { revisedPrompt: item.revised_prompt } : {}),
+      }
+    } catch (error) {
+      if (timedOut) throw new Error(`Image generation timed out after ${IMAGE_GENERATION_TIMEOUT_MS / 1000} seconds.`)
+      throw error
+    } finally {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
+  private async downloadImage(url: string, signal: AbortSignal): Promise<Buffer> {
+    const response = await net.fetch(url, { signal })
+    if (!response.ok) {
+      throw new Error(`${this.name} returned an image URL that could not be downloaded (HTTP ${response.status}).`)
+    }
+    return Buffer.from(await response.arrayBuffer())
   }
 
   async listModels(): Promise<ProviderModelOption[]> {

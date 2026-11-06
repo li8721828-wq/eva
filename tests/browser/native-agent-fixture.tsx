@@ -7,6 +7,7 @@ import type { AgentConfig, AgentMarkdownRenderer } from '../../src/shared/types/
 import type { NativeAgentEvent } from '../../src/shared/types/native-agent'
 import type { ChatMessage } from '../../src/shared/types/conversation'
 import '../../src/renderer/index.css'
+import { READING_PREVIEW_MARKDOWN } from './reading-content'
 
 // Public-event fixtures only; no production preload, credentials or actual task execution.
 const testWindow = window as any
@@ -18,14 +19,14 @@ const root = createRoot(document.getElementById('root')!)
 const renderMessage = (message: ChatMessage, streaming: boolean, showActions = false) => {
   testWindow.nativeMessage = message
   root.render(
-    <div className="eva-app-shell min-h-screen p-4 text-zinc-900">
+    <div className="eva-app-shell min-h-screen text-zinc-900"><div className="eva-chat-surface min-h-screen p-4">
       <MessageBubble
         key={message.id}
         message={message}
         isStreaming={streaming}
         showActions={showActions}
       />
-    </div>,
+    </div></div>,
   )
 }
 useAppStore.setState({ language: 'zh' })
@@ -170,35 +171,6 @@ testWindow.setAlternatingScenario = (engine: 'eva' | NativeAgentEvent['engine'],
   renderMessage(message, live)
 }
 
-const readingContent = `# 修改已经完成
-
-**现在切换执行引擎后，答复采用同一套阅读层级。** 原始结果保持完整，执行记录可以按需展开。
-
-## 调整了哪些部分
-
-- 统一标题、正文和重点的视觉层级，阅读时更容易找到结论。
-- 收起过程中的命令与工具反馈，完整记录仍然可以查看。
-
-## 验证结果与下一步
-
-| 检查 | 结果 |
-| --- | --- |
-| 排版一致性 | 已检查 |
-| 原始内容 | 完整保留 |
-
-> 这是一段引用说明，采用固定的缩进和边线，不添加额外装饰。
-
----
-
-需要手动执行的命令仍留在答复中：
-
-\`\`\`sh
-npm run typecheck
-\`\`\`
-
-下一步请在项目中查看效果，必要时展开执行记录。
-`
-
 testWindow.setReadingScenario = (renderer: AgentMarkdownRenderer, theme: string, engine: 'eva' | NativeAgentEvent['engine'], streaming = false) => {
   testWindow.setNativeScenario(engine === 'eva' ? 'pi' : engine, theme)
   const agent: AgentConfig = {
@@ -211,7 +183,7 @@ testWindow.setReadingScenario = (renderer: AgentMarkdownRenderer, theme: string,
   useAgentStore.setState({ agents: [agent] })
   const message: ChatMessage = {
     ...testWindow.nativeMessage, id: `reading-${engine}`, agentId: agent.id, agentName: agent.name,
-    content: readingContent, timestamp: 0,
+    content: READING_PREVIEW_MARKDOWN, timestamp: 0,
     timing: { modelDurationMs: 1200, toolExecutionMs: 300, totalMs: 1500, modelCalls: [], toolCalls: [] },
   }
   if (engine === 'eva') {
@@ -220,9 +192,9 @@ testWindow.setReadingScenario = (renderer: AgentMarkdownRenderer, theme: string,
       id: 'tool', name: 'execute_command', arguments: { command: 'original command --verbose' }, result: 'Original execution output',
     } }]
   } else {
-    message.nativeAgent = { ...message.nativeAgent!, events: message.nativeAgent!.events.map(event => event.messageId === 'final' ? { ...event, content: event.type === 'text_delta' ? readingContent : event.content } : event) }
+    message.nativeAgent = { ...message.nativeAgent!, events: message.nativeAgent!.events.map(event => event.messageId === 'final' ? { ...event, content: event.type === 'text_delta' ? READING_PREVIEW_MARKDOWN : event.content } : event) }
   }
-  testWindow.originalReadingContent = readingContent
+  testWindow.originalReadingContent = READING_PREVIEW_MARKDOWN
   testWindow.readingSnapshot = JSON.stringify(message)
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { testWindow.copiedText = text } } })
   renderMessage(message, streaming, true)

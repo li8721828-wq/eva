@@ -203,6 +203,13 @@ export interface ChatImageAttachment {
   dataUrl?: string
 }
 
+/** Image produced by a tool. Local path only; the renderer loads it through the preview IPC. */
+export interface ToolResultImageRef {
+  path: string
+  name: string
+  mediaType: 'image/jpeg' | 'image/png' | 'image/webp'
+}
+
 export interface ChatDocumentAttachment {
   path: string
   name: string
@@ -217,6 +224,8 @@ export interface ToolCall {
   result?: string
   isError?: boolean
   protocol?: ExecutionEnvelope
+  /** Images the tool produced, retained so the transcript can show them again. */
+  images?: ToolResultImageRef[]
 }
 
 /** `plan` and `step` are the structured work report: one opening plan block
@@ -308,6 +317,8 @@ export interface ChatStreamEvent {
   toolResult?: string
   isError?: boolean
   protocol?: ExecutionEnvelope
+  /** Images produced by this tool result, rendered inline as thumbnails. */
+  toolResultImages?: ToolResultImageRef[]
   executionTimeline?: ExecutionTimelineEntry[]
   progressKind?: ProgressUpdateKind
   /** For a `progress` event of kind `step`: the plan line the report completes. */

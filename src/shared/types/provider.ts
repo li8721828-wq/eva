@@ -13,6 +13,25 @@ export interface ProviderConfigEntry {
   pricingGroup?: string
 }
 
+/** Route used by the `generate_image` tool. Never reuses the chat model. */
+export interface ImageGenerationConfig {
+  providerId: string
+  model: string
+}
+
+export interface ImageGenerationRequest {
+  model: string
+  prompt: string
+  size?: string
+}
+
+export interface GeneratedImage {
+  /** Base64 payload without a `data:` prefix. */
+  base64: string
+  mediaType: 'image/png' | 'image/jpeg' | 'image/webp'
+  revisedPrompt?: string
+}
+
 export interface ProviderTestConfig {
   id: string
   name: string

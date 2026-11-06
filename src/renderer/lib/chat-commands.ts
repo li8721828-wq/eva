@@ -4,7 +4,7 @@ export const CHAT_SLASH_COMMANDS = [
   { command: 'requirement-modeling', label: '/requirement-modeling', description: '将已明确需求建模为标准化规格与验收文档' },
   { command: 'spec', label: '/spec', description: '基于需求建模和代码证据构建并校验实施规格' },
   { command: 'dsl', label: '/dsl', description: 'Use the completed specification to generate domain-language DSL files' },
-  { command: 'coding', label: '/coding', description: 'Generate and verify isolated Java code from the persisted DSL without AI' },
+  { command: 'coding', label: '/coding', description: '确定性生成参考代码，使用 /coding java-domain 生成并验证 Java/Maven 领域模块' },
   { command: 'file', label: '/file', description: '添加一个或多个文件到当前消息' },
   { command: 'folder', label: '/folder', description: '添加一个文件夹到当前消息' },
 ] as const

@@ -30,7 +30,7 @@ export function registerRequirementEngineeringHandlers(providers: ProviderRegist
   ipcMain.handle(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, async (event, input: SubmitSpecificationResolutionInput) => {
     return service.resolveSpecificationBlockers(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
   })
-  ipcMain.handle(IPC.REQUIREMENT_RUN_ABORT, async (_event, conversationId: string) => service.abort(conversationId))
+  ipcMain.handle(IPC.REQUIREMENT_RUN_ABORT, async (_event, conversationId: string, runId?: string) => service.abort(conversationId, runId))
   ipcMain.handle(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, async (event, document: { path: string }) => {
     await service.showDocumentContextMenu(event.sender, document.path)
   })

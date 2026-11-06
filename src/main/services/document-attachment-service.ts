@@ -22,8 +22,12 @@ interface ParsedAttachment {
   issue?: string
 }
 
-async function collectFiles(entryPath: string, result: string[]): Promise<void> {
-  if (result.length >= MAX_FILES) return
+async function collectFiles(entryPath: string, result: string[], requireComplete = false): Promise<void> {
+  const limit = requireComplete ? MAX_FILES + 1 : MAX_FILES
+  if (result.length >= limit) return
+  if (requireComplete && (await fs.lstat(entryPath)).isSymbolicLink()) {
+    throw new Error(`需求附件包含符号链接或目录联接：${entryPath}`)
+  }
   const stats = await fs.stat(entryPath)
   if (stats.isFile()) {
     result.push(entryPath)
@@ -32,9 +36,9 @@ async function collectFiles(entryPath: string, result: string[]): Promise<void> 
   if (!stats.isDirectory()) return
   const entries = await fs.readdir(entryPath, { withFileTypes: true })
   for (const entry of entries) {
-    if (result.length >= MAX_FILES) return
+    if (result.length >= limit) return
     if (entry.name === 'node_modules' || entry.name === '.git') continue
-    await collectFiles(path.join(entryPath, entry.name), result)
+    await collectFiles(path.join(entryPath, entry.name), result, requireComplete)
   }
 }
 
@@ -81,23 +85,33 @@ async function parseFile(filePath: string): Promise<ParsedAttachment> {
   }
 }
 
-export async function buildDocumentAttachmentContext(attachments: ChatDocumentAttachment[] | undefined): Promise<string> {
+export async function buildDocumentAttachmentContext(
+  attachments: ChatDocumentAttachment[] | undefined,
+  options: { requireComplete?: boolean } = {},
+): Promise<string> {
   if (!attachments?.length) return ''
   const filePaths: string[] = []
   for (const attachment of attachments) {
     try {
-      await collectFiles(attachment.path, filePaths)
+      await collectFiles(attachment.path, filePaths, options.requireComplete)
     } catch (error) {
+      if (options.requireComplete) throw error
       filePaths.push(attachment.path)
     }
   }
 
+  if (options.requireComplete && (!filePaths.length || filePaths.length > MAX_FILES)) {
+    throw new Error(`需求附件必须包含 1 到 ${MAX_FILES} 个可读取文件，请调整附件范围。`)
+  }
   const parsed = await Promise.all(filePaths.slice(0, MAX_FILES).map(parseFile))
   let remainingChars = MAX_TOTAL_CHARS
   const sections = parsed.map((item) => {
     if (item.text !== undefined) {
       const allowed = Math.min(MAX_FILE_CHARS, remainingChars)
       const text = item.text.slice(0, allowed)
+      if (options.requireComplete && (!text.trim() || text.length !== item.text.length)) {
+        throw new Error(`需求附件「${item.name}」正文为空或超出完整读取上限，请拆分或转换后重试。`)
+      }
       remainingChars -= text.length
       const truncated = text.length < item.text.length
         ? `\n[Attachment excerpt truncated at ${allowed} characters. For XLSX/CSV, continue with the spreadsheet tool using pagination, column selection, or aggregation.]`
@@ -107,6 +121,6 @@ export async function buildDocumentAttachmentContext(attachments: ChatDocumentAt
     return `--- Attached file requires conversion: ${item.name}\nPath: ${item.path}\nDirect extraction was unavailable: ${item.issue}\nFirst inspect the file and use an available local conversion or extraction method. Do not claim its contents until conversion succeeds.\n--- End attachment notice ---`
   })
 
-  const truncated = filePaths.length >= MAX_FILES ? `\nOnly the first ${MAX_FILES} files from the selected attachments were included.` : ''
+  const truncated = !options.requireComplete && filePaths.length >= MAX_FILES ? `\nOnly the first ${MAX_FILES} files from the selected attachments were included.` : ''
   return `\n\n${sections.join('\n\n')}${truncated}`
 }

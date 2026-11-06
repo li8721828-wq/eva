@@ -2,7 +2,7 @@ import type { AgentConfig, AgentRole } from './types/agent'
 import type { ModelInfo } from './types/provider'
 
 export const APP_NAME = 'Eva'
-export const APP_VERSION = '0.1.206'
+export const APP_VERSION = '0.1.212'
 
 export const DEFAULT_MAX_ITERATIONS = 100
 export const DEFAULT_TEMPERATURE = 0.7
@@ -77,7 +77,7 @@ export const BUILT_IN_AGENTS: Omit<AgentConfig, 'id' | 'createdAt' | 'updatedAt'
     systemPrompt: '',
     model: 'gpt-4o',
     providerId: 'openai',
-    tools: ['inspect_runtime', 'diagnose_runtime', 'create_runtime_proposal', 'manage_personal_preferences', 'spreadsheet', 'read_file', 'edit_file', 'write_file', 'list_directory', 'search_files', 'search_code', 'search_by_regex', 'open_terminal', 'read_terminal', 'write_terminal', 'execute_command', 'close_terminal', 'browser_control', 'project_search', 'project_index_status', 'load_skill', 'run_skill_command', 'write_skill_file', 'record_purpose_progress', 'web_search', 'read_web_page', 'delegate_to_model_pool'],
+    tools: ['inspect_runtime', 'diagnose_runtime', 'create_runtime_proposal', 'manage_personal_preferences', 'spreadsheet', 'read_file', 'edit_file', 'write_file', 'generate_image', 'list_directory', 'search_files', 'search_code', 'search_by_regex', 'open_terminal', 'read_terminal', 'write_terminal', 'execute_command', 'close_terminal', 'browser_control', 'project_search', 'project_index_status', 'load_skill', 'run_skill_command', 'write_skill_file', 'record_purpose_progress', 'web_search', 'read_web_page', 'delegate_to_model_pool'],
     maxIterations: 100,
     temperature: 0.7,
     isBuiltIn: true,

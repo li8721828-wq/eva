@@ -172,8 +172,9 @@ export function MessageList({ className }: MessageListProps) {
 
   const abortClarificationAnalysis = useCallback(async () => {
     if (!awaitingClarification) return
-    await window.eva.requirements.abort(awaitingClarification.conversationId)
-  }, [awaitingClarification])
+    await window.eva.requirements.abort(awaitingClarification.conversationId, awaitingClarification.id)
+    await loadAwaitingClarification()
+  }, [awaitingClarification, loadAwaitingClarification])
 
   const submitSpecificationResolution = useCallback(async (answers: RequirementClarificationAnswer[]) => {
     if (!awaitingSpecResolution) return
@@ -189,8 +190,9 @@ export function MessageList({ className }: MessageListProps) {
 
   const abortSpecificationResolution = useCallback(async () => {
     if (!awaitingSpecResolution) return
-    await window.eva.requirements.abort(awaitingSpecResolution.conversationId)
-  }, [awaitingSpecResolution])
+    await window.eva.requirements.abort(awaitingSpecResolution.conversationId, awaitingSpecResolution.id)
+    await loadAwaitingClarification()
+  }, [awaitingSpecResolution, loadAwaitingClarification])
 
   const updateScrollAffordances = useCallback((scrollArea: HTMLDivElement, reveal = false) => {
     const overflow = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)

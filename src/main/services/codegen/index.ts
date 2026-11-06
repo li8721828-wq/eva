@@ -7,7 +7,10 @@
  * stable, so nothing depends on that order.
  */
 import { promises as fs } from 'fs'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'path'
+import type { SpecContract } from '../spec-contract'
+import { rmsdPath } from '../rmsd-path'
 import {
   DSL_FIELD_TYPES,
   getCodeGenerator,
@@ -21,6 +24,7 @@ import {
 } from './types'
 import { javaReferenceGenerator } from './java-reference'
 import { javaMavenGenerator } from './java-maven'
+import { javaDomainGenerator } from './java-domain'
 import { jsonSchemaGenerator } from './json-schema'
 import { sqlDdlGenerator } from './sql-ddl'
 
@@ -35,14 +39,14 @@ let registered = false
 export function ensureCodeGeneratorsRegistered(): void {
   if (registered) return
   registered = true
-  for (const generator of [javaReferenceGenerator, javaMavenGenerator, jsonSchemaGenerator, sqlDdlGenerator]) {
+  for (const generator of [javaReferenceGenerator, javaMavenGenerator, javaDomainGenerator, jsonSchemaGenerator, sqlDdlGenerator]) {
     registerCodeGenerator(generator)
   }
 }
 
 ensureCodeGeneratorsRegistered()
 
-export { javaReferenceGenerator, javaMavenGenerator, jsonSchemaGenerator, sqlDdlGenerator }
+export { javaReferenceGenerator, javaMavenGenerator, javaDomainGenerator, jsonSchemaGenerator, sqlDdlGenerator }
 
 // -----------------------------------------------------------------------------
 // Target model: the approved declaration of what `/coding` is allowed to write.
@@ -71,12 +75,15 @@ export function readTargetModel(document: unknown): { ok: true; model: TargetMod
     return { ok: false, error: 'The target model is not an object.' }
   }
   const record = document as Record<string, unknown>
-  const generatorId = typeof record.generator === 'string' ? record.generator : DEFAULT_CODE_GENERATOR_ID
+  if (record.generator !== undefined && typeof record.generator !== 'string') {
+    return { ok: false, error: 'The target model generator must be a registered string id.' }
+  }
+  const generatorId = record.generator ?? DEFAULT_CODE_GENERATOR_ID
   const lookup = getCodeGenerator(generatorId)
   if (!lookup.ok) return { ok: false, error: lookup.error }
   const generator = lookup.generator
 
-  const options: Record<string, string> = {}
+  const options: Record<string, string> = Object.create(null)
   const rawOptions = record.options ?? record.settings
   if (rawOptions !== undefined) {
     if (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
@@ -109,6 +116,17 @@ export function readTargetModel(document: unknown): { ok: true; model: TargetMod
       error: `Generator "${generator.id}" is an isolated reference adapter and cannot be approved for production output.`,
     }
   }
+  const rawApproval = record.approvalStatus ?? record.approval_status
+  if (rawApproval !== undefined && (typeof rawApproval !== 'string' || !rawApproval.trim())) {
+    return { ok: false, error: 'The target model approval must be a non-empty string.' }
+  }
+  const approval = stringField(record.approvalStatus, record.approval_status)
+  if (approval !== undefined && approval !== 'approved-for-declared-target' && approval !== 'approved-for-non-production-reference-output') {
+    return { ok: false, error: `The target model is not approved (${approval}).` }
+  }
+  if ((productionOutput === true || generator.id === javaDomainGenerator.id) && (productionOutput !== true || approval !== 'approved-for-declared-target')) {
+    return { ok: false, error: 'Production output requires explicit approved-for-declared-target approval.' }
+  }
 
   return {
     ok: true,
@@ -116,7 +134,7 @@ export function readTargetModel(document: unknown): { ok: true; model: TargetMod
       schemaVersion: stringField(record.schemaVersion, record.schema_version) ?? '1.0',
       targetId: stringField(record.targetId, record.target_id) ?? `eva-${generator.id}`,
       generator: generator.id,
-      approvalStatus: stringField(record.approvalStatus, record.approval_status) ?? 'approved-for-non-production-reference-output',
+      approvalStatus: approval ?? 'approved-for-non-production-reference-output',
       productionOutput: productionOutput === true,
       outputKind: generator.outputKind,
       options,
@@ -134,7 +152,7 @@ export function defaultTargetModel(generator: CodeGenerator, domain: string): Ta
     approvalStatus: generator.outputKind === 'production'
       ? 'approved-for-declared-target'
       : 'approved-for-non-production-reference-output',
-    productionOutput: false,
+    productionOutput: generator.id === javaDomainGenerator.id,
     outputKind: generator.outputKind,
     options: {},
     overwritePolicy: 'refuse-non-empty-output',
@@ -151,7 +169,8 @@ function stringField(camel: unknown, snake: unknown): string | undefined {
   return undefined
 }
 
-/** The fields a target model exposes on disk, in a stable order. */export function targetModelDocument(model: TargetModel): string {
+/** The fields a target model exposes on disk, in a stable order. */
+export function targetModelDocument(model: TargetModel): string {
   return `${JSON.stringify({
     schema_version: model.schemaVersion,
     target_id: model.targetId,
@@ -159,7 +178,7 @@ function stringField(camel: unknown, snake: unknown): string | undefined {
     approval_status: model.approvalStatus,
     production_output: model.productionOutput,
     output_kind: model.outputKind,
-    options: model.options,
+    options: Object.fromEntries(Object.entries(model.options).sort(([left], [right]) => left.localeCompare(right))),
     overwrite_policy: model.overwritePolicy,
   }, null, 2)}\n`
 }
@@ -177,27 +196,42 @@ function stringField(camel: unknown, snake: unknown): string | undefined {
  * the earlier package unreproducible.
  */
 export async function writeGeneratedFile(filePath: string, content: string): Promise<void> {
+  const expected = Buffer.from(content)
   try {
-    const existing = await fs.readFile(filePath, 'utf8')
-    if (existing !== content) throw new Error(`Existing deterministic artifact differs: ${filePath}`)
+    if (!(await fs.lstat(filePath)).isFile()) throw new Error(`Deterministic artifact is not a regular file: ${filePath}`)
+    const existing = await fs.readFile(filePath)
+    if (!existing.equals(expected)) throw new Error(`Existing deterministic artifact differs: ${filePath}`)
     return
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Existing deterministic artifact differs:')) throw error
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.writeFile(filePath, content, 'utf8')
+  const staged = `${filePath}.${randomUUID()}.tmp`
+  try {
+    await fs.writeFile(staged, content, { encoding: 'utf8', flag: 'wx' })
+    try {
+      await fs.link(staged, filePath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+      if (!(await fs.lstat(filePath)).isFile()) throw new Error(`Deterministic artifact is not a regular file: ${filePath}`)
+    if (!(await fs.readFile(filePath)).equals(expected)) throw new Error(`Existing deterministic artifact differs: ${filePath}`)
+    }
+  } finally {
+    await fs.unlink(staged).catch(() => undefined)
+  }
 }
 
 export interface WrittenPackage {
   manifest: GeneratedManifest
   resultPath: string
   verification: string
+  files: Array<{ path: string; sha256: string }>
 }
 
 /** The declared type spelling of every field, for generators that need it. */
 export function declaredTypeMap(parsed: Parameters<CodeGenerator['generate']>[0]): Record<string, ParsedDslField['type']> {
-  const map: Record<string, ParsedDslField['type']> = {}
+  const map: Record<string, ParsedDslField['type']> = Object.create(null)
   for (const aggregate of parsed.aggregates) {
     for (const field of aggregate.fields) map[field.name] = field.type
   }
@@ -213,23 +247,49 @@ export async function writeGeneratedPackage(
   parsed: Parameters<CodeGenerator['generate']>[0],
   outputDirectory: string,
   options: Record<string, string>,
+  productionOutput = false,
+  specContract?: SpecContract,
 ): Promise<WrittenPackage> {
   const result: GeneratorResult = generator.generate(parsed, {
     outputDirectory,
     options,
     declaredTypes: declaredTypeMap(parsed),
+    specContract,
   })
 
-  for (const file of result.files) {
+  if (!result.files.length) throw new Error(`Generator "${generator.id}" produced no files beyond its own result document.`)
+  if (result.manifest.generator !== generator.id || !result.manifest.generated.length) {
+    throw new Error(`Generator "${generator.id}" returned an inconsistent manifest.`)
+  }
+  if (productionOutput && result.manifest.requiresTargetAdapter.length) {
+    throw new Error(`The approved target lacks executable coverage for: ${result.manifest.requiresTargetAdapter.join(', ')}.`)
+  }
+  const names = new Set<string>()
+  const files = result.files.map((file) => {
     const target = path.resolve(outputDirectory, file.path)
-    if (!isInside(outputDirectory, target)) {
+    if (path.isAbsolute(file.path) || /^[A-Za-z]:/.test(file.path) || !isInside(outputDirectory, target)) {
       throw new Error(`Generator "${generator.id}" tried to write outside the output directory: ${file.path}`)
     }
+    const relative = path.relative(outputDirectory, target).split(path.sep).join('/')
+    const key = relative.toLowerCase()
+    if (names.has(key) || key === 'generation-result.yaml' || !file.content.trim()) {
+      throw new Error(`Generator "${generator.id}" returned a duplicate, reserved or empty file: ${relative}`)
+    }
+    names.add(key)
+    return { path: relative, sha256: hash(file.content) }
+  })
+  await fs.mkdir(outputDirectory, { recursive: true })
+  const existing = await listFiles(outputDirectory)
+  if (existing.some((name) => !names.has(name.toLowerCase()) && name !== 'generation-result.yaml')) {
+    throw new Error(`Unexpected files in deterministic output: ${outputDirectory}`)
+  }
+  for (const [index, file] of result.files.entries()) {
+    const target = await rmsdPath(outputDirectory, path.join(outputDirectory, files[index].path))
     await writeGeneratedFile(target, file.content)
   }
 
   const resultDocument = {
-    schema_version: '1.0',
+    schema_version: '2.0',
     adapter: generator.id,
     adapter_label: generator.label,
     target: result.manifest.target,
@@ -237,29 +297,24 @@ export async function writeGeneratedPackage(
     generated: result.manifest.generated,
     preserved: result.manifest.preserved,
     requires_target_adapter: result.manifest.requiresTargetAdapter,
+    files,
     details: result.manifest.details ?? {},
   }
-  const resultPath = path.join(outputDirectory, 'generation-result.yaml')
+  const resultPath = await rmsdPath(outputDirectory, path.join(outputDirectory, 'generation-result.yaml'))
   await writeGeneratedFile(resultPath, `${JSON.stringify(resultDocument, null, 2)}\n`)
 
-  return { manifest: result.manifest, resultPath, verification: await verifyGeneratedPackage(generator, outputDirectory) }
+  return { manifest: result.manifest, resultPath, files, verification: await verifyGeneratedPackage(generator, outputDirectory, files) }
 }
 
-/**
- * Prove the package on disk matches its own manifest.
- *
- * This is a structural check, not a compile: it catches a truncated write, an
- * empty package, or a result document that names a different adapter than the
- * files beside it. What it deliberately does *not* do is assert that the files
- * are non-empty — `generated` holds DSL construct names (`Invoice`,
- * `sales_orders`), not file names, so matching the two would be a guess. SQL
- * emits one file for every table, Java one per aggregate; a generator knows the
- * difference and the manifest records it.
- */
-export async function verifyGeneratedPackage(generator: CodeGenerator, outputDirectory: string): Promise<string> {
-  const resultPath = path.join(outputDirectory, 'generation-result.yaml')
+/** Verify the exact file inventory and each file checksum, optionally against the generator output. */
+export async function verifyGeneratedPackage(
+  generator: CodeGenerator,
+  outputDirectory: string,
+  expected?: WrittenPackage['files'],
+): Promise<string> {
+  const resultPath = await rmsdPath(outputDirectory, path.join(outputDirectory, 'generation-result.yaml'))
   const raw = await fs.readFile(resultPath, 'utf8')
-  let document: { adapter?: string; generated?: unknown }
+  let document: { adapter?: string; generated?: unknown; files?: WrittenPackage['files'] }
   try {
     document = JSON.parse(raw) as typeof document
   } catch {
@@ -271,20 +326,31 @@ export async function verifyGeneratedPackage(generator: CodeGenerator, outputDir
   if (!Array.isArray(document.generated)) throw new Error('The generation result has no "generated" list.')
   if (document.generated.length === 0) throw new Error('The generation result lists no generated artifacts.')
 
-  const produced = await listFiles(outputDirectory)
-  // The result document is written by this function, so it is always present;
-  // requiring one more file proves the generator actually produced something.
-  if (produced.filter((file) => file !== 'generation-result.yaml').length === 0) {
-    throw new Error(`Generator "${generator.id}" produced no files beyond its own result document.`)
+  if (!Array.isArray(document.files) || !document.files.length || (expected && JSON.stringify(document.files) !== JSON.stringify(expected))) {
+    throw new Error('The generation result has no matching file inventory.')
+  }
+  const paths = new Set(document.files.map((file) => file.path))
+  const produced = (await listFiles(outputDirectory)).filter((file) => file !== 'generation-result.yaml')
+  if (produced.length !== document.files.length || paths.size !== document.files.length || produced.some((file) => !paths.has(file))) {
+    throw new Error('Generated files do not match the verified inventory.')
+  }
+  for (const entry of document.files) {
+    const file = await rmsdPath(outputDirectory, path.join(outputDirectory, entry.path))
+    if (hash(await fs.readFile(file)) !== entry.sha256) throw new Error(`Generated artifact checksum mismatch: ${entry.path}`)
   }
   return `verified ${document.generated.length} generated construct(s) across ${produced.length} file(s) for ${generator.id}`
+}
+
+function hash(value: string | Buffer): string {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 async function listFiles(root: string, prefix = ''): Promise<string[]> {
   const entries = await fs.readdir(path.join(root, prefix), { withFileTypes: true })
   const files: string[] = []
   for (const entry of entries) {
-    const relative = prefix ? path.join(prefix, entry.name) : entry.name
+    if (entry.isSymbolicLink()) throw new Error(`Symbolic link in generated package: ${entry.name}`)
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name
     if (entry.isDirectory()) files.push(...await listFiles(root, relative))
     else files.push(relative)
   }

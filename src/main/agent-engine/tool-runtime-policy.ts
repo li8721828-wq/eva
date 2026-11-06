@@ -26,7 +26,7 @@ export const TOOL_RUNTIME_POLICIES: Readonly<Record<string, ToolRuntimePolicy>> 
   write_file: SERIAL, edit_file: SERIAL, execute_command: SERIAL,
   write_terminal: SERIAL, open_terminal: SERIAL, close_terminal: SERIAL,
   browser_control: SERIAL, run_skill_command: SERIAL, write_skill_file: SERIAL,
-  spreadsheet: SERIAL, 'mcp:*': SERIAL,
+  spreadsheet: SERIAL, generate_image: SERIAL, 'mcp:*': SERIAL,
   record_purpose_progress: LOCAL_ACTION, create_runtime_proposal: LOCAL_ACTION,
   manage_personal_preferences: LOCAL_ACTION, delegate_to_model_pool: LOCAL_ACTION,
 }

@@ -48,7 +48,7 @@ export interface IpcContract {
   [IPC.REQUIREMENT_DSL_SUBMIT]: { args: [input: SubmitDslInput]; result: RequirementRun }
   [IPC.REQUIREMENT_CODING_SUBMIT]: { args: [input: SubmitCodingInput]; result: RequirementRun }
   [IPC.REQUIREMENT_SPECIFICATION_RESOLUTION]: { args: [input: SubmitSpecificationResolutionInput]; result: RequirementRun }
-  [IPC.REQUIREMENT_RUN_ABORT]: { args: [conversationId: string]; result: void }
+  [IPC.REQUIREMENT_RUN_ABORT]: { args: [conversationId: string, runId?: string]; result: void }
   [IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU]: { args: [document: { path: string }]; result: void }
   [IPC.APP_SERVER_GET_STATUS]: { args: []; result: AppServerStatus }
   [IPC.APP_SERVER_START]: { args: []; result: AppServerStatus }

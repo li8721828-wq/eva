@@ -26,6 +26,10 @@ describe('tool catalog', () => {
     expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'create_runtime_proposal', category: 'Integrations', risk: 'write' }))
   })
 
+  it('marks image generation as a workspace write', () => {
+    expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'generate_image', category: 'Files', risk: 'write' }))
+  })
+
   it('lists skill loading as a read-only search capability', () => {
     expect(TOOL_CATALOG).toContainEqual(expect.objectContaining({ id: 'load_skill', category: 'Search', risk: 'read' }))
   })

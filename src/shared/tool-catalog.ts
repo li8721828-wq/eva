@@ -22,6 +22,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { id: 'file_info', label: 'File information', description: 'Read file metadata such as size and modification time.', category: 'Files', risk: 'read' },
   { id: 'edit_file', label: 'Edit file', description: 'Safely replace one exact, unique text fragment in an authorized file.', category: 'Files', risk: 'write' },
   { id: 'write_file', label: 'Write file', description: 'Create or update files in an authorized location.', category: 'Files', risk: 'write' },
+  { id: 'generate_image', label: 'Generate image', description: 'Generate an image from a text description with the configured image connection, save it into the workspace, and show it in the conversation.', category: 'Files', risk: 'write' },
   { id: 'search_files', label: 'Find files', description: 'Find files by name within an authorized location.', category: 'Search', risk: 'read' },
   { id: 'search_code', label: 'Search code', description: 'Find literal text and references in workspace file contents.', category: 'Search', risk: 'read' },
   { id: 'search_by_regex', label: 'Regex search', description: 'Search workspace files with a regular expression.', category: 'Search', risk: 'read' },
@@ -43,4 +44,4 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
 
 // Increment when built-in agent tool defaults change so persisted built-ins
 // receive the newly shipped capability on the next application start.
-export const TOOL_CATALOG_VERSION = 35
+export const TOOL_CATALOG_VERSION = 36

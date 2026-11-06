@@ -7,7 +7,7 @@ import {
   DEFAULT_TEMPERATURE,
   DEFAULT_MAX_TOKENS,
 } from '../../shared/constants'
-import type { ProviderConfigEntry } from '../../shared/types/provider'
+import type { ImageGenerationConfig, ProviderConfigEntry } from '../../shared/types/provider'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import type { AppServerConfig, AutomationConfig } from '../../shared/types/automation'
 import { DEFAULT_APP_SERVER_CONFIG, DEFAULT_AUTOMATION_CONFIG } from '../../shared/types/automation'
@@ -18,6 +18,7 @@ import { DEFAULT_ENVIRONMENT_RULES, type EnvironmentRulesConfig } from '../../sh
 import { CredentialStore } from './credential-store'
 import { DEFAULT_EXECUTION_ENGINE, isExecutionEngineConfig, type ExecutionEngineConfig } from '../../shared/types/execution-engine'
 import { isReasoningSelection, reasoningCapabilityForModel, supportsReasoningSelection, type ReasoningSelection } from '../../shared/model-reasoning'
+import { isTransientProbeFailure } from '../services/model-capability-probe'
 
 export type { ProviderConfigEntry }
 export type AppTheme = 'light' | 'dark' | 'starlight'
@@ -44,6 +45,8 @@ export interface AppConfig {
   modelPools: ModelPool[]
   /** @deprecated Legacy singleton pool, migrated into modelPools on startup. */
   modelPool?: ModelPoolEntry[]
+  /** Connection and model used by the generate_image tool, separate from chat. */
+  imageGeneration?: ImageGenerationConfig
 
   // Advanced
   maxIterations: number
@@ -116,6 +119,7 @@ export class ConfigStore {
   constructor() {
     this.store = this.openStore()
     this.repairInvalidShape()
+    this.repairTransientProbeVerdicts()
     this.migrateProviderCredentials()
     this.migrateModelPools()
   }
@@ -191,6 +195,33 @@ export class ConfigStore {
       }
       if (mutated && next) this.store.set('automation', next)
     }
+  }
+
+  /**
+   * Older builds stored every probe failure as `supportsTools: false`. A 5xx,
+   * timeout, or network error never answered the question, so restore those
+   * routes to "unconfirmed" instead of leaving them permanently blocked.
+   */
+  private repairTransientProbeVerdicts(): void {
+    const providers = this.store.get('providers')
+    let changed = false
+    const next = providers.map((provider) => {
+      if (!provider.models?.length) return provider
+      let providerChanged = false
+      const models = provider.models.map((model) => {
+        const capabilities = model.capabilities
+        if (!capabilities || capabilities.supportsTools !== false || capabilities.probeStatus !== 'unsupported') return model
+        if (!isTransientProbeFailure(capabilities.lastError)) return model
+        const repaired = { ...capabilities, probeStatus: 'inconclusive' as const }
+        delete (repaired as { supportsTools?: boolean }).supportsTools
+        providerChanged = true
+        return { ...model, capabilities: repaired }
+      })
+      if (!providerChanged) return provider
+      changed = true
+      return { ...provider, models }
+    })
+    if (changed) this.store.set('providers', next)
   }
 
   get<K extends keyof AppConfig>(key: K): AppConfig[K] {

@@ -4,7 +4,9 @@ import type { ChatImageAttachment } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Dialog, DialogClose, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 
-export function ReferenceImagePreview({ image, className }: { image: ChatImageAttachment; className?: string }) {
+export type PreviewImage = Pick<ChatImageAttachment, 'path' | 'name' | 'mediaType'>
+
+export function ReferenceImagePreview({ image, className }: { image: PreviewImage; className?: string }) {
   const [source, setSource] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)

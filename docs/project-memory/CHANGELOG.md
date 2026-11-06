@@ -817,3 +817,70 @@
 - `.gitignore` 增加 `.tmp-design/`，排除与产品代码无关的本地文档设计脚本、图片和 Python 缓存；文件保留本地。候选共 144 个文本文件，约 3.3 MB；检查未发现疑似凭据，构建输出、依赖和临时验证产物继续忽略，差异空白检查通过。
 - 复用本轮既有验证，不宣称重新运行：48 项定向、Node/Web 类型检查、隔离界面和生产构建通过；全量 1189/1190 通过，Harness Windows ReplaceFileW 1175 的单项复验两引擎均通过。该间歇风险未解决，详细记录保留在上一条。
 - 暂存检查补齐两份 2026-10-21 文档的格式：元信息行的双空格换行改为显式 Markdown 换行，保留渲染效果；144 个暂存文件的空白检查与候选凭据扫描通过。
+
+## 2026-11-05：真实聊天背景与代码格式对齐预览，版本 0.1.207
+
+- 问题：独立消息预览显示外壳渐变，真实 ChatPanel 的近白背景却覆盖了它；未标语言的代码围栏还被按行内代码处理，叠加灰底/小字，路径可能误成标签。本轮聚焦背景与字体格式，不改变已有字号偏好或引擎输出。
+- 修改 `src/renderer/index.css`，实际聊天区域与预览共享淡紫蓝 `--conversation-canvas`，保留深色/星空覆盖；`chat/MessageBubble.tsx` 用块级上下文区分围栏与行内代码，并移除 code 元素上的 HAST node 属性。真正的行内路径、原文和复制语义保持不变。
+- 验收补齐真实 `App → ChatPanel → MessageList → MessageBubble`，不再只用独立气泡截图。新增 `tests/browser/reading-content.ts` 共用演示内容，修改 native-agent/workspace 夹具和 reading-runner；三主题、三渲染器比较实际背景、字体、墨色、围栏格式与窗口版本，检查溢出/界面错误。截图 `tmp/ui-check/real-{app,chat}-{theme}.png` 为真实组件树的演示内容，已目检亮色实际页面；不是模型执行质量证据。
+- 版本同步递增为 **0.1.207**：`package.json`、lockfile 顶层/根包、`src/shared/constants.ts`。新增 `tests/unit/application-version.test.ts` 守住一致性；AGENTS.md、PROJECT_MEMORY.md 记录每批交付递增版本号及当前暂停安装包，同步展示规范、架构和回归防护。
+- 验证：未标语言围栏先复现红灯，再修正；定向 **4 文件 / 23 项**、Node/Web 类型检查、最终全量 **136 文件 / 1192 项**（单 worker）、`verify-ui.mjs --reading` 与普通 electron-vite 生产构建通过。构建日志 `tmp/ui-check/source-build-0.1.207.log`，保留既有 Streamdown use-client 忽略提示；生产主进程/renderer 已包含 0.1.207 和共享渐变。
+- 打包边界：用户暂停前，基于已推送的 `3edf2af` 曾生成旧版 `dist/2026-11-05-windows-x64/Eva Setup 0.1.206.exe`；未运行安装器，目录已用 NOT_CURRENT.txt 标明旧版。暂停后只做源码验证/普通构建，**没有生成 0.1.207 安装包**，没有重启用户会话、提交或推送本轮修改。
+- 剩余边界：字体仍取本机安装与用户偏好，其他机器字形可能不同；未调用用户模型账号。全量本次通过不等于此前 Harness Windows ReplaceFileW 1175 已解决，本轮未修改执行运行时。
+
+## 2026-11-05：聊天与右栏共用连续画布，版本 0.1.208
+
+- 问题：0.1.207 只对齐独立消息与聊天背景，工作区仍有自己的渐变，右栏还有近白底；相同渐变若各列重画，也会因坐标起点不同产生色块边界。此次把 App 外壳设为唯一背景所有者，聊天、workspace、桌面右栏及展开工作区透明，移除深色/星空的重复半透明叠底。
+- 文件：修改 `src/renderer/index.css`、`tests/browser/reading-runner.cjs`，同步 package/lockfile/共享版本常量为 **0.1.208**；更新展示规范、架构与回归防护。输入框和紧凑便签保留独立表面，窄屏模态抽屉使用主题表面与原遮罩；未改变字号、字体偏好、会话数据、引擎或工具执行。
+- 验收：浏览器检查先在旧版复现工作区重复渐变红灯；改为检查共同外壳背景、各结构层透明和聊天/右栏空白边界的实际像素。采样避开滚动条、便签阴影和输入框；覆盖三主题/三渲染器、1440/1680px、右栏开关/展开/还原，以及 620px 模态抽屉。截图 `tmp/ui-check/real-app-{theme}.png` 已包含打开的右栏，目检亮色真实 App 组件树及暗色背景；内容为演示数据。
+- 验证：定向 **3 文件 / 34 项**、Node/Web 类型检查、`verify-ui.mjs --reading` 与完整隔离 Electron 界面检查通过；最终独立全量 **136 文件 / 1192 项通过**。普通 `npm run build` 通过，包含 234 个已安装引擎依赖包，保留既有 Streamdown use-client 忽略提示；日志为 `tmp/ui-check/{canvas,ui,tests,build}-0.1.208.log`。`git diff --check` 通过；没有生成安装包、提交、推送或重启用户会话。
+- 剩余边界：截图/像素验证基于当前 Windows/本地字体与演示数据，不代表真实模型任务质量或其他平台的字形验收；原有 Harness Windows 原子发布风险不属于本次展示修复。
+
+## 2026-11-05：恢复浅色画布的淡紫与冰蓝透光层次，版本 0.1.209
+
+- 用户反馈连续画布仍显灰、缺少参考预览的水晶质感。取色对比发现大部分空白底色接近，主要差异在桌面尺度的颜色分布；此次仅调整 `src/renderer/index.css` 的 `--conversation-canvas`，以宽幅淡紫/冰蓝径向光色场叠加珠光线性底色，仍由 App 外壳统一绘制，未恢复各列独立背景。
+- 同步 package/lockfile/共享版本常量为 **0.1.209**，更新展示规范、架构、回归防护。字体、字号、文字清晰度、引擎输出/数据以及深色/星空的外壳配色不变；没有下载纹理、加文字模糊或改写原始回复。
+- `tests/browser/reading-runner.cjs` 在实际 App 的阅读区空白与右栏空白取样颜色/亮度；先在 0.1.208 复现紫色层次缺失，再验证 1440/1680px、右栏打开及窗口缩放后的配色。记录 `tmp/ui-check/crystal-palette.json`：1440px 下阅读边缘由 RGB 241/243/254 调整到 235/232/254，右栏样本为 237/247/255；样本避开头像、文字、滚动条与卡片。颜色断言仅防止层次退化，不能证明主观质感完全一致。
+- 验证：定向 **3 文件 / 34 项**、Node/Web 类型检查、`verify-ui.mjs --reading`、最终独立全量 **136 文件 / 1192 项**及普通 `npm run build` 均通过，`git diff --check` 通过；原有三主题/三渲染器、字体、围栏、版本、连续边界、开关/展开与窄屏抽屉检查继续通过。构建含 234 个引擎依赖包，保留既有 Streamdown use-client 忽略提示。已目检真实 App 组件树，交付截图为 `tmp/ui-check/crystal-{app,chat}-0.1.209.png`，保留旧版对照 `canvas-before-0.1.208.png`；均为演示内容。继续暂停安装包，未生成 0.1.209 安装器。
+- 剩余边界：仅在当前 Windows/显示缩放验证，其他显示器与平台的颜色、字形及低位深渐变需实际设备验收；未调用真实模型账号，原有运行时风险未在本轮修复。没有提交、推送或重启用户会话。
+
+## 2026-11-05：按用户确认打包 Windows 0.1.209
+
+- 用户确认当前视觉效果并明确恢复打包。本轮只将已验收的 **0.1.209** 制作为 Windows x64 NSIS 安装包，不改产品代码或递增同一版本；更新 AGENTS.md、PROJECT_MEMORY.md、架构及回归防护中的暂停状态与分发规则。
+- 产物：`dist/0.1.209-windows-x64/Eva Setup 0.1.209.exe`，226,915,713 字节（216.4 MiB）；安装器 ProductVersion/FileVersion 均为 0.1.209。附 `checksums.sha256` 与 `package-verification.json`，SHA-256 为 `5b732dc914bea4108c00deaa11f2e2c140cfdc02a76884be45dc0d738b75bde5`；保留旧版目录，不将 0.1.206 标成当前产物。
+- 命令：electron-builder 25.1.8 `--win nsis --x64 --publish never --config.directories.output=dist/0.1.209-windows-x64` 成功。复用刚完成的 0.1.209 类型、界面、1192 项测试及普通构建结果，没有宣称本轮重复执行；重新通过 115 项打包文件规则。
+- 产物验证：ASAR 中 manifest 为 0.1.209，全部 9 个 out 文件与当前构建逐文件 SHA-256 一致，含最新水晶配色；所有 worker 模块与资源源文件一致。打包后的 Electron 33.4.11 以已确认启用的 RunAsNode 模式加载 ASAR 内 node-pty/koffi 成功，不启动产品主进程。另从实际打包资源复制到仓库外临时目录，两引擎均完成原生读取、编辑、命令、回读及结束，临时路径按既有守卫清理；模型响应受控，不涉及真实账号。
+- 边界：沿用现有未签名 NSIS 配置，未运行安装器或改动用户数据/现有会话；未验证真实安装升级流程和其他平台。Pi/Harness 仍要求外部 Node >=22.19.0，Node 本身不在安装包内；既有字体与 Windows 原子发布风险保留。没有提交、推送或发布远程版本。
+
+## 2026-11-05：整理当日两份 Markdown 交付文档
+
+- 新增 `docs/2026-11-05-Eva-更新成果说明.md` 与 `docs/2026-11-05-Eva-技术实现与验证记录.md`，分别面向使用者/产品评审和开发维护/发布交接；PROJECT_MEMORY.md 增加索引。
+- 依据当日 0.1.207—0.1.209 变更、代码、既有验证日志与包内报告，记录真实页面/预览、连续画布、水晶配色、普通围栏、版本规则和 Windows 安装包；明确原生引擎、柔和字体和工具分组属于此前能力，不重复计作今日新增。
+- 本轮仅归档已交付的 0.1.209，不修改产品代码/应用版本或重建安装包，不重复运行应用测试。文档验证包括本地链接、版本/测试数量、安装器大小与 SHA-256 的一致性及差异格式检查。
+- 剩余边界：临时截图/日志与 dist 产物不随 Git 分发；真实安装升级、跨平台显示、真实模型长任务及既有 Windows 原子发布风险继续保留。没有提交或推送。
+
+## 2026-11-06：探测误判修复、全局图像路由与 generate_image 缩略图，版本 0.1.210
+
+- 问题：接入生图模型后界面显示「不支持工具调用」。旧探测把一次瞬时失败（超时、429、5xx、网络中断）直接写成 `supportsTools: false` 的永久结论，运行器据此整轮拦截，模型连普通工具都无法调用。同时仓库还没有生图工具，用户需要「全局单独设置图像连接+模型」并把生成的图「在对话里直接显示缩略图」。
+- 探测判定：新增 `src/main/services/model-capability-probe.ts`，只有 400/404/422 且响应明确提到 tools 并带拒绝措辞时才记为 `unsupported`；其余失败一律 `inconclusive` 并保留 `lastError`，不写 `supportsTools: false`。`src/main/storage/config-store.ts` 的 `repairTransientProbeVerdicts()` 在启动时迁移已落盘的瞬时误判（`probeStatus: 'unsupported'` 但错误可复现为瞬时类），运行器只拦 `supportsTools === false`。真机确认 `gpt-image-2.6` 的能力档已变为 `inconclusive` 且该模型能正常跑原生一轮。
+- 生图工具：新增 `src/main/tools/image-generation-tools.ts` 的 `generate_image`，读全局 `imageGeneration`（`providerId` + `model`），与聊天路由完全独立；经 provider 的 `generateImage` 走 `/images/generations`，校验魔数（png/jpeg/webp）后写入工作区 `.eva/generated-images/image-<时间戳>-<随机>.<ext>`，审批类别为 `workspace-write`；`TOOL_CATALOG_VERSION` 升到 36。设置页新增 `src/renderer/components/settings/ImageGenerationPanel.tsx`（连接下拉 + 模型输入 + 保存/清除），`RENDERER_CONFIG_KEYS` 放行 `imageGeneration`。
+- 缩略图链路：`ToolResultImageRef` 经原生运行器（`native-engine-runner.ts` 的扩展工具 `tool_end`/`tool_result` 携带 `images`）、`ipc/conversation.ts`（`toolResultImages` → `ToolCall.images`）落到会话；`NativeAgentView` 汇总结果图并在折叠工具组外侧渲染 24×24 缩略图（`ToolActivityList` 新增 `attachments` 槽，批次收起时仍可见）。`native-agent-transcript.ts` 的 `tool_end` 改为合并而非覆盖，避免 SDK 后到的完成帧抹掉 Eva 结果里的图片。
+- 验收：真机选择图像连接与 `gpt-image-2.6` 并保存；原生引擎一轮触发审批「允许（本次）」→ `generate_image` → 工作区生成 PNG → 会话落盘 `toolCalls[].images` → 收起状态下缩略图可见（证据截图 `tmp/evidence-generate-image.png`）。随后删除测试会话与生成的图片/空目录。定向新增 `tests/unit/model-capability-probe.test.ts`、`tests/unit/image-generation.test.ts`，并补 `execution-engines`、`native-agent-transcript`、`config-store`、`tool-catalog`、`tool-approval-policy` 用例；`npm run typecheck` 通过，全量 **138 文件 / 1219 项**通过。
+- 版本：`package.json`、lockfile 顶层/根包与 `src/shared/constants.ts` 同步为 **0.1.210**。
+- 剩余边界：仅以一个网关的 `gpt-image-2.6` 实测出图，其他供应商的返回格式/尺寸差异未覆盖；魔数校验只认 png/jpeg/webp；未生成安装包、未提交或推送。
+
+## 2026-11-06 RMSD 阶段放行与 Java/Maven 领域模块，版本 0.1.211
+
+- 需求工程按当前工作树与运行选择产物。发布回执绑定文档、上游和 SHA-256，重跑上游使后续阶段失效。保持原始需求全文，附件不完整或超限时阻断。模型续写保留源事实，空续写失败。Spec 审核最终正文，DSL 校验语法、规格编号和业务覆盖。清单原子落盘，互斥运行，支持取消澄清与重试中断阶段。
+- `/coding java-domain` 生成 Java 17 Maven 模块，实现状态迁移、角色检查、守卫及类型化事件。发布前在隔离目录运行 JDK 编译和行为测试。生成键包含契约、Spec、DSL 与目标配置。核对逐文件摘要，补齐缺失产物并拒绝覆盖不同内容。保持 Java 参考主源文件字节兼容，代码生成调用模型数为零。
+- 影响范围包括 `requirement-engineering-service.ts`、`requirement-run-repository.ts`、`requirement-prompt-factory.ts`、`document-attachment-service.ts`、`domain-dsl.ts`、`rmsd-path.ts`、`deterministic-coding-service.ts`、`codegen/`、原子写入、需求 IPC 与聊天命令及澄清卡片。同步更新三个版本位置、需求流水线说明和回归防护。
+- 验证覆盖五阶段公开入口、磁盘改动、较新阻塞运行、目标切换、文件补齐、并发和工作树边界。定向回归 66 项，全量 139 文件 / 1229 项，Node/Web 类型检查、Electron Vite 构建、浏览器界面及 IPC 边界检查通过。生成的订单模块通过 JDK 17 和独立 Maven/JUnit 测试，故意违背守卫的示例被拒绝。
+- 剩余边界是模型阶段使用受控回复联测，真实项目需求仍需验收。Java 目标需要本机 JDK，生产范围限于 DSL 可表达的领域行为，宿主负责认证上下文、持久化和集成。旧 Spec/DSL 需走新放行，历史包不参与新生成键复用。
+
+## 2026-11-06 独立 Spec 验收、检查点与变更影响，版本 0.1.212
+
+- `/spec` 审查并发布结构化 `acceptance-contract.json`，每条 FR 具有条件、结果和可执行验收或人工验收缺口。契约哈希进入发布回执与生成键。DSL 核对命令与 FR 绑定。Java 领域目标把 Spec 用例独立编入验收入口，使用 JDK 检查期望状态、事件和准确拒绝原因。历史发布可继续读取，重跑 Spec 可生成独立用例。
+- Spec 与 DSL 中间阶段按同一未完成尝试、模型、输入及本地和工作树文件内容恢复。最终审查重跑。生成报告对比当前运行、相同目标的上次验证产物，列出受影响的规则、命令、用例及文件变化。保持完整 Java 模块编译与验收。
+- 影响范围包括 `spec-contract.ts`、`requirement-engineering-service.ts`、需求共享类型、确定性生成入口、`codegen/java-domain.ts`、`tests/unit/requirement-pipeline.test.ts` 及生成说明、架构和回归防护。同步三个版本位置。
+- 定向回归 65 项、Node/Web 类型检查及全量 139 文件 / 1234 项通过。高额审批的 4 条独立用例通过真实 JDK 和 Maven/JUnit。将 `>=` 改为 `>` 时，DSL 自带正例仍可通过，独立边界用例阻断发布。联测另覆盖篡改的契约与检查点、缺少规则、重复用例、精度保护和单一用例变动的文件差异。
+- 模型回复为受控联测，审批规则为样例。增量范围覆盖报告及中间成果复用，Java 发布仍验证整个生成模块。现有业务仓库的隔离补丁交付属于后续工作。

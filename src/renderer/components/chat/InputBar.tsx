@@ -26,11 +26,6 @@ export interface InputBarProps {
 
 const COMMAND_INPUT_SEPARATOR = ' '
 
-async function latestRequirementRunId(conversationId: string, statuses: string[]): Promise<string | undefined> {
-  const runs = await window.eva.requirements.listRuns(conversationId)
-  return runs.find((run) => statuses.includes(run.status))?.id
-}
-
 function getConnectionDisplayName(provider: ProviderConfigEntry): string {
   const defaultNames: Record<ProviderConfigEntry['type'], string> = {
     openai: 'OpenAI',
@@ -268,7 +263,7 @@ export function InputBar({ className }: InputBarProps) {
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
     }
-    const codingMatch = inputText.trim().match(/^\/coding$/i)
+    const codingMatch = inputText.trim().match(/^\/coding(?:\s+([a-z][a-z0-9-]*))?$/i)
     if (codingMatch) {
       if (referenceImages.length > 0 || documentAttachments.length > 0) {
         setError('Code generation uses the persisted DSL. Remove current attachments or images first.')
@@ -278,14 +273,13 @@ export function InputBar({ className }: InputBarProps) {
       try {
         const conversation = currentConversation || await createConversation()
         requirementConversationId = conversation.id
-        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/coding', timestamp: Date.now() })
+        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: inputText.trim(), timestamp: Date.now() })
         setInputText('')
         setQuotedMessage(null)
         setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, 'Preparing deterministic code generation from the persisted DSL')
-        const runId = await latestRequirementRunId(conversation.id, ['ready-for-implementation'])
-        await window.eva.requirements.coding({ conversationId: conversation.id, runId })
+        await window.eva.requirements.coding({ conversationId: conversation.id, generator: codingMatch[1]?.toLowerCase() })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'Deterministic code generation failed.')
@@ -311,8 +305,7 @@ export function InputBar({ className }: InputBarProps) {
         setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取已完成的最终实施规格')
-        const runId = await latestRequirementRunId(conversation.id, ['ready-for-implementation'])
-        await window.eva.requirements.dsl({ conversationId: conversation.id, runId })
+        await window.eva.requirements.dsl({ conversationId: conversation.id })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'DSL generation failed.')
@@ -338,8 +331,7 @@ export function InputBar({ className }: InputBarProps) {
         setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取需求建模成果并核对代码证据')
-        const runId = await latestRequirementRunId(conversation.id, ['ready-for-specification', 'ready-for-implementation'])
-        await window.eva.requirements.spec({ conversationId: conversation.id, runId })
+        await window.eva.requirements.spec({ conversationId: conversation.id })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : '规格构建执行失败。')

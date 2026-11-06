@@ -48,13 +48,14 @@
 - 执行走 `spawn(argv, { shell: false })` 于入口的临时副本上，`cwd` 为 Skill 目录，超时与 `ToolContext.signal` 都会终止子进程。`run_skill_command` 属于 `terminal-command` 审批类别，且在 spawn 前先经 `evaluateSandboxCommand`（Skill 目录仅在该次判定中加入允许集）。
 - 详见 `docs/程序化Skill说明.md`；边界约束见 `REGRESSION-GUARDS.md` 的「程序化 Skill 的执行边界」。
 
-## RMSD 最后一段：确定性代码生成
+## RMSD 需求到代码流水线
 
-- 流水线 `/requirement → /requirement-modeling → /spec → /dsl → /coding`，前四段有模型参与，`/coding` 之后调用数为零。
-- `services/deterministic-coding-service.ts` 负责 DSL 解析（`parseDomainDsl`，类型归一化且未知类型报错）与语义包 / 生成 IR 写入；具体产出交给 `services/codegen/` 的注册表。
-- `codegen/` 的契约是 `CodeGenerator`：`id` / `label` / `target` / `outputKind` / `capabilities` / `options`（含允许值）/ `generate(parsed, context)` 纯函数。已注册 `java-reference`、`java-maven`、`json-schema`、`sql-ddl`；新增目标只需加一个文件并在 `index.ts` 注册，流水线无需改动。
-- 每次运行读 `intermediate/runs/<dslHash>/02-generation-ir/target-model.yaml` 决定生成器与选项；该文件缺失才写入显式默认（`java-reference`），存在但非法则整轮失败。产物落在 `coding/output/runs/<dslHash>/03-generated-code/`，含 `generation-result.yaml`；同目录已有不同字节即拒绝覆盖。
-- 详见 `docs/确定性代码生成流程说明.md`；边界约束见 `REGRESSION-GUARDS.md` 的「确定性代码生成的生成器边界」。
+- `RequirementEngineeringService` 编排 `/requirement → /requirement-modeling → /spec → /dsl → /coding`。按会话与需求运行互斥，选中当前工作树的运行并校验状态。运行清单原子落盘，支持取消等待卡片和重试中断的 Spec、DSL 与代码生成。
+- 发布回执记录产物文档、上游文档和 SHA-256。变更上游会使下游失效。Spec 同时检查评分与阻塞项并复核最终正文，DSL 通过严格语法、实际编号及语义审查后发布。项目写入通过工作树及路径边界校验。
+- 新 Spec 发布绑定 `acceptance-contract.json`，记录每条 FR 的条件、结果与可执行用例或人工验收缺口。DSL 核对命令追溯，Java 生成器从契约编译独立验收。Spec 与 DSL 按未完成的尝试、提示输入、模型与产物哈希恢复中间阶段。
+- `domain-dsl.ts` 解析可追溯 DSL，`DeterministicCodingService` 写语义包和生成 IR。自 `/coding` 起模型调用为零。注册表含 `java-reference`、`java-maven`、`java-domain`、`json-schema`、`sql-ddl`。
+- `/coding <生成器 ID>` 可显式切换目标，首次无指定时使用 `java-reference`。批准配置存放在 `coding/intermediate/runs/<dslHash>/02-generation-ir/target-model.yaml`。代码输出使用生成契约、Spec、DSL、验收契约和目标配置共同决定的生成键，逐文件校验 SHA-256，拒绝覆盖不同字节。相同目标的上次成功产物提供规则、用例和文件影响基线。
+- `java-domain` 生成 Java 17 Maven 领域模块，支持角色、状态迁移、数值或布尔守卫及类型化事件。隔离运行 JDK 编译与生成的验收测试，成功后发布。宿主应用负责认证、事务、持久化和事件分发。详见 `docs/确定性代码生成流程说明.md`。
 
 ## 对外接口边界
 
@@ -108,3 +109,7 @@
 - 前端不生成语义摘要，不修改引擎、提示词、原始结果或来源。数量来自已有工具条目，仅表示调用、报错与停止后的未确认项，不作任务完成判据。
 
 - 柔和字形：`styles/typography.css` 仅映射本地 HarmonyOS Regular/Medium，不请求网络或安装字体；全局 UI 默认字体栈与聊天共用。`lib/reading-typography.ts` 提供实际 px 字级，OutputFormatPanel 标签与 Markdown 阅读层共享，应用根字号仍为 14px。阅读正文 400、标题/强调 500，关闭合成字重；主题墨色由阅读作用域拥有，旧原生深色规则排除它。字体缺失时由平台无衬线回退，字体文件未打包。
+
+- 实际画布：App 外壳是唯一背景所有者，浅色使用 `--conversation-canvas`，深色/星空保留外壳主题；workspace、ChatPanel、桌面右栏及展开工作区透明，避免渐变重启、近白色遮盖与半透明主题多层叠色。紧凑便签/输入框保留表面，窄屏模态抽屉保留可读底色。未标语言代码通过 MarkdownBlockCodeContext 区分块级/行内。真实 App 与独立预览共用 reading-content.ts，并在右栏打开/关闭、缩放及展开时验证实际样式与边界像素。
+- 浅色材质：`--conversation-canvas` 由宽幅淡紫/冰蓝径向光色场与珠光线性底色组成，仍仅由 App 外壳绘制；reading-runner 在真实桌面布局取样阅读边缘与右栏空白的亮度/色差，防止画布连续却被摊平成灰蓝底。字体、数据和其他主题背景独立于此配色。
+- 版本：按用户要求每批更新同步递增 package/lockfile 根包与 APP_VERSION，application-version.test.ts 维护一致性；该轮视觉更新为 0.1.209。用户已确认当时视觉效果并明确恢复该版本的 Windows 打包；仅分发同一已验收版本时不额外递增版本号。

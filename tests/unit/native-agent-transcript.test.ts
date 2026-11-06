@@ -195,3 +195,31 @@ it('renders the Harness tool-owned presentation instead of inventing a generic l
   expect(html).toContain('41  native line')
   expect(html).toContain('raw native model feedback')
 })
+it('keeps extension result images when the SDK repeats the tool completion', () => {
+  const images = [{ path: '/tmp/a.png', name: 'a.png', mediaType: 'image/png' }]
+  const transcript = events('deepseek-harness', [
+    {
+      type: 'tool_start',
+      toolCallId: 'img',
+      name: 'generate_image',
+      data: { arguments: {}, implementation: 'eva-extension' },
+    },
+    {
+      type: 'tool_end',
+      toolCallId: 'img',
+      name: 'generate_image',
+      content: 'Generated image',
+      data: { isError: false, images },
+    },
+    {
+      type: 'tool_end',
+      toolCallId: 'img',
+      name: 'generate_image',
+      data: { isError: false, implementation: 'eva-extension' },
+    },
+  ])
+  const item = projectNativeTranscript(transcript).find((entry) => entry.kind === 'tool')
+  expect(item?.content).toBe('Generated image')
+  expect(item?.data?.images).toEqual(images)
+  expect(render(transcript)).toContain('data-native-result-images')
+})

@@ -802,6 +802,7 @@ export class AgentRunner {
                 result: result.result,
                 isError: result.isError,
                 protocol: result.protocol,
+                ...(result.images?.length ? { images: result.images } : {}),
               },
             }
           }
@@ -899,6 +900,7 @@ export class AgentRunner {
               result: result.result,
               isError: result.isError,
               protocol: result.protocol,
+              ...(result.images?.length ? { images: result.images } : {}),
             },
           }
         }

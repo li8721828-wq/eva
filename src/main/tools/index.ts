@@ -17,6 +17,7 @@ import { createSpreadsheetTools } from './spreadsheet-tools'
 import { createSkillTools } from './skill-tools'
 import { createAskUserTools } from './ask-user-tools'
 import { createPurposeTools } from './purpose-tools'
+import { createImageGenerationTools } from './image-generation-tools'
 import type { AskUserOutcome, AskUserPrompt } from '../services/ask-user-policy'
 import type { PersonalPreferenceStore } from '../storage/personal-preference-store'
 import type { LongTermMemoryStore } from '../storage/long-term-memory-store'
@@ -195,6 +196,7 @@ export function createToolRegistry(projectIndexService?: ProjectIndexService, pr
   for (const tool of createSkillTools()) registry.register(tool)
   for (const tool of createAskUserTools()) registry.register(tool)
   for (const tool of createPurposeTools()) registry.register(tool)
+  for (const tool of createImageGenerationTools()) registry.register(tool)
   if (personalPreferenceStore) {
     for (const tool of createPersonalPreferenceTools(personalPreferenceStore, longTermMemory)) registry.register(tool)
   }

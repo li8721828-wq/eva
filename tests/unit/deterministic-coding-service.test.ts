@@ -2,6 +2,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { DSL_CONTRACT } from '../../src/main/services/domain-dsl'
 import { DeterministicCodingService } from '../../src/main/services/deterministic-coding-service'
 import { RequirementEngineeringService } from '../../src/main/services/requirement-engineering-service'
 import {
@@ -34,7 +35,7 @@ describe('DeterministicCodingService', () => {
       'rule ApprovalLimit: amount requires approval',
     ].join('\n'))).toEqual({
       domain: 'Budget',
-      aggregates: [{ name: 'Approval', fields: [{ name: 'id', type: 'string' }, { name: 'amount', type: 'decimal' }] }],
+      aggregates: [{ name: 'Approval', trace: ['FR-001'], fields: [{ name: 'id', type: 'string' }, { name: 'amount', type: 'decimal' }] }],
       rules: ['ApprovalLimit'],
       ruleDefinitions: [{ name: 'ApprovalLimit', definition: 'amount requires approval' }],
       commands: [],
@@ -125,7 +126,7 @@ describe('DeterministicCodingService', () => {
 
 describe('the generator registry', () => {
   it('registers every adapter under a stable id', () => {
-    expect(availableGeneratorIds()).toEqual(['java-maven', 'java-reference', 'json-schema', 'sql-ddl'])
+    expect(availableGeneratorIds()).toEqual(['java-domain', 'java-maven', 'java-reference', 'json-schema', 'sql-ddl'])
   })
 
   it('reports the available ids when asked for one that does not exist', () => {
@@ -173,6 +174,13 @@ describe('the approved target model', () => {
     const read = readTargetModel({ generator: 'java-reference', productionOutput: true })
     expect(read.ok).toBe(false)
     if (!read.ok) expect(read.error).toContain('cannot be approved for production output')
+  })
+
+  it('requires explicit Java domain approval and refuses rejected configurations', () => {
+    expect(readTargetModel({ generator: 'java-domain' }).ok).toBe(false)
+    expect(readTargetModel({ generator: 'java-domain', production_output: true, approval_status: 'rejected' }).ok).toBe(false)
+    const generator = service.resolveGenerator('java-domain')
+    expect(readTargetModel(JSON.parse(targetModelDocument(defaultTargetModel(generator, 'Sales')))).ok).toBe(true)
   })
 
   it('refuses a declared outputKind that disagrees with the generator', () => {
@@ -232,7 +240,8 @@ describe('determinism and write safety', () => {
   async function generateWith(generatorId: string, options: Record<string, string> = {}): Promise<{ files: string[]; output: string; verification: string }> {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'eva-codegen-'))
     directories.push(directory)
-    const parsed = service.parseDomainDsl(source)
+    const dsl = generatorId === 'java-domain' ? DSL_CONTRACT.split('\n').slice(1).join('\n').split('\nUse the example')[0] : source
+    const parsed = service.parseDomainDsl(dsl)
     const result = await service.generatePackage(directory, parsed, service.resolveGenerator(generatorId), options)
     return { files: await readdir(directory), output: directory, verification: result.verification }
   }

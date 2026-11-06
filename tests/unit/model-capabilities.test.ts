@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferModelCapabilities, supportsImageInput } from '../../src/shared/model-capabilities'
+import { inferModelCapabilities, mergeProbedCapabilities, supportsImageInput } from '../../src/shared/model-capabilities'
 
 describe('model capability profiles', () => {
   it('identifies DeepSeek reasoning and large context routes', () => {
@@ -52,6 +52,29 @@ describe('model capability profiles', () => {
       contextWindowTokens: 256_000,
     })
     expect(profile.contextWindowTokens).toBe(256_000)
+  })
+})
+
+describe('probe result merging', () => {
+  const previous = { ...inferModelCapabilities('custom', 'gateway-model'), supportsTools: true, source: 'probed' as const, probeStatus: 'supported' as const }
+
+  it('keeps a previously confirmed capability when a retry is inconclusive', () => {
+    const probed = { ...inferModelCapabilities('custom', 'gateway-model', { supportsTools: true }), source: 'probed' as const, probeStatus: 'inconclusive' as const, lastError: 'HTTP 503' }
+    const merged = mergeProbedCapabilities(previous, probed)
+    expect(merged.supportsTools).toBe(true)
+    expect(merged.probeStatus).toBe('supported')
+    expect(merged.lastError).toBe('HTTP 503')
+  })
+
+  it('accepts a definitive verdict even when one already existed', () => {
+    const probed = { ...inferModelCapabilities('custom', 'gateway-model', { supportsTools: false }), source: 'probed' as const, probeStatus: 'unsupported' as const }
+    expect(mergeProbedCapabilities(previous, probed).supportsTools).toBe(false)
+    expect(mergeProbedCapabilities(previous, probed).probeStatus).toBe('unsupported')
+  })
+
+  it('leaves an unconfirmed route unconfirmed when nothing was known before', () => {
+    const probed = { ...inferModelCapabilities('custom', 'gateway-model'), supportsTools: undefined, source: 'probed' as const, probeStatus: 'inconclusive' as const }
+    expect(mergeProbedCapabilities(undefined, probed).supportsTools).toBeUndefined()
   })
 })
 

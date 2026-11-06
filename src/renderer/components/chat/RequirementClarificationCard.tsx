@@ -32,6 +32,15 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
     }
   }
 
+  const cancel = async () => {
+    setError(null)
+    try {
+      await onAbort()
+    } catch (abortError) {
+      setError(abortError instanceof Error ? abortError.message : '取消需求运行失败，请重试。')
+    }
+  }
+
   return (
     <section className="mb-8 max-w-2xl border border-violet-200 bg-white p-5" aria-labelledby={`clarification-${run.id}`}>
       <div className="flex items-start gap-3">
@@ -78,13 +87,18 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
       <div className="mt-5 flex items-center justify-between gap-3 border-t border-zinc-200 pt-4">
         <span className="text-xs text-zinc-500">已选择 {Object.keys(selection).length}/{activeQuestions.length}</span>
         {isSubmitting ? (
-          <button type="button" onClick={() => void onAbort()} className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-900 px-3 text-sm font-medium text-white hover:bg-zinc-700">
+          <button type="button" onClick={() => void cancel()} className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-900 px-3 text-sm font-medium text-white hover:bg-zinc-700">
             <Square className="h-3.5 w-3.5 fill-current" /> 停止分析
           </button>
         ) : (
-          <button type="button" disabled={!isComplete} onClick={() => void submit()} className="inline-flex h-9 items-center gap-2 rounded-md bg-violet-600 px-3 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500">
-            <CheckCircle2 className="h-4 w-4" /> {mode === 'specification' ? '保存处置选择' : '提交确认并继续'}
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => void cancel()} className="h-9 rounded-md px-3 text-sm text-zinc-600 hover:bg-zinc-100">
+              取消本轮
+            </button>
+            <button type="button" disabled={!isComplete} onClick={() => void submit()} className="inline-flex h-9 items-center gap-2 rounded-md bg-violet-600 px-3 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500">
+              <CheckCircle2 className="h-4 w-4" /> {mode === 'specification' ? '保存处置选择' : '提交确认并继续'}
+            </button>
+          </div>
         )}
       </div>
       {isSubmitting && <div className="mt-3 flex items-center gap-2 text-sm text-violet-600"><Loader2 className="h-4 w-4 animate-spin" /> 正在保存选择并整理后续路径</div>}

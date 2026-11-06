@@ -348,6 +348,54 @@ const labels: Record<string, readonly [string, string]> = {
   "Run one live test search": [
     "测试搜索连接",
     "検索接続をテスト"
+  ],
+  "Image generation": [
+    "图像生成",
+    "画像生成"
+  ],
+  "The generate_image tool uses this connection and model. It is independent of the chat model, so an image model never has to support tool calls.": [
+    "generate_image 工具使用这条连接和模型，与聊天模型相互独立，因此生图模型不必支持工具调用。",
+    "generate_image ツールはこの接続とモデルを使います。チャットモデルとは独立しているため、画像モデルがツール呼び出しに対応している必要はありません。"
+  ],
+  "Connection": [
+    "连接",
+    "接続"
+  ],
+  "Not configured": [
+    "未配置",
+    "未設定"
+  ],
+  "Model": [
+    "模型",
+    "モデル"
+  ],
+  "For example gpt-image-1": [
+    "例如 gpt-image-1",
+    "例: gpt-image-1"
+  ],
+  "This connection is missing, disabled, or has no API key. Choose another connection.": [
+    "该连接不存在、已停用或没有 API Key，请改选其他连接。",
+    "この接続は存在しないか、無効か、API キーがありません。別の接続を選んでください。"
+  ],
+  "Save a connection with an API key before configuring image generation.": [
+    "请先保存一条带 API Key 的连接，再配置图像生成。",
+    "API キー付きの接続を保存してから画像生成を設定してください。"
+  ],
+  "Choose a saved connection for image generation.": [
+    "请为图像生成选择一条已保存的连接。",
+    "画像生成に使用する保存済み接続を選んでください。"
+  ],
+  "Enter the image model ID this connection should use.": [
+    "请填写这条连接要使用的生图模型 ID。",
+    "この接続で使う画像モデル ID を入力してください。"
+  ],
+  "Save image settings": [
+    "保存图像设置",
+    "画像設定を保存"
+  ],
+  "Clear": [
+    "清除",
+    "クリア"
   ]
 }
 

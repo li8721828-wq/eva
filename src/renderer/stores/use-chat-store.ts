@@ -914,7 +914,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existingStream = s.streamingByConversation[conversationId]
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-              return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError), protocol: event.protocol } : tc) } } }
+              return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolCalls: stream.toolCalls.map((tc) => tc.id === event.toolCallId ? { ...tc, result: event.toolResult || '', isError: Boolean(event.isError), protocol: event.protocol, ...(event.toolResultImages?.length ? { images: event.toolResultImages } : {}) } : tc) } } }
           })
         }
         break

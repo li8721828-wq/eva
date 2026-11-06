@@ -5,6 +5,8 @@ import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAgentStore } from '@/stores/use-agent-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
+import { READING_PREVIEW_MARKDOWN } from './reading-content'
+import type { AgentMarkdownRenderer } from '../../src/shared/types/agent'
 
 // The actual app shell with renderer-only demonstration data; no production preload or model calls.
 const testWindow = window as any
@@ -45,5 +47,13 @@ testWindow.switchFixtureConversation = (id: string) => useChatStore.setState({ c
 testWindow.setTestTheme = (theme: 'light' | 'dark' | 'starlight') => useAppStore.setState({ theme })
 testWindow.setFullFilesystemAccess = () => useChatStore.setState({ conversations: [{ ...conversation, permissionLevel: 'full-access' }] })
 testWindow.setReasoningRoute = (enabled: boolean) => useAppStore.setState({ activeProviderId: enabled ? 'reasoning-demo' : 'demo', activeModel: enabled ? 'deepseek-flash' : 'coding-demo' })
+
+testWindow.setReadingPreview = (renderer: AgentMarkdownRenderer, theme: 'light' | 'dark' | 'starlight') => {
+  const agent = { id: 'reading-agent', name: '编程助手', description: '', role: 'coder' as const, systemPrompt: '', model: 'coding-demo', providerId: 'demo', tools: [], maxIterations: 1, temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0, markdownRenderer: renderer, outputFontSize: 'medium' as const }
+  useAppStore.setState({ theme, currentView: 'chat', workspaceExpanded: false, rightPanelVisible: false })
+  useWorkspaceStore.setState({ activeWorkspaceId: project.id })
+  useAgentStore.setState({ agents: [agent] })
+  useChatStore.setState({ currentConversationId: 'current', conversations: [conversation], messages: [{ id: 'reading-preview', conversationId: 'current', agentId: agent.id, agentName: agent.name, role: 'assistant', content: READING_PREVIEW_MARKDOWN, timestamp: 1 }] })
+}
 createRoot(document.getElementById('root')!).render(<App />)
 setTimeout(() => { testWindow.uiReady = true }, 400)

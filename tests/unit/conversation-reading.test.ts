@@ -85,6 +85,17 @@ it('renders the declared default prose size without shrinking it through the 14p
   expect(html).toContain('--reading-size:15px')
 })
 
+it('renders unlabelled fenced text as block code without inline chips or an inner highlight', () => {
+  const html = renderToStaticMarkup(React.createElement(MarkdownMessageContent, {
+    content: '```\nsrc/example.ts\nsecond line\n```', readingStandard: true, preserveSource: true,
+  }))
+  expect(html).toContain('markdown-code-block')
+  expect(html).toContain('src/example.ts')
+  expect(html).toContain('second line')
+  expect(html).not.toContain('markdown-inline-code')
+  expect(html).not.toContain('markdown-file-chip')
+})
+
 it('does not animate a stopped tool or treat an empty successful result as pending', () => {
   const toolCall = { id: 't', name: 'read_file', arguments: {} }
   const stopped = renderToStaticMarkup(React.createElement(ToolCallView, { toolCall, active: false }))

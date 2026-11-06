@@ -611,6 +611,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
         toolResult: event.toolResult?.result,
         isError: event.toolResult?.isError,
         protocol: event.toolResult?.protocol,
+        toolResultImages: event.toolResult?.images,
       }
     case 'error':
       return { type: 'error', error: event.error }
@@ -1261,7 +1262,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
         // 6. Execute the ReAct loop and stream events
         const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = []
-        const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean; protocol?: import('../../shared/types/execution-protocol').ExecutionEnvelope }> = []
+        const allToolResults: Array<{ toolCallId: string; name: string; result: string; isError: boolean; protocol?: import('../../shared/types/execution-protocol').ExecutionEnvelope; images?: import('../../shared/types/conversation').ToolResultImageRef[] }> = []
         let lastPublicExecutionNote = ''
         let assistantContent = ''
         let assistantReasoningContent = ''
@@ -1466,6 +1467,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                 result: compactToolResult(agentEvent.toolResult.result),
                 isError: agentEvent.toolResult.isError,
                 protocol: agentEvent.toolResult.protocol,
+                ...(agentEvent.toolResult.images?.length ? { images: agentEvent.toolResult.images } : {}),
               }
               emitExecutionTimeline()
             }
@@ -1547,6 +1549,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
                   result: result ? (nativeMode ? result.result : compactToolResult(result.result)) : undefined,
                   isError: result?.isError,
                   protocol: result?.protocol,
+                  ...(result?.images?.length ? { images: result.images } : {}),
                 }
               })
             : undefined

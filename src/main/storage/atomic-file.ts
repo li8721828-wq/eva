@@ -14,10 +14,14 @@ export function writeJsonAtomic(filePath: string, data: unknown): void {
 
 /** Async counterpart for stores whose read/modify/write queue must not block Electron. */
 export async function writeJsonAtomicAsync(filePath: string, data: unknown): Promise<void> {
+  await writeTextAtomicAsync(filePath, JSON.stringify(data, null, 2))
+}
+
+export async function writeTextAtomicAsync(filePath: string, text: string): Promise<void> {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true })
   const tmpPath = `${filePath}.${uuidv4()}.tmp`
   try {
-    await fsPromises.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8')
+    await fsPromises.writeFile(tmpPath, text, { encoding: 'utf-8', flag: 'wx' })
     for (let attempt = 1; ; attempt += 1) {
       try {
         await fsPromises.rename(tmpPath, filePath)

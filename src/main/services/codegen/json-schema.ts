@@ -88,7 +88,12 @@ export const jsonSchemaGenerator: CodeGenerator = {
         preserved: ['commands', 'events', 'states', 'rules'],
         // A schema describes data, not behaviour, so there is nothing left that a
         // target adapter must supply; the rules and lifecycle stay documented.
-        requiresTargetAdapter: [],
+        requiresTargetAdapter: [
+          ...(parsed.commands.length ? ['commands'] : []),
+          ...(parsed.events.length ? ['events'] : []),
+          ...(parsed.states.length ? ['states'] : []),
+          ...(parsed.rules.length ? ['rules'] : []),
+        ],
         details: {
           schemaId: String(document.$id),
           requireAllFields: String(requireAll),

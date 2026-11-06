@@ -73,6 +73,25 @@ export function supportsImageInput(profile: ModelCapabilityProfile): boolean {
   return profile.supportsVision === true
 }
 
+/**
+ * A failed probe only reports that the check could not run. Keeping the
+ * previous verdict prevents a gateway outage from silently downgrading a
+ * verified route (or reviving a rejected one) until a probe actually completes.
+ */
+export function mergeProbedCapabilities(
+  previous: ModelCapabilityProfile | undefined,
+  probed: ModelCapabilityProfile,
+): ModelCapabilityProfile {
+  if (probed.probeStatus !== 'inconclusive' || previous?.supportsTools === undefined) return probed
+  return {
+    ...probed,
+    supportsTools: previous.supportsTools,
+    probeStatus: previous.probeStatus === 'supported' || previous.probeStatus === 'unsupported'
+      ? previous.probeStatus
+      : 'inconclusive',
+  }
+}
+
 export function describeModelCapabilityProfile(profile: ModelCapabilityProfile): string {
   const support = (value?: boolean) => value === undefined ? 'unknown' : value ? 'yes' : 'no'
   return [
