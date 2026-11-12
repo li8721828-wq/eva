@@ -43,7 +43,14 @@ export function createLocalExecutionPolicy(
   // This is a conversation grant, never a write to the global preferences.
   // Keep sandbox enforcement and the runner's plan-mode gate independent.
   if (fullAccess) automation.toolApproval.policy = 'off'
-  return { automation, requestToolApproval: createLocalToolApproval({ ...approvalContext, config: automation.toolApproval }) }
+  return {
+    automation,
+    requestToolApproval: createLocalToolApproval({
+      ...approvalContext,
+      allowFileAccessRequests: Boolean(conversation && approvalContext.window),
+      config: automation.toolApproval,
+    }),
+  }
 }
 
 /** A configured run must not silently lose approvals when no human-facing transport is available. */
@@ -56,6 +63,7 @@ export function executionApproval(policy: ExecutionPolicy): ExecutionPolicy['req
       return { approved: false, message: 'Plan mode does not execute writes or commands. Switch to normal mode to execute this action.' }
     }
     if (policy.requestToolApproval) return policy.requestToolApproval(request)
+    if (request.fileAccess) return { approved: false, message: 'No file access approval channel is available for this run.' }
     return requiresApproval(request.toolCall.name, automation.toolApproval.policy) === null
       ? { approved: true }
       : { approved: false, message: 'No approval channel is available for this run; the tool call was denied.' }

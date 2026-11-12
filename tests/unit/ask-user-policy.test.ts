@@ -80,6 +80,7 @@ describe('ask_user policy', () => {
     const ask = createLocalAskUser({ conversationId: 'conv-4', window: makeWindow() as never })
     const first = ask(prompt)
     const second = ask({ ...prompt, question: '第二个问题？' })
+    const third = ask({ ...prompt, question: '第三个问题？' })
     await Promise.resolve()
     await Promise.resolve()
 
@@ -93,6 +94,10 @@ describe('ask_user policy', () => {
     const secondId = (sent[1] as { askUser: { id: string } }).askUser.id
     resolvePendingAskUser(secondId, 'opt_2', 'conv-4')
     await expect(second).resolves.toMatchObject({ status: 'selected', optionId: 'opt_2' })
+    expect(sent).toHaveLength(3)
+    const thirdId = (sent[2] as { askUser: { id: string } }).askUser.id
+    resolvePendingAskUser(thirdId, 'opt_1', 'conv-4')
+    await expect(third).resolves.toMatchObject({ status: 'selected', optionId: 'opt_1' })
   })
 
   it('cancels every outstanding question when a newer request owns the conversation', async () => {
@@ -107,10 +112,10 @@ describe('ask_user policy', () => {
     await expect(displayed).resolves.toMatchObject({ status: 'cancelled', reason: '用户改发了新消息，没有回答这个问题。' })
     await expect(queued).resolves.toMatchObject({ status: 'cancelled' })
 
-    // A late click on either dead card finds nothing to resolve.
-    const ids = sent.map((event) => (event as { askUser: { id: string } }).askUser.id)
-    expect(resolvePendingAskUser(ids[0], 'opt_1', 'conv-5')).toBe(false)
-    expect(resolvePendingAskUser(ids[1], 'opt_1', 'conv-5')).toBe(false)
+    const id = (sent[0] as { askUser: { id: string } }).askUser.id
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toMatchObject({ type: 'ask_user_closed', askUserId: id, conversationId: 'conv-5' })
+    expect(resolvePendingAskUser(id, 'opt_1', 'conv-5')).toBe(false)
   })
 
   it('auto-cancels after the waiting window closes', async () => {
@@ -122,10 +127,25 @@ describe('ask_user policy', () => {
       await vi.advanceTimersByTimeAsync(5 * 60_000 + 10)
       await expect(settled).resolves.toMatchObject({ status: 'cancelled', reason: '等待超时' })
       const id = (sent[0] as { askUser: { id: string } }).askUser.id
+      expect(sent[1]).toMatchObject({ type: 'ask_user_closed', askUserId: id, conversationId: 'conv-6' })
       expect(resolvePendingAskUser(id, 'opt_1', 'conv-6')).toBe(false)
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('settles delivery failures immediately and gives the conversation slot back', async () => {
+    sent.length = 0
+    const window = makeWindow()
+    const send = window.webContents.send
+    window.webContents.send = vi.fn(send).mockImplementationOnce(() => { throw new Error('renderer closed') })
+    const ask = createLocalAskUser({ conversationId: 'conv-7', window: window as never })
+    await expect(ask(prompt)).resolves.toEqual({ status: 'cancelled', reason: '提问卡片未能送达界面' })
+    const next = ask(prompt)
+    expect(sent).toHaveLength(1)
+    const id = (sent[0] as { askUser: { id: string } }).askUser.id
+    expect(resolvePendingAskUser(id, 'opt_1', 'conv-7')).toBe(true)
+    await next
   })
 
   it('keeps the decide channel on the trusted contract', () => {

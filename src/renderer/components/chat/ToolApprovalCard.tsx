@@ -14,6 +14,7 @@ interface ToolApprovalCardProps {
 }
 
 const CATEGORY_LABEL: Record<ToolApprovalRequest['category'], string> = {
+  'file-access': '文件访问',
   'workspace-write': '文件写入',
   'terminal-command': '终端命令',
   'mcp-call': 'MCP 工具',
@@ -22,6 +23,7 @@ const CATEGORY_LABEL: Record<ToolApprovalRequest['category'], string> = {
 }
 
 const CATEGORY_TINT: Record<ToolApprovalRequest['category'], string> = {
+  'file-access': 'border-amber-200 bg-amber-50 text-amber-700',
   'workspace-write': 'border-amber-200 bg-amber-50 text-amber-700',
   'terminal-command': 'border-rose-200 bg-rose-50 text-rose-700',
   'mcp-call': 'border-sky-200 bg-sky-50 text-sky-700',
@@ -39,6 +41,7 @@ const CATEGORY_TINT: Record<ToolApprovalRequest['category'], string> = {
  * card auto-denies — without that hint the silent denial looks like a bug.
  */
 export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: ToolApprovalCardProps) {
+  const scoped = request.category === 'file-access'
   const tint = CATEGORY_TINT[request.category]
   const label = CATEGORY_LABEL[request.category]
   const [remainingMs, setRemainingMs] = useState(timeoutMs)
@@ -82,7 +85,7 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm font-semibold text-zinc-800">需要你确认一次工具调用</p>
+            <p className="text-sm font-semibold text-zinc-800">{scoped ? '需要你授权本次路径访问' : '需要你确认一次工具调用'}</p>
             <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${tint}`}>{label}</span>
             <span
               className={cn(
@@ -135,14 +138,14 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
               <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
               允许（本次）
             </button>
-            <button
+            {!scoped && <button
               type="button"
               onClick={() => handleDecision(true, 'session')}
               title={`本会话内不再询问「${label}」类操作`}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
             >
               本会话内都允许「{label}」
-            </button>
+            </button>}
             <button
               type="button"
               onClick={() => handleDecision(false, 'once')}

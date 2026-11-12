@@ -5,11 +5,12 @@ import { createHash, randomUUID } from 'crypto'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from './project-index-service'
 import type { ChatDocumentAttachment, Conversation } from '../../shared/types/conversation'
-import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementProgress, RequirementReleaseStage, RequirementRun, RequirementUnresolvedItem, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
+import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementHostVerification, RequirementProgress, RequirementReleaseStage, RequirementRun, RequirementUnresolvedItem, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { getStorage } from '../storage'
 import { buildDocumentAttachmentContext } from './document-attachment-service'
 import { recordActivity } from './activity-log'
 import { RequirementRunRepository } from './requirement-run-repository'
+import { readRequirementCodeEvidence, requirementSearchTerms } from './requirement-code-evidence'
 import * as requirementPrompts from './requirement-prompt-factory'
 import { DeterministicCodingService } from './deterministic-coding-service'
 import { defaultTargetModel, targetModelDocument } from './codegen'
@@ -18,7 +19,9 @@ import { writeTextAtomicAsync } from '../storage/atomic-file'
 import { rmsdPath } from './rmsd-path'
 import { DSL_CONTRACT, dslTraceIds } from './domain-dsl'
 import { verifyJavaSources } from './codegen/java-validation'
-import { diffSpecContracts, parseSpecContract, SPEC_CONTRACT_PROMPT, specTraceIds, validateAcceptanceBindings } from './spec-contract'
+import { parseMavenHostTarget, verifyMavenHost, type HostDomainArtifact } from './codegen/maven-host-verification'
+import { validateJavaDomainDsl } from './codegen/java-domain'
+import { diffSpecContracts, parseSpecContract, SPEC_ACCEPTANCE_VERSION, SPEC_CONTRACT_PROMPT, SPEC_CRITICAL_RULES_FORMAT, specCriticalRules, specTraceIds, validateAcceptanceBindings } from './spec-contract'
 
 const QUALITY_THRESHOLD = 80
 const SPEC_QUALITY_THRESHOLD = 85
@@ -30,8 +33,9 @@ const RELEASE_DOCUMENTS = {
   specification: ['specification', 'implementation-ready', '/spec'],
   dsl: ['dsl', 'dsl-final', '/dsl'],
 } as const
-const CODEGEN_CONTRACT_VERSION = 3
+const CODEGEN_CONTRACT_VERSION = 5
 const SPEC_CONTRACT_DIMENSION = 'acceptance-contract'
+const CONFIRM_SPEC_RULES = '确认关键规则并发布规格'
 
 function contentHash(text: string): string {
   return createHash('sha256').update(text).digest('hex')
@@ -134,6 +138,7 @@ export class RequirementEngineeringService {
       const conversation = await this.getConversation(input.conversationId)
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
+        if (run.specReview) return this.resolveSpecReview(run, conversation, answers[0]?.option === CONFIRM_SPEC_RULES, onProgress, signal)
         return this.resolveSpecificationBlockersInternal(run, conversation, answers, onProgress, signal)
       })
     }, input.runId)
@@ -159,6 +164,7 @@ export class RequirementEngineeringService {
         run.status = 'cancelled'
         run.clarificationQuestions = []
         run.specResolutionQuestions = []
+        delete run.specReview
         await this.persist(run)
       })
     })
@@ -369,19 +375,28 @@ export class RequirementEngineeringService {
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
         const finalSpec = await this.requireRelease(run, 'specification')
+        let selected = input.generator
+        const priorHash = run.releases?.dsl?.sha256
+        if (!selected && priorHash) {
+          const priorTarget = await this.readOptionalJson(await this.targetConfigurationPath(run, priorHash))
+          if (priorTarget !== undefined) selected = this.deterministicCoding.parseTargetModel(priorTarget).generator
+        }
+        selected ??= run.codingGenerator
+        const generator = this.deterministicCoding.resolveGenerator(selected)
         const attempt = run.draftAttempts?.dsl ?? randomUUID()
         this.invalidateAfter(run, 'specification')
+        if (selected) run.codingGenerator = generator.id
         run.draftAttempts ??= {}
         run.draftAttempts.dsl = attempt
         run.dslOutputPath = path.join(run.workspacePackagePath!, 'dsl')
         run.dslStatus = 'generating'
         run.error = undefined
-        return this.buildDslInternal(run, conversation, finalSpec, onProgress, signal)
+        return this.buildDslInternal(run, conversation, finalSpec, selected ? generator.id : undefined, onProgress, signal)
       })
     })
   }
 
-  private async buildDslInternal(run: RequirementRun, conversation: Conversation, finalSpec: RequirementDocument, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
+  private async buildDslInternal(run: RequirementRun, conversation: Conversation, finalSpec: RequirementDocument, selectedGenerator?: string, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
     const existing = new Set(run.documents.map(({ id }) => id))
     const publish = async (document: RequirementDocument) => {
       await this.persist(run)
@@ -389,9 +404,10 @@ export class RequirementEngineeringService {
     }
     try {
       await this.persist(run)
-      await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/dsl')
+      await this.persistCommand(conversation.id, { conversationId: conversation.id }, selectedGenerator ? `/dsl ${selectedGenerator}` : '/dsl')
       this.throwIfAborted(signal)
       const acceptance = await this.readReleasedSpecContract(run, finalSpec)
+      if (selectedGenerator === 'java-domain') this.requireJavaSpecReview(run, acceptance?.contract.version)
       const sourcePack = `# Final implementation specification\n${finalSpec.content}${acceptance ? `\n\n# Approved acceptance contract\n${acceptance.document.content}` : ''}`
 
       await this.snapshotUpstream(run, 'dsl', [
@@ -432,7 +448,8 @@ export class RequirementEngineeringService {
         'Domain language DSL',
         `Generate the final domain DSL from the approved specification and model. Output plain DSL only.
 ${DSL_CONTRACT}
-Trace each FR identifier in the approved Spec to at least one declaration. Every acceptance case must bind to a command with a trace to its FR. Use the fixed names and behavior in the acceptance contract.
+${selectedGenerator === 'java-domain' ? 'Target: java-domain. Preserve the checked actor, starting state, numeric and boolean guards, and event payload of each approved Spec command.' : ''}
+Trace each FR identifier in the approved Spec to at least one declaration. Every acceptance case must bind to a command with a trace to its FR. Use the fixed names and checks in the acceptance contract.
 
 # Domain-language model
 ${domainLanguage.content}
@@ -444,7 +461,8 @@ ${sourcePack}`,
       const dslContent = this.extractDslContent(dslDocument.content)
       const parsed = this.deterministicCoding.parseDomainDsl(dslContent)
       this.validateDslTraceability(parsed, finalSpec.content)
-      if (acceptance) validateAcceptanceBindings(acceptance.contract, parsed)
+      if (selectedGenerator === 'java-domain') validateJavaDomainDsl(parsed, acceptance?.contract)
+      else if (acceptance) validateAcceptanceBindings(acceptance.contract, parsed)
       const audit = await this.generateDocument(
         run, 'dsl', 'dsl-release-validation', '最终 DSL 放行审查',
         this.specificationValidationPrompt(
@@ -460,6 +478,14 @@ ${sourcePack}`,
       this.throwIfAborted(signal)
       await this.requireRelease(run, 'specification')
       await this.readReleasedSpecContract(run, finalSpec)
+      if (selectedGenerator) {
+        const targetPath = await this.targetConfigurationPath(run, contentHash(dslContent))
+        const config = await this.readOptionalJson(targetPath)
+        if (config === undefined || this.deterministicCoding.parseTargetModel(config).generator !== selectedGenerator) {
+          const target = defaultTargetModel(this.deterministicCoding.resolveGenerator(selectedGenerator), parsed.domain)
+          await this.writeWorkspaceArtifact(run, targetPath, targetModelDocument(target))
+        }
+      }
       dslDocument.content = dslContent
       await writeTextAtomicAsync(dslDocument.path, dslContent)
       await this.publishRelease(run, 'dsl', dslDocument, finalSpec)
@@ -504,6 +530,123 @@ ${sourcePack}`,
     })
   }
 
+  async verifyHost(input: SubmitHostVerificationInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
+    const { action } = input
+    if (action !== 'preflight' && action !== 'preview' && action !== 'run') throw new Error('未知宿主验收操作。')
+    return this.runSubmission(input.conversationId, async (signal) => {
+      const conversation = await this.getConversation(input.conversationId)
+      const run = await this.findWorkspaceRun(conversation, action === 'preflight'
+        ? ['ready-for-specification', 'ready-for-implementation', 'awaiting-spec-resolution'] : 'ready-for-implementation', input.runId)
+      if (!run) throw new Error('请先在当前工作区建立需求运行。')
+      return this.withRun(run, async () => {
+        await this.ensureWorkspacePackage(run, conversation)
+        return this.verifyHostInternal(run, input.conversationId, action, signal, onProgress)
+      })
+    }, input.runId)
+  }
+
+  private async verifyHostInternal(run: RequirementRun, conversationId: string, action: SubmitHostVerificationInput['action'], signal: AbortSignal, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
+    const coding = path.join(run.workspacePackagePath!, 'coding')
+    const command = action === 'preview' ? '/verify-host' : `/verify-host ${action}`
+    const plan = action === 'preview' ? undefined : run.hostVerification?.plan
+    let result: RequirementHostVerification = { action, status: 'running', summary: '正在检查宿主验收目标', plan }
+    run.hostVerification = result
+    await this.persist(run)
+    await this.persistCommand(conversationId, { conversationId }, command)
+    try {
+      const configuration = await this.readHostTarget(run, coding, action !== 'preflight')
+      const { target, adapter } = configuration
+      result = { ...result, commit: target.commit, module: target.module }
+      if (action === 'run') {
+        if (!plan) throw new Error('请先执行 /verify-host 预览宿主补丁。')
+        const patchFile = await this.workspaceArtifact(run, plan.patchPath)
+        const preview = await fs.readFile(patchFile).catch(() => undefined)
+        if (!preview || createHash('sha256').update(preview).digest('hex') !== plan.patchSha256) {
+          throw new Error('预览补丁已变更，请重新执行 /verify-host。')
+        }
+      }
+      const artifact = action === 'preflight' ? undefined : await this.readHostArtifact(run)
+      result = { ...result, generationKey: artifact?.key }
+      const checked = await verifyMavenHost({ action, workspace: run.workspaceRoot!, target, artifact, adapter, expectedPlan: plan }, signal,
+        (message) => this.reportProgress(onProgress, run, 'coding', message))
+      this.throwIfAborted(signal)
+      if ((await this.readHostTarget(run, coding, action !== 'preflight')).sha256 !== configuration.sha256
+        || (artifact && (await this.readHostArtifact(run)).key !== artifact.key)) {
+        throw new Error('验收期间宿主配置或生成产物已变更，请重新预览。')
+      }
+      result = { ...result, maven: checked.maven, java: checked.java }
+      if (checked.plan && checked.patch !== undefined) {
+        const patchPath = path.join(coding, 'output', 'host', `${checked.plan.patchSha256}.patch`)
+        await this.writeWorkspaceArtifact(run, patchPath, checked.patch)
+        result = { ...result, status: 'preview-ready', summary: '宿主补丁预览已生成。确认差异后执行 /verify-host run。', plan: { ...checked.plan, patchPath } }
+      } else if (checked.testCount !== undefined) {
+        result = { ...result, status: 'passed', summary: `宿主验证通过，隔离 Maven 构建实际通过 ${checked.testCount} 项测试。`, testCount: checked.testCount }
+      } else {
+        result = { ...result, status: 'preflight-passed', summary: '宿主预检通过，固定提交、Maven/JDK 和原始模块测试编译可用。' }
+      }
+    } catch (error) {
+      result = signal.aborted
+        ? { ...result, status: 'cancelled', summary: '宿主验证已取消。' }
+        : { ...result, status: 'blocked', summary: error instanceof Error ? error.message : String(error) }
+    }
+    run.hostVerification = result
+    await this.writeWorkspaceArtifact(run, path.join(coding, 'output', 'host', 'verification.json'), JSON.stringify(result, null, 2) + '\n')
+    await this.persist(run)
+    const changes = result.status === 'preview-ready' ? result.plan : undefined
+    const preview = changes ? [
+      `补丁路径 \`${changes.patchPath}\``,
+      ...changes.changes.slice(0, 16).map(({ path: file, change }) => `- ${change === 'added' ? '新增' : '修改'} \`${file}\``),
+      ...(changes.changes.length > 16 ? ['- 其余文件见补丁。'] : []),
+    ].join('\n') : ''
+    const title = result.status === 'blocked' ? '宿主验证受阻' : '宿主集成验收'
+    await this.storage.conversations.addMessage(conversationId, {
+      id: randomUUID(), role: 'assistant', agentName: '宿主验收', timestamp: Date.now(),
+      content: `## ${title}\n\n${result.summary}${preview ? `\n\n${preview}` : ''}`,
+    })
+    this.reportProgress(onProgress, run, result.status === 'blocked' || result.status === 'cancelled' ? 'failed' : 'complete', result.summary.split('\n')[0])
+    return run
+  }
+
+  private async readHostTarget(run: RequirementRun, coding: string, includeAdapter: boolean) {
+    const location = await this.workspaceArtifact(run, path.join(coding, 'host-target.json'))
+    const size = await fs.stat(location).then((file) => file.isFile() ? file.size : undefined, () => undefined)
+    if (size === undefined) throw new Error(`请在需求运行中创建宿主目标配置。${location}`)
+    if (size > 16 * 1024) throw new Error('宿主目标配置超出大小上限。')
+    const raw = await fs.readFile(location, 'utf8')
+    let value: unknown
+    try { value = JSON.parse(raw) } catch { throw new Error('host-target.json 需要合法的 JSON。') }
+    const target = parseMavenHostTarget(value)
+    let adapter: Buffer | undefined
+    if (includeAdapter && target.adapterPatch) {
+      const file = await this.workspaceArtifact(run, path.join(coding, 'host-adapter.patch'))
+      const stat = await fs.stat(file).catch(() => undefined)
+      if (!stat?.isFile() || stat.size < 1 || stat.size > 1024 * 1024) throw new Error('host-adapter.patch 缺失或大小不符合要求。')
+      adapter = await fs.readFile(file)
+    }
+    return { target, adapter, sha256: createHash('sha256').update(raw).update(adapter ?? '').digest('hex') }
+  }
+
+  private async readHostArtifact(run: RequirementRun): Promise<HostDomainArtifact> {
+    if (run.codingStatus !== 'ready' || !run.codingOutputPath) throw new Error('请先执行 /coding java-domain 并完成领域模块验收。')
+    await this.requireRelease(run, 'dsl')
+    const spec = await this.requireRelease(run, 'specification')
+    const acceptance = await this.readReleasedSpecContract(run, spec)
+    const manifestPath = await this.workspaceArtifact(run, path.join(run.codingOutputPath, 'codegen-manifest.json'))
+    const document = [...run.documents].reverse().find((item) => item.dimension === 'codegen-manifest' && item.workspacePath === manifestPath)
+    const bytes = await fs.readFile(manifestPath, 'utf8')
+    const baseline = run.verifiedCoding?.['java-domain']
+    if (!document || bytes !== document.content || !baseline || !acceptance) throw new Error('领域模块验收记录已变更，请重新执行 /coding java-domain。')
+    const manifest = JSON.parse(bytes)
+    if (manifest.status !== 'completed' || manifest.adapter !== 'java-domain' || manifest.generationKey !== path.basename(run.codingOutputPath)
+      || manifest.sourceDslSha256 !== run.releases!.dsl!.sha256 || manifest.sourceSpecSha256 !== run.releases!.specification!.sha256
+      || manifest.sourceSpecContractSha256 !== acceptance.receipt.sha256 || baseline.specContract?.sha256 !== acceptance.receipt.sha256) {
+      throw new Error('当前生成产物不属于已验收的 Java 领域模块。')
+    }
+    const directory = await this.workspaceArtifact(run, path.join(run.codingOutputPath, '03-generated-code'))
+    await this.deterministicCoding.verifyGeneratedPackage(directory, 'java-domain', baseline.files)
+    return { key: manifest.generationKey, directory, files: baseline.files }
+  }
+
   private async buildCodingInternal(
     run: RequirementRun,
     conversation: Conversation,
@@ -515,6 +658,7 @@ ${sourcePack}`,
     const documents: RequirementDocument[] = []
     try {
       run.codingStatus = 'generating'
+      this.invalidateHostDelivery(run)
       run.codingOutputPath = undefined
       run.error = undefined
       await this.persist(run)
@@ -526,16 +670,18 @@ ${sourcePack}`,
       const dslHash = run.releases!.dsl!.sha256
       const specHash = run.releases!.specification!.sha256
       const packageRoot = run.workspacePackagePath!
-      const targetPath = await this.workspaceArtifact(run, path.join(packageRoot, 'coding', 'intermediate', 'runs', dslHash, '02-generation-ir', 'target-model.yaml'))
+      const targetPath = await this.targetConfigurationPath(run, dslHash)
       const config = await this.readOptionalJson(targetPath)
       let target = config === undefined
-        ? defaultTargetModel(this.deterministicCoding.resolveGenerator(requestedGenerator), parsed.domain)
+        ? defaultTargetModel(this.deterministicCoding.resolveGenerator(requestedGenerator ?? run.codingGenerator), parsed.domain)
         : this.deterministicCoding.parseTargetModel(config)
       if (requestedGenerator && requestedGenerator !== target.generator) {
         target = defaultTargetModel(this.deterministicCoding.resolveGenerator(requestedGenerator), parsed.domain)
       }
       target.options = Object.fromEntries(Object.entries(target.options).sort(([left], [right]) => left.localeCompare(right)))
       const generator = this.deterministicCoding.resolveGenerator(target.generator)
+      run.codingGenerator = generator.id
+      if (generator.id === 'java-domain') this.requireJavaSpecReview(run, acceptance?.contract.version)
       if (config === undefined || requestedGenerator) await this.writeWorkspaceArtifact(run, targetPath, targetModelDocument(target))
       const key = contentHash(JSON.stringify({
         contract: CODEGEN_CONTRACT_VERSION, dslHash, specHash, specContractSha256: acceptance?.receipt.sha256, target,
@@ -689,6 +835,16 @@ ${sourcePack}`,
     return { receipt, document, contract: parseSpecContract(bytes, spec.content) }
   }
 
+  private requireJavaSpecReview(run: RequirementRun, version?: number): void {
+    if (version !== SPEC_ACCEPTANCE_VERSION || !run.releases?.specification?.criticalRulesConfirmedAt) {
+      throw new Error(`Java 生产目标需要第 ${SPEC_ACCEPTANCE_VERSION} 版验收契约和关键规则确认，请重新执行 /spec 和 /dsl。`)
+    }
+  }
+
+  private targetConfigurationPath(run: RequirementRun, dslHash: string): Promise<string> {
+    return this.workspaceArtifact(run, path.join(run.workspacePackagePath!, 'coding', 'intermediate', 'runs', dslHash, '02-generation-ir', 'target-model.yaml'))
+  }
+
   private validateDslTraceability(parsed: ReturnType<DeterministicCodingService['parseDomainDsl']>, specification: string): void {
     const specIds = specTraceIds(specification)
     const trace = new Set(dslTraceIds(parsed))
@@ -731,8 +887,15 @@ ${sourcePack}`,
       if (downstream === 'specification' || downstream === 'dsl') delete run.draftAttempts?.[downstream]
     }
     if (stage !== 'dsl') run.dslStatus = 'idle'
+    if (stage === 'requirement' || stage === 'modeling') delete run.specReview
     run.codingStatus = 'idle'
+    this.invalidateHostDelivery(run)
     run.codingOutputPath = undefined
+  }
+
+  private invalidateHostDelivery(run: RequirementRun): void {
+    if (run.hostVerification?.action === 'preflight') delete run.hostVerification.plan
+    else delete run.hostVerification
   }
 
   private async publishRelease(run: RequirementRun, stage: RequirementReleaseStage, document: RequirementDocument, upstream?: RequirementDocument): Promise<void> {
@@ -817,6 +980,7 @@ ${sourcePack}`,
     }
     const allowed = Array.isArray(status) ? status : [status]
     if (run && !allowed.includes(run.status)) {
+      if (run.specReview) throw new Error('请先在对话中确认规格的关键规则与例外。')
       throw new Error(`当前需求运行状态为 ${run.status}，请先完成该运行的上一阶段。`)
     }
     return run
@@ -952,7 +1116,7 @@ ${sourcePack}`,
       await this.persistCommand(conversation.id, { conversationId: conversation.id }, '/spec')
       this.throwIfAborted(signal)
 
-      const codeEvidence = await this.codeEvidence(conversation, finalRequirement.content)
+      const codeEvidence = await this.codeEvidence(conversation, finalRequirement.content, signal)
       const priorCodeAnalysis = [...run.documents].reverse().find((document) => document.stage === 'code-analysis')
       const resolutionDocuments = run.documents.filter((document) => document.stage === 'spec-validation' && document.dimension === 'resolution-answers')
       const sourcePack = this.specificationSourcePack(finalRequirement, modelingDocuments, priorCodeAnalysis, codeEvidence, resolutionDocuments)
@@ -995,21 +1159,24 @@ ${sourcePack}`,
 
       let finalSpec: RequirementDocument | undefined
       let acceptanceDocument: RequirementDocument | undefined
+      let criticalRules: ReturnType<typeof specCriticalRules> = []
       if (this.specificationPassed(evaluation)) {
         this.reportProgress(onProgress, run, 'specification', '正在汇总并复核最终实施规格')
         finalSpec = await this.generateDocument(run, 'specification', 'implementation-ready', '最终实施规格', this.finalSpecificationPrompt(sourcePack, generatedDocuments), signal, onProgress)
+        criticalRules = specCriticalRules(finalSpec.content)
         acceptanceDocument = await this.generateDocument(
           run, 'specification', SPEC_CONTRACT_DIMENSION, '规格验收契约',
           `${SPEC_CONTRACT_PROMPT}\n\n# 最终实施规格\n${finalSpec.content}`, signal, onProgress,
         )
         const contractText = acceptanceDocument.content.replace(/^# 规格验收契约\r?\n+/, '')
         const contract = parseSpecContract(contractText, finalSpec.content)
+        if (contract.version !== SPEC_ACCEPTANCE_VERSION) throw new Error(`最终规格必须生成第 ${SPEC_ACCEPTANCE_VERSION} 版验收契约，请重试 /spec。`)
         acceptanceDocument.content = JSON.stringify(contract, null, 2) + '\n'
         await writeTextAtomicAsync(acceptanceDocument.path, acceptanceDocument.content)
         const finalAudit = await this.generateDocument(
           run, 'spec-validation', 'implementation-release-validation', '最终实施规格放行审查',
           this.specificationValidationPrompt(
-            `${sourcePack}\n\n另需核对验收契约和最终正文一致，特别检查阈值、边界等号、拒绝路径及未证实的测试事实。人工验收项只要明确缺口和证据需求即可保留。`,
+            `${sourcePack}\n\n逐项比较原始业务条件与最终规格的 BR 清单，遗漏、合并、增加或改变关键规则均列入阻塞项。核对每个 BR 在契约中的含义与正文一致，包括角色、状态、阈值与比较符、布尔条件、例外和独立拒绝用例，以及成功事件的完整字段和预期值。不得把尚未执行的测试写成验证事实。人工验收项须明确缺口和证据需求。`,
             [finalSpec, acceptanceDocument],
           ), signal, onProgress,
         )
@@ -1021,18 +1188,22 @@ ${sourcePack}`,
       if (finalSpec && acceptanceDocument && this.specificationPassed(evaluation)) {
         this.throwIfAborted(signal)
         await this.requireRelease(run, 'modeling')
-        const contractPath = this.workspaceDocumentPath(run, 'specification', SPEC_CONTRACT_DIMENSION, 'acceptance-contract.json')!
-        await this.writeWorkspaceArtifact(run, contractPath, acceptanceDocument.content)
-        acceptanceDocument.workspacePath = contractPath
-        await this.publishRelease(run, 'specification', finalSpec, finalModeling)
-        run.releases!.specification!.specContract = { documentId: acceptanceDocument.id, sha256: contentHash(acceptanceDocument.content) }
-        await publish(finalSpec)
-        run.status = 'ready-for-implementation'
+        run.specReview = {
+          specification: { documentId: finalSpec.id, sha256: contentHash(finalSpec.content) },
+          contract: { documentId: acceptanceDocument.id, sha256: contentHash(acceptanceDocument.content) },
+          upstreamDocumentId: finalModeling.id,
+          rules: criticalRules.map(({ id, summary }) => ({ id, summary })),
+        }
+        run.specResolutionQuestions = [{
+          id: randomUUID(), category: 'specification', blocker: '', question: '关键业务规则与例外是否完整、准确？',
+          options: [CONFIRM_SPEC_RULES, '暂缓发布，返回规格修改'], recommendedIndex: -1,
+        }]
+        run.status = 'awaiting-spec-resolution'
         await this.storage.conversations.addMessage(conversation.id, {
           id: randomUUID(), role: 'assistant', agentName: '规格构建',
-          content: `## 规格构建完成\n\n规格一致性评分：**${evaluation.score}/${SPEC_QUALITY_THRESHOLD}**。最终实施规格、追溯矩阵和独立验收契约已保存，可继续生成 DSL。`, timestamp: Date.now(),
+          content: '规格草稿已通过校验。请确认下方的关键规则与例外，确认后即可继续生成 DSL。', timestamp: Date.now(),
         })
-        this.reportProgress(onProgress, run, 'complete', '规格已校验通过，可进入实现阶段')
+        this.reportProgress(onProgress, run, 'complete', '正在等待确认关键规则与例外')
       } else {
         run.specResolutionQuestions = this.specificationResolutionQuestions(evaluation)
         run.status = 'awaiting-spec-resolution'
@@ -1044,10 +1215,12 @@ ${sourcePack}`,
       }
       delete run.draftAttempts.specification
       await this.persist(run)
-      void recordActivity({ category: 'agent', action: 'requirement.specified', status: run.status === 'ready-for-implementation' ? 'success' : 'info', summary: `Specification validation score ${evaluation.score}/${SPEC_QUALITY_THRESHOLD}.`, conversationId: conversation.id })
+      void recordActivity({ category: 'agent', action: 'requirement.specified', status: 'info', summary: `Specification validation score ${evaluation.score}/${SPEC_QUALITY_THRESHOLD}.`, conversationId: conversation.id })
       return run
     } catch (error) {
       delete run.releases?.specification
+      delete run.specReview
+      run.specResolutionQuestions = []
       if (signal?.aborted) {
         run.status = 'ready-for-specification'
         await this.persist(run)
@@ -1060,6 +1233,58 @@ ${sourcePack}`,
       this.reportProgress(onProgress, run, 'failed', '规格构建未能完成，可重试 /spec')
       throw error
     }
+  }
+
+  private async resolveSpecReview(run: RequirementRun, conversation: Conversation, confirmed: boolean, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
+    const review = run.specReview!
+    if (!confirmed) {
+      delete run.specReview
+      run.specResolutionQuestions = []
+      run.specResolutionHandledAt = new Date().toISOString()
+      run.specQualityScore = undefined
+      run.status = 'ready-for-specification'
+      await this.persist(run)
+      this.reportProgress(onProgress, run, 'complete', '已暂缓发布，更新需求后可重新执行 /spec')
+      return run
+    }
+    const reviewedDocument = async (receipt: typeof review.specification, dimension: string) => {
+      const document = run.documents.find((item) => item.id === receipt.documentId)
+      if (!document || document.stage !== 'specification' || document.dimension !== dimension
+        || contentHash(document.content) !== receipt.sha256
+        || (await fs.readFile(await rmsdPath(this.runDirectory(run.id), document.path), 'utf8')) !== document.content) {
+        throw new Error('待确认的规格或验收契约已变更。请返回规格修改并重新生成。')
+      }
+      return document
+    }
+    const modeling = await this.requireRelease(run, 'modeling')
+    if (modeling.id !== review.upstreamDocumentId) throw new Error('需求建模已变更，请重新生成规格。')
+    const spec = await reviewedDocument(review.specification, 'implementation-ready')
+    const acceptance = await reviewedDocument(review.contract, SPEC_CONTRACT_DIMENSION)
+    const rules = specCriticalRules(spec.content).map(({ id, summary }) => ({ id, summary }))
+    if (JSON.stringify(rules) !== JSON.stringify(review.rules)
+      || parseSpecContract(acceptance.content, spec.content).version !== SPEC_ACCEPTANCE_VERSION) {
+      throw new Error('待确认的关键规则与验收契约不一致，请重新生成规格。')
+    }
+    this.throwIfAborted(signal)
+    const contractPath = this.workspaceDocumentPath(run, 'specification', SPEC_CONTRACT_DIMENSION, 'acceptance-contract.json')!
+    await this.writeWorkspaceArtifact(run, contractPath, acceptance.content)
+    acceptance.workspacePath = contractPath
+    await this.publishRelease(run, 'specification', spec, modeling)
+    const confirmedAt = new Date().toISOString()
+    run.releases!.specification!.specContract = review.contract
+    run.releases!.specification!.criticalRulesConfirmedAt = confirmedAt
+    run.specResolutionHandledAt = confirmedAt
+    delete run.specReview
+    run.specResolutionQuestions = []
+    run.status = 'ready-for-implementation'
+    await this.persist(run)
+    await this.persistDocuments(conversation.id, [spec], '规格构建')
+    await this.storage.conversations.addMessage(conversation.id, {
+      id: randomUUID(), role: 'assistant', agentName: '规格构建',
+      content: '关键规则与例外已确认。最终实施规格和独立验收契约已发布，可以继续生成 DSL。', timestamp: Date.now(),
+    })
+    this.reportProgress(onProgress, run, 'complete', '规格已确认并发布')
+    return run
   }
 
   private async resolveSpecificationBlockersInternal(
@@ -1103,7 +1328,7 @@ ${sourcePack}`,
     if (actions.has('code-evidence')) {
       const finalRequirement = await this.requireRelease(run, 'requirement')
       this.reportProgress(onProgress, run, 'code-analysis', '正在按你的选择补充代码证据与影响分析')
-      const evidence = await this.codeEvidence(conversation, finalRequirement.content)
+      const evidence = await this.codeEvidence(conversation, finalRequirement.content, signal)
       const codeAnalysis = await this.generateDocument(run, 'code-analysis', 'spec-resolution-evidence', '规格阻塞代码证据补充', requirementPrompts.codePrompt('为规格阻塞项补充可验证的代码证据', finalRequirement.content, evidence), signal, onProgress)
       await this.persistDocuments(conversation.id, [codeAnalysis], '规格构建')
     }
@@ -1272,7 +1497,7 @@ ${sourcePack}`,
   private async analyze(run: RequirementRun, conversation: Conversation, source: string, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
     try {
       this.throwIfAborted(signal)
-      const codeEvidence = await this.codeEvidence(conversation, source)
+      const codeEvidence = await this.codeEvidence(conversation, source, signal)
       this.reportProgress(onProgress, run, 'code-analysis', '正在理解现有代码并生成代码分析文档')
       const codeAnalysis = await this.generateDocument(run, 'code-analysis', 'current-codebase', `第 ${run.round} 轮代码分析`, this.codePrompt('当前代码结构、可复用模块与改动影响', source, codeEvidence), signal, onProgress)
 
@@ -1620,67 +1845,16 @@ ${sourcePack}`,
     if (signal?.aborted) throw new Error('Requirement engineering was stopped.')
   }
 
-  private async codeEvidence(conversation: Conversation, source: string): Promise<string> {
-    const query = source.replace(/[^\p{L}\p{N}_-]+/gu, ' ').split(/\s+/).filter((token) => token.length > 2).slice(0, 8).join(' ')
-    // The project index belongs to the base workspace. A separate worktree
-    // needs direct evidence from its own checkout.
-    if (conversation.gitWorktreePath || !conversation.workspaceId || !this.projectIndex) return this.directCodeEvidence(conversation, query)
-    const status = await this.projectIndex.getStatus(conversation.workspaceId)
-    const matches = query ? await this.projectIndex.search(conversation.workspaceId, query, 12) : []
-    const indexed = matches.map((item) => item.relativePath)
-    const fallback = await this.directCodeEvidence(conversation, query, indexed)
-    return [
-      `项目索引：${status.indexedFiles} 个文件，${status.indexedSymbols} 个符号，${status.indexedApiEndpoints} 个接口，${status.indexedDataEntities} 个数据实体。`,
-      `主要语言：${status.languages.map((item) => `${item.language} (${item.files})`).join('，') || '未知'}。`,
-      fallback || '索引和本地源码扫描均未找到明确关联文件；实现前必须重新核对代码范围。',
-    ].join('\n')
-  }
-
-  private async directCodeEvidence(conversation: Conversation, query: string, indexed: string[] = []): Promise<string> {
-    const workspaceRoot = await this.canonicalWorkspace(conversation)
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-    const allowed = /\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|java|go|rs|cs|c|h|cpp|cc|hpp|html|css|scss|json|yaml|yml|xml|sql)$/iu
-    const ignored = new Set(['.git', 'node_modules', 'out', 'dist', 'build', 'coverage', '.eva'])
-    const evidence: string[] = []
-    const checked = new Set<string>()
-    const inspect = async (candidate: string, indexMatch = false): Promise<void> => {
-      if (checked.has(candidate) || !allowed.test(candidate)) return
-      checked.add(candidate)
-      try {
-        const file = await rmsdPath(workspaceRoot, candidate)
-        const relative = path.relative(workspaceRoot, file)
-        if (relative.split(path.sep).some((segment) => ignored.has(segment))) return
-        const stat = await fs.stat(file)
-        if (!stat.isFile() || stat.size > 200_000) return
-        const lines = (await fs.readFile(file, 'utf8')).split(/\r?\n/)
-        const matched = lines.flatMap((line, index) => terms.some((term) => line.toLowerCase().includes(term))
-          ? [{ line, index }]
-          : []).slice(0, 3)
-        const pathMatch = terms.some((term) => relative.toLowerCase().includes(term))
-        if (!indexMatch && !matched.length && !pathMatch) return
-        const snippets = matched.length ? matched : lines.map((line, index) => ({ line, index })).filter(({ line }) => line.trim()).slice(0, 2)
-        for (const { line, index } of snippets) {
-          if (evidence.length >= 16) break
-          evidence.push(`${relative}:${index + 1} ${line.trim().slice(0, 280)}`)
-        }
-      } catch {
-        // Stale index candidates and files changed during the scan provide no evidence.
-      }
-    }
-    for (const candidate of indexed) await inspect(path.resolve(workspaceRoot, candidate), true)
-    const visit = async (directory: string, depth: number): Promise<void> => {
-      if (depth > 5 || checked.size >= 500 || evidence.length >= 16) return
-      let entries
-      try { entries = await fs.readdir(await rmsdPath(workspaceRoot, directory), { withFileTypes: true }) } catch { return }
-      for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-        if (checked.size >= 500 || evidence.length >= 16) return
-        const candidate = path.join(directory, entry.name)
-        if (entry.isDirectory() && !ignored.has(entry.name)) await visit(candidate, depth + 1)
-        if (entry.isFile()) await inspect(candidate)
-      }
-    }
-    await visit(workspaceRoot, 0)
-    return evidence.length ? `当前工作树源码证据（相对路径与行号）：\n${evidence.join('\n')}` : ''
+  private async codeEvidence(conversation: Conversation, source: string, signal?: AbortSignal): Promise<string> {
+    const root = await this.canonicalWorkspace(conversation)
+    const terms = requirementSearchTerms(source)
+    const matches = terms.length && this.projectIndex
+      ? await this.projectIndex.searchWorkspacePath(root, terms.join(' '), 12).catch(() => [])
+      : []
+    const evidence = await readRequirementCodeEvidence(root, terms, matches.map((item) => item.relativePath), signal)
+    return evidence
+      ? `当前工作树源码证据（相对路径、文件 SHA-256 与行号）：\n${evidence}`
+      : '当前工作树的有界源码检索未找到相关证据，实现前需核对代码范围。'
   }
 
   private analysisPrompt(title: string, source: string, codeEvidence: string): string {
@@ -1704,7 +1878,7 @@ ${sourcePack}`,
       '# 最终明确需求', finalRequirement.content,
       '# 需求建模成果', modelingDocuments.map((document) => `## ${document.title}\n${document.content}`).join('\n\n'),
       '# 已有代码分析', codeAnalysis?.content || '未保留详细代码分析，以下项目索引证据为准。',
-      '# 当前代码库证据', codeEvidence,
+      '# 当前代码库证据（以当前工作树的源码片段与摘要为准）', codeEvidence,
       ...(resolutionDocuments.length > 0 ? ['# 已选择的规格处置', resolutionDocuments.map((document) => document.content).join('\n\n')] : []),
     ].join('\n\n')
   }
@@ -1734,7 +1908,7 @@ ${sourcePack}`,
   }
 
   private finalSpecificationPrompt(sourcePack: string, documents: RequirementDocument[]): string {
-    return `汇总以下已通过一致性检测的规格材料，生成唯一的“最终实施规格”。\n\n# 需求与建模来源\n${sourcePack}\n\n# 已通过的规格材料\n${documents.filter((document) => document.stage === 'specification' || document.stage === 'spec-validation').map((document) => `## ${document.title}\n${document.content}`).join('\n\n')}\n\n输出顺序固定为：范围与目标、业务规则与 EARS 需求、BDD 验收场景、代码对齐约束、追溯矩阵、实现前检查清单。只保留经检测一致的内容；任何未证实风险都需显式标注“实现前核对”，不应作为既定事实。`
+    return `汇总以下已通过一致性检测的规格材料，生成唯一的“最终实施规格”。\n\n# 需求与建模来源\n${sourcePack}\n\n# 已通过的规格材料\n${documents.filter((document) => document.stage === 'specification' || document.stage === 'spec-validation').map((document) => `## ${document.title}\n${document.content}`).join('\n\n')}\n\n输出顺序固定为：范围与目标、业务规则与 EARS 需求、关键规则与例外、BDD 验收场景、代码对齐约束、追溯矩阵、实现前检查清单。只保留经检测一致的内容；任何未证实风险都需显式标注“实现前核对”，不应作为既定事实。\n${SPEC_CRITICAL_RULES_FORMAT}`
   }
 
   private modelingPlanPrompt(finalRequirement: string): string {
@@ -2048,7 +2222,7 @@ ${sourcePack}`,
     if (selected.size !== questions.length) throw new Error('每个澄清问题只能选择一个选项。')
     return questions.map((question) => {
       const optionIndex = selected.get(question.id)
-      if (optionIndex === undefined || optionIndex < 0 || optionIndex >= question.options.length) throw new Error('所选澄清选项无效，请重新选择。')
+      if (optionIndex === undefined || !Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= question.options.length) throw new Error('所选澄清选项无效，请重新选择。')
       return { question, option: question.options[optionIndex] }
     })
   }

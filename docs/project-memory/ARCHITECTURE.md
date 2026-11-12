@@ -22,7 +22,10 @@
 - Renderer 的 `lib/workspace-layout.ts` 统一主列/侧栏/右栏宽度预算；抽屉、可见尺寸和焦点属于 UI 状态，不进入会话持久化。`lib/floating-layer.ts` 统一 Dialog/Select/紧凑右栏的关闭顺序与焦点边界。
 - 活跃模型连接与模型通过有类型的 `config:select-model` IPC 一次写入 electron-store，renderer 等保存成功后再切换显示。禁止以两条独立配置写入代替该接口。
 - 思考档位存于连接的 `ProviderModelOption.reasoningSelection`，同一 typed IPC 原子保存，按连接/模型隔离。`shared/model-reasoning.ts` 解释真实能力与协议，provider 实例替换仅影响后续运行；Eva/Pi/Harness 使用实际请求参数，显示偏好不覆盖思考选择。能力未知不展示假档位。
+- 图片识别设置按连接和模型保存在能力档案的可选 `visionEnabled` 字段。没有手动选择时，配置界面与聊天运行时共用 `supportsImageInput` 的能力默认值。
+- 单次输出预算随模型能力档案按连接和模型保存。模型发现记录上游声明的 `maxOutputTokens`，用户值 `outputTokenBudget` 独立保留。配置预览和 Eva/Pi/Harness 共用预算计算，自动采用引擎默认，显式值受上游及上下文限制。
 
+- `ask_user` 通过会话专属的即时流事件进入输入框上方的等待区。前端先提交该会话已到达的正文与结构事件，再显示或关闭卡片。卡片生命周期由提问 ID 驱动，与虚拟消息列表及消息记录分离。
 - 工具时间线和最终 Markdown 回复属于同一轮，但必须是两个独立的布局区域。
 - 工具时间线只能来源于真实工具事件；不能用模型文本伪造执行记录。
 - 最终回复由模型根据任务类型自适应组织，系统提示只提供条件式规则。
@@ -33,8 +36,9 @@
 - 项目任务主线通过 `PurposeStore` 保存为项目内 `.eva/purposes/<uuid>.json`，不属于个人长期记忆或本仓库工程记忆。`PurposeService` 通过本机会话的 `purposeId` 和注册项目定位文档；隐藏工作会话沿父关系查找，跨机器只依赖主线文件，不要求历史会话存在。
 - 主线 IPC 使用 trusted facade 与共享类型契约；创建/更新/笔记/人工交接/检查/新会话继续分别暴露。普通会话更新禁止修改 `purposeId`，关联只能通过校验同项目和执行状态的专用操作。
 - 桌面聊天、独立 Goal/团队、App Server、QQ 注入有上限的主线参考；Goal 在步骤边界刷新 `GoalStepHandoff.purposeContext`，继续保持步骤会话与父聊天隔离。实际工具元数据与时点代码指纹自动记录，公开 AI 进度报告通过受审批的 `record_purpose_progress` 写入，不能代替人工验收。
-- 主线界面新增右栏 `purposes` 标签；选中主线、编辑草稿、接手检查和复核状态为 renderer 局部状态。项目 JSON 的写入采用原子重命名、期望 revision 和目录写锁；活动执行句柄仍由 `activeRunRegistry` 管理，不写入可移交文件。
+- 侧栏项目行不重复显示项目主线入口。主线可从聊天标题栏或任务工作区打开。主线界面使用右栏 `purposes` 标签；选中主线、编辑草稿、接手检查和复核状态为 renderer 局部状态。项目 JSON 的写入采用原子重命名、期望 revision 和目录写锁；活动执行句柄仍由 `activeRunRegistry` 管理，不写入可移交文件。
 - `PurposeDraftService` 是无工具、无持久化的辅助模型分析，读取当前选定模型、需求、用户明确勾选的同项目公开会话片段和缓存索引元数据。生成/取消走独立 typed trusted IPC，以 renderer ID 隔离在途请求；取消/60 秒超时不接收迟到结果。`PurposeDraftAssistant` 只填入新建表单并保留撤回快照，`planningNotes` 由用户保存时转成主线的待核实记录，不进入文档 schema 顶层，也不修改既有验收状态。
+- `PurposeHandoffForm` 通过同一辅助服务起草交接。来源限用户选定的同项目、同主线顶层会话。`purpose-memory.ts` 从公开文本采样并脱敏，为每条引用保留会话、消息、时间和摘要。人工保存时复核新引用，沿用已审阅的来源可脱离本机聊天。`PurposeHandoff.memory` 为可选的当前记忆快照，最新显式快照用于续接，空快照清空当前记忆。模型上下文优先包含结构化记忆和最新交接，来源片段在界面按需展示。
 
 - `src/main/storage/long-term-memory-store.ts` 等是 Eva 运行时长期记忆能力。
 - `PROJECT_MEMORY.md` 和本目录是仓库开发记忆，供后续编码 Agent 读取。
@@ -52,16 +56,20 @@
 
 - `RequirementEngineeringService` 编排 `/requirement → /requirement-modeling → /spec → /dsl → /coding`。按会话与需求运行互斥，选中当前工作树的运行并校验状态。运行清单原子落盘，支持取消等待卡片和重试中断的 Spec、DSL 与代码生成。
 - 发布回执记录产物文档、上游文档和 SHA-256。变更上游会使下游失效。Spec 同时检查评分与阻塞项并复核最终正文，DSL 通过严格语法、实际编号及语义审查后发布。项目写入通过工作树及路径边界校验。
-- 新 Spec 发布绑定 `acceptance-contract.json`，记录每条 FR 的条件、结果与可执行用例或人工验收缺口。DSL 核对命令追溯，Java 生成器从契约编译独立验收。Spec 与 DSL 按未完成的尝试、提示输入、模型与产物哈希恢复中间阶段。
+- 新 Spec 发布绑定第 3 版 `acceptance-contract.json`。最终 Spec 的 `BR` 清单与契约逐项匹配，用户确认后按草稿摘要发布。`/dsl java-domain` 和 Java 生成器共用结构检查，覆盖数值、布尔守卫、已声明的角色与状态检查，以及事件字段。JDK 验证实际行为。第 1、2 版契约可读，Java 生产需重发 Spec 与 DSL。Spec 与 DSL 按未完成的尝试、提示输入、模型与产物哈希恢复中间阶段。
+- `requirement-code-evidence.ts` 在当前工作树中发现并排序候选源码，使用同路径索引作候选提示，引用实读文件的相对路径、行号与 SHA-256。Git 候选遵循忽略规则，非 Git 工作区使用有界文件遍历。
 - `domain-dsl.ts` 解析可追溯 DSL，`DeterministicCodingService` 写语义包和生成 IR。自 `/coding` 起模型调用为零。注册表含 `java-reference`、`java-maven`、`java-domain`、`json-schema`、`sql-ddl`。
-- `/coding <生成器 ID>` 可显式切换目标，首次无指定时使用 `java-reference`。批准配置存放在 `coding/intermediate/runs/<dslHash>/02-generation-ir/target-model.yaml`。代码输出使用生成契约、Spec、DSL、验收契约和目标配置共同决定的生成键，逐文件校验 SHA-256，拒绝覆盖不同字节。相同目标的上次成功产物提供规则、用例和文件影响基线。
+- `/dsl <生成器 ID>` 可提前选择目标，`/coding <生成器 ID>` 可显式切换，首次无指定时使用 `java-reference`。目标配置存放在 `coding/intermediate/runs/<dslHash>/02-generation-ir/target-model.yaml`。代码输出使用生成契约、Spec、DSL、验收契约和目标配置共同决定的生成键，逐文件校验 SHA-256，拒绝覆盖不同字节。相同目标的上次成功产物提供规则、用例和文件影响基线。
 - `java-domain` 生成 Java 17 Maven 领域模块，支持角色、状态迁移、数值或布尔守卫及类型化事件。隔离运行 JDK 编译与生成的验收测试，成功后发布。宿主应用负责认证、事务、持久化和事件分发。详见 `docs/确定性代码生成流程说明.md`。
+- `/verify-host` 使用当前需求运行的 `coding/host-target.json`，按固定提交创建一次性 Git 副本。预检独立于代码生成。预览和执行绑定领域产物、宿主配置、适配补丁与合成差异摘要。离线 Maven 宿主验收以本次 Surefire 报告为准，状态与领域模块验收分开。宿主补丁和最近结果保存在 `coding/output/host`。
 
 ## 对外接口边界
 
 - `services/execution-policy.ts` 统一合并 automation 默认值并组合有效沙箱/审批策略；桌面、任务编排、App-Server 与 QQ 均需显式注入。Goal/团队子 runner 继承父任务审批通道，审批请求携带运行 AbortSignal，取消后不能执行工具。
 - 本地会话 `full-access` 同时表示全部磁盘与已启用工具免审批。`createLocalExecutionPolicy` 根据可信会话快照覆盖本次审批配置，不改全局设置，切回其他档位恢复全局策略；子任务继承回调。沙箱/规划只读/精确路径/工具启用清单保留，网络与 QQ 不继承该本地覆盖。
 - 工具的运行期取消通过 `ToolContext.signal` 贯通到命令服务；终端队列绑定具体 shell 实例，关闭或重建后旧调用不能接管新 shell。
+- 桌面运行中，受支持的文件工具可对显式的外部路径发起一次性审批。Eva dispatcher 与 Pi/Harness 的 NativeToolPolicy 共用路径预检，卡片沿用串行审批通道，决定绑定发起会话与窗口。批准只在本次调用和该调用的沙箱路径校验中生效。原生会话状态显示该轮实际引擎名。
+- 普通聊天附件的 ZIP 预览在主进程内只读生成，限制目录大小、成员数和解压文本预算。附件预览不授予工具目录访问。RMSD 需要完整正文，遇到 ZIP 时要求解压后重新添加所需文件。
 
 - App-Server 默认只绑 `127.0.0.1`，但可显式配置监听地址进入远程 HTTPS 模式。远程模式必须配置 HTTPS 公网基址、PEM 证书和私钥，并强制 Bearer Token；`AppServerStatus.loopbackOnly` 反映实际绑定范围。
 - `publicBaseUrl` 也可在回环监听时填写，用于 Cloudflare Tunnel/反向代理：Eva 仍提供本机 HTTP，状态里的 `rpcUrl`/`acpUrl` 使用外部 `https://`/`wss://` 基址；一旦存在公网基址，ACP 认证强制开启，Eva 不要求本地 TLS 文件。

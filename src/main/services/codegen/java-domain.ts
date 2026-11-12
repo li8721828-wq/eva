@@ -1,9 +1,8 @@
-import type { AcceptanceValue, SpecAcceptanceCase } from '../spec-contract'
+import { boundaryKey, NUMERIC_LITERAL, SPEC_ACCEPTANCE_VERSION, validateAcceptanceBindings, type AcceptanceValue, type SpecAcceptanceCase, type SpecCheck, type SpecContract } from '../spec-contract'
 import { javaMavenGenerator, javaFieldType } from './java-maven'
 import { sortFiles, type CodeGenerator, type ParsedDslAggregate, type ParsedDslBlock, type ParsedDslField, type ParsedDomainDsl } from './types'
 
 const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]*$/
-const NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/
 const DEFAULT_VALUE: Record<ParsedDslField['type'], string> = {
   string: '"example"', text: '"example"', int: '0', long: '0L', decimal: 'java.math.BigDecimal.ZERO',
   boolean: 'false', date: 'java.time.LocalDate.of(2000, 1, 1)',
@@ -26,6 +25,7 @@ interface Rule {
   field: ParsedDslField
   operator: string
   value: string
+  threshold: string
 }
 
 interface Command {
@@ -77,7 +77,7 @@ function named<T extends { name: string }>(items: T[], key: string | undefined, 
 
 function literal(field: ParsedDslField, value: unknown, owner: string): string {
   if (field.type === 'boolean' && (value === 'true' || value === 'false' || typeof value === 'boolean')) return String(value)
-  if (typeof value !== 'string' || value.length > 60 || !NUMBER.test(value)) {
+  if (typeof value !== 'string' || value.length > 60 || !NUMERIC_LITERAL.test(value)) {
     invalid(owner, `use a quoted numeric literal or boolean for "${field.name}".`)
   }
   if (field.type === 'decimal') return `new java.math.BigDecimal("${value}")`
@@ -115,7 +115,7 @@ function parseWorkflows(parsed: ParsedDomainDsl): Workflow[] {
       || (field.type === 'boolean' && operator !== '==' && operator !== '!=')) {
       invalid(rule.name, 'numeric comparison or boolean equality is required.')
     }
-    return { name: rule.name, entity, field, operator, value: literal(field, value, rule.name) }
+    return { name: rule.name, entity, field, operator, threshold: value, value: literal(field, value, rule.name) }
   })
   const commands = parsed.commands.map((block) => {
     const props = keys(block, ['entity', 'actor', 'from', 'to', 'emit', 'requires', 'example'])
@@ -171,6 +171,99 @@ function parseWorkflows(parsed: ParsedDomainDsl): Workflow[] {
     if (unreachable) invalid(unreachable.name, 'state cannot be reached from the initial state.')
     return [{ entity, initial: initial[0], states: ownStates, events: events.filter((event) => event.entity === entity), commands: ownCommands }]
   })
+}
+
+// Compare exact decimal values without IEEE-754 rounding or dependence on scale.
+function decimalOrder(left: string, right: string): -1 | 0 | 1 {
+  const leftScale = left.split('.')[1]?.length ?? 0
+  const rightScale = right.split('.')[1]?.length ?? 0
+  const scale = Math.max(leftScale, rightScale)
+  const a = BigInt(left.replace('.', '')) * 10n ** BigInt(scale - leftScale)
+  const b = BigInt(right.replace('.', '')) * 10n ** BigInt(scale - rightScale)
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+function requiredBoundarySides(rule: Rule): Array<-1 | 0 | 1> {
+  if (rule.field.type === 'decimal') return [-1, 0, 1]
+  const limit = 1n << (rule.field.type === 'int' ? 31n : 63n)
+  const threshold = BigInt(rule.threshold)
+  if (threshold === -limit) return [0, 1]
+  if (threshold === limit - 1n) return [-1, 0]
+  return [-1, 0, 1]
+}
+
+function validateSpecCoverage(workflows: Workflow[], contract: SpecContract): void {
+  const cases = contract.rules.flatMap((rule) => rule.cases)
+  const checks = new Map<string, { check: Exclude<SpecCheck, { kind: 'manual' }>; cases: SpecAcceptanceCase[] }>()
+  for (const owner of contract.rules) {
+    for (const check of owner.checks ?? []) {
+      if (check.kind === 'manual') invalid(check.id, 'requires external acceptance.')
+      const key = 'rule' in check ? boundaryKey(check) : `${check.entity}.${check.command}:${check.kind}`
+      if (checks.has(key)) invalid(check.id, `duplicates Spec check ${key}.`)
+      checks.set(key, { check, cases: owner.cases })
+    }
+  }
+  const sideLabels = { [-1]: 'below', 0: 'equal to', 1: 'above' }
+
+  for (const { entity, commands } of workflows) {
+    for (const command of commands) {
+      const commandName = `${entity.name}.${command.name}`
+      const tests = cases.filter((test) => test.entity === entity.name && test.command === command.name)
+      if (!tests.some((test) => 'state' in test.expect) || !tests.some((test) => 'reject' in test.expect)) {
+        invalid(commandName, 'Spec must include both a successful case and a rejection case.')
+      }
+
+      for (const kind of ['actor', 'state'] as const) {
+        const key = `${commandName}:${kind}`
+        const declared = checks.get(key)?.check
+        if (!declared) continue
+        if (declared.kind === 'actor' && declared.actor !== command.actor) invalid(declared.id, 'Spec actor does not match DSL.')
+        if (declared.kind === 'state' && declared.state !== command.from.name) invalid(declared.id, 'Spec starting state does not match DSL.')
+        checks.delete(key)
+      }
+      for (const [index, rule] of command.rules.entries()) {
+        const key = boundaryKey({ entity: entity.name, command: command.name, rule: rule.name })
+        const declared = checks.get(key)
+        if (!declared) invalid(key, 'missing independent guard declaration in the Spec.')
+        const { check } = declared
+        if (!('rule' in check)) invalid(check.id, `expected a guard for ${key}.`)
+        const isBoolean = rule.field.type === 'boolean'
+        const threshold = check.kind === 'boolean' ? String(check.value) : check.threshold
+        if (isBoolean !== (check.kind === 'boolean') || check.field !== rule.field.name || check.operator !== rule.operator
+          || (isBoolean ? threshold !== rule.threshold : decimalOrder(threshold, rule.threshold) !== 0)) {
+          invalid(check.id, `Spec ${check.field} ${check.operator} ${threshold} does not match DSL ${rule.field.name} ${rule.operator} ${rule.threshold}.`)
+        }
+        const reachable = declared.cases.filter((test) => {
+          if (test.entity !== entity.name || test.command !== command.name
+            || test.actor !== command.actor || test.state !== command.from.name) return false
+          // A rejection at an earlier guard does not exercise this boundary.
+          const expected = test.expect
+          return !('reject' in expected) || (expected.reject === 'rule'
+            && command.rules.findIndex((candidate) => candidate.name === expected.rule) >= index)
+        })
+        if (check.kind === 'boolean') {
+          const rejected = reachable.some(({ expect, input }) => 'reject' in expect && expect.rule === rule.name
+            && typeof input[check.field] === 'boolean' && (input[check.field] === check.value) !== (check.operator === '=='))
+          if (!rejected) invalid(check.id, `Spec lacks a rejection reaching ${key} with a failing boolean value.`)
+        } else {
+          const covered = new Set<-1 | 0 | 1>()
+          for (const { input } of reachable) {
+            const value = input[check.field]
+            if (typeof value === 'string' && value.length <= 60 && NUMERIC_LITERAL.test(value)) {
+              covered.add(decimalOrder(value, rule.threshold))
+            }
+          }
+          const missing = requiredBoundarySides(rule).filter((side) => !covered.has(side))
+          if (missing.length) invalid(check.id, `Spec lacks executable cases ${missing.map((side) => sideLabels[side]).join(', ')} ${rule.threshold}.`)
+        }
+        checks.delete(key)
+      }
+    }
+  }
+  if (checks.size) {
+    const remaining = [...checks.values()].map(({ check }) => check.id).sort()
+    invalid(remaining.join(', '), 'Spec checks have no corresponding DSL command or guard.')
+  }
 }
 
 function workflowSource({ entity, initial, states, commands }: Workflow): string {
@@ -245,6 +338,10 @@ function specCaseSource(workflows: Workflow[], test: SpecAcceptanceCase, index: 
   const apply = `${type}.apply(data, ${type}.State.${from.name}, ${type}.Command.${command.name}, "${test.actor}")`
   let assertions: string[]
   if ('reject' in expected) {
+    if ((expected.reject === 'state') !== (from !== command.from)
+      || (expected.reject !== 'state' && (expected.reject === 'actor') !== (test.actor !== command.actor))) {
+      invalid(test.id, 'declared actor or starting state does not reach the expected rejection.')
+    }
     const reason = expected.reject === 'rule'
       ? `Rule: ${named(command.rules, expected.rule, test.id, 'command rule').name}`
       : `${expected.reject === 'actor' ? 'Actor' : 'State'}: ${command.name}`
@@ -252,10 +349,28 @@ function specCaseSource(workflows: Workflow[], test: SpecAcceptanceCase, index: 
   } else {
     const to = named(workflow.states, expected.state, test.id, 'expected state')
     const event = named(workflow.events, expected.event, test.id, 'expected event')
+    if (from !== command.from || to !== command.to || event !== command.event || test.actor !== command.actor) {
+      invalid(test.id, 'successful Spec case does not match the DSL actor, state transition or event.')
+    }
+    const payload = expected.payload
+    if (!payload) invalid(test.id, 'Spec must declare the expected event payload.')
+    const missing = Object.keys(payload).filter((name) => !event.fields.some((field) => field.name === name))
+    const unspecified = event.fields.filter((field) => !Object.hasOwn(payload, field.name)).map((field) => field.name)
+    if (missing.length) invalid(test.id, `event ${event.name} is missing Spec payload fields: ${missing.join(', ')}.`)
+    if (unspecified.length) invalid(test.id, `Spec is missing expected values for event fields: ${unspecified.join(', ')}.`)
     assertions = [
       `            var outcome = ${apply};`,
       `            check(outcome.state() == ${type}.State.${to.name}, "Expected state ${to.name}");`,
       `            check(outcome.event() instanceof ${event.name}, "Expected event ${event.name}");`,
+      `            var event = (${event.name}) outcome.event();`,
+      ...event.fields.map((field) => {
+        const accessor = `event.${field.name}()`
+        const value = specLiteral(field, payload[field.name], test.id)
+        const predicate = field.type === 'decimal' && payload[field.name] !== null
+          ? `${accessor} != null && ${accessor}.compareTo(${value}) == 0`
+          : `java.util.Objects.equals(${accessor}, ${value})`
+        return `            check(${predicate}, "Expected event payload ${field.name}");`
+      }),
     ]
   }
   return [
@@ -335,6 +450,21 @@ ${checks.join('\n')}
 }`
 }
 
+function prepareJavaDomain(parsed: ParsedDomainDsl, contract?: SpecContract) {
+  if (contract?.version !== SPEC_ACCEPTANCE_VERSION) invalid(parsed.domain, `Spec acceptance v${SPEC_ACCEPTANCE_VERSION} is required. Run /spec and /dsl again.`)
+  const manualRules = contract.rules.filter((rule) => rule.manual)
+  if (manualRules.length) invalid(parsed.domain, `missing executable acceptance for ${manualRules.map((rule) => rule.id).join(', ')}.`)
+  validateAcceptanceBindings(contract, parsed)
+  const specCases = contract.rules.flatMap((rule) => rule.cases)
+  const workflows = parseWorkflows(parsed)
+  validateSpecCoverage(workflows, contract)
+  return { workflows, acceptance: acceptanceSource(workflows, specCases), caseCount: specCases.length }
+}
+
+export function validateJavaDomainDsl(parsed: ParsedDomainDsl, contract?: SpecContract): void {
+  prepareJavaDomain(parsed, contract)
+}
+
 export const javaDomainGenerator: CodeGenerator = {
   id: 'java-domain',
   label: 'Executable Java/Maven domain module',
@@ -343,10 +473,7 @@ export const javaDomainGenerator: CodeGenerator = {
   capabilities: ['aggregates', 'fields', 'commands', 'events', 'states', 'rules', 'maven-module'],
   options: {},
   generate(parsed, context) {
-    const manualRules = context.specContract?.rules.filter((rule) => rule.manual) ?? []
-    if (manualRules.length) invalid(parsed.domain, `missing executable acceptance for ${manualRules.map((rule) => rule.id).join(', ')}.`)
-    const specCases = context.specContract?.rules.flatMap((rule) => rule.cases) ?? []
-    const workflows = parseWorkflows(parsed)
+    const { workflows, acceptance, caseCount } = prepareJavaDomain(parsed, context.specContract)
     const model = javaMavenGenerator.generate(parsed, { ...context, options: { useRecords: 'true' } })
     const javaPackage = model.manifest.details!.javaPackage
     const folder = javaPackage.replace(/\./g, '/')
@@ -366,7 +493,7 @@ export const javaDomainGenerator: CodeGenerator = {
         add(event.name, `public record ${event.name}(${fields}) implements DomainEvent {}`)
       }
     }
-    add('DomainAcceptance', acceptanceSource(workflows, specCases), 'test')
+    add('DomainAcceptance', acceptance, 'test')
     add('DomainAcceptanceTest', `class DomainAcceptanceTest {
     @org.junit.jupiter.api.Test
     void declaredWorkflowExamplesPass() {
@@ -383,7 +510,7 @@ export const javaDomainGenerator: CodeGenerator = {
         requiresTargetAdapter: [],
         details: {
           ...model.manifest.details, outputKind: 'production', acceptanceClass: `${javaPackage}.DomainAcceptance`,
-          ...(context.specContract ? { specAcceptanceCases: String(specCases.length) } : {}),
+          specAcceptanceCases: String(caseCount), specAcceptanceVersion: String(SPEC_ACCEPTANCE_VERSION),
         },
       },
     }

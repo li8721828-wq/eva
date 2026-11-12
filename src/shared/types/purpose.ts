@@ -32,6 +32,24 @@ export interface PurposeExecution {
   code: PurposeCodeState
 }
 
+export const PURPOSE_MEMORY_KINDS = ['requirement', 'decision', 'finding', 'verification', 'open'] as const
+export const PURPOSE_MEMORY_LIMITS = { entries: 16, entryText: 600, sources: 3, excerpt: 480, conversations: 6 } as const
+
+export interface PurposeMemorySource {
+  conversationId: string
+  messageId: string
+  title: string
+  timestamp: number
+  sha256: string
+  excerpt?: string
+}
+
+export interface PurposeMemoryEntry {
+  kind: typeof PURPOSE_MEMORY_KINDS[number]
+  text: string
+  sources: PurposeMemorySource[]
+}
+
 export interface PurposeHandoff {
   id: string
   createdAt: number
@@ -40,6 +58,7 @@ export interface PurposeHandoff {
   blockers: string
   nextAction: string
   code: PurposeCodeState
+  memory?: PurposeMemoryEntry[]
 }
 
 export interface Purpose {
@@ -114,6 +133,32 @@ export interface PurposeHandoffInput extends PurposeRef {
   summary: string
   blockers: string
   nextAction: string
+  memory?: PurposeMemoryEntry[]
+}
+
+export interface GeneratePurposeHandoffDraftInput extends PurposeRef {
+  revision: number
+  requestId: string
+  conversationIds: string[]
+  includeExcerpts: boolean
+  language: 'zh' | 'en' | 'ja'
+}
+
+export interface PurposeHandoffDraft {
+  summary: string
+  blockers: string
+  nextAction: string
+  memory: PurposeMemoryEntry[]
+  messageCount: number
+}
+
+/** A later handoff that only changes the next action keeps the last reviewed memory. */
+export function latestPurposeMemory(purpose: Pick<Purpose, 'handoffs'>): PurposeMemoryEntry[] | undefined {
+  for (let index = purpose.handoffs.length - 1; index >= 0; index -= 1) {
+    const memory = purpose.handoffs[index].memory
+    if (memory !== undefined) return memory
+  }
+  return undefined
 }
 export interface PurposePreflight {
   revision: number
@@ -129,6 +174,7 @@ export interface ContinuePurposeInput extends PurposeRef {
 }
 export interface PurposeAPI {
   generateDraft(input: GeneratePurposeDraftInput): Promise<PurposeDraftAnalysis>
+  generateHandoffDraft(input: GeneratePurposeHandoffDraftInput): Promise<PurposeHandoffDraft>
   cancelDraft(requestId: string): Promise<void>
   list(workspaceId: string): Promise<Purpose[]>
   create(workspaceId: string, input: CreatePurposeInput): Promise<Purpose>

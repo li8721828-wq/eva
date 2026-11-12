@@ -119,6 +119,18 @@ export function chatMessageToInput(msg: ChatMessage): ChatMessageInput {
   return input
 }
 
+export function buildCapabilityRecoveryPrompt(tools: ToolDefinition[]): string {
+  const guidance = [
+    'If a tool or service is unavailable, use an authorized alternative that can satisfy the request. Complete any independent work you can.',
+    'When progress requires user action, ask for the specific missing input or configuration change. Identify the file, tool, or setting involved and what can resume once it is available.',
+    'Use the application’s approval controls for permission changes. Respect denials across tools and delegated agents. Avoid repeating an unchanged denied call. Report external actions as completed only when supported by tool results.',
+  ]
+  if (tools.some((tool) => tool.name === 'ask_user')) {
+    guidance.push('Use ask_user when the user needs to choose between concrete alternative inputs or approaches. Continue the same turn if the selected alternative is available. Permission changes require an application approval, regardless of the answer to ask_user.')
+  }
+  return guidance.join(' ')
+}
+
 export class ContextManager {
   private lastDiagnostics?: ContextDiagnostics
   private compressedHistoryMessages = 0
@@ -429,7 +441,7 @@ export class ContextManager {
     parts.push('For code review requests, lead with actionable findings ordered by severity and ground them in evidence. Use a compact list with the verified file location, concrete trigger, impact, and suggested correction. By default keep only the highest-value findings, usually no more than five; include more only when the user requests a complete audit or the additional issues are materially distinct. Do not repeat the same issue as an overview, finding, strategy, and risk. Review evidence: inspect relevant surrounding code and callers before reporting a defect. A suspicious expression alone is not proof of a bug; do not invent line numbers or exaggerate impact. Keep unverified concerns separate from confirmed findings. If no supported findings remain, say so plainly. Complete a requested review using available read tools before replying; a directory listing alone is not a code review. If a relevant definition or caller can be read, inspect it instead of asking the user to do so. Do not modify reviewed code unless requested. Mention unchecked scope or tests not run only when material; do not append a menu asking the user to restart or direct the same review.')
     parts.push('For planning requests, present the goal, key decisions or tradeoffs, and the next practical steps. For mixed requests, identify the primary outcome and combine at most the two response shapes that are actually needed. If the request is ambiguous but answerable, make a reasonable assumption and state it briefly; ask a clarifying question only when proceeding would likely produce the wrong result.')
     parts.push('Match response length to the current request. Prefer one clear answer over a comprehensive report. Use headings only when they improve scanning, and do not force a fixed template onto a task that does not need one. Preserve the requested depth when the user explicitly asks for a detailed report.')
-    parts.push('End-of-turn discipline: offering follow-up options after the work is finished is fine, but asking permission before doing the work is not. Before ending the turn, check the closing paragraph: if it is a plan, an open question, a list of next steps, or a promise about work that is still pending (such as “I will now…”, “next I will…”, or “let me know if you want…”), do that work now with the available tools instead of handing control back with the answer unfinished. Announcing a step without performing it in the same turn leaves the user waiting.')
+    parts.push('End-of-turn discipline requires completing the work you can do with the available permissions. If you are about to promise a step you can already perform, do that work now with the available tools. If a required step depends on user input or approval, ask for the specific prerequisite before ending the turn.')
     if (agentConfig.allowEmojiSymbols) {
       parts.push('Use emoji or simple symbols sparingly when they materially improve scanning or convey status. Keep them purposeful and avoid decorating every paragraph; never replace precise technical content with emoji.')
     }
@@ -453,7 +465,7 @@ export class ContextManager {
     parts.push('Report tool failures, denied permissions, unavailable services, and incomplete evidence plainly. Never claim to have searched the web, read or written files, executed a command, or completed delegated work unless the corresponding tool result confirms it.')
     parts.push('For current or web-derived claims, use only sources returned in this execution. If web search or page reading fails, say that current information could not be verified; you may offer clearly-labelled general/offline reasoning, but never present it as current research.')
     parts.push('For file changes, do not say the saved content is correct or complete until it has been independently checked with read_file or an equivalent inspection. If verification is unavailable, say the write is unverified.')
-    parts.push('When the required capability is absent, do not work around it by guessing. State the blocked action, the reason, and the smallest next step: grant a tool, configure a service, provide a source, or approve an action.')
+    parts.push(buildCapabilityRecoveryPrompt(capabilityTools))
     if (agentConfig.processOutput === 'detailed') {
       parts.push('Each available tool is an atomic operation. In this detailed step mode, call at most one structured tool per model response; wait for its result before choosing another. Keep the user-visible sequence as decision, one operation, result, and next decision. Do not batch even independent read-only calls.')
     } else {

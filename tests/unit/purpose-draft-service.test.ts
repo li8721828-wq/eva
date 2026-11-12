@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { parsePurposeDraft, PurposeDraftService } from '../../src/main/services/purpose-draft-service'
 import type { StorageManager } from '../../src/main/storage'
 import type { ProviderRegistry } from '../../src/main/providers'
-import type { GeneratePurposeDraftInput } from '../../src/shared/types/purpose'
+import type { GeneratePurposeDraftInput, GeneratePurposeHandoffDraftInput } from '../../src/shared/types/purpose'
 
 const draft = { title: '部分退款', objective: '支持安全的部分退款', scope: '保留现有支付协议', acceptanceCriteria: ['重复请求不产生重复退款'], milestones: ['核实支付约束', '实现退款幂等', '验证重试流程'] }
 const response = () => ({ content: JSON.stringify({ draft, assumptions: ['现有订单有稳定标识'], questions: ['退款金额上限是多少？'] }), finishReason: 'stop' })
@@ -112,5 +112,66 @@ describe('AI purpose drafting', () => {
     expect(parsePurposeDraft(JSON.stringify({ draft: { ...draft, objective: 'apiKey=some-secret-credential' }, assumptions: [], questions: [] })).draft.objective).toBe('[REDACTED]')
     expect(() => parsePurposeDraft(JSON.stringify({ draft: { ...draft, status: 'completed' }, assumptions: [], questions: [] }))).toThrow('Invalid')
     expect(() => parsePurposeDraft(JSON.stringify({ draft: { ...draft, milestones: Array(21).fill('step') }, assumptions: [], questions: [] }))).toThrow('list')
+  })
+})
+
+describe('AI handoff drafting', () => {
+  const handoffInput: GeneratePurposeHandoffDraftInput = {
+    workspaceId: 'project', purposeId: 'refund', revision: 3, requestId: 'handoff',
+    conversationIds: ['scope', 'checks'], language: 'zh', includeExcerpts: false,
+  }
+  const handoffResponse = (sourceIds = ['S1', 'S2']) => ({
+    finishReason: 'stop', content: JSON.stringify({
+      summary: '部分退款已实现，回归待复验', blockers: '', nextAction: '重跑幂等用例',
+      memory: [{ kind: 'decision', text: '沿用支付协议和幂等键', sourceIds }],
+    }),
+  })
+  beforeEach(() => {
+    storage.purposes.get = vi.fn(async () => ({
+      ...draft, revision: 3, handoffs: [], milestones: [],
+    })) as unknown as typeof storage.purposes.get
+    vi.mocked(storage.conversations.getConversation).mockImplementation(async id => ({
+      id, title: `会话 ${id}`, workspaceId: 'project', purposeId: id === 'foreign' ? 'another' : 'refund',
+    }) as never)
+    storage.conversations.getMessages = vi.fn(async id => id === 'scope' ? [
+      { id: 'rule', role: 'user', timestamp: 1, content: '沿用支付协议。apiKey=some-secret-credential', attachmentContext: 'private-attachment' },
+      { id: 'thinking', role: 'assistant', timestamp: 2, content: 'private-progress', progressKind: 'thinking' },
+    ] : []) as unknown as typeof storage.conversations.getMessages
+    vi.mocked(storage.conversations.getRecentMessages).mockImplementation(async id => id === 'checks' ? [
+      { id: 'check', role: 'assistant', timestamp: 4, content: '幂等键仍需复验。', reasoningContent: 'private-reasoning' },
+      { id: 'tool', role: 'tool', timestamp: 5, content: 'private-tool-output' },
+    ] as never : [])
+    complete.mockResolvedValue(handoffResponse())
+  })
+
+  it('creates a read-only draft with references from the selected chats and optional redacted excerpts', async () => {
+    const result = await service.generateHandoff(1, handoffInput)
+    expect(result.messageCount).toBe(2)
+    expect(result.memory[0].sources).toMatchObject([
+      { conversationId: 'scope', messageId: 'rule', title: '会话 scope' },
+      { conversationId: 'checks', messageId: 'check', title: '会话 checks' },
+    ])
+    expect(result.memory[0].sources[0]).not.toHaveProperty('excerpt')
+    const request = complete.mock.calls[0][0]
+    const sent = JSON.stringify(request.messages)
+    expect(request.tools).toBeUndefined()
+    expect(sent).toContain('沿用支付协议。[REDACTED]')
+    expect(sent).toContain('幂等键仍需复验。')
+    expect(sent).not.toMatch(/some-secret-credential|private-/)
+    const withExcerpts = await service.generateHandoff(1, { ...handoffInput, includeExcerpts: true })
+    expect(withExcerpts.memory[0].sources[0].excerpt).toBe('沿用支付协议。[REDACTED]')
+    expect(storage.purposes.update).not.toHaveBeenCalled()
+    expect(storage.conversations.addMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unrelated conversation and stale revision before contacting the model', async () => {
+    await expect(service.generateHandoff(1, { ...handoffInput, conversationIds: ['scope', 'foreign'] })).rejects.toThrow('linked to this project purpose')
+    await expect(service.generateHandoff(1, { ...handoffInput, revision: 2 })).rejects.toThrow('Purpose changed')
+    expect(complete).not.toHaveBeenCalled()
+  })
+
+  it('rejects invented citation IDs', async () => {
+    complete.mockResolvedValue(handoffResponse(['S3']))
+    await expect(service.generateHandoff(1, handoffInput)).rejects.toThrow('outside the selected conversations')
   })
 })

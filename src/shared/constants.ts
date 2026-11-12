@@ -2,7 +2,7 @@ import type { AgentConfig, AgentRole } from './types/agent'
 import type { ModelInfo } from './types/provider'
 
 export const APP_NAME = 'Eva'
-export const APP_VERSION = '0.1.212'
+export const APP_VERSION = '0.1.223'
 
 export const DEFAULT_MAX_ITERATIONS = 100
 export const DEFAULT_TEMPERATURE = 0.7
@@ -29,10 +29,10 @@ export function getModelContextWindowTokens(modelId: string): number {
  * Keep room for the configured generation and a small protocol margin so an
  * input request cannot consume the provider's entire context window.
  */
-export function getModelInputBudgetTokens(modelId: string, contextWindowTokens?: number): number {
+export function getModelInputBudgetTokens(modelId: string, contextWindowTokens?: number, outputTokens = DEFAULT_MAX_TOKENS): number {
   return Math.max(
     DEFAULT_MAX_TOKENS,
-    (contextWindowTokens ?? getModelContextWindowTokens(modelId)) - DEFAULT_MAX_TOKENS - CONTEXT_SAFETY_RESERVE_TOKENS
+    (contextWindowTokens ?? getModelContextWindowTokens(modelId)) - outputTokens - CONTEXT_SAFETY_RESERVE_TOKENS
   )
 }
 

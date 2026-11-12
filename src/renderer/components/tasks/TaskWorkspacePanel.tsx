@@ -321,7 +321,7 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
     return () => window.clearInterval(timer)
   }, [liveExpertTask.isRunning, liveGoalTask.isRunning, refresh, snapshot])
 
-  const openArtifact = async (artifact: TaskArtifactItem) => {
+  const openArtifact = async (artifact: Pick<TaskArtifactItem, 'path'>) => {
     if (!artifact.path || !resolvedWorkspacePath) return
     try {
       const content = await window.eva.file.read(artifact.path, resolvedWorkspacePath)
@@ -503,7 +503,23 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
                   <h3 className="text-sm font-semibold text-zinc-800">需求工程记录</h3>
                   <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', run.status === 'ready-for-implementation' ? 'bg-emerald-50 text-emerald-700' : run.status === 'ready-for-specification' && run.specQualityScore === undefined ? 'bg-emerald-50 text-emerald-700' : run.status === 'failed' || run.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700')}>{run.status === 'ready-for-implementation' || run.specQualityScore !== undefined ? `${run.specQualityScore || 0}/${run.specQualityThreshold || 85}` : `${run.qualityScore}/${run.qualityThreshold}`}</span>
                 </div>
-                 <p className="mt-1 text-xs text-zinc-500">{run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
+                 <p className="mt-1 text-xs text-zinc-500">{run.specReview ? '规格草稿已通过校验，请在对话中确认关键规则与例外。' : run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
+                 {((run.codingStatus === 'ready' && run.codingGenerator === 'java-domain') || run.hostVerification) && (
+                   <div className="mt-2 space-y-1 text-xs leading-5 text-zinc-600" aria-label="宿主验收">
+                     {run.codingStatus === 'ready' && run.codingGenerator === 'java-domain' && <p>领域模块通过</p>}
+                     {run.hostVerification && (
+                       <p className="whitespace-pre-line break-words">
+                         {run.hostVerification.status === 'blocked' && <span className="font-medium text-amber-700">宿主验证受阻。 </span>}
+                         {run.hostVerification.summary}
+                       </p>
+                     )}
+                     {run.hostVerification?.plan && (
+                       <button type="button" className="rounded px-1 text-violet-700 hover:bg-violet-50" onClick={() => void openArtifact({ path: run.hostVerification!.plan!.patchPath })}>
+                         查看宿主补丁（{run.hostVerification.plan.changes.length} 个文件）
+                       </button>
+                     )}
+                   </div>
+                 )}
                  {run.evaluations.length > 0 && (() => {
                    const status = latestEvaluationStatus(run)
                    return (

@@ -3,7 +3,7 @@ import { IPC } from '../../shared/ipc-channels'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from '../services/project-index-service'
 import type { StorageManager } from '../storage'
-import type { SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
+import type { SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { RequirementEngineeringService } from '../services/requirement-engineering-service'
 
 export function registerRequirementEngineeringHandlers(providers: ProviderRegistry, projectIndex: ProjectIndexService | undefined, storage: StorageManager): void {
@@ -26,6 +26,9 @@ export function registerRequirementEngineeringHandlers(providers: ProviderRegist
   })
   ipcMain.handle(IPC.REQUIREMENT_CODING_SUBMIT, async (event, input: SubmitCodingInput) => {
     return service.buildCoding(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
+  })
+  ipcMain.handle(IPC.REQUIREMENT_HOST_VERIFY, async (event, input: SubmitHostVerificationInput) => {
+    return service.verifyHost(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
   })
   ipcMain.handle(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, async (event, input: SubmitSpecificationResolutionInput) => {
     return service.resolveSpecificationBlockers(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))

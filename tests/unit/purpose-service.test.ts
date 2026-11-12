@@ -5,8 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PurposeStore } from '../../src/main/storage/purpose-store'
 import { ConversationStore } from '../../src/main/storage/conversation-store'
 import { PurposeService } from '../../src/main/services/purpose-service'
+import { readPurposeMemoryMessages } from '../../src/main/services/purpose-memory'
 import type { StorageManager } from '../../src/main/storage'
-import type { Purpose, PurposeCodeState } from '../../src/shared/types/purpose'
+import { latestPurposeMemory, type Purpose, type PurposeCodeState, type PurposeHandoffInput } from '../../src/shared/types/purpose'
 import type { Conversation } from '../../src/shared/types/conversation'
 import { requiresApproval } from '../../src/main/services/tool-approval-policy'
 import { recordActivity } from '../../src/main/services/activity-log'
@@ -162,5 +163,52 @@ describe('purpose handoff and continuation', () => {
     expect(created.workspacePath).toBe(other)
     expect(await fresh.context(created.id)).toContain('Tests still failing')
     expect(await fresh.context(created.id)).toContain('Duplicate calls are idempotent')
+  })
+
+  it('validates reviewed citations and continues from their structured memory in a fresh checkout', async () => {
+    await attach()
+    await storage.conversations.addMessage(conversation.id, { id: 'requirement', role: 'user', timestamp: 1, content: 'A chat excerpt with apiKey=secret-credential' })
+    const second = await storage.conversations.createConversation({ title: 'Verification chat', agentId: 'eva', mode: 'normal', workspaceId: 'project-a', workspacePath: project })
+    await service.attach(ref(), second.id)
+    await storage.conversations.addMessage(second.id, { id: 'verification', role: 'assistant', timestamp: 2, content: 'Verbatim test conversation excerpt.' })
+    const [{ source }] = await readPurposeMemoryMessages(storage, ref(), conversation.id)
+    const [checkMessage] = await readPurposeMemoryMessages(storage, ref(), second.id)
+    const handoffInput: PurposeHandoffInput = {
+      ...ref(), revision: purpose.revision, summary: 'Partial refund reviewed', blockers: '', nextAction: 'Verify migration',
+      memory: [
+        { kind: 'decision', text: 'Use the existing payment protocol. token=another-secret', sources: [source, checkMessage.source] },
+        { kind: 'open', text: 'Confirm the migration plan.', sources: [{ ...source, excerpt: undefined }] },
+      ],
+    }
+    await expect(service.handoff({ ...handoffInput, memory: [{ ...handoffInput.memory![0], sources: [{ ...source, excerpt: 'Forged source' }] }] })).rejects.toThrow('source changed')
+    expect((await storage.purposes.get(project, purpose.id)).handoffs).toHaveLength(0)
+    purpose = await service.handoff(handoffInput)
+    const memory = latestPurposeMemory(purpose)!
+    expect(memory[0].sources.map(item => item.conversationId)).toEqual([conversation.id, second.id])
+    expect(memory[0].sources[0].excerpt).toContain('[REDACTED]')
+    expect(JSON.stringify(memory)).not.toMatch(/secret-credential|another-secret/)
+    await expect(service.handoff(handoffInput)).rejects.toThrow('Purpose changed')
+
+    const other = path.join(root, 'review-checkout'); await fs.mkdir(other)
+    await fs.cp(path.join(project, '.eva'), path.join(other, '.eva'), { recursive: true })
+    const freshStorage = fakeStorage('review-project-id', other, path.join(root, 'app-b'))
+    const fresh = new PurposeService(freshStorage)
+    const otherRef = { workspaceId: 'review-project-id', purposeId: purpose.id }
+    expect(await freshStorage.conversations.listConversations()).toEqual([])
+    const check = await fresh.preflight(otherRef)
+    expect(check.latestHandoff?.memory).toEqual(memory)
+    const created = await fresh.continue({ ...otherRef, revision: check.revision, fingerprint: check.currentCode.fingerprint, acknowledgeChanged: true })
+    const context = await fresh.context(created.id)
+    expect(context).toContain('Use the existing payment protocol.')
+    expect(context).toContain('Verify migration')
+    expect(context).not.toMatch(/A chat excerpt|Verbatim test conversation excerpt|secret-credential/)
+
+    const revision = (await freshStorage.purposes.get(other, purpose.id)).revision
+    const newHandoff = { ...otherRef, revision, summary: 'Additional checks reviewed', blockers: '', nextAction: 'Continue testing' }
+    const continued = await fresh.handoff(newHandoff)
+    expect(latestPurposeMemory(continued)).toEqual(memory)
+    const edited = await fresh.handoff({ ...newHandoff, revision: continued.revision, memory: [{ ...memory[0], text: 'Keep the existing protocol after review.' }] })
+    expect(latestPurposeMemory(edited)?.[0].sources).toEqual(memory[0].sources)
+    expect(await fresh.context(created.id)).toContain('Keep the existing protocol after review.')
   })
 })

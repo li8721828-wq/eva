@@ -62,6 +62,7 @@ const BROWSER_CONTROL_TOOLS = new Set([
 ])
 
 export type ApprovalCategory =
+  | 'file-access'
   | 'workspace-write'
   | 'terminal-command'
   | 'mcp-call'
@@ -158,6 +159,7 @@ function buildSummary(toolName: string, args: Record<string, unknown>, category:
 
 interface PendingApproval {
   conversationId: string
+  ownerWebContentsId?: number
   toolName: string
   category: ApprovalCategory
   resolve: (decision: ToolApprovalDecision) => void
@@ -254,16 +256,19 @@ export function resolvePendingApproval(
   approved: boolean,
   message?: string,
   rememberScope?: 'once' | 'session',
+  owner?: { conversationId: string; webContentsId: number },
 ): boolean {
   const pending = pendingApprovals.get(approvalId)
   if (!pending) return false
+  const scoped = pending.category === 'file-access'
+  if (scoped && (!owner || owner.conversationId !== pending.conversationId || owner.webContentsId !== pending.ownerWebContentsId)) return false
   clearTimeout(pending.timer)
   pendingApprovals.delete(approvalId)
-  if (approved && rememberScope === 'session') {
+  if (approved && !scoped && rememberScope === 'session') {
     grantCategoryForSession(pending.conversationId, pending.category)
   }
   pending.resolve(approved
-    ? { approved: true }
+    ? { approved: true, ...(scoped ? { fileAccessApproved: true } : {}) }
     : { approved: false, message: message || 'The user denied the request.' })
   return true
 }
@@ -281,6 +286,7 @@ export interface ApprovalFactoryContext {
    *  fallback. When both are absent the policy falls back to `headlessMode`. */
   window: BrowserWindow | null
   config: ToolApprovalConfig
+  allowFileAccessRequests?: boolean
   /** Called with the card as soon as it exists, wherever it is ultimately shown. */
   onRequested?: (approval: ToolApprovalCard) => void
   /**
@@ -311,19 +317,28 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
 
   return async (request: ToolApprovalRequest) => {
     if (request.signal?.aborted) return { approved: false, message: 'The run was cancelled.' }
-    const category = requiresApproval(request.toolCall.name, config.policy)
+    const scoped = request.fileAccess
+    if (scoped && (!context.allowFileAccessRequests || !window || window.isDestroyed() || approvalRelays.has(conversationId))) {
+      return { approved: false, message: 'This run cannot request additional file access. Ask the user to select the file or authorize the folder in the desktop conversation.' }
+    }
+    const category = scoped ? 'file-access' : requiresApproval(request.toolCall.name, config.policy)
     if (category === null) {
       return { approved: true }
     }
 
     // Earlier in this session the user asked not to be prompted again for this
     // category in this conversation, and that decision still holds.
-    if (hasSessionGrant(conversationId, category)) {
+    if (!scoped && hasSessionGrant(conversationId, category)) {
       return { approved: true }
     }
 
     const approvalId = uuidv4()
-    const { summary, detail } = buildSummary(request.toolCall.name, request.toolCall.arguments, category, request.workspacePath)
+    const { summary, detail } = scoped
+      ? {
+          summary: scoped.operation === 'write' ? '写入工作区外的文件' : scoped.directory ? '读取工作区外的目录' : '读取工作区外的文件',
+          detail: scoped.path,
+        }
+      : buildSummary(request.toolCall.name, request.toolCall.arguments, category, request.workspacePath)
     const approvalPayload: ToolApprovalCard = {
       id: approvalId,
       toolCallId: request.toolCall.id,
@@ -416,6 +431,7 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
         }, config.timeoutMs)
         pendingApprovals.set(approvalId, {
           conversationId,
+          ownerWebContentsId: scoped ? window?.webContents.id : undefined,
           toolName: request.toolCall.name,
           category,
           resolve: settle,

@@ -9,7 +9,7 @@ import type {
   GeneratedImage,
 } from '../../shared/types/provider'
 import { reasoningCapabilityForModel, reasoningRequest, selectedReasoning, REASONING_EFFORTS } from '../../shared/model-reasoning'
-import { inferModelCapabilities } from '../../shared/model-capabilities'
+import { inferModelCapabilities, isOutputTokenLimit } from '../../shared/model-capabilities'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { toOpenAITools, toOpenAIMessages } from './base-provider'
 import { withRetry, classifyError } from './errors'
@@ -651,13 +651,15 @@ export class OpenAIProvider implements LLMProvider {
     const response = await withRetry(() => this.client.models.list(), this.id)
     const models: ProviderModelOption[] = []
     for await (const model of response) {
-      const raw = model as unknown as { name?: string; effort?: { supported_levels?: unknown[] }; context_window?: number; input_modalities?: string[] }
+      const raw = model as unknown as { name?: string; effort?: { supported_levels?: unknown[] }; context_window?: number; max_output_tokens?: number; outputTokenLimit?: number; input_modalities?: string[] }
       const efforts = raw.effort?.supported_levels?.filter((value): value is typeof REASONING_EFFORTS[number] => REASONING_EFFORTS.includes(value as never))
       const profile = inferModelCapabilities(this.type, model.id)
+      const maxOutputTokens = [raw.max_output_tokens, raw.outputTokenLimit].find(isOutputTokenLimit)
       models.push({ id: model.id, name: raw.name || model.id, capabilities: {
         ...profile,
-        ...(raw.effort || raw.context_window || raw.input_modalities ? { source: 'declared' as const } : {}),
+        ...(raw.effort || raw.context_window || raw.input_modalities || maxOutputTokens ? { source: 'declared' as const } : {}),
         ...(typeof raw.context_window === 'number' && raw.context_window > 0 ? { contextWindowTokens: raw.context_window } : {}),
+        ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
         ...(Array.isArray(raw.input_modalities) ? { supportsVision: raw.input_modalities.includes('image') } : {}),
         ...(efforts?.length ? { supportsReasoning: true, reasoningSource: 'declared' as const, reasoning: { mode: profile.reasoning?.mode || (this.type === 'deepseek' ? 'deepseek-thinking' : 'openai-effort'), efforts, canDisable: profile.reasoning?.canDisable || this.type === 'deepseek' } } : {}),
       } })

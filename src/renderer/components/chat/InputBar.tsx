@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { shouldUseExpertTeam } from '@/lib/team-routing'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
+import { AskUserCard } from './AskUserCard'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
 import { Bot, Brain, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Sparkles, Square, X } from 'lucide-react'
 import { uiCopy } from '@/lib/ui-copy'
@@ -64,6 +65,8 @@ export function InputBar({ className }: InputBarProps) {
   })))
   const activeStream = useChatStore((state) => currentConversationId ? state.streamingByConversation[currentConversationId] : undefined)
   const isStreaming = Boolean(activeStream?.isStreaming)
+  const askUser = activeStream?.askUser
+  const decideAskUser = useChatStore((state) => state.decideAskUser)
   const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode, language } = useAppStore(useShallow((state) => ({
     activeProviderId: state.activeProviderId,
     activeModel: state.activeModel,
@@ -264,9 +267,15 @@ export function InputBar({ className }: InputBarProps) {
       return
     }
     const codingMatch = inputText.trim().match(/^\/coding(?:\s+([a-z][a-z0-9-]*))?$/i)
-    if (codingMatch) {
+    const hostMatch = inputText.trim().match(/^\/verify-host(?:\s+(.+))?$/i)
+    const hostAction = hostMatch?.[1]?.toLowerCase() ?? 'preview'
+    if (hostMatch && hostAction !== 'preflight' && hostAction !== 'run' && hostAction !== 'preview') {
+      setError('宿主验收命令支持 /verify-host、/verify-host preflight 和 /verify-host run。')
+      return
+    }
+    if (codingMatch || hostMatch) {
       if (referenceImages.length > 0 || documentAttachments.length > 0) {
-        setError('Code generation uses the persisted DSL. Remove current attachments or images first.')
+        setError(hostMatch ? '宿主验收使用当前需求运行的配置，请先移除附件或图片。' : 'Code generation uses the persisted DSL. Remove current attachments or images first.')
         return
       }
       let requirementConversationId: string | null = null
@@ -278,18 +287,23 @@ export function InputBar({ className }: InputBarProps) {
         setQuotedMessage(null)
         setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
-        startRequirementProgress(conversation.id, 'Preparing deterministic code generation from the persisted DSL')
-        await window.eva.requirements.coding({ conversationId: conversation.id, generator: codingMatch[1]?.toLowerCase() })
+        if (hostMatch) {
+          startRequirementProgress(conversation.id, '正在准备隔离宿主验收')
+          await window.eva.requirements.verifyHost({ conversationId: conversation.id, action: hostAction === 'preflight' || hostAction === 'run' ? hostAction : 'preview' })
+        } else {
+          startRequirementProgress(conversation.id, 'Preparing deterministic code generation from the persisted DSL')
+          await window.eva.requirements.coding({ conversationId: conversation.id, generator: codingMatch?.[1]?.toLowerCase() })
+        }
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
-        setError(error instanceof Error ? error.message : 'Deterministic code generation failed.')
+        setError(error instanceof Error ? error.message : hostMatch ? '宿主验证失败。' : 'Deterministic code generation failed.')
       } finally {
         if (requirementConversationId) finishRequirementProgress(requirementConversationId)
       }
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
     }
-    const dslMatch = inputText.trim().match(/^\/dsl$/i)
+    const dslMatch = inputText.trim().match(/^\/dsl(?:\s+([a-z][a-z0-9-]*))?$/i)
     if (dslMatch) {
       if (referenceImages.length > 0 || documentAttachments.length > 0) {
         setError('DSL generation uses the completed specification. Remove current attachments or images first.')
@@ -299,13 +313,14 @@ export function InputBar({ className }: InputBarProps) {
       try {
         const conversation = currentConversation || await createConversation()
         requirementConversationId = conversation.id
-        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: '/dsl', timestamp: Date.now() })
+        const generator = dslMatch[1]?.toLowerCase()
+        addMessage({ id: crypto.randomUUID(), conversationId: conversation.id, role: 'user', content: generator ? `/dsl ${generator}` : '/dsl', timestamp: Date.now() })
         setInputText('')
         setQuotedMessage(null)
         setAttachedSkill(null)
         if (textareaRef.current) textareaRef.current.style.height = 'auto'
         startRequirementProgress(conversation.id, '正在读取已完成的最终实施规格')
-        await window.eva.requirements.dsl({ conversationId: conversation.id })
+        await window.eva.requirements.dsl({ conversationId: conversation.id, generator })
         await useChatStore.getState().refreshConversation(conversation.id)
       } catch (error) {
         setError(error instanceof Error ? error.message : 'DSL generation failed.')
@@ -592,6 +607,15 @@ export function InputBar({ className }: InputBarProps) {
       )}
     >
       <div className="w-full">
+        {askUser && currentConversationId && (
+          <AskUserCard
+            request={askUser}
+            onDecide={(optionId) => {
+              void decideAskUser(currentConversationId, askUser.id, optionId)
+                .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error)))
+            }}
+          />
+        )}
         <div
           className={cn(
             'chat-composer relative box-border min-w-0 overflow-visible rounded-lg border border-transparent bg-white shadow-[0_0_30px_-10px_rgba(53,62,104,0.22),0_0_12px_-4px_rgba(53,62,104,0.12),inset_0_1px_0_rgba(255,255,255,0.96)] transition-[border-color,box-shadow,background-color] duration-200 focus-within:border-violet-100 focus-within:shadow-[0_0_34px_-9px_rgba(109,83,190,0.28),0_0_14px_-4px_rgba(53,62,104,0.14),inset_0_1px_0_rgba(255,255,255,0.98)]',

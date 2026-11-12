@@ -2,7 +2,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DSL_CONTRACT } from '../../src/main/services/domain-dsl'
+import { approvalContract, sampleDsl } from '../fixtures/approval-codegen'
 import { DeterministicCodingService } from '../../src/main/services/deterministic-coding-service'
 import { RequirementEngineeringService } from '../../src/main/services/requirement-engineering-service'
 import {
@@ -240,9 +240,9 @@ describe('determinism and write safety', () => {
   async function generateWith(generatorId: string, options: Record<string, string> = {}): Promise<{ files: string[]; output: string; verification: string }> {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'eva-codegen-'))
     directories.push(directory)
-    const dsl = generatorId === 'java-domain' ? DSL_CONTRACT.split('\n').slice(1).join('\n').split('\nUse the example')[0] : source
-    const parsed = service.parseDomainDsl(dsl)
-    const result = await service.generatePackage(directory, parsed, service.resolveGenerator(generatorId), options)
+    const isDomain = generatorId === 'java-domain'
+    const parsed = service.parseDomainDsl(isDomain ? sampleDsl : source)
+    const result = await service.generatePackage(directory, parsed, service.resolveGenerator(generatorId), options, isDomain, isDomain ? approvalContract() : undefined)
     return { files: await readdir(directory), output: directory, verification: result.verification }
   }
 
@@ -274,6 +274,18 @@ describe('determinism and write safety', () => {
       expect(generated.verification).toContain(id)
       expect(generated.verification).toMatch(/verified \d+/)
     }
+  })
+
+  it('requires v3 acceptance before generating an executable Java domain', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'eva-codegen-v3-'))
+    directories.push(directory)
+    const parsed = service.parseDomainDsl(sampleDsl)
+    const generator = service.resolveGenerator('java-domain')
+    await expect(service.generatePackage(directory, parsed, generator, {}, true))
+      .rejects.toThrow('Spec acceptance v3 is required')
+    await expect(service.generatePackage(directory, parsed, generator, {}, true, { ...approvalContract(), version: 2 }))
+      .rejects.toThrow('Spec acceptance v3 is required')
+    expect(await readdir(directory)).toEqual([])
   })
 
   it('fails verification when the package holds nothing but its own result document', async () => {

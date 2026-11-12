@@ -110,6 +110,33 @@ describe('tool approval policy', () => {
     expect((await pending).approved).toBe(false)
     expect(resolvePendingApproval(sent[0].toolApproval.id, true)).toBe(false)
   })
+  it('requires a fresh, conversation-owned desktop decision for every file-access request even with tool approvals off', async () => {
+    const send = vi.fn()
+    const window = { isDestroyed: () => false, webContents: { id: 15, send } } as unknown as BrowserWindow
+    const conversationId = 'one-call-file-access'
+    const approve = createLocalToolApproval({
+      conversationId, window, allowFileAccessRequests: true, config: { policy: 'off', timeoutMs: 1000 },
+    })
+    const request: ToolApprovalRequest = {
+      toolCall: { id: 'file', name: 'read_file', arguments: {} },
+      workspacePath: 'C:/workspace',
+      fileAccess: { path: 'C:/external/file.txt', operation: 'read', directory: false },
+    }
+    const pending = approve(request)
+    const card = send.mock.calls[0][1].toolApproval
+    expect(card).toMatchObject({ category: 'file-access', detail: 'C:/external/file.txt' })
+    expect(resolvePendingApproval(card.id, true)).toBe(false)
+    expect(resolvePendingApproval(card.id, true, undefined, 'once', { conversationId, webContentsId: 2 })).toBe(false)
+    expect(resolvePendingApproval(card.id, true, undefined, 'session', { conversationId, webContentsId: 15 })).toBe(true)
+    await expect(pending).resolves.toEqual({ approved: true, fileAccessApproved: true })
+    const next = approve(request)
+    expect(send).toHaveBeenCalledTimes(2)
+    resolvePendingApproval(send.mock.calls[1][1].toolApproval.id, false, undefined, 'once', { conversationId, webContentsId: 15 })
+    await expect(next).resolves.toMatchObject({ approved: false })
+    const headless = createLocalToolApproval({ conversationId, window: null, config: { policy: 'off', timeoutMs: 1000 } })
+    await expect(headless(request)).resolves.toMatchObject({ approved: false })
+  })
+
   describe('off', () => {
     it('never asks for any tool', () => {
       expect(requiresApproval('write_file', 'off')).toBeNull()

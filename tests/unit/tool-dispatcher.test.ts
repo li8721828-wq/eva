@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { ToolDispatcher } from '../../src/main/services/tool-dispatcher'
+import { FileServiceImpl } from '../../src/main/services/file-service'
 import { ToolRegistry, type FileService, type TerminalService, type ToolContext } from '../../src/main/tools'
+import { createFileTools } from '../../src/main/tools/file-tools'
 
 function context(): ToolContext {
   const fileService: FileService = {
@@ -27,6 +32,38 @@ function context(): ToolContext {
 }
 
 describe('ToolDispatcher', () => {
+  it('continues a denied external read only after scoped approval, without changing the conversation grants', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-dispatch-access-'))
+    try {
+      const workspacePath = path.join(root, 'workspace')
+      const external = path.join(root, 'external.txt')
+      await fs.mkdir(workspacePath)
+      await fs.writeFile(external, 'external contents')
+      const registry = new ToolRegistry()
+      for (const tool of createFileTools()) registry.register(tool)
+      const fileService = new FileServiceImpl()
+      const dispatchContext = { ...context(), workspacePath, fileService, fileAccessGrants: [] }
+      const request = { id: 'external-read', name: 'read_file', arguments: { path: external }, context: dispatchContext }
+      const approve = vi.fn()
+        .mockResolvedValueOnce({ approved: true })
+        .mockResolvedValueOnce({ approved: true, fileAccessApproved: true })
+      const dispatcher = new ToolDispatcher({ toolRegistry: registry, agentTools: ['read_file'], requestToolApproval: approve })
+      expect((await dispatcher.dispatch(request)).isError).toBe(true)
+      expect((await dispatcher.dispatch({ ...request, id: 'approved-read' }))).toMatchObject({
+        result: 'external contents',
+        isError: false,
+      })
+      expect(approve).toHaveBeenCalledTimes(2)
+      expect(approve).toHaveBeenLastCalledWith(expect.objectContaining({
+        fileAccess: { path: await fs.realpath(external), operation: 'read', directory: false },
+      }))
+      expect(dispatchContext.fileAccessGrants).toEqual([])
+      await expect(fileService.readFile(external, workspacePath)).rejects.toThrow('Access denied')
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects a tool that is not enabled without executing it', async () => {
     const execute = vi.fn(async () => 'should not run')
     const registry = new ToolRegistry()

@@ -3,6 +3,7 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { writeJsonAtomicAsync } from './atomic-file'
 import type { CreatePurposeInput, Purpose, UpdatePurposeInput } from '../../shared/types/purpose'
+import { validatePurposeMemory } from '../services/purpose-memory'
 
 const ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/
 const MAX_BYTES = 2 * 1024 * 1024
@@ -74,10 +75,11 @@ export class PurposeStore {
       purposeText(note.content, 70000, true); finite(note.createdAt)
     }
     for (const item of data.handoffs) {
-      keys(item, ['id', 'createdAt', 'revision', 'summary', 'blockers', 'nextAction', 'code'])
+      keys(item, ['id', 'createdAt', 'revision', 'summary', 'blockers', 'nextAction', 'code', 'memory'])
       if (!ID.test(item.id)) throw new Error('Invalid handoff ID.')
       purposeText(item.summary, 4000, true); purposeText(item.blockers); purposeText(item.nextAction, 4000, true)
       finite(item.createdAt); finite(item.revision); code(item.code)
+      if (item.memory !== undefined) validatePurposeMemory(item.memory)
     }
     for (const item of data.executions) {
       keys(item, ['id', 'conversationId', 'status', 'recordedAt', 'model', 'tools', 'steps', 'code'])

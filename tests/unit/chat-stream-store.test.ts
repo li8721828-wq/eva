@@ -714,6 +714,16 @@ describe('ask_user card state', () => {
     await useChatStore.getState().decideAskUser('foreground', 'ask-1', 'opt_2')
     expect(useChatStore.getState().streamingByConversation.foreground.askUser).toBeUndefined()
   })
+
+  it('clears only the exact pending question when the runtime closes it', () => {
+    const conversationId = 'foreground'
+    const next = { ...askUser, id: 'ask-2' }
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_request', conversationId, askUser: next })
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_closed', conversationId, askUserId: askUser.id })
+    expect(useChatStore.getState().streamingByConversation.foreground.askUser).toEqual(next)
+    useChatStore.getState().appendStreamEvent({ type: 'ask_user_closed', conversationId, askUserId: next.id })
+    expect(useChatStore.getState().streamingByConversation.foreground).toMatchObject({ askUser: undefined, isStreaming: true })
+  })
 })
 
 describe('tool approval card state', () => {

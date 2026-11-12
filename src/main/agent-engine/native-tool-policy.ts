@@ -5,7 +5,8 @@ import type {
   ToolApprovalRequest,
   ToolApprovalDecision,
 } from '../services/tool-dispatcher'
-import { resolveAuthorizedFileOperation } from '../services/file-service'
+import { authorizeFileToolPath } from '../services/tool-dispatcher'
+import { resolveAuthorizedFileOperation, sandboxForFileOperation } from '../services/file-service'
 import {
   evaluateSandboxCommand,
   evaluateSandboxPath,
@@ -29,6 +30,8 @@ export interface NativeToolCall {
 
 /** Eva authorizes the operation; the selected framework implements it. */
 export class NativeToolPolicy {
+  private readonly oneCallGrants = new WeakMap<NativeToolCall, FileAccessGrant>()
+
   constructor(
     private readonly options: {
       engine: ExecutionEngineId
@@ -47,17 +50,19 @@ export class NativeToolPolicy {
   private async checkedPath(
     requested: string,
     operation: 'read' | 'write',
+    grant?: FileAccessGrant,
   ): Promise<string> {
     const o = this.options
+    const grants = grant ? [...o.fileAccessGrants ?? [], grant] : o.fileAccessGrants
     const canonical = await resolveAuthorizedFileOperation(
       requested,
       o.workspacePath,
-      o.fileAccessGrants,
+      grants,
       operation,
       o.fullFilesystemAccess,
     )
     if (o.sandbox) {
-      const decision = evaluateSandboxPath(canonical, operation, o.sandbox)
+      const decision = evaluateSandboxPath(canonical, operation, sandboxForFileOperation(o.sandbox, grants ?? []))
       if (!decision.allowed) throw new Error(decision.reason)
     }
     if (operation === 'write' && o.allowedWritePaths?.length) {
@@ -93,6 +98,7 @@ export class NativeToolPolicy {
         `Native tool '${call.name}' is not authorized for this agent.`,
       )
     const args = { ...call.arguments }
+    let scopedGrant: FileAccessGrant | undefined
     const isShell = alias === 'execute_command'
     if (isShell) {
       if (o.allowedWritePaths?.length)
@@ -115,9 +121,15 @@ export class NativeToolPolicy {
         throw new Error('A file path is required.')
       const operation =
         alias === 'write_file' || alias === 'edit_file' ? 'write' : 'read'
-      args[key] = await this.checkedPath(requested, operation)
+      const authorized = await authorizeFileToolPath(requested, {
+        signal: o.signal,
+        workspacePath: o.workspacePath,
+        toolCall: { ...call, name: alias },
+      }, o, o.approve)
+      scopedGrant = authorized.grant
+      args[key] = await this.checkedPath(authorized.canonical, operation, scopedGrant)
     }
-    if (o.approve) {
+    if (o.approve && !scopedGrant) {
       const approval = await o.approve({
         signal: o.signal,
         workspacePath: o.workspacePath,
@@ -138,6 +150,7 @@ export class NativeToolPolicy {
         throw new Error(approval.message || 'The native tool was not approved.')
     }
     if (o.signal.aborted) throw new Error('The run was cancelled.')
+    if (scopedGrant) this.oneCallGrants.set(call, scopedGrant)
     return args
   }
 
@@ -175,6 +188,7 @@ export class NativeToolPolicy {
     operation: 'read' | 'write' = 'read',
   ): Promise<void> {
     const o = this.options
+    if (o.signal.aborted) throw new Error('The run was cancelled.')
     if (!call) {
       const root = await resolveAuthorizedFileOperation(
         o.bootstrapDirectory || o.workspacePath,
@@ -201,6 +215,6 @@ export class NativeToolPolicy {
       !['write_file', 'edit_file'].includes(NATIVE_TOOL_ALIASES[call.name])
     )
       throw new Error('This native call cannot perform file mutations.')
-    await this.checkedPath(requested, operation)
+    await this.checkedPath(requested, operation, this.oneCallGrants.get(call))
   }
 }

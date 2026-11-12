@@ -17,6 +17,7 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
   const questions = useMemo(() => run.clarificationQuestions.filter((question) => Array.isArray(question.options) && question.options.length > 0), [run.clarificationQuestions])
   const resolutionQuestions = useMemo(() => (run.specResolutionQuestions || []).filter((question) => Array.isArray(question.options) && question.options.length > 0), [run.specResolutionQuestions])
   const activeQuestions = mode === 'specification' ? resolutionQuestions : questions
+  const review = mode === 'specification' ? run.specReview : undefined
   const isComplete = activeQuestions.length > 0 && activeQuestions.every((question) => selection[question.id] !== undefined)
 
   const submit = async () => {
@@ -48,11 +49,19 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
           <Circle className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-violet-600">{mode === 'specification' ? '规格构建，阻塞处置' : `需求工程，第 ${run.round} 轮`}</p>
-          <h2 id={`clarification-${run.id}`} className="mt-1 text-sm font-semibold text-zinc-700">{mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径` : `需要你确认 ${activeQuestions.length} 个澄清点`}</h2>
-          <p className="mt-1 text-sm leading-6 text-zinc-700">{mode === 'specification' ? '每个阻塞项均已标注归因和检测建议。你的选择会被持久化，明确下一步应回到需求、建模、代码证据或规格修订。' : '已由代码和材料可以确定的内容会由 AI 自动采用。以下选择会成为下一轮分析与评测的依据。'}</p>
+          <p className="text-xs font-medium text-violet-600">{review ? '规格确认' : mode === 'specification' ? '规格构建，阻塞处置' : `需求工程，第 ${run.round} 轮`}</p>
+          <h2 id={`clarification-${run.id}`} className="mt-1 text-sm font-semibold text-zinc-700">{review ? '确认关键业务规则与例外' : mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径` : `需要你确认 ${activeQuestions.length} 个澄清点`}</h2>
+          <p className="mt-1 text-sm leading-6 text-zinc-700">{review ? '请核对业务条件和例外是否完整。确认后发布本版规格。' : mode === 'specification' ? '每个阻塞项均已标注归因和检测建议。你的选择会被持久化，明确下一步应回到需求、建模、代码证据或规格修订。' : '已由代码和材料可以确定的内容会由 AI 自动采用。以下选择会成为下一轮分析与评测的依据。'}</p>
         </div>
       </div>
+
+      {review && (review.rules.length ? (
+        <ul className="mt-4 max-h-56 space-y-2 overflow-auto text-sm leading-6 text-zinc-700" aria-label="关键业务规则">
+          {review.rules.map(({ id, summary }) => (
+            <li key={id} className="break-words"><span className="mr-2 font-medium text-zinc-500">{id}</span>{summary}</li>
+          ))}
+        </ul>
+      ) : <p className="mt-4 text-sm text-zinc-700">本版规格声明无需要单独确认的关键规则或例外。</p>)}
 
       <div className="mt-5 space-y-6">
         {activeQuestions.map((question, questionIndex) => (
@@ -96,7 +105,7 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
               取消本轮
             </button>
             <button type="button" disabled={!isComplete} onClick={() => void submit()} className="inline-flex h-9 items-center gap-2 rounded-md bg-violet-600 px-3 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500">
-              <CheckCircle2 className="h-4 w-4" /> {mode === 'specification' ? '保存处置选择' : '提交确认并继续'}
+              <CheckCircle2 className="h-4 w-4" /> {review ? '提交选择' : mode === 'specification' ? '保存处置选择' : '提交确认并继续'}
             </button>
           </div>
         )}

@@ -77,6 +77,12 @@ export interface RequirementRun {
   specQualityThreshold?: number
   specResolutionQuestions?: SpecificationResolutionQuestion[]
   specResolutionHandledAt?: string
+  specReview?: {
+    specification: RequirementArtifactReceipt
+    contract: RequirementArtifactReceipt
+    upstreamDocumentId: string
+    rules: Array<{ id: string; summary: string }>
+  }
   documents: RequirementDocument[]
   evaluations: RequirementEvaluation[]
   clarificationQuestions: RequirementClarificationQuestion[]
@@ -86,6 +92,7 @@ export interface RequirementRun {
   releases?: Partial<Record<RequirementReleaseStage, RequirementRelease>>
   revision?: number
   draftAttempts?: Partial<Record<'specification' | 'dsl', string>>
+  codingGenerator?: string
   /** Project-local RMSD run root: <workspace>/.eva/RMSD/<requirement-name>/runs/<run-id>. */
   workspacePackagePath?: string
   /** Fixed workspace directory for this requirement package's specification artifacts. */
@@ -97,6 +104,7 @@ export interface RequirementRun {
   codingOutputPath?: string
   verifiedCoding?: Record<string, { specContract?: RequirementArtifactReceipt; files: Array<{ path: string; sha256: string }> }>
   codingStatus?: 'idle' | 'generating' | 'ready' | 'failed'
+  hostVerification?: RequirementHostVerification
   createdAt: string
   updatedAt: string
   error?: string
@@ -112,6 +120,7 @@ export interface RequirementArtifactReceipt {
 export interface RequirementRelease extends RequirementArtifactReceipt {
   upstreamDocumentId?: string
   specContract?: RequirementArtifactReceipt
+  criticalRulesConfirmedAt?: string
 }
 
 export interface SubmitRequirementInput {
@@ -141,6 +150,7 @@ export interface SubmitDslInput {
   conversationId: string
   /** Explicit requirement run to continue; omitted only for legacy recovery. */
   runId?: string
+  generator?: string
 }
 
 export interface SubmitCodingInput {
@@ -148,6 +158,33 @@ export interface SubmitCodingInput {
   /** Explicit requirement run to continue; omitted only for legacy recovery. */
   runId?: string
   generator?: string
+}
+
+export type HostVerificationAction = 'preflight' | 'preview' | 'run'
+
+export interface HostVerificationPlan {
+  inputSha256: string
+  patchSha256: string
+  changes: Array<{ path: string; change: 'added' | 'modified' }>
+}
+
+export interface RequirementHostVerification {
+  action: HostVerificationAction
+  status: 'running' | 'preflight-passed' | 'preview-ready' | 'blocked' | 'passed' | 'cancelled'
+  summary: string
+  commit?: string
+  module?: string
+  maven?: string
+  java?: string
+  generationKey?: string
+  plan?: HostVerificationPlan & { patchPath: string }
+  testCount?: number
+}
+
+export interface SubmitHostVerificationInput {
+  conversationId: string
+  runId?: string
+  action: HostVerificationAction
 }
 
 export interface SubmitSpecificationResolutionInput {

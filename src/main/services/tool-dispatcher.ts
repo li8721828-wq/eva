@@ -4,6 +4,8 @@ import type { ToolContext, ToolExecutionResult, ToolExecutor, ToolRegistry } fro
 import { createExecutionEnvelope } from '../tools'
 import { validateToolArguments } from '../agent-engine/tool-dispatch'
 import { toolRuntimePolicy } from '../agent-engine/tool-runtime-policy'
+import type { FileAccessGrant } from '../../shared/types/file-access'
+import { createOneCallFileGrant, expandHomePath, FileAccessDenied, isWithinRoot, resolveAuthorizedFileOperation } from './file-service'
 
 export interface ToolApprovalRequest {
   signal?: AbortSignal
@@ -13,11 +15,13 @@ export interface ToolApprovalRequest {
     arguments: Record<string, unknown>
   }
   workspacePath: string
+  fileAccess?: { path: string; operation: 'read' | 'write'; directory: boolean }
 }
 
 export interface ToolApprovalDecision {
   approved: boolean
   message?: string
+  fileAccessApproved?: boolean
 }
 
 export interface ToolDispatchRequest {
@@ -94,6 +98,43 @@ function defaultProtocol(tool: ToolExecutor, startedAt: number): ExecutionEnvelo
   return { ...envelope, durationMs: Date.now() - startedAt, completedAt }
 }
 
+const DIRECTORY_TOOLS = new Set(['list_directory', 'search_files', 'search_code', 'search_by_regex'])
+const DIRECT_FILE_TOOLS = new Set(['read_file', 'file_info', 'write_file', 'edit_file', ...DIRECTORY_TOOLS])
+
+/** Only a top-level, validated path can request a one-call filesystem grant. */
+export async function authorizeFileToolPath(
+  target: string,
+  request: ToolApprovalRequest,
+  access: { fileAccessGrants?: FileAccessGrant[]; fullFilesystemAccess?: boolean; allowedWritePaths?: string[] },
+  approve?: ToolDispatcherConfig['requestToolApproval'],
+): Promise<{ canonical: string; grant?: FileAccessGrant }> {
+  const operation = ['write_file', 'edit_file'].includes(request.toolCall.name) ? 'write' : 'read'
+  const resolve = (filePath: string, grants = access.fileAccessGrants) =>
+    resolveAuthorizedFileOperation(filePath, request.workspacePath, grants, operation, access.fullFilesystemAccess)
+  try {
+    return { canonical: await resolve(target) }
+  } catch (error) {
+    if (!(error instanceof FileAccessDenied) || !approve || request.signal?.aborted) throw error
+    if (operation === 'write' && access.allowedWritePaths?.length) throw error
+    const expanded = expandHomePath(target)
+    const requested = path.resolve(request.workspacePath || '.', expanded)
+    // Never turn an implicit traversal through an in-workspace link into a prompt.
+    if (request.workspacePath && isWithinRoot(requested, request.workspacePath)) throw error
+    const directory = DIRECTORY_TOOLS.has(request.toolCall.name)
+    const decision = await approve({
+      ...request,
+      fileAccess: { path: error.canonicalPath, operation, directory },
+    })
+    if (request.signal?.aborted) throw new Error('The run was cancelled.')
+    if (!decision.approved || !decision.fileAccessApproved) {
+      if (decision.message) throw new Error(decision.message)
+      throw error
+    }
+    const grant = createOneCallFileGrant(error.canonicalPath, operation, directory)
+    return { canonical: await resolve(error.canonicalPath, [...access.fileAccessGrants ?? [], grant]), grant }
+  }
+}
+
 /**
  * The single execution boundary for registered tools.
  *
@@ -121,26 +162,33 @@ export class ToolDispatcher {
       return rejection(request.name, 'This agent may write only to its explicitly authorized paths.')
     }
 
-    if (this.config.requestToolApproval) {
-      const approval = await this.config.requestToolApproval({
-        signal: request.signal,
-        toolCall: {
-          id: request.id,
-          name: request.name,
-          arguments: request.arguments,
-        },
-        workspacePath: request.context.workspacePath,
-      })
-      if (!approval.approved) {
-        return rejection(request.name, approval.message || `Execution of '${request.name}' was not approved.`)
-      }
-    }
-
     const startedAt = Date.now()
     if (request.signal?.aborted) return rejection(request.name, 'The run was cancelled.')
     try {
-      const context = request.signal ? { ...request.context, signal: request.signal } : request.context
-      const output = await tool.execute(request.arguments, context)
+      let context = request.signal ? { ...request.context, signal: request.signal } : request.context
+      let args = request.arguments
+      const approvalRequest: ToolApprovalRequest = {
+        signal: request.signal,
+        toolCall: { id: request.id, name: request.name, arguments: args },
+        workspacePath: context.workspacePath,
+      }
+      const target = args.path
+      let scopedApproval = false
+      if (this.config.requestToolApproval && DIRECT_FILE_TOOLS.has(request.name) && typeof target === 'string'
+        && target.trim() && (context.workspacePath || path.isAbsolute(expandHomePath(target)))) {
+        const authorized = await authorizeFileToolPath(target, approvalRequest, { ...context, allowedWritePaths: this.config.allowedWritePaths }, this.config.requestToolApproval)
+        if (authorized.grant) {
+          args = { ...args, path: authorized.canonical }
+          context = { ...context, fileAccessGrants: [...context.fileAccessGrants ?? [], authorized.grant] }
+          scopedApproval = true
+        }
+      }
+      if (this.config.requestToolApproval && !scopedApproval) {
+        const approval = await this.config.requestToolApproval(approvalRequest)
+        if (!approval.approved) return rejection(request.name, approval.message || `Execution of '${request.name}' was not approved.`)
+      }
+      if (request.signal?.aborted) return rejection(request.name, 'The run was cancelled.')
+      const output = await tool.execute(args, context)
       if (typeof output === 'string') {
         return {
           result: output,

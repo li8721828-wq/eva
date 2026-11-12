@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { inferModelCapabilities, mergeProbedCapabilities, supportsImageInput } from '../../src/shared/model-capabilities'
+import { inferModelCapabilities, mergeProbedCapabilities, resolveModelOutputBudget, supportsImageInput } from '../../src/shared/model-capabilities'
 
 describe('model capability profiles', () => {
   it('identifies DeepSeek reasoning and large context routes', () => {
@@ -55,6 +55,28 @@ describe('model capability profiles', () => {
   })
 })
 
+describe('model output budget', () => {
+  const profile = inferModelCapabilities('custom', 'deepseek-v4-flash')
+  const harness = { id: 'deepseek-harness' as const }
+
+  it('keeps legacy defaults and clamps a model override to the connection limit', () => {
+    expect(resolveModelOutputBudget(profile, harness, true)).toBe(16_384)
+    expect(resolveModelOutputBudget(profile, undefined, true)).toBe(8_192)
+    const configured = { ...profile, outputTokenBudget: 65_536, maxOutputTokens: 32_768 }
+    expect(resolveModelOutputBudget(configured, harness, true)).toBe(32_768)
+    expect(resolveModelOutputBudget(configured, undefined, false)).toBe(32_768)
+    expect(resolveModelOutputBudget({ ...configured, contextWindowTokens: 32_000 }, harness, true)).toBe(8_000)
+  })
+
+  it('preserves output metadata and overrides across tool probes', () => {
+    const configured = { ...profile, outputTokenBudget: 24_000, maxOutputTokens: 32_000 }
+    expect(mergeProbedCapabilities(configured, profile)).toMatchObject({
+      outputTokenBudget: 24_000,
+      maxOutputTokens: 32_000,
+    })
+  })
+})
+
 describe('probe result merging', () => {
   const previous = { ...inferModelCapabilities('custom', 'gateway-model'), supportsTools: true, source: 'probed' as const, probeStatus: 'supported' as const }
 
@@ -92,6 +114,22 @@ describe('image input gate', () => {
   it('lets a declared value decide instead of the model name', () => {
     expect(supportsImageInput(inferModelCapabilities('openai', 'gpt-4o', { supportsVision: false }))).toBe(false)
     expect(supportsImageInput(inferModelCapabilities('custom', 'gateway-model', { supportsVision: true }))).toBe(true)
+  })
+
+  it('uses the saved image-input choice before capability defaults', () => {
+    const visual = inferModelCapabilities('anthropic', 'claude-opus-4-6-thinking')
+    const unknown = inferModelCapabilities('custom', 'gateway-model')
+    expect(supportsImageInput({ ...visual, visionEnabled: false })).toBe(false)
+    expect(supportsImageInput({ ...unknown, visionEnabled: true })).toBe(true)
+  })
+
+  it('keeps image metadata and the user preference after a tool probe', () => {
+    const declared = inferModelCapabilities('custom', 'gateway-model', { supportsVision: true })
+    const toolProbe = { ...inferModelCapabilities('custom', 'gateway-model'), probeStatus: 'supported' as const }
+    expect(mergeProbedCapabilities(declared, toolProbe).supportsVision).toBe(true)
+    const merged = mergeProbedCapabilities({ ...declared, visionEnabled: false }, toolProbe)
+    expect(merged.supportsVision).toBe(true)
+    expect(supportsImageInput(merged)).toBe(false)
   })
 
   it('trusts the Anthropic family without requiring a declaration', () => {

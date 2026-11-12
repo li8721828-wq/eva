@@ -58,8 +58,20 @@ describe('reasoning request payloads', () => {
   })
   it('reads supported reasoning levels from model metadata', async () => {
     const provider = new OpenAIProvider('ds', 'DS', 'deepseek', { apiKey: 'fixture' })
-    ;(provider as any).client = { models: { list: async () => ({ async *[Symbol.asyncIterator]() { yield { id: 'private-ds', name: 'Private DS', effort: { supported_levels: ['low', 'max', 'garbage'] }, context_window: 1000000, input_modalities: ['text', 'image'] } } }) } }
-    expect((await provider.listModels())[0]).toMatchObject({ capabilities: { supportsReasoning: true, supportsVision: true, contextWindowTokens: 1000000, reasoning: { mode: 'deepseek-thinking', efforts: ['low', 'max'] } } })
+    ;(provider as any).client = { models: { list: async () => ({ async *[Symbol.asyncIterator]() { yield { id: 'private-ds', name: 'Private DS', effort: { supported_levels: ['low', 'max', 'garbage'] }, context_window: 1000000, max_output_tokens: 384000, input_modalities: ['text', 'image'] } } }) } }
+    expect((await provider.listModels())[0]).toMatchObject({ capabilities: { supportsReasoning: true, supportsVision: true, contextWindowTokens: 1000000, maxOutputTokens: 384000, reasoning: { mode: 'deepseek-thinking', efforts: ['low', 'max'] } } })
+  })
+  it('reads Anthropic output limits without inventing values for missing metadata', async () => {
+    const provider = new AnthropicProvider('a', 'A', { apiKey: 'fixture' })
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: [
+      { id: 'claude-sonnet-4', max_tokens: 64_000 },
+      { id: 'other' },
+    ] })))
+    try {
+      const models = await provider.listModels()
+      expect(models.find(model => model.id === 'claude-sonnet-4')?.capabilities?.maxOutputTokens).toBe(64_000)
+      expect(models.find(model => model.id === 'other')?.capabilities?.maxOutputTokens).toBeUndefined()
+    } finally { fetchMock.mockRestore() }
   })
   it.each(['claude-sonnet-4-20250514', 'claude-opus-4-7'])('maps Anthropic %s to its supported thinking mode', async (model) => {
     const provider = new AnthropicProvider('a', 'A', { apiKey: 'fixture', models: [{ id: model, name: model, reasoningSelection: 'high' }] })

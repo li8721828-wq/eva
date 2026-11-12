@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto'
+import type { WebContents } from 'electron'
 import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import { getStorage } from '../storage'
@@ -8,19 +9,26 @@ import type { ContinuePurposeInput, CreatePurposeInput, PurposeHandoffInput, Pur
 import { notifyRendererConversationChanged } from '../services/conversation-notify'
 import { PurposeDraftService } from '../services/purpose-draft-service'
 import type { ApplicationServices } from '../services/application-services'
-import type { GeneratePurposeDraftInput } from '../../shared/types/purpose'
+import type { GeneratePurposeDraftInput, GeneratePurposeHandoffDraftInput } from '../../shared/types/purpose'
 
 export function registerPurposeHandlers(services?: Pick<ApplicationServices, 'storage' | 'providerRegistry'>): void {
   const drafts = services ? new PurposeDraftService(services.storage, services.providerRegistry) : null
   const owners = new Set<number>()
-  ipcMain.handle(IPC.PURPOSE_DRAFT_GENERATE, async (event, input: GeneratePurposeDraftInput) => {
-    if (!drafts) throw new Error('AI drafting services are unavailable.')
-    const owner = event.sender.id
+  const draftOwner = (sender: WebContents) => {
+    const owner = sender.id
     if (!owners.has(owner)) {
       owners.add(owner)
-      event.sender.once('destroyed', () => { drafts.cancelOwner(owner); owners.delete(owner) })
+      sender.once('destroyed', () => { drafts?.cancelOwner(owner); owners.delete(owner) })
     }
-    return drafts.generate(owner, input)
+    return owner
+  }
+  ipcMain.handle(IPC.PURPOSE_DRAFT_GENERATE, async (event, input: GeneratePurposeDraftInput) => {
+    if (!drafts) throw new Error('AI drafting services are unavailable.')
+    return drafts.generate(draftOwner(event.sender), input)
+  })
+  ipcMain.handle(IPC.PURPOSE_HANDOFF_DRAFT_GENERATE, async (event, input: GeneratePurposeHandoffDraftInput) => {
+    if (!drafts) throw new Error('AI drafting services are unavailable.')
+    return drafts.generateHandoff(draftOwner(event.sender), input)
   })
   ipcMain.handle(IPC.PURPOSE_DRAFT_CANCEL, async (event, requestId: string) => { drafts?.cancel(event.sender.id, requestId) })
   ipcMain.handle(IPC.PURPOSE_LIST, async (_event, workspaceId: string) => {

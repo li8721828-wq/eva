@@ -1,4 +1,6 @@
 import { settingsDetailText } from '@/lib/settings-detail-copy'
+import { reasoningCapabilityForModel } from '../../../shared/model-reasoning'
+import { isExecutionEngineConfig, type ExecutionEngineConfig } from '../../../shared/types/execution-engine'
 import { ExecutionEnginePanel } from './ExecutionEnginePanel'
 import React, { useEffect, useState, useRef } from 'react'
 import { useAppStore } from '@/stores/use-app-store'
@@ -30,7 +32,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import type { ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
+import type { ModelCapabilityProfile, ProviderConfigEntry, ProviderModelOption, ProviderTestConfig } from '../../../shared/types/provider'
 import type { QqRemoteConfig, QqRemoteStatus } from '../../../shared/types/qq'
 import type { Workspace } from '../../../shared/types/workspace'
 import type { AgentConfig } from '../../../shared/types/agent'
@@ -38,7 +40,7 @@ import type { AutomationConfig, HiddenCapabilityId, ToolApprovalPolicy } from '.
 import { DEFAULT_AUTOMATION_CONFIG } from '../../../shared/types/automation'
 import type { NetworkConfig, NetworkTestResult } from '../../../shared/types/network'
 import { DEFAULT_NETWORK_CONFIG } from '../../../shared/types/network'
-import { inferModelCapabilities, mergeProbedCapabilities } from '../../../shared/model-capabilities'
+import { inferModelCapabilities, isOutputTokenLimit, mergeProbedCapabilities, resolveModelOutputBudget, supportsImageInput } from '../../../shared/model-capabilities'
 import { PluginCenter } from './PluginCenter'
 import { McpPanel } from './McpPanel'
 import { SkillPanel } from './SkillPanel'
@@ -125,6 +127,7 @@ export function SettingsDialog() {
   const [providerEnabled, setProviderEnabled] = useState(true)
   const [editingProviderId, setEditingProviderId] = useState('')
   const [providerEditorOpen, setProviderEditorOpen] = useState(false)
+  const [budgetEngine, setBudgetEngine] = useState<ExecutionEngineConfig | null>(null)
   const [providerPendingDeletionId, setProviderPendingDeletionId] = useState<string | null>(null)
   const [savedProviders, setSavedProviders] = useState<ProviderConfigEntry[]>([])
   const [apiKey, setApiKey] = useState('')
@@ -425,6 +428,15 @@ export function SettingsDialog() {
     }
   }
 
+  useEffect(() => {
+    if (!providerEditorOpen) return
+    let active = true
+    void window.eva.config.get<ExecutionEngineConfig>('executionEngine').then((engine) => {
+      if (active && isExecutionEngineConfig(engine)) setBudgetEngine(engine)
+    }).catch(() => {})
+    return () => { active = false }
+  }, [providerEditorOpen])
+
   const handleSaveProvider = async () => {
     const validationError = validateProviderConfig()
     if (validationError) {
@@ -542,7 +554,25 @@ export function SettingsDialog() {
         return
       }
 
-      setAvailableModels(result.models)
+      setAvailableModels((current) => {
+        const previousModels = new Map(current.map((model) => [model.id, model]))
+        const fetchedModels = result.models.map((model) => {
+          const previous = previousModels.get(model.id)?.capabilities
+          const { visionEnabled, outputTokenBudget } = previous ?? {}
+          if (visionEnabled === undefined && outputTokenBudget === undefined) return model
+          return { ...model, capabilities: {
+            ...(model.capabilities ?? inferModelCapabilities(config.type, model.id)),
+            visionEnabled,
+            outputTokenBudget,
+          } }
+        })
+        const manualModel = previousModels.get(config.defaultModel)
+        if (manualModel && (manualModel.capabilities?.visionEnabled !== undefined || manualModel.capabilities?.outputTokenBudget !== undefined)
+          && !fetchedModels.some((model) => model.id === manualModel.id)) {
+          return [...fetchedModels, manualModel]
+        }
+        return fetchedModels
+      })
       setSelectedModelIds((current) => current.filter((id) => result.models.some((model) => model.id === id)))
       setModelSearch('')
       setModelsStamp(computeModelStamp(config))
@@ -592,7 +622,16 @@ export function SettingsDialog() {
 
   const handleClearProbe = (modelId: string) => {
     setAvailableModels((current) => current.map((model) => model.id === modelId
-      ? { ...model, capabilities: inferModelCapabilities(providerType, model.id) }
+      ? {
+          ...model,
+          capabilities: {
+            ...inferModelCapabilities(providerType, model.id),
+            ...(model.capabilities?.supportsVision !== undefined ? { supportsVision: model.capabilities.supportsVision } : {}),
+            visionEnabled: model.capabilities?.visionEnabled,
+            maxOutputTokens: model.capabilities?.maxOutputTokens,
+            outputTokenBudget: model.capabilities?.outputTokenBudget,
+          },
+        }
       : model))
     setModelsMessage(`Cleared the stored capability result for ${modelId}; inferred values are used until the next probe.`)
   }
@@ -614,6 +653,68 @@ export function SettingsDialog() {
       }
     }))
   }
+
+  const updateModelCapabilities = (model: ProviderModelOption, changes: Partial<ModelCapabilityProfile>) => {
+    setAvailableModels((current) => {
+      const existing = current.find((item) => item.id === model.id)
+      const option = existing ?? model
+      const capabilities = option.capabilities ?? inferModelCapabilities(providerType, option.id)
+      const updated = { ...option, capabilities: { ...capabilities, ...changes } }
+      return existing ? current.map((item) => item.id === model.id ? updated : item) : [...current, updated]
+    })
+  }
+
+  const visionLabel = language === 'zh' ? '图片识别' : language === 'ja' ? '画像認識' : 'Image input'
+  const renderVisionSwitch = (model: ProviderModelOption) => (
+    <label className="settings-dialog__model-vision">
+      <Switch
+        aria-label={`${visionLabel} · ${model.name || model.id}`}
+        checked={supportsImageInput(model.capabilities ?? inferModelCapabilities(providerType, model.id))}
+        disabled={loadingModels || probingModelId === model.id || saving}
+        onChange={(event) => updateModelCapabilities(model, { visionEnabled: event.target.checked })}
+      />
+      <span>{visionLabel}</span>
+    </label>
+  )
+  const budgetCopy = {
+    zh: { label: '输出预算', auto: '自动', upstream: '上游', unknown: '未提供', request: '请求上限' },
+    en: { label: 'Output budget', auto: 'Auto', upstream: 'Provider', unknown: 'Unspecified', request: 'Request limit' },
+    ja: { label: '出力予算', auto: '自動', upstream: 'プロバイダー', unknown: '未提供', request: 'リクエスト上限' },
+  }[language]
+  const renderOutputBudget = (model: ProviderModelOption) => {
+    const profile = model.capabilities ?? inferModelCapabilities(providerType, model.id)
+    const reasoning = Boolean(reasoningCapabilityForModel(providerType, model.id, [model]))
+    const budget = profile.outputTokenBudget
+    const upstream = isOutputTokenLimit(profile.maxOutputTokens) ? profile.maxOutputTokens.toLocaleString(language) : budgetCopy.unknown
+    const request = budgetEngine ? resolveModelOutputBudget(profile, budgetEngine, reasoning).toLocaleString(language) : undefined
+    return (
+      <label className="settings-dialog__model-budget">
+        <span>{budgetCopy.label}</span>
+        <input
+          key={`${model.id}:${budget ?? ''}`}
+          type="number"
+          min={1}
+          step={1}
+          aria-label={`${budgetCopy.label} · ${model.name || model.id}`}
+          placeholder={budgetCopy.auto}
+          defaultValue={budget}
+          disabled={loadingModels || probingModelId === model.id || saving}
+          onBlur={({ currentTarget }) => {
+            const value = currentTarget.valueAsNumber
+            if (currentTarget.validity.badInput || (currentTarget.value && !isOutputTokenLimit(value))) {
+              currentTarget.value = budget === undefined ? '' : String(budget)
+              return
+            }
+            const outputTokenBudget = currentTarget.value ? value : undefined
+            if (outputTokenBudget !== budget) updateModelCapabilities(model, { outputTokenBudget })
+          }}
+        />
+        <span>{budgetCopy.upstream} {upstream}{request && ` · ${budgetCopy.request} ${request}`}</span>
+      </label>
+    )
+  }
+  const typedModelId = modelName.trim()
+  const hasTypedModelRow = availableModels.some((model) => model.id === typedModelId)
 
   const filteredModels = availableModels.filter((model) => {
     const query = modelSearch.trim().toLowerCase()
@@ -1066,7 +1167,15 @@ export function SettingsDialog() {
                     placeholder={t("e.g. gpt-4o-mini or provider-specific-model")}
                     aria-label={t("Model name")}
                   />
-                  <p className="text-xs text-zinc-400">{t("Enter the exact model ID. Fetch Models is optional for gateways without a model-list endpoint.")}</p>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs text-zinc-400">{t("Enter the exact model ID. Fetch Models is optional for gateways without a model-list endpoint.")}</p>
+                    {typedModelId && !hasTypedModelRow && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {renderVisionSwitch({ id: typedModelId, name: typedModelId })}
+                        {renderOutputBudget({ id: typedModelId, name: typedModelId })}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 {availableModels.length > 0 ? (
                   <div className="settings-dialog__model-picker">
@@ -1084,14 +1193,18 @@ export function SettingsDialog() {
                     />
                     <div className="settings-dialog__model-options" role="group" aria-label={t("Models to include in this connection")}>
                       {filteredModels.length > 0 ? filteredModels.map((model) => (
-                        <label key={model.id} className="settings-dialog__model-option">
-                          <input
-                            type="checkbox"
-                            checked={selectedModelIds.includes(model.id)}
-                            onChange={() => toggleModelSelection(model.id)}
-                          />
-                          <span className="truncate">{model.name}</span>
-                          <span className="settings-dialog__model-meta">
+                        <div key={model.id} className="settings-dialog__model-option">
+                          <label className="settings-dialog__model-select">
+                            <input
+                              type="checkbox"
+                              checked={selectedModelIds.includes(model.id)}
+                              onChange={() => toggleModelSelection(model.id)}
+                            />
+                            <span className="truncate">{model.name}</span>
+                          </label>
+                          <div className="settings-dialog__model-meta">
+                            {renderVisionSwitch(model)}
+                            {renderOutputBudget(model)}
                             {model.capabilities && <span
                               className={`settings-dialog__model-capability ${model.capabilities.supportsTools === false ? 'is-error' : model.capabilities.probeStatus === 'supported' ? 'is-success' : ''}`}
                               title={model.capabilities.lastError || undefined}
@@ -1108,8 +1221,8 @@ export function SettingsDialog() {
                             </select>
                             <button type="button" className="settings-dialog__model-probe" onClick={(event) => { event.preventDefault(); void handleProbeModel(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>{probingModelId === model.id ? '探测中…' : '探测能力'}</button>
                             {model.capabilities && <button type="button" className="settings-dialog__model-probe" title="删除已保存的能力探测结果，改为推导值" aria-label={`清除 ${model.name || model.id} 的能力探测结果`} onClick={(event) => { event.preventDefault(); handleClearProbe(model.id) }} disabled={probingModelId === model.id || loadingModels || saving || testing}>清除</button>}
-                          </span>
-                        </label>
+                          </div>
+                        </div>
                       )) : (
                         <div className="settings-dialog__model-no-results">{t("No matching models.")}</div>
                       )}

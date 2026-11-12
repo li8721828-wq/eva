@@ -3028,14 +3028,48 @@ a.tool-call-source__title:hover {
 
 .settings-dialog__model-option {
   display: grid;
-  grid-template-columns: 14px minmax(0, 1.618fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   align-items: center;
-  gap: 13px;
+  gap: 10px;
   min-height: 38px;
-  padding: 0 10px;
+  padding: 4px 10px;
   color: #3f3f46;
   font-size: 0.8125rem;
+}
+
+.settings-dialog__model-select,
+.settings-dialog__model-vision {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   cursor: pointer;
+}
+
+.settings-dialog__model-vision {
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.settings-dialog__model-budget {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  max-width: 100%;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+}
+
+.settings-dialog__model-budget input {
+  width: 6rem;
+  min-height: 24px;
+  padding: 2px 4px;
+  color: var(--text-primary);
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius-sm);
 }
 
 .settings-dialog__model-meta {
@@ -3043,7 +3077,8 @@ a.tool-call-source__title:hover {
   min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
 }
 
 .settings-dialog__model-option + .settings-dialog__model-option {
@@ -3054,7 +3089,8 @@ a.tool-call-source__title:hover {
   background: #fafafa;
 }
 
-.settings-dialog__model-option input {
+.settings-dialog__model-select > input {
+  flex: 0 0 14px;
   width: 14px;
   height: 14px;
   accent-color: #7c3aed;

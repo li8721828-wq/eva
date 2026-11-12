@@ -22,7 +22,7 @@ import type { RuntimeEvolutionProposal } from '../shared/types/runtime-evolution
 import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/types/runtime-kernel'
 import type { ActivePlan } from '../shared/types/active-plan'
 import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
-import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
+import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
 import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
 import type { McpServerConfig, McpServerState } from '../shared/types/mcp'
 import type { SkillInventory, SkillRootKind } from '../shared/types/skill'
@@ -319,6 +319,7 @@ export interface EvaAPI {
     spec(input: SubmitSpecificationInput): Promise<RequirementRun>
     dsl(input: SubmitDslInput): Promise<RequirementRun>
     coding(input: SubmitCodingInput): Promise<RequirementRun>
+    verifyHost(input: SubmitHostVerificationInput): Promise<RequirementRun>
     resolveSpec(input: SubmitSpecificationResolutionInput): Promise<RequirementRun>
     abort(conversationId: string, runId?: string): Promise<void>
     showDocumentContextMenu(document: Pick<RequirementDocument, 'path'>): Promise<void>
@@ -330,6 +331,7 @@ export interface EvaAPI {
 const evaAPI: EvaAPI = {
   purpose: {
     generateDraft: (input) => invokeContract(IPC.PURPOSE_DRAFT_GENERATE, input),
+    generateHandoffDraft: (input) => invokeContract(IPC.PURPOSE_HANDOFF_DRAFT_GENERATE, input),
     cancelDraft: (requestId) => invokeContract(IPC.PURPOSE_DRAFT_CANCEL, requestId),
     list: (workspaceId) => invokeContract(IPC.PURPOSE_LIST, workspaceId),
     create: (workspaceId, input) => invokeContract(IPC.PURPOSE_CREATE, workspaceId, input),
@@ -649,6 +651,7 @@ const evaAPI: EvaAPI = {
     spec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, input),
     dsl: (input) => invokeContract(IPC.REQUIREMENT_DSL_SUBMIT, input),
     coding: (input) => invokeContract(IPC.REQUIREMENT_CODING_SUBMIT, input),
+    verifyHost: (input) => invokeContract(IPC.REQUIREMENT_HOST_VERIFY, input),
     resolveSpec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
     abort: (conversationId, runId) => invokeContract(IPC.REQUIREMENT_RUN_ABORT, conversationId, runId),
     showDocumentContextMenu: (document) => invokeContract(IPC.REQUIREMENT_DOCUMENT_CONTEXT_MENU, document),

@@ -129,18 +129,19 @@ function drainQueue(key: string): void {
     return
   }
 
-  queue.items.shift()
   if (item.kind === 'terminal') {
     // Let the last characters settle before the reply is finalized, so a
     // terminal event never truncates ink that is still animating in.
     queue.timer = window.setTimeout(() => {
       queue.timer = null
+      queue.items.shift()
       emit(item.event)
       drainQueue(key)
     }, FINAL_INK_SETTLE_MS)
     return
   }
 
+  queue.items.shift()
   emit(item.event)
   queue.timer = window.setTimeout(() => drainQueue(key), 0)
 }
@@ -154,6 +155,12 @@ function scheduleQueueDrain(key: string): void {
 export function enqueueStreamItem(item: QueuedStreamItem): void {
   const key = ownerOf(item)
   queueFor(key).items.push(item)
+  if (item.kind === 'event' && (item.event.type === 'ask_user_request' || item.event.type === 'ask_user_closed')) {
+    // A blocking interaction should arrive without waiting for visual text
+    // pacing. Commit preceding events in order, only for its own chat.
+    flushQueue(key)
+    return
+  }
   scheduleQueueDrain(key)
 }
 
@@ -177,18 +184,21 @@ export function dropQueuedItemsFor(conversationId: string): void {
   queues.delete(conversationId)
 }
 
+function flushQueue(key: string): void {
+  const queue = queues.get(key)
+  if (!queue) return
+  clearFlushTimer(queue)
+  queues.delete(key)
+  for (const item of queue.items) {
+    if (item.kind === 'text') {
+      emit({ type: 'text_delta', conversationId: item.conversationId, content: item.content })
+    } else {
+      emit(item.event)
+    }
+  }
+}
+
 /** Apply every queued item immediately, used when the listener unmounts. */
 export function flushRevealQueue(): void {
-  for (const queue of queues.values()) clearFlushTimer(queue)
-  for (const queue of queues.values()) {
-    for (const item of queue.items) {
-      if (item.kind === 'text') {
-        emit({ type: 'text_delta', conversationId: item.conversationId, content: item.content })
-      } else {
-        emit(item.event)
-      }
-    }
-    queue.items.length = 0
-  }
-  queues.clear()
+  for (const key of [...queues.keys()]) flushQueue(key)
 }

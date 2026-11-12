@@ -4,9 +4,33 @@ import path from 'path'
 import type { FileService, FileEntry } from '../tools'
 import type { FileAccessGrant } from '../../shared/types/file-access'
 import { evaluateSandboxPath } from './sandbox'
+import type { SandboxContext } from './sandbox/types'
 import { currentSandboxScope } from './sandbox/scope'
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
+
+export class FileAccessDenied extends Error {
+  constructor(requestedPath: string, readonly canonicalPath: string) {
+    super(`Access denied: ${requestedPath} is not within an authorized folder`)
+  }
+}
+
+// These grants belong to one validated tool invocation. Do not re-resolve
+// their roots as ordinary folder grants if a path is replaced with a link.
+const oneCallGrants = new WeakMap<FileAccessGrant, boolean>()
+
+export function createOneCallFileGrant(target: string, operation: 'read' | 'write', directory: boolean): FileAccessGrant {
+  const grant: FileAccessGrant = { path: target, access: operation === 'write' ? 'read-write' : 'read' }
+  oneCallGrants.set(grant, directory)
+  return grant
+}
+
+export function sandboxForFileOperation(sandbox: SandboxContext, grants: FileAccessGrant[]): SandboxContext {
+  const temporary = grants.filter((grant) => oneCallGrants.has(grant))
+  return temporary.length
+    ? { ...sandbox, extraAllowedPaths: [...sandbox.extraAllowedPaths, ...temporary.map((grant) => grant.path)] }
+    : sandbox
+}
 
 /** Expand the one cross-shell home shorthand before path validation. */
 export function expandHomePath(filePath: string): string {
@@ -67,13 +91,17 @@ async function normalizeAndValidate(
   ]
   const [canonicalCandidate, canonicalRoots] = await Promise.all([
     canonicalizePath(resolved),
-    Promise.all(roots.map(async (grant) => ({ ...grant, path: await canonicalizePath(grant.path) }))),
+    Promise.all(roots.filter((grant) => !oneCallGrants.has(grant)).map(async (grant) => ({ ...grant, path: await canonicalizePath(grant.path) }))),
   ])
   const matchingGrant = canonicalRoots.find((grant) => isWithinRoot(canonicalCandidate, grant.path))
-  if (!matchingGrant || (requiresWrite && matchingGrant.access !== 'read-write')) {
-    throw new Error(`Access denied: ${filePath} is not within an authorized folder`)
+  if (matchingGrant && (!requiresWrite || matchingGrant.access === 'read-write')) return canonicalCandidate
+  for (const grant of grants) {
+    const directory = oneCallGrants.get(grant)
+    if (directory === undefined || (requiresWrite && grant.access !== 'read-write')) continue
+    if (!isWithinRoot(resolved, grant.path) || !isWithinRoot(canonicalCandidate, grant.path)) continue
+    if (directory || !path.relative(grant.path, canonicalCandidate)) return canonicalCandidate
   }
-  return canonicalCandidate
+  throw new FileAccessDenied(filePath, canonicalCandidate)
 }
 
 function isBinaryBuffer(buffer: Buffer): boolean {
@@ -132,7 +160,7 @@ export class FileServiceImpl implements FileService {
     let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
     const sandboxScope = currentSandboxScope()
     if (sandboxScope) {
-      const decision = evaluateSandboxPath(resolved, 'write', sandboxScope)
+      const decision = evaluateSandboxPath(resolved, 'write', sandboxForFileOperation(sandboxScope, grants))
       if (!decision.allowed) throw new Error(decision.reason)
     }
     const dir = path.dirname(resolved)
@@ -148,7 +176,7 @@ export class FileServiceImpl implements FileService {
     let resolved = await normalizeAndValidate(filePath, workspacePath, grants, true, fullFilesystemAccess)
     const sandboxScope = currentSandboxScope()
     if (sandboxScope) {
-      const decision = evaluateSandboxPath(resolved, 'write', sandboxScope)
+      const decision = evaluateSandboxPath(resolved, 'write', sandboxForFileOperation(sandboxScope, grants))
       if (!decision.allowed) throw new Error(decision.reason)
     }
     await fs.promises.mkdir(path.dirname(resolved), { recursive: true })
@@ -168,7 +196,7 @@ export class FileServiceImpl implements FileService {
       let size: number | undefined
 
       try {
-        const stat = await fs.promises.stat(entryPath)
+        const stat = await fs.promises.lstat(entryPath)
         size = stat.size
       } catch {
         // Ignore stat errors

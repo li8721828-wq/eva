@@ -271,7 +271,7 @@ export interface ToolApprovalRequest {
   /** Workspace the call targets; used to render the approval card. */
   workspacePath: string
   /** Why this call was classified as approval-required. */
-  category: 'workspace-write' | 'terminal-command' | 'mcp-call' | 'browser-control' | 'other'
+  category: 'file-access' | 'workspace-write' | 'terminal-command' | 'mcp-call' | 'browser-control' | 'other'
   /** A short, user-facing summary of the operation. */
   summary: string
   /** Optional detail line (e.g. the command text or file path preview). */
@@ -305,7 +305,7 @@ export interface ChatStreamEvent {
   /** The Agent actually selected for this response by the main process. */
   agentId?: string
   agentName?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'ask_user_request' | 'done' | 'error' | 'native_event'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'ask_user_request' | 'ask_user_closed' | 'done' | 'error' | 'native_event'
   messageId?: string
   content?: string
   /** True only when provisional text was protocol markup and must be discarded. */
@@ -326,6 +326,8 @@ export interface ChatStreamEvent {
   goalConfirmation?: GoalConfirmationRequest
   toolApproval?: ToolApprovalRequest
   askUser?: AskUserRequest
+  /** Identifies the question whose waiting slot was closed. */
+  askUserId?: string
   error?: string
   finishReason?: string
   usage?: ChatUsage

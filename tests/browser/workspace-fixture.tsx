@@ -7,6 +7,8 @@ import { useAgentStore } from '@/stores/use-agent-store'
 import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { READING_PREVIEW_MARKDOWN } from './reading-content'
 import type { AgentMarkdownRenderer } from '../../src/shared/types/agent'
+import type { ChatStreamEvent } from '../../src/shared/types/conversation'
+import type { RequirementRun, SubmitDslInput, SubmitHostVerificationInput, SubmitSpecificationResolutionInput } from '../../src/shared/types/requirement-engineering'
 
 // The actual app shell with renderer-only demonstration data; no production preload or model calls.
 const testWindow = window as any
@@ -14,17 +16,35 @@ const unsubscribe = () => () => {}
 const project = { id: 'project', name: '订单服务', path: 'D:/demo/orders', createdAt: 1, updatedAt: 1 }
 const conversation = { id: 'current', title: '订单退款与幂等处理', agentId: 'demo', mode: 'normal' as const, workspaceId: project.id, workspacePath: project.path, createdAt: 1, updatedAt: 1, messageCount: 2 }
 const writes: unknown[] = []
+let specDraft: RequirementRun | undefined
+let chatListener: ((event: unknown, payload: ChatStreamEvent) => void) | undefined
+const emitChat = (payload: ChatStreamEvent) => chatListener?.(null, payload)
+const question = '接下来要检查哪一段？'
 const providers = [{ id: 'demo', name: '开发连接', type: 'custom', isEnabled: true, defaultModel: 'coding-demo', models: [{ id: 'coding-demo', name: '编程模型' }] }, { id: 'reasoning-demo', name: '思考连接', type: 'deepseek', apiKey: 'fixture-only', isEnabled: true, defaultModel: 'deepseek-flash', models: [{ id: 'deepseek-flash', name: 'DeepSeek Flash' }] }]
 const api: Record<string, unknown> = {
   config: { set: async (key: string, value: unknown) => { writes.push({ key, value }) }, selectModel: async (providerId: string, model: string, reasoningSelection?: string) => { writes.push({ key: 'modelSelection', providerId, model, reasoningSelection }); const entry = providers.find(provider => provider.id === providerId)?.models.find(item => item.id === model); if (entry && reasoningSelection !== undefined) (entry as any).reasoningSelection = reasoningSelection } },
-  chat: { onStream: unsubscribe }, goal: { onStream: unsubscribe }, symposium: { onStream: unsubscribe },
+  chat: {
+    onStream: (listener: typeof chatListener) => { chatListener = listener; return () => { chatListener = undefined } },
+    decideAskUser: async (conversationId: string, askId: string, optionId: string) => {
+      testWindow.fixtureChoice = { conversationId, askId, optionId }
+      emitChat({ type: 'text_delta', conversationId, content: '已收到选择，继续检查。' })
+      return true
+    },
+  }, goal: { onStream: unsubscribe }, symposium: { onStream: unsubscribe },
   conversation: { onChanged: unsubscribe }, terminal: { onPanelVisibility: unsubscribe },
   task: { onStream: unsubscribe, getSnapshot: async (id: string) => {
     if (id === 'slow') return new Promise(resolve => { testWindow.completeSlowWorkspace = () => resolve({ status: 'running', goal: '不应出现在新会话的旧任务' }) })
     if (testWindow.failWorkspaceLoad) throw new Error('演示读取失败')
     return testWindow.fixtureSnapshot ?? null
   }, listArtifacts: async () => [] },
-  requirements: { onProgress: unsubscribe, listRuns: async () => [] },
+  requirements: {
+    onProgress: unsubscribe,
+    listRuns: async (id?: string) => specDraft && (!id || id === specDraft.conversationId) ? [specDraft] : [],
+    resolveSpec: async (input: SubmitSpecificationResolutionInput) => { testWindow.fixtureSpecAnswer = input; specDraft = undefined },
+    dsl: async (input: SubmitDslInput) => { testWindow.fixtureDslTarget = input },
+    verifyHost: async (input: SubmitHostVerificationInput) => { testWindow.fixtureHostAction = input },
+  },
+  file: { read: async (path: string) => { testWindow.fixtureFilePath = path; return 'diff --git a/Approval.java b/Approval.java' } },
   activePlan: { get: async () => null },
   provider: { list: async () => providers },
   purpose: { list: async () => [] },
@@ -55,5 +75,56 @@ testWindow.setReadingPreview = (renderer: AgentMarkdownRenderer, theme: 'light' 
   useAgentStore.setState({ agents: [agent] })
   useChatStore.setState({ currentConversationId: 'current', conversations: [conversation], messages: [{ id: 'reading-preview', conversationId: 'current', agentId: agent.id, agentName: agent.name, role: 'assistant', content: READING_PREVIEW_MARKDOWN, timestamp: 1 }] })
 }
+testWindow.showSpecReview = () => {
+  specDraft = {
+    id: 'fixture-spec', conversationId: conversation.id, conversationTitle: conversation.title,
+    status: 'awaiting-spec-resolution', round: 1, qualityScore: 95, qualityThreshold: 80, specQualityScore: 95,
+    documents: [], evaluations: [], clarificationQuestions: [], createdAt: '', updatedAt: '',
+    specReview: {
+      specification: { documentId: 'spec', sha256: 'fixture-spec-hash' }, contract: { documentId: 'contract', sha256: 'fixture-contract-hash' },
+      upstreamDocumentId: 'model', rules: [{ id: 'BR-001', summary: '未双签的订单不允许审批' }],
+    },
+    specResolutionQuestions: [{
+      id: 'fixture-approval', question: '关键业务规则与例外是否完整、准确？', category: 'specification', blocker: '',
+      options: ['确认关键规则并发布规格', '暂缓发布，返回规格修改'], recommendedIndex: -1,
+    }],
+  }
+  testWindow.setReadingPreview('enhanced', 'light')
+}
+testWindow.enterDslCommand = () => useChatStore.getState().setInputText('/dsl java-domain')
+testWindow.showHostResult = () => {
+  testWindow.showSpecReview()
+  specDraft = {
+    ...specDraft!, status: 'ready-for-implementation', specReview: undefined, specResolutionQuestions: [],
+    codingStatus: 'ready', codingGenerator: 'java-domain',
+    hostVerification: {
+      action: 'run', status: 'blocked', summary: '缺少 Maven 依赖 pilot:service:jar:1.0',
+      plan: { inputSha256: 'fixture-input', patchSha256: 'fixture-patch', changes: [{ path: 'Approval.java', change: 'modified' }], patchPath: `${project.path}/preview.patch` },
+    },
+  }
+  useAppStore.setState({ rightPanelVisible: true, rightPanelTab: 'requirements' })
+}
+testWindow.enterHostCommand = () => useChatStore.getState().setInputText('/verify-host run')
+testWindow.startLongQuestionTurn = (engine: 'pi' | 'deepseek-harness') => {
+  testWindow.setReadingPreview('enhanced', 'light')
+  useChatStore.setState({ streamingByConversation: {} })
+  testWindow.fixtureChoice = null
+  const native = { engine, runId: `question-${engine}`, timestamp: 0 }
+  emitChat({ conversationId: 'current', type: 'native_event', nativeEvent: {
+    ...native, sequence: 1, type: 'text_delta', messageId: 'checking',
+    content: Array.from({ length: 42 }, (_, index) => `第 ${index + 1} 项已检查，继续验证运行结果和依赖配置。`).join('\n\n'),
+  } })
+  emitChat({ conversationId: 'current', type: 'native_event', nativeEvent: {
+    ...native, sequence: 2, type: 'tool_start', toolCallId: 'ask-tool', name: 'ask_user',
+    data: { implementation: 'extension', arguments: { question } },
+  } })
+}
+testWindow.requestFixtureChoice = () => emitChat({
+  type: 'ask_user_request', conversationId: 'current',
+  askUser: {
+    id: 'fixture-question', question, requestedAt: Date.now(),
+    options: [{ id: 'opt_1', label: '检查启动' }, { id: 'opt_2', label: '检查接口' }],
+  },
+})
 createRoot(document.getElementById('root')!).render(<App />)
 setTimeout(() => { testWindow.uiReady = true }, 400)

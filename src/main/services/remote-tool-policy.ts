@@ -55,6 +55,7 @@ async function showLocalApproval(title: string, detail: string): Promise<boolean
 export function createRemoteToolApproval(context: RemoteToolPolicyContext): (request: ToolApprovalRequest) => Promise<ToolApprovalDecision> {
   return async (request) => {
     if (request.signal?.aborted) return { approved: false, message: 'The run was cancelled.' }
+    if (request.fileAccess) return { approved: false, message: 'Additional file access must be requested in a desktop conversation.' }
     const alwaysAsk = ['write_file', 'edit_file', 'execute_command', 'write_terminal'].includes(request.toolCall.name)
     if (!alwaysAsk && requiresApproval(request.toolCall.name, context.policy ?? 'safe') === null) {
       return { approved: true }

@@ -5,6 +5,7 @@ import { useAppStore } from '@/stores/use-app-store'
 import { useChatStore } from '@/stores/use-chat-store'
 import { Button } from '@/components/ui/Button'
 import { PurposeDraftAssistant } from './PurposeDraftAssistant'
+import { PurposeHandoffForm, PurposeMemoryView } from './PurposeHandoffForm'
 import { Input } from '@/components/ui/Input'
 import { Textarea } from '@/components/ui/Textarea'
 
@@ -65,6 +66,7 @@ export function PurposePanel({ workspaceId }: { workspaceId: string | null }) {
   const copy = copies[language]
   const currentConversationId = useChatStore(state => state.currentConversationId)
   const currentConversation = useChatStore(state => state.conversations.find(item => item.id === state.currentConversationId))
+  const conversations = useChatStore(state => state.conversations)
   const [items, setItems] = useState<Purpose[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
@@ -76,7 +78,6 @@ export function PurposePanel({ workspaceId }: { workspaceId: string | null }) {
   const [beforeAi, setBeforeAi] = useState<{ draft: typeof draft; notes: string } | null>(null)
   const [note, setNote] = useState(''), [noteKind, setNoteKind] = useState<'decision' | 'finding'>('decision')
   const [handoffOpen, setHandoffOpen] = useState(false)
-  const [handoff, setHandoff] = useState({ summary: '', blockers: '', nextAction: '' })
   const [check, setCheck] = useState<PurposePreflight | null>(null), [ack, setAck] = useState(false)
   const generation = useRef(0)
   const operationInFlight = useRef(false)
@@ -176,12 +177,16 @@ export function PurposePanel({ workspaceId }: { workspaceId: string | null }) {
         <label className="purpose-ack"><input type="checkbox" checked={ack} onChange={event => setAck(event.target.checked)} />{copy.ack}</label>
         <div className="purpose-actions"><Button size="sm" disabled={busy || !ack} onClick={() => void act(continuePurpose)}>{copy.continue}</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(async () => { setCheck(await window.eva.purpose.preflight(ref!)); setAck(false) })}>{copy.inspectAgain}</Button></div>
       </section>}
-      {handoffOpen && <form className="purpose-section purpose-form" onSubmit={event => { event.preventDefault(); void act(async () => { accept(await window.eva.purpose.handoff({ ...ref!, revision: purpose.revision, ...handoff })); setHandoffOpen(false); setHandoff({ summary: '', blockers: '', nextAction: '' }) }) }}><fieldset disabled={busy}>
-        <Field label={copy.summary} value={handoff.summary} onChange={summary => setHandoff({ ...handoff, summary })} required />
-        <Field label={copy.blockers} value={handoff.blockers} onChange={blockers => setHandoff({ ...handoff, blockers })} />
-        <Field label={copy.next} value={handoff.nextAction} onChange={nextAction => setHandoff({ ...handoff, nextAction })} required />
-        <div className="purpose-actions"><Button size="sm" type="submit">{copy.save}</Button><Button size="sm" type="button" variant="ghost" onClick={() => setHandoffOpen(false)}>{copy.cancel}</Button></div>
-      </fieldset></form>}
+      {handoffOpen && workspaceId && <PurposeHandoffForm
+        key={`${workspaceId}:${purpose.id}`} purpose={purpose} workspaceId={workspaceId}
+        conversations={conversations} language={language} labels={copy} busy={busy}
+        onClose={() => setHandoffOpen(false)}
+        onSave={input => void act(async () => {
+          accept(await window.eva.purpose.handoff(input))
+          setHandoffOpen(false)
+        })}
+      />}
+      {!handoffOpen && <PurposeMemoryView purpose={purpose} language={language} />}
       <section className="purpose-section"><h4>{copy.milestones.replace(/（.*| \(.*/, '')}</h4><p className="purpose-muted">{copy.review}</p><div className="purpose-milestones">{purpose.milestones.map(item => <Milestone key={`${item.id}:${purpose.revision}`} item={item} copy={copy} disabled={busy} onSave={updateMilestone} />)}</div></section>
       <section className="purpose-section"><h4>{copy.note}</h4>{!purpose.notes.length && <p className="purpose-muted">{copy.noNotes}</p>}{purpose.notes.slice(-10).reverse().map(item => <article className="purpose-note" key={item.id}><span className="purpose-muted">{copy[item.kind]} · {date(item.createdAt)}</span><p>{item.content}</p></article>)}
         <form onSubmit={event => { event.preventDefault(); void act(async () => { accept(await window.eva.purpose.note(ref!, purpose.revision, noteKind, note)); setNote('') }) }}><fieldset disabled={busy}>

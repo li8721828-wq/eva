@@ -227,7 +227,7 @@ export function NativeAgentView({
               compaction_start: '正在压缩原生上下文',
               compaction_end: '原生上下文压缩完成',
               retry: `原生请求恢复：第 ${item.data?.retry ?? ''} 次重试`,
-              session: item.data?.resumed ? '已续接原生会话' : '已创建原生会话',
+              session: item.data?.resumed ? `已续接 ${profile.label} 会话` : `已创建 ${profile.label} 会话`,
             }
             return (
               <div

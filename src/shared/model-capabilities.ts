@@ -1,6 +1,27 @@
-import { CONTEXT_WINDOW_TOKENS, getModelContextWindowTokens } from './constants'
+import { CONTEXT_WINDOW_TOKENS, CONTEXT_SAFETY_RESERVE_TOKENS, DEFAULT_MAX_TOKENS, getModelContextWindowTokens } from './constants'
 import type { ModelCapabilityProfile, ModelInfo, ModelProtocol, ProviderConfigEntry } from './types/provider'
 import { modelReasoningCapability } from './model-reasoning'
+import type { ExecutionEngineConfig } from './types/execution-engine'
+
+export function isOutputTokenLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
+/** Per-model budgets override engine defaults. Provider and context ceilings still apply. */
+export function resolveModelOutputBudget(
+  profile: ModelCapabilityProfile,
+  engine: Pick<ExecutionEngineConfig, 'id' | 'maxOutputTokens'> | undefined,
+  reasoning: boolean,
+): number {
+  const native = engine && engine.id !== 'eva'
+  const fallback = native ? engine.maxOutputTokens ?? 16_384 : reasoning ? 8_192 : DEFAULT_MAX_TOKENS
+  const requested = isOutputTokenLimit(profile.outputTokenBudget) ? profile.outputTokenBudget : fallback
+  const contextWindow = isOutputTokenLimit(profile.contextWindowTokens) ? profile.contextWindowTokens : getModelContextWindowTokens(profile.modelId)
+  const contextLimit = native
+    ? Math.max(256, Math.floor(contextWindow / 4))
+    : Math.max(1, contextWindow - CONTEXT_SAFETY_RESERVE_TOKENS - DEFAULT_MAX_TOKENS)
+  return Math.min(requested, contextLimit, isOutputTokenLimit(profile.maxOutputTokens) ? profile.maxOutputTokens : Infinity)
+}
 
 const NON_CHAT_MODEL_PATTERN = /(?:embedding|embed(?:ding)?|rerank|moderation|whisper|transcri(?:be|ption)|tts|text-to-speech|dall-e|image-generation|video-generation)/i
 const DEEPSEEK_PATTERN = /deepseek(?:[-_](?:v4|chat|reasoner|coder)|$)/i
@@ -62,29 +83,32 @@ export function inferModelCapabilities(
 }
 
 /**
- * Whether this exact route may receive image content parts. A declared or
- * probed value is authoritative and the identifier only prefills it, so a
- * gateway's vision model never has to win a name match to be used as one.
- * The Anthropic API family has always accepted images and needs no declaration
- * to send one.
+ * Whether this exact route may receive image content parts. Use the saved
+ * preference when set. Otherwise use capability metadata and the existing
+ * inference, including the Anthropic image-input default.
  */
 export function supportsImageInput(profile: ModelCapabilityProfile): boolean {
-  if (profile.providerType === 'anthropic') return true
-  return profile.supportsVision === true
+  return profile.visionEnabled ?? (profile.providerType === 'anthropic' || profile.supportsVision === true)
 }
 
 /**
- * A failed probe only reports that the check could not run. Keeping the
- * previous verdict prevents a gateway outage from silently downgrading a
- * verified route (or reviving a rejected one) until a probe actually completes.
+ * Tool probes do not test image input. Keep the previous vision metadata and
+ * user override. An inconclusive tool probe also keeps the last tool verdict.
  */
 export function mergeProbedCapabilities(
   previous: ModelCapabilityProfile | undefined,
   probed: ModelCapabilityProfile,
 ): ModelCapabilityProfile {
-  if (probed.probeStatus !== 'inconclusive' || previous?.supportsTools === undefined) return probed
-  return {
+  const profile = {
     ...probed,
+    supportsVision: previous?.supportsVision ?? probed.supportsVision,
+    visionEnabled: previous?.visionEnabled,
+    maxOutputTokens: previous?.maxOutputTokens ?? probed.maxOutputTokens,
+    outputTokenBudget: previous?.outputTokenBudget,
+  }
+  if (probed.probeStatus !== 'inconclusive' || previous?.supportsTools === undefined) return profile
+  return {
+    ...profile,
     supportsTools: previous.supportsTools,
     probeStatus: previous.probeStatus === 'supported' || previous.probeStatus === 'unsupported'
       ? previous.probeStatus

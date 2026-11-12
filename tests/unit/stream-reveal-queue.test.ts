@@ -55,6 +55,30 @@ describe('stream reveal queue', () => {
     expect(emitted.filter((event) => event.type === 'done')).toHaveLength(1)
   })
 
+  it('reveals an ask_user request immediately without rushing other conversations', () => {
+    const conversationId = 'conversation-a'
+    const ask = { type: 'ask_user_request', conversationId } as const
+    enqueueStreamItem({ kind: 'text', conversationId: 'conversation-b', content: '背景会话' })
+    enqueueStreamItem({ kind: 'text', conversationId, content: '说明'.repeat(1000) })
+    enqueueStreamItem({ kind: 'event', event: ask })
+
+    expect(emitted.map((event) => event.type)).toEqual(['text_delta', 'ask_user_request'])
+    expect(emitted.at(-1)).toEqual(ask)
+    expect(revealedText()).toBe('说明'.repeat(1000))
+    expect(queuedTextFor('conversation-b')).toBe('背景会话')
+  })
+
+  it('commits a terminal event already waiting for ink to settle before the card', () => {
+    const conversationId = 'conversation-a'
+    enqueueStreamItem({ kind: 'terminal', event: { type: 'done', conversationId } })
+    vi.advanceTimersByTime(5)
+    expect(emitted).toHaveLength(0)
+
+    enqueueStreamItem({ kind: 'event', event: { type: 'ask_user_request', conversationId } })
+    vi.advanceTimersByTime(1000)
+    expect(emitted.map((event) => event.type)).toEqual(['done', 'ask_user_request'])
+  })
+
   it('never leaks a previous round into the conversation that starts a new one', () => {
     const previousRound = '上一轮还没显示完的回复'
     enqueueStreamItem({ kind: 'text', conversationId: 'conversation-a', content: previousRound })

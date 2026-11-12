@@ -26,7 +26,7 @@ export function buildProviderProfile(input: ProviderTestConfig & { pricingGroup?
   const defaultModel = input.defaultModel.trim()
   const selectedModels = input.availableModels.filter((model) => input.selectedModelIds.includes(model.id))
   const models = defaultModel && !selectedModels.some((model) => model.id === defaultModel)
-    ? [{ id: defaultModel, name: defaultModel }, ...selectedModels]
+    ? [input.availableModels.find((model) => model.id === defaultModel) ?? { id: defaultModel, name: defaultModel }, ...selectedModels]
     : selectedModels
   return {
     id: input.id,

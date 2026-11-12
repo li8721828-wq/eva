@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { ChatParams, ChatChunk, ChatMessageInput, ToolDefinition } from '../../shared/types/provider'
+import type { ChatParams, ChatChunk, ChatMessageInput, ProviderModelOption, ToolDefinition } from '../../shared/types/provider'
 import type { LLMProvider, ProviderCreateOptions } from './base-provider'
 import { withRetry, classifyError } from './errors'
+import { inferModelCapabilities, isOutputTokenLimit } from '../../shared/model-capabilities'
 import { reasoningCapabilityForModel, reasoningRequest, selectedReasoning } from '../../shared/model-reasoning'
 
 export class AnthropicProvider implements LLMProvider {
@@ -313,8 +314,8 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
-  async listModels(): Promise<Array<{ id: string; name: string }>> {
-    const models: Array<{ id: string; name: string }> = []
+  async listModels(): Promise<ProviderModelOption[]> {
+    const models: ProviderModelOption[] = []
     let afterId: string | undefined
 
     do {
@@ -332,12 +333,18 @@ export class AnthropicProvider implements LLMProvider {
       }
 
       const payload = (await response.json()) as {
-        data?: Array<{ id: string; display_name?: string }>
+        data?: Array<{ id: string; display_name?: string; max_tokens?: number }>
         has_more?: boolean
         last_id?: string
       }
       for (const model of payload.data || []) {
-        models.push({ id: model.id, name: model.display_name || model.id })
+        models.push({
+          id: model.id,
+          name: model.display_name || model.id,
+          ...(isOutputTokenLimit(model.max_tokens) ? {
+            capabilities: { ...inferModelCapabilities(this.type, model.id), source: 'declared', maxOutputTokens: model.max_tokens },
+          } : {}),
+        })
       }
 
       afterId = payload.has_more ? payload.last_id : undefined

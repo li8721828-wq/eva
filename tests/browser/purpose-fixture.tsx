@@ -21,6 +21,16 @@ const api: PurposeAPI = {
     if (testWindow.delayPurposeDraft) return new Promise(resolve => { testWindow.completePurposeDraft = () => resolve({ ...result, draft: { ...result.draft, title: '不应覆盖的迟到草稿' } }) })
     return copy(result)
   },
+  generateHandoffDraft: async input => {
+    writes.push({ action: 'generateHandoffDraft', input })
+    return { summary: '接口和迁移文件已生成，迁移尚未执行。', blockers: '重复退款的集成测试仍失败。', nextAction: '先修复幂等测试，再核实迁移脚本。', messageCount: 2,
+      memory: [{ kind: 'decision', text: '沿用现有退款协议。', sources: input.conversationIds.map(conversationId => ({
+        conversationId, messageId: `message-${conversationId}`, timestamp: 1, sha256: 'a'.repeat(64),
+        title: useChatStore.getState().conversations.find(item => item.id === conversationId)!.title,
+        ...(input.includeExcerpts ? { excerpt: '沿用已确认的协议。' } : {}),
+      })) }],
+    }
+  },
   cancelDraft: async requestId => { writes.push({ action: 'cancelDraft', requestId }) },
   list: async () => copy(documents),
   create: async (_workspace, input) => {
@@ -35,13 +45,17 @@ const api: PurposeAPI = {
     Object.assign(purpose, copy(input)); writes.push({ action: 'update', input }); return revise(purpose)
   },
   note: async (ref, _revision, kind, content) => { const purpose = find(ref.purposeId); purpose.notes.push({ id: crypto.randomUUID(), kind, content, createdAt: Date.now() }); writes.push({ action: 'note' }); return revise(purpose) },
-  handoff: async input => { const purpose = find(input.purposeId); purpose.handoffs.push({ id: crypto.randomUUID(), revision: purpose.revision + 1, createdAt: Date.now(), summary: input.summary, blockers: input.blockers, nextAction: input.nextAction, code }); writes.push({ action: 'handoff' }); return revise(purpose) },
+  handoff: async input => { const purpose = find(input.purposeId); purpose.handoffs.push({ id: crypto.randomUUID(), revision: purpose.revision + 1, createdAt: Date.now(), summary: input.summary, blockers: input.blockers, nextAction: input.nextAction, code, memory: input.memory }); writes.push({ action: 'handoff', input }); return revise(purpose) },
   preflight: async ref => ({ revision: find(ref.purposeId).revision, currentCode: code, comparison: testWindow.purposeChanged ? 'changed' : 'match', latestHandoff: copy(find(ref.purposeId).handoffs.at(-1)) }),
   continue: async input => { writes.push({ action: 'continue', input }); return { id: 'continued', title: find(input.purposeId).title, purposeId: input.purposeId, agentId: '__auto__', mode: 'normal', workspaceId: 'project', workspacePath: 'D:/demo', permissionLevel: 'workspace', createdAt: 1, updatedAt: 1, messageCount: 1 } },
   attach: async (ref, id) => { writes.push({ action: 'attach' }); useChatStore.setState(state => ({ conversations: state.conversations.map(item => item.id === id ? { ...item, purposeId: ref.purposeId } : item) })) },
 }
 testWindow.eva = { purpose: api }
 testWindow.purposeWrites = writes
+testWindow.addHandoffConversations = () => useChatStore.setState(state => {
+  const current = state.conversations[0]
+  return { conversations: [current, { ...current, id: 'checks', title: '验证会话' }, { ...current, id: 'other', title: '其他主线会话', purposeId: 'other' }] }
+})
 testWindow.purposeLayout = () => useAppStore.getState()
 testWindow.setPurposeDocuments = (value: Purpose[]) => { documents = copy(value) }
 testWindow.setTestTheme = (theme: string) => { document.documentElement.dataset.theme = theme }

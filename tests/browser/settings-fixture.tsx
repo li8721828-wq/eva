@@ -7,19 +7,26 @@ import { useAppStore } from '@/stores/use-app-store'
 import { DEFAULT_APP_SERVER_CONFIG, DEFAULT_AUTOMATION_CONFIG } from '../../src/shared/types/automation'
 import { DEFAULT_NETWORK_CONFIG } from '../../src/shared/types/network'
 import { DEFAULT_EXECUTION_ENGINE } from '../../src/shared/types/execution-engine'
+import { inferModelCapabilities } from '../../src/shared/model-capabilities'
+import type { ProviderConfigEntry } from '../../src/shared/types/provider'
 
 // Only fixture data is available: this renderer has no production preload bridge.
-const providers = [
+const providers: ProviderConfigEntry[] = [
   {
     id: 'deepseek',
     type: 'deepseek',
     name: 'DeepSeek',
-    apiKey: '',
+    apiKey: 'fixture-key',
     isEnabled: true,
     defaultModel: 'deepseek-chat',
     models: [
-      { id: 'deepseek-chat', name: 'DeepSeek Chat' },
+      { id: 'deepseek-chat', name: 'DeepSeek Chat', capabilities: {
+        ...inferModelCapabilities('deepseek', 'deepseek-chat'),
+        maxOutputTokens: 32_768,
+        source: 'declared',
+      } },
       { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner' },
+      { id: 'visual-alias', name: 'Visual Alias', capabilities: inferModelCapabilities('deepseek', 'visual-alias', { supportsVision: true }) },
     ],
   },
   { id: 'openai', type: 'openai', name: 'OpenAI', apiKey: '', isEnabled: false, models: [] },
@@ -56,7 +63,14 @@ testWindow.eva = {
       testWindow.settingsWrites.push({ key, value })
     },
   },
-  provider: { list: async () => providers },
+  provider: {
+    list: async () => providers,
+    saveConfig: async (provider: ProviderConfigEntry) => {
+      const index = providers.findIndex(({ id }) => id === provider.id)
+      providers[index] = provider
+      testWindow.settingsWrites.push({ key: 'provider', value: provider })
+    },
+  },
   skills: { list: async () => ({ skills: [], diagnostics: [], roots: { global: 'D:/demo/skills', project: 'D:/demo/project/.eva/skills' } }) },
   plugins: { list: async () => [], marketplace: async () => [] },
   mcp: { list: async () => [] },

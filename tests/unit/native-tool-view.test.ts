@@ -2,6 +2,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { expect, it } from 'vitest'
 import { getToolLabel, ToolCallView } from '../../src/renderer/components/chat/ToolCallView'
+import { NativeAgentView } from '../../src/renderer/components/chat/NativeAgentView'
 import type { ToolCall } from '../../src/shared/types/conversation'
 
 function render(data: Record<string, unknown>) {
@@ -45,6 +46,19 @@ it('keeps Eva extensions distinct inside a native backend', () => {
 })
 it('does not claim native execution from the selected engine alone', () => {
   expect(render({ executionEngine: 'pi' })).not.toContain('Pi 原生')
+})
+
+it.each([
+  ['pi', 'Pi Agent'],
+  ['deepseek-harness', 'DeepSeek Harness'],
+] as const)('names the engine recorded for a %s session', (engine, label) => {
+  const html = renderToStaticMarkup(React.createElement(NativeAgentView, {
+    transcript: { engine, events: [{ engine, runId: 'run', sequence: 1, timestamp: 1, type: 'session' }] },
+    streaming: false,
+    finalContent: '',
+    renderMarkdown: (content) => content,
+  }))
+  expect(html).toContain(`已创建 ${label} 会话`)
 })
 
 it.each(['execute_command', 'pwsh', 'bash'])('shows the exact %s command without changing its tool name', name => {

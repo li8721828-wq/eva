@@ -1,6 +1,6 @@
 import { BrowserWindow } from 'electron'
 import { v4 as uuidv4 } from 'uuid'
-import type { AskUserOption, AskUserRequest } from '../../shared/types/conversation'
+import type { AskUserOption, AskUserRequest, ChatStreamEvent } from '../../shared/types/conversation'
 import { IPC } from '../../shared/ipc-channels'
 import { recordActivity } from './activity-log'
 
@@ -25,6 +25,7 @@ interface PendingAskUser {
   conversationId: string
   options: AskUserOption[]
   resolve: (outcome: AskUserOutcome) => void
+  notifyClosed: () => void
   timer: NodeJS.Timeout
 }
 
@@ -66,6 +67,16 @@ function releaseAskUserSlot(conversationId: string): void {
   displayedAskUsers.delete(conversationId)
 }
 
+function settlePendingAskUser(askId: string, outcome: AskUserOutcome, advance = true): void {
+  const pending = pendingAskUsers.get(askId)
+  if (!pending) return
+  clearTimeout(pending.timer)
+  pendingAskUsers.delete(askId)
+  if (outcome.status === 'cancelled') pending.notifyClosed()
+  pending.resolve(outcome)
+  if (advance) releaseAskUserSlot(pending.conversationId)
+}
+
 function cancelAllForConversation(conversationId: string, reason: string): void {
   const waiting = askUserWaiters.get(conversationId)
   askUserWaiters.delete(conversationId)
@@ -73,9 +84,7 @@ function cancelAllForConversation(conversationId: string, reason: string): void 
   for (const waiter of waiting ?? []) waiter.cancel(reason)
   for (const [askId, pending] of pendingAskUsers) {
     if (pending.conversationId !== conversationId) continue
-    clearTimeout(pending.timer)
-    pendingAskUsers.delete(askId)
-    pending.resolve({ status: 'cancelled', reason })
+    settlePendingAskUser(askId, { status: 'cancelled', reason }, false)
   }
 }
 
@@ -91,10 +100,7 @@ export function resolvePendingAskUser(askId: string, optionId: string, conversat
   if (!pending || pending.conversationId !== conversationId) return false
   const option = pending.options.find((candidate) => candidate.id === optionId)
   if (!option) return false
-  clearTimeout(pending.timer)
-  pendingAskUsers.delete(askId)
-  releaseAskUserSlot(pending.conversationId)
-  pending.resolve({ status: 'selected', optionId: option.id, label: option.label })
+  settlePendingAskUser(askId, { status: 'selected', optionId: option.id, label: option.label })
   return true
 }
 
@@ -125,25 +131,20 @@ export function createLocalAskUser(
       requestedAt: Date.now(),
     }
 
-    void recordActivity({
-      category: 'agent',
-      action: 'chat.ask_user_requested',
-      status: 'info',
-      summary: `等待用户选择：${prompt.question.slice(0, 60)}`,
-      conversationId,
-      workspaceId,
-    })
+    const send = (event: Pick<ChatStreamEvent, 'type' | 'askUser' | 'askUserId'>): boolean => {
+      if (window.isDestroyed()) return false
+      try {
+        window.webContents.send(IPC.CHAT_STREAM, { conversationId, ...event })
+        return true
+      } catch {
+        // The renderer can disappear between checking and sending.
+        return false
+      }
+    }
 
     return new Promise<AskUserOutcome>((resolve) => {
-      const settle = (outcome: AskUserOutcome): void => {
-        releaseAskUserSlot(conversationId)
-        resolve(outcome)
-      }
-
       const deliver = (): void => {
         const timer = setTimeout(() => {
-          if (!pendingAskUsers.has(askId)) return
-          pendingAskUsers.delete(askId)
           void recordActivity({
             category: 'agent',
             action: 'chat.ask_user_timeout',
@@ -152,20 +153,31 @@ export function createLocalAskUser(
             conversationId,
             workspaceId,
           })
-          settle({ status: 'cancelled', reason: '等待超时' })
+          settlePendingAskUser(askId, { status: 'cancelled', reason: '等待超时' })
         }, ASK_USER_TIMEOUT_MS)
-        pendingAskUsers.set(askId, { conversationId, options: prompt.options, resolve: settle, timer })
+        let delivered = false
+        pendingAskUsers.set(askId, {
+          conversationId,
+          options: prompt.options,
+          resolve,
+          timer,
+          notifyClosed: () => {
+            if (delivered) send({ type: 'ask_user_closed', askUserId: askId })
+          },
+        })
 
-        if (window.isDestroyed()) {
-          clearTimeout(timer)
-          pendingAskUsers.delete(askId)
-          settle({ status: 'cancelled', reason: '界面窗口已关闭' })
+        delivered = send({ type: 'ask_user_request', askUser: payload })
+        if (!delivered) {
+          settlePendingAskUser(askId, { status: 'cancelled', reason: '提问卡片未能送达界面' })
           return
         }
-        window.webContents.send(IPC.CHAT_STREAM, {
+        void recordActivity({
+          category: 'agent',
+          action: 'chat.ask_user_requested',
+          status: 'info',
+          summary: `等待用户选择：${prompt.question.slice(0, 60)}`,
           conversationId,
-          type: 'ask_user_request',
-          askUser: payload,
+          workspaceId,
         })
       }
 

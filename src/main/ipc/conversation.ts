@@ -1763,7 +1763,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   ipcMain.handle(
     IPC.CHAT_TOOL_APPROVAL_DECIDE,
-    async (_event, payload: { conversationId?: string; approvalId?: string; approved?: boolean; rememberScope?: 'once' | 'session' }): Promise<boolean> => {
+    async (event, payload: { conversationId?: string; approvalId?: string; approved?: boolean; rememberScope?: 'once' | 'session' }): Promise<boolean> => {
       const approvalId = typeof payload?.approvalId === 'string' ? payload.approvalId : ''
       const conversationId = typeof payload?.conversationId === 'string' ? payload.conversationId : ''
       const approved = payload?.approved === true
@@ -1774,6 +1774,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         approved,
         approved ? undefined : 'The user denied the tool call.',
         rememberScope,
+        { conversationId, webContentsId: event.sender.id },
       )
       if (!handled) return false
 

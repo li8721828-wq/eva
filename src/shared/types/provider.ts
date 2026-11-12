@@ -67,7 +67,13 @@ export interface ModelCapabilityProfile {
   supportsStreaming?: boolean
   supportsReasoning?: boolean
   supportsVision?: boolean
+  /** User override for sending images on this connection and model. */
+  visionEnabled?: boolean
   contextWindowTokens: number
+  /** Maximum output reported by the connection's model metadata. */
+  maxOutputTokens?: number
+  /** User-selected request budget. An absent value uses the engine default. */
+  outputTokenBudget?: number
   source: 'inferred' | 'declared' | 'probed'
   checkedAt: number
   probeStatus?: 'supported' | 'unsupported' | 'inconclusive'

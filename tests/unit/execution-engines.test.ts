@@ -22,6 +22,7 @@ import {
 import { DEFAULT_AUTOMATION_CONFIG } from '../../src/shared/types/automation'
 import { NetworkError } from '../../src/main/providers/errors'
 import { createLocalExecutionPolicy } from '../../src/main/services/execution-policy'
+import type { ToolApprovalDecision, ToolApprovalRequest } from '../../src/main/services/tool-dispatcher'
 import type { ReasoningSelection } from '../../src/shared/model-reasoning'
 
 vi.mock('../../src/main/services/supplier-pricing-service', () => ({
@@ -76,6 +77,7 @@ type Request = {
   messages: ChatMessageInput[]
   tools?: ToolDefinition[]
   nativeToolCallsOnly?: boolean
+  maxTokens?: number
   reasoning?: { enabled: boolean; effort?: string }
 }
 
@@ -99,10 +101,13 @@ async function fixture(
     reasoningSelection?: ReasoningSelection
     vision?: boolean
     contextWindow?: number
+    outputTokenBudget?: number
+    maxOutputTokens?: number
     noWorkspace?: boolean
     fullFilesystemAccess?: boolean
     localFullAccess?: boolean
     withImageExtension?: boolean
+    requestToolApproval?: (request: ToolApprovalRequest) => Promise<ToolApprovalDecision>
     responseFor?: (request: Request, index: number) => ChatChunk | Error
   } = {},
 ) {
@@ -161,10 +166,10 @@ async function fixture(
   const requests: Request[] = []
   let calls = 0
   const store = new AgentRunEventStore(path.join(dir, 'journal'))
-  const approve = vi.fn(async () => ({
+  const approve = vi.fn(options.requestToolApproval ?? (async () => ({
     approved: !options.denied,
     message: options.denied ? 'Denied in test' : undefined,
-  }))
+  })))
   const context = new ContextManager({
     durableMemory: 'Business reference from Eva.',
   })
@@ -219,13 +224,15 @@ async function fixture(
     contextManager: context,
     workspacePath: options.noWorkspace ? '' : dir,
     fullFilesystemAccess: options.fullFilesystemAccess,
-    ...(options.vision || options.contextWindow
+    ...(options.vision || options.contextWindow || options.outputTokenBudget || options.maxOutputTokens
       ? {
           providerRegistry: {
             getModelCapabilities: () => ({
               supportsVision: Boolean(options.vision),
               supportsTools: true,
               contextWindowTokens: options.contextWindow || 128000,
+              outputTokenBudget: options.outputTokenBudget,
+              maxOutputTokens: options.maxOutputTokens,
             }),
           } as never,
         }
@@ -275,6 +282,19 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect(f.requests[0].reasoning).toEqual(reasoningSelection === 'default' ? undefined : { enabled: reasoningSelection !== 'none', effort: reasoningSelection })
       } finally { await f.close() }
     }, 15_000)
+    it('sends a per-model output budget above the engine default and below the upstream cap', async () => {
+      const f = await fixture(engine, [answer], {
+        contextWindow: 1_000_000,
+        outputTokenBudget: 65_536,
+        maxOutputTokens: 32_768,
+      })
+      try {
+        const events = await collect(f.runner)
+        expect(events.filter(event => event.type === 'error')).toEqual([])
+        expect(f.requests[0]?.maxTokens).toBe(32_768)
+      } finally { await f.close() }
+    }, 15_000)
+
     it('carries extension image results into the native feed and the tool result', async () => {
       const f = await fixture(engine, [call('generate_image', 'img-1', {}), answer], {
         allowedTools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'execute_command', 'inspect_runtime', 'generate_image'],
@@ -574,6 +594,12 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect(JSON.stringify(f.requests[0])).toContain(
           'Business reference from Eva.',
         )
+        expect(JSON.stringify(f.requests[0].messages)).toContain(
+          'ask for the specific missing input or configuration change',
+        )
+        expect(JSON.stringify(f.requests[0].messages)).not.toContain(
+          'Use ask_user',
+        )
         expect(JSON.stringify(f.requests[0])).not.toContain(
           'Eva Platform Capabilities',
         )
@@ -718,6 +744,46 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect(f.oldCore).not.toHaveBeenCalled()
       } finally {
         await f.close()
+      }
+    }, 15_000)
+    it('reads an external file only for the native call with scoped approval', async () => {
+      const external = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'eva-native-external-')))
+      const allowed = path.join(external, 'approved.txt')
+      const sibling = path.join(external, 'sibling.txt')
+      try {
+        await fs.writeFile(allowed, 'approved native file content')
+        await fs.writeFile(sibling, 'unapproved sibling content')
+        const f = await fixture(engine, [
+          call('read', 'allowed', argsFor(engine, allowed)),
+          call('read', 'repeated', argsFor(engine, allowed)),
+          call('read', 'sibling', argsFor(engine, sibling)),
+          answer,
+        ], {
+          requestToolApproval: async ({ toolCall, fileAccess }) => ({
+            approved: true,
+            fileAccessApproved: toolCall.id === 'allowed' && fileAccess?.path === allowed && fileAccess.operation === 'read' && !fileAccess.directory,
+          }),
+        })
+        try {
+          const events = await collect(f.runner)
+          expect(events.filter((event) => event.type === 'error')).toEqual([])
+          expect(events.filter((event) => event.type === 'tool_result').map((event) => event.toolResult)).toEqual([
+            expect.objectContaining({ isError: false, result: expect.stringContaining('approved native file content') }),
+            expect.objectContaining({ isError: true, result: expect.stringContaining('Access denied') }),
+            expect.objectContaining({ isError: true, result: expect.stringContaining('Access denied') }),
+          ])
+          expect(f.approve.mock.calls.map(([request]) => request.fileAccess)).toEqual([
+            { path: allowed, operation: 'read', directory: false },
+            { path: allowed, operation: 'read', directory: false },
+            { path: sibling, operation: 'read', directory: false },
+          ])
+          expect(f.oldCore).not.toHaveBeenCalled()
+        } finally {
+          await f.close()
+        }
+      } finally {
+        await Promise.all([fs.rm(allowed, { force: true }), fs.rm(sibling, { force: true })])
+        await fs.rmdir(external)
       }
     }, 15_000)
     it('keeps the exact write-path restriction and omits the native shell', async () => {

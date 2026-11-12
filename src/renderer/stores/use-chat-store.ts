@@ -838,6 +838,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         break
       }
 
+      case 'ask_user_closed': {
+        const askUserId = event.askUserId
+        if (!askUserId) break
+        set((s) => {
+          const stream = s.streamingByConversation[conversationId]
+          if (!stream || stream.askUser?.id !== askUserId) return s
+          return {
+            streamingByConversation: {
+              ...s.streamingByConversation,
+              [conversationId]: { ...stream, askUser: undefined },
+            },
+          }
+        })
+        break
+      }
+
       case 'reasoning_delta': {
         if (event.content) {
           set((s) => {

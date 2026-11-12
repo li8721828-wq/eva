@@ -52,6 +52,7 @@ interface Options {
   instructions: string
   tools: ToolDefinition[]
   contextWindow: number
+  maxTokens: number
   supportsVision: boolean
   signal: AbortSignal
   sandbox: SandboxContext | null
@@ -150,10 +151,7 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
   let providerFailure: ProviderError | undefined
   let latestTranscript = o.history
   let offeredNativeTools = new Set<string>()
-  const maxTokens = Math.min(
-    o.engine.maxOutputTokens ?? 16384,
-    Math.max(256, Math.floor(o.contextWindow / 4)),
-  )
+  const { maxTokens } = o
   const capabilities = {
     plan:
       allowed.includes('create_execution_plan') ||

@@ -250,7 +250,7 @@ describe('AgentRunner adaptive tool budget', () => {
     expect(events.some((event) => event.type === 'tool_call' && (event as { toolCall?: { name?: string } }).toolCall?.name === 'execute_command')).toBe(false)
   })
 
-  it('continues a provider-truncated response without imposing a max token request', async () => {
+  it.each([undefined, 24_000])('continues a provider-truncated response with output budget %s', async (outputTokenBudget) => {
     let request = 0
     const requestedMaxTokens: Array<number | undefined> = []
     const provider = {
@@ -269,6 +269,7 @@ describe('AgentRunner adaptive tool budget', () => {
     const runner = new AgentRunner({
       agentConfig: { ...agent, tools: [], maxIterations: 2 },
       provider: provider as never,
+      providerRegistry: { getModelCapabilities: () => ({ contextWindowTokens: 128_000, outputTokenBudget }) } as never,
       toolRegistry: new ToolRegistry(),
       contextManager: new ContextManager(),
       workspacePath: 'D:\\workspace',
@@ -283,7 +284,7 @@ describe('AgentRunner adaptive tool budget', () => {
     })) events.push(event)
 
     expect(request).toBe(2)
-    expect(requestedMaxTokens).toEqual([4096, 4096])
+    expect(requestedMaxTokens).toEqual(Array(2).fill(outputTokenBudget ?? 4096))
     expect(events.find((event) => event.type === 'done')).toMatchObject({
       content: 'The first part completes here.',
       finishReason: 'stop',

@@ -7,7 +7,7 @@ import type { AgentConfig, AgentEvent } from '../../shared/types/agent'
 import type { ChatMessage, ChatUsage, ModelCallTiming, ResponseTiming, ToolCallTiming } from '../../shared/types/conversation'
 import type { ToolDefinition, ChatMessageInput, ChatChunk } from '../../shared/types/provider'
 import type { AskUserOutcome, AskUserPrompt } from '../services/ask-user-policy'
-import { ContextManager, chatMessageToInput } from './context'
+import { buildCapabilityRecoveryPrompt, ContextManager, chatMessageToInput } from './context'
 import { DEFAULT_MAX_ITERATIONS, getModelInputBudgetTokens } from '../../shared/constants'
 import { appendRollingToolEvidence, compactCompletedToolTransactions, compactToolResultForModel } from './tool-result-context'
 import { learnEnvironmentRuleFromFailure } from '../services/environment-profile-service'
@@ -19,13 +19,14 @@ import { resolveConnectionPricingMode, resolveRateCardUsageCost } from '../servi
 import { ensureProviderPricing } from '../services/supplier-pricing-service'
 import { formatProviderRequestFailure, type ProviderRequestSource } from '../services/provider-request-diagnostics'
 import { classifyError, InvalidRequestError } from '../providers/errors'
-import { describeModelCapabilityProfile, inferModelCapabilities, supportsImageInput } from '../../shared/model-capabilities'
+import { describeModelCapabilityProfile, inferModelCapabilities, resolveModelOutputBudget, supportsImageInput } from '../../shared/model-capabilities'
 import { randomUUID } from 'crypto'
 import type { AgentRunEventStore } from '../storage/agent-run-event-store'
 import type { AutomationConfig } from '../../shared/types/automation'
 import { resolveSandboxPolicy } from '../services/sandbox/policy'
 import { openSandboxScope, closeSandboxScope } from '../services/sandbox/scope'
-import { ToolDispatcher } from '../services/tool-dispatcher'
+import { ToolDispatcher, type ToolApprovalRequest, type ToolApprovalDecision } from '../services/tool-dispatcher'
+export type { ToolApprovalRequest, ToolApprovalDecision } from '../services/tool-dispatcher'
 import { executionApproval } from '../services/execution-policy'
 import { RunJournal } from './run-journal'
 import { RunWorkingState } from './run-working-state'
@@ -85,21 +86,6 @@ export interface AdaptiveToolBudget {
   maxIterations: number
 }
 
-export interface ToolApprovalRequest {
-  signal?: AbortSignal
-  toolCall: {
-    id: string
-    name: string
-    arguments: Record<string, unknown>
-  }
-  workspacePath: string
-}
-
-export interface ToolApprovalDecision {
-  approved: boolean
-  message?: string
-}
-
 export interface RunParams {
   messages: ChatMessage[]
   newMessage: ChatMessage
@@ -128,8 +114,6 @@ const ROLLING_TOOL_EVIDENCE_END = '--- End earlier completed tool evidence ---'
 // when it explicitly reports `length`; a natural `stop` must end the turn.
 const MAX_PROVIDER_CONTINUATIONS = 3
 const MAX_EMPTY_RESPONSE_RETRIES = 1
-const DEFAULT_AGENT_RESPONSE_TOKENS = 4_096
-const REASONING_AGENT_RESPONSE_TOKENS = 8_192
 const SEARCH_UNAVAILABLE_MARKER = '[SEARCH_UNAVAILABLE]'
 // Tool-generated screenshots need an independent bound from user attachments.
 const MAX_TOOL_REVIEW_IMAGE_BYTES = 32 * 1024 * 1024
@@ -350,7 +334,7 @@ export class AgentRunner {
       // this refresh is an untimed request to the supplier, and the first token
       // must not wait on it.
       void ensureProviderPricing(this.config.provider.id).catch(() => undefined)
-      const { agentConfig, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
+      const { agentConfig, provider, toolRegistry, contextManager, workspacePath, fileAccessGrants, fullFilesystemAccess } = this.config
       const configuredMaxIterations = this.config.maxIterations ?? agentConfig.maxIterations ?? DEFAULT_MAX_ITERATIONS
       // Detailed process output is a user-facing step mode. It must not turn
       // provider-private slow reasoning into the main visible activity, and
@@ -391,7 +375,7 @@ export class AgentRunner {
       const mcpToolNames = agentConfig.tools.includes('mcp:*')
         ? toolRegistry.getAll().filter((tool) => tool.definition.name.startsWith('mcp__')).map((tool) => tool.definition.name)
         : []
-      const configuredToolNames = agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool' && name !== 'mcp:*' && name !== 'spreadsheet')
+      const configuredToolNames = agentConfig.tools.filter((name) => name !== 'delegate_to_model_pool' && name !== 'mcp:*' && name !== 'spreadsheet' && name !== 'ask_user')
       const spreadsheetDefinition = toolRegistry.getDefinitionsByNames(['spreadsheet'])
       const allToolDefs: ToolDefinition[] = [
         ...(hasSpreadsheetAttachment ? spreadsheetDefinition : []),
@@ -480,7 +464,7 @@ export class AgentRunner {
       if (this.config.executionEngine && this.config.executionEngine.id !== 'eva') {
         const nativeHistory = safeAllHistory.filter((message) => !message.progressKind).map(chatMessageToInput)
         const nativeRole = !agentConfig.isBuiltIn || agentConfig.systemPromptCustomized ? agentConfig.systemPrompt : ''
-        const instructions = [nativeRole, contextManager.getNativeReferenceContext(),
+        const instructions = [nativeRole, contextManager.getNativeReferenceContext(), buildCapabilityRecoveryPrompt(activeToolDefs),
           this.config.allowedWritePaths?.length ? `Only these exact files may be modified: ${this.config.allowedWritePaths.join(', ')}.` : '',
           fileAccessGrants?.length ? `Additional authorized folders: ${fileAccessGrants.map((grant) => `${grant.path} (${grant.access})`).join(', ')}.` : '',
         ].filter(Boolean).join('\n\n')
@@ -488,6 +472,7 @@ export class AgentRunner {
           config: this.config, engine: { ...this.config.executionEngine }, history: nativeHistory, instructions,
           userMessageIds: [...params.messages, params.newMessage].filter(message => message.role === 'user').map(message => message.id),
           tools: activeToolDefs, contextWindow: modelCapabilities.contextWindowTokens || 128_000,
+          maxTokens: resolveModelOutputBudget(modelCapabilities, this.config.executionEngine, provider.supportsReasoning(agentConfig.model)),
           supportsVision: primarySupportsVision, signal: this.abortController.signal,
           sandbox: buildSandboxContext(this.config), runId: this.currentRunId, turnId: this.currentTurnId,
           onUsage: (usage, timing) => {
@@ -529,7 +514,8 @@ export class AgentRunner {
         workspacePath,
         fileAccessGrants,
         fullFilesystemAccess,
-        maxContextTokens: getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens),
+        maxContextTokens: getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens,
+          resolveModelOutputBudget(modelCapabilities, undefined, provider.supportsReasoning(agentConfig.model))),
         tools: activeToolDefs,
         systemPromptSuffix: spreadsheetPolicy + modelCapabilityPolicy,
       })
@@ -722,7 +708,7 @@ export class AgentRunner {
         const unavailableToolCalls = response.toolCalls.filter((toolCall) => !activeToolNames.has(toolCall.name))
         for (const toolCall of unavailableToolCalls) {
           const result: CompletedToolResult = {
-            result: `Tool ${toolCall.name} is not available to this agent. Continue with the tools that are available to you.`,
+            result: `Tool ${toolCall.name} is not available to this agent. Use an authorized alternative if available. If this capability is required, ask for the specific configuration or input needed to proceed.`,
             isError: true,
           }
           toolResults.set(toolCall.id, result)
@@ -1271,7 +1257,8 @@ export class AgentRunner {
     // count as input tokens.
     const modelCapabilities = this.config.providerRegistry?.getModelCapabilities(this.config.provider.id, agentConfig.model)
       || inferModelCapabilities(this.config.provider.type, agentConfig.model)
-    const modelInputBudget = getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens)
+    const maxTokens = resolveModelOutputBudget(modelCapabilities, undefined, provider.supportsReasoning(agentConfig.model))
+    const modelInputBudget = getModelInputBudgetTokens(agentConfig.model, modelCapabilities.contextWindowTokens, maxTokens)
     const fittedMessages = this.config.contextManager.fitMessages(
       messages,
       modelInputBudget,
@@ -1310,9 +1297,7 @@ export class AgentRunner {
           messages: fittedMessages,
           tools: tools.length > 0 ? tools : undefined,
           temperature: agentConfig.temperature,
-          maxTokens: provider.supportsReasoning(agentConfig.model)
-            ? REASONING_AGENT_RESPONSE_TOKENS
-            : DEFAULT_AGENT_RESPONSE_TOKENS,
+          maxTokens,
           stream: true,
           reasoning: options?.disableReasoning ? { enabled: false } : resolveProviderReasoning(provider, agentConfig.model,
             !this.shouldRequestProviderReasoning(agentConfig) ? { enabled: false }
@@ -1863,7 +1848,7 @@ export class AgentRunner {
 
     if (failures.length > 0) {
       const names = failures.map(({ toolCall }) => toolCall.name).join(', ')
-      return `Execution integrity notice: ${names} did not complete successfully. Do not claim any requested outcome from those calls succeeded, and do not fabricate the missing data. State the limitation plainly and identify the next concrete requirement (permission, service configuration, source, or user approval).`
+      return `Execution integrity notice: ${names} did not complete successfully. Use an authorized alternative if one can satisfy the request. If progress requires user action, ask for the specific prerequisite. Do not repeat an unchanged denied call or claim a result unsupported by the evidence.`
     }
 
     const successfulSearch = toolCalls.some((toolCall) => toolCall.name === 'web_search' && !toolResults.get(toolCall.id)?.isError)

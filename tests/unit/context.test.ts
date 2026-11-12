@@ -284,6 +284,24 @@ describe('ContextManager', () => {
       expect(prompt).toContain('do that work now with the available tools')
     })
 
+    it('guides blocked work to authorized alternatives and offers choices only when ask_user is available', () => {
+      const agent: AgentConfig = {
+        id: 'recovery-agent', name: 'Recovery Agent', description: '', role: 'custom', systemPrompt: 'Base instructions.',
+        model: 'test-model', providerId: 'test-provider', tools: [], maxIterations: 4,
+        temperature: 0, isBuiltIn: false, createdAt: 0, updatedAt: 0,
+      }
+      const withoutChoices = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [])
+      const withChoices = cm.buildSystemPrompt(agent, 'C:\\workspace', undefined, false, [
+        { name: 'ask_user', description: 'Ask for a choice', parameters: { type: 'object' } },
+      ])
+
+      expect(withoutChoices).toContain('use an authorized alternative that can satisfy the request')
+      expect(withoutChoices).toContain('ask for the specific missing input or configuration change')
+      expect(withoutChoices).not.toContain('Use ask_user')
+      expect(withChoices).toContain('Use ask_user when the user needs to choose between concrete alternative inputs or approaches')
+      expect(withChoices).toContain('Permission changes require an application approval, regardless of the answer to ask_user')
+    })
+
     it('asks for a plan plus numbered step reports when detailed process output is on', () => {
       const agent: AgentConfig = {
         id: 'detailed-agent', name: 'Detailed Agent', description: 'Test agent', role: 'custom', systemPrompt: 'Base instructions.',

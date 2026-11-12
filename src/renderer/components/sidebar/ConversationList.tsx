@@ -7,7 +7,7 @@ import { useWorkspaceStore } from '@/stores/use-workspace-store'
 import { shellCopy } from '@/lib/shell-copy'
 import { cn } from '@/lib/utils'
 import { useShallow } from 'zustand/react/shallow'
-import { Target, AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageSquare, Plus, Trash2, UsersRound, XCircle } from 'lucide-react'
+import { AlertTriangle, Archive, ArchiveRestore, CheckCircle2, Loader2, MessageSquare, Plus, Trash2, UsersRound, XCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Dialog, DialogClose, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog'
 import { ScrollArea } from '@/components/ui/ScrollArea'
@@ -210,7 +210,6 @@ export function ConversationList({ className }: ConversationListProps) {
                   <span className="truncate">{workspace.name}</span>
                   <span className="ml-auto text-xs leading-5 text-zinc-400">{workspaceConversations.length}</span>
                 </button>
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" title={`${workspace.name} · ${copy.purposes}`} aria-label={`${workspace.name} · ${copy.purposes}`} onClick={() => { setActiveWorkspaceId(workspace.id); useAppStore.getState().openPurposeWorkspace() }}><Target className="h-3.5 w-3.5" /></Button>
                 <Button
                   variant="ghost"
                   size="icon"
