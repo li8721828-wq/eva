@@ -1,4 +1,4 @@
-import type { SpecAcceptanceCase, SpecContract } from '../../src/main/services/spec-contract'
+import { SPEC_ACCEPTANCE_VERSION, type SpecAcceptanceCase, type SpecContract } from '../../src/main/services/spec-contract'
 
 export const sampleDsl = `domain Sales
 version 1
@@ -48,7 +48,7 @@ function approvalCase(id: string, total: string, expect: SpecAcceptanceCase['exp
 export function approvalContract(id = 'FR-001', above = '100000.01'): SpecContract {
   const command = { entity: 'Order', command: 'Approve' }
   return {
-    version: 3,
+    version: SPEC_ACCEPTANCE_VERSION,
     rules: [{
       id,
       condition: '财务审批，金额达到 100000 元且已双签',
@@ -58,6 +58,7 @@ export function approvalContract(id = 'FR-001', above = '100000.01'): SpecContra
         { ...command, id: 'BR-002', kind: 'boolean', rule: 'DualSignature', field: 'dualSigned', operator: '==', value: true },
         { ...command, id: 'BR-003', kind: 'actor', actor: 'Finance' },
         { ...command, id: 'BR-004', kind: 'state', state: 'Pending' },
+        { id: 'BR-005', kind: 'initial-state', entity: 'Order', state: 'Pending' },
       ],
       cases: [
         approvalCase('AT-001', '99999.99', { reject: 'rule', rule: 'MinimumTotal' }),
@@ -73,8 +74,9 @@ export function approvalContract(id = 'FR-001', above = '100000.01'): SpecContra
 
 export function approvalCriticalRules(id = 'FR-001'): string {
   return `## 关键规则与例外
-- BR-001 [${id}] [numeric] 金额达到 100000 元
-- BR-002 [${id}] [boolean] 未双签的订单不允许审批
-- BR-003 [${id}] [actor] 仅财务角色可以审批
-- BR-004 [${id}] [state] 仅待审批状态的订单可以审批`
+- BR-001 [${id}] [numeric] \`Order.Approve.MinimumTotal total >= 100000\`
+- BR-002 [${id}] [boolean] \`Order.Approve.DualSignature dualSigned == true\`
+- BR-003 [${id}] [actor] \`Order.Approve actor = Finance\`
+- BR-004 [${id}] [state] \`Order.Approve from = Pending\`
+- BR-005 [${id}] [initial-state] \`Order initial = Pending\``
 }

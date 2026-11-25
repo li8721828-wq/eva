@@ -7,6 +7,7 @@ import {
   type NativeTranscriptItem,
 } from '../../../shared/native-agent-transcript'
 import { ToolActivityList } from './ToolActivityList'
+import { ConversationActivity } from './ConversationActivity'
 import { ReferenceImagePreview, type PreviewImage } from './ReferenceImagePreview'
 import { groupToolActivity } from '@/lib/execution-activity'
 import { canonicalToolName } from '../../../shared/tool-semantics'
@@ -129,7 +130,7 @@ export function NativeAgentView({
   transcript: NativeAgentTranscript
   finalContent: string
   streaming: boolean
-  renderMarkdown(content: string): ReactNode
+  renderMarkdown(content: string, streaming?: boolean): ReactNode
   collapsible?: boolean
 }) {
   const profile = NATIVE_AGENT_PRESENTERS[transcript.engine]
@@ -150,7 +151,8 @@ export function NativeAgentView({
   const lastMessage = [...items]
     .reverse()
     .find((item) => item.kind === 'message' && item.content)
-  const visibleItems = items.filter(item => item !== lastMessage || item.content !== finalContent)
+  const visibleItems = items.filter(item => (item !== lastMessage || item.content !== finalContent)
+    && (!collapsible || item.kind !== 'status' || item.eventType !== 'session'))
   const hasDetails = visibleItems.some(item => item.kind === 'message' ? Boolean(item.content) : item.kind !== 'status' || item.eventType !== 'session')
   const renderItem = (item: NativeTranscriptItem) => {
           if (item.kind === 'message') {
@@ -161,7 +163,7 @@ export function NativeAgentView({
               return null
             return (
               <div key={item.id} className="activity-narration" data-native-message={item.id}>
-                {renderMarkdown(item.content)}
+                {renderMarkdown(item.content, streaming && item === items.at(-1))}
               </div>
             )
           }
@@ -315,19 +317,18 @@ export function NativeAgentView({
       <NativeResultImages images={nativeResultImages(items)} />
     </div>
   </section>
-  if (!hasDetails && !streaming) return null
+  if (!hasDetails) return null
   const groups = groupToolActivity(visibleItems.filter(item => item.kind !== 'message' || Boolean(item.content)))
-  return <section className="execution-feed native-agent-feed chronological-activity" data-native-agent={transcript.engine} aria-label={`${profile.label} 执行过程`}>
-    {groups.map(group => group.kind === 'tools'
-      ? <ToolActivityList key={group.id} toolCount={group.items.length}
+  return <ConversationActivity nativeEngine={transcript.engine} label={`${profile.label} 执行过程`} items={groups.map(group => group.kind === 'tools'
+      ? { id: group.id, kind: 'tools',
+          attachments: <NativeResultImages images={nativeResultImages(group.items)} />,
+          content: <ToolActivityList toolCount={group.items.length}
           streaming={streaming && group.items.some(item => item.status === 'running')}
           errorCount={group.items.filter(item => item.status === 'failed' || item.status === 'rejected').length}
           unconfirmedCount={streaming ? 0 : group.items.filter(item => item.status === 'running').length}
           commandsOnly={group.items.every(item => canonicalToolName(item.name || '') === 'execute_command')}
-          attachments={<NativeResultImages images={nativeResultImages(group.items)} />}>
+          >
           {group.items.map(renderItem)}
-        </ToolActivityList>
-      : renderItem(group.item))}
-    {streaming && !hasDetails && <Loader2 className="h-3 w-3 animate-spin" aria-label="原生运行中" />}
-  </section>
+        </ToolActivityList> }
+      : { id: group.id, kind: 'item', content: renderItem(group.item) })} />
 }

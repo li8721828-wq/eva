@@ -9,7 +9,7 @@ import { RequirementRunRepository } from '../../src/main/services/requirement-ru
 import { mavenDiagnostic } from '../../src/main/services/codegen/maven-host-process'
 import { parseMavenHostTarget } from '../../src/main/services/codegen/maven-host-verification'
 import { parseSpecContract, type SpecContract } from '../../src/main/services/spec-contract'
-import type { RequirementProgress, RequirementRun } from '../../src/shared/types/requirement-engineering'
+import type { RequirementProgress, RequirementRun, RequirementUnresolvedItem } from '../../src/shared/types/requirement-engineering'
 
 import { approvalContract, approvalCriticalRules, sampleDsl } from '../fixtures/approval-codegen'
 import { adaptedApprovalHandler, approvalHandlerTests, hostHandlerPath, hostModulePom, hostReactorPom, hostTestClass, mavenHostModule, originalApprovalHandler } from '../fixtures/maven-host-approval'
@@ -50,18 +50,23 @@ async function fixture() {
   const control = {
     blocked: false, finalSpecBlocked: false, dslBlocked: false, dsl: sampleDsl, specId: 'FR-001',
     failDimension: '', above: '100000.01', contract: undefined as SpecContract | undefined,
+    contradictFinalReadiness: false,
+    assess: undefined as ((dimension: string, prompt: string) => string) | undefined,
   }
   const prompts: string[] = []
   const requests: string[] = []
   const provider = {
+    type: 'custom',
     async chatComplete(request: { messages: Array<{ content: string }> }) {
       prompts.push(request.messages.at(-1)!.content)
       requests.push(dimension)
       if (dimension === control.failDimension) throw new Error('fixture model interrupted')
       let content = padding
-      if (dimension.startsWith('final-readiness') || dimension.startsWith('round-')) {
+      if (dimension.startsWith('final-readiness') || dimension.startsWith('round-') || dimension.startsWith('clarification-re')) {
         const gaps = control.blocked ? [{ id: 'U-1', fact: '审批人未确定', impact: '无法验收', requiredDecision: '确定审批人', blocking: true, options: ['负责人', '财务'] }] : []
-        content = `SCORE: 96\nREADINESS: ${control.blocked ? 'BLOCKED' : 'READY'}\nUNRESOLVED_ITEMS_JSON:\n${JSON.stringify(gaps)}\nBLOCKERS:\n- ${control.blocked ? '审批人未确定' : '无'}\nASSESSMENT:\n已检查。`
+        const listsBlocker = control.blocked || (dimension.startsWith('final-readiness') && control.contradictFinalReadiness)
+        content = `SCORE: 96\nREADINESS: ${control.blocked ? 'BLOCKED' : 'READY'}\nUNRESOLVED_ITEMS_JSON:\n${JSON.stringify(gaps)}\nBLOCKERS:\n- ${listsBlocker ? '审批人未确定' : '无'}\nASSESSMENT:\n已检查。`
+        if (control.assess) content = control.assess(dimension, request.messages.at(-1)!.content)
       }
       if (dimension === 'modeling-plan') content = 'STANDARDS: EARS, BDD\n' + padding
       if (dimension === 'ears-spec') content = 'EARS\n' + padding
@@ -87,7 +92,10 @@ async function fixture() {
       addMessage: vi.fn(async () => undefined),
     },
   }
-  const service = new RequirementEngineeringService({ get: () => provider } as never, undefined, { storage: storage as never, runs })
+  const service = new RequirementEngineeringService({
+    get: () => provider,
+    getModelCapabilities: () => undefined,
+  } as never, undefined, { storage: storage as never, runs })
   const progress = (event: RequirementProgress) => {
     if (event.phase === 'started' && event.document) dimension = event.document.dimension
   }
@@ -106,6 +114,148 @@ async function fixture() {
   return { root, workspacePath, conversations, conversation, input, runs, service, progress, prompts, requests, control, model, spec, buildSpec, confirm }
 }
 
+it('keeps same-worktree continuation progress and Spec confirmation in the invoking conversation', async () => {
+  const f = await fixture()
+  const modeled = await f.model()
+  const continuation = { ...f.conversation, id: 'continuation' }
+  f.conversations.push(continuation)
+  const input = { conversationId: continuation.id }
+  const events: RequirementProgress[] = []
+  const draft = await f.service.buildSpecification(input, (event) => {
+    events.push(event)
+    f.progress(event)
+  })
+  expect(draft).toMatchObject({
+    id: modeled.id, conversationId: f.conversation.id, interactionConversationId: continuation.id,
+    status: 'awaiting-spec-resolution',
+  })
+  expect(new Set(events.map((event) => event.conversationId))).toEqual(new Set([continuation.id]))
+  expect(await f.service.list(continuation.id)).toMatchObject([{ id: draft.id, status: 'awaiting-spec-resolution' }])
+  const answers = [{ questionId: draft.specResolutionQuestions![0].id, optionIndex: 0 }]
+  await expect(f.service.resolveSpecificationBlockers({ ...f.input, runId: draft.id, answers }))
+    .rejects.toThrow('没有可提交')
+  await f.service.abort(f.conversation.id, draft.id)
+  expect((await f.runs.readManifest(draft.id))?.status).toBe('awaiting-spec-resolution')
+
+  const foreign = path.join(f.root, 'foreign-worktree')
+  await fs.mkdir(foreign)
+  continuation.workspacePath = foreign
+  expect(await f.service.list(continuation.id)).toEqual([])
+  expect((await f.service.list(f.conversation.id))[0].interactionConversationId).toBeUndefined()
+  await expect(f.service.resolveSpecificationBlockers({ ...input, runId: draft.id, answers }))
+    .rejects.toThrow('没有可提交')
+  continuation.workspacePath = f.workspacePath
+  expect((await f.service.resolveSpecificationBlockers({ ...input, runId: draft.id, answers })).status)
+    .toBe('ready-for-implementation')
+  expect((await f.service.buildDsl(input, f.progress)).dslStatus).toBe('ready')
+  const nextDraft = await f.service.buildSpecification(input, f.progress)
+  await f.service.abort(continuation.id, nextDraft.id)
+  expect((await f.runs.readManifest(draft.id))?.status).toBe('cancelled')
+}, PIPELINE_TIMEOUT_MS)
+
+it('allows the owner to recover pending Spec confirmation after the continuation conversation is deleted', async () => {
+  const f = await fixture()
+  await f.model()
+  const continuation = { ...f.conversation, id: 'deleted-continuation' }
+  f.conversations.push(continuation)
+  const draft = await f.service.buildSpecification({ conversationId: continuation.id }, f.progress)
+  expect(draft.interactionConversationId).toBe(continuation.id)
+  f.conversations.pop()
+  expect(await f.service.list(continuation.id)).toEqual([])
+  expect((await f.service.list(f.conversation.id))[0].interactionConversationId).toBeUndefined()
+  expect((await f.confirm(draft)).status).toBe('ready-for-implementation')
+  expect((await f.runs.readManifest(draft.id))?.interactionConversationId).toBeUndefined()
+}, PIPELINE_TIMEOUT_MS)
+
+it('does not release a requirement when the final audit says READY and reports a blocker', async () => {
+  const f = await fixture()
+  f.control.contradictFinalReadiness = true
+  const run = await f.service.submit({ ...f.input, content: '订单审批需求' }, f.progress)
+  expect(run.status).toBe('review-required')
+  expect(run.clarificationQuestions).toEqual([])
+  expect(run.evaluations.at(-1)).toMatchObject({
+    blockers: ['审批人未确定'],
+    unresolvedItems: [{ id: 'U-FORMAT', blocking: true }],
+  })
+  expect(run.releases?.requirement).toBeUndefined()
+}, PIPELINE_TIMEOUT_MS)
+
+const approvalDecision: RequirementUnresolvedItem = {
+  id: 'U-1', key: 'approval-role', kind: 'decision', fact: '审批角色待定', impact: '权限验收受阻',
+  requiredDecision: '谁有审批权限？', blocking: true, options: ['财务主管', '应收会计'],
+}
+const privacyMaterial: RequirementUnresolvedItem = {
+  id: 'U-2', key: 'privacy-fields', kind: 'material', fact: '缺少敏感字段清单', impact: '脱敏验收受阻',
+  requiredDecision: '交付需脱敏的字段清单及逐字段规则', blocking: true, options: ['定稿前交付', '以后交付'],
+}
+
+function assessment(items: RequirementUnresolvedItem[], evidence: NonNullable<RequirementRun['evaluations'][number]['materialEvidence']> = []) {
+  const blocked = items.some(({ blocking }) => blocking)
+  return `SCORE: 96\nREADINESS: ${blocked ? 'BLOCKED' : 'READY'}\nUNRESOLVED_ITEMS_JSON:\n${JSON.stringify(items)}\nBLOCKERS:\n- ${blocked ? '仍有待处理项' : '无'}\nASSESSMENT:\n已检查。\nMATERIAL_EVIDENCE_JSON: ${JSON.stringify(evidence)}`
+}
+
+it('saves business decisions and waits for actual materials in the same requirement run', async () => {
+  const f = await fixture()
+  f.control.assess = () => assessment([approvalDecision, privacyMaterial])
+  const first = await f.service.submit({ ...f.input, content: '编制客户对账单' }, f.progress)
+  expect(first.clarificationQuestions).toHaveLength(1)
+  expect(first.pendingMaterials).toMatchObject([{ key: 'privacy-fields' }])
+  const requests = f.requests.length
+  const waiting = await f.service.answerClarifications({ ...f.input, runId: first.id,
+    answers: [{ questionId: first.clarificationQuestions[0].id, optionIndex: 0 }],
+  }, f.progress)
+  expect(waiting).toMatchObject({ id: first.id, status: 'awaiting-materials', round: 1, clarificationQuestions: [] })
+  expect(f.requests).toHaveLength(requests)
+  await expect(f.service.submit(f.input, f.progress)).rejects.toThrow('补充材料')
+  await expect(f.service.buildSpecification(f.input, f.progress)).rejects.toThrow('awaiting-materials')
+
+  f.control.assess = () => assessment([])
+  const stillWaiting = await f.service.submit({ ...f.input, content: '定稿前会交付。' }, f.progress)
+  expect(stillWaiting.status).toBe('awaiting-materials')
+  expect(stillWaiting.releases?.requirement).toBeUndefined()
+  const quote = '联系人手机号只记录末四位，姓名禁止记录原值。'
+  const file = path.join(f.root, 'privacy.txt')
+  await fs.writeFile(file, quote)
+  f.control.assess = (dimension, prompt) => {
+    if (dimension.startsWith('final-readiness')) return assessment([])
+    const sourceIds = [...prompt.matchAll(/补充需求材料 \[sourceId: ([^\]]+)\]/g)]
+    return assessment([], [{ key: 'privacy-fields', sourceId: sourceIds.at(-1)![1], quote }])
+  }
+  const ready = await f.service.submit({ ...f.input, attachments: [{ path: file, name: 'privacy.txt', kind: 'file', size: Buffer.byteLength(quote) }] }, f.progress)
+  expect(ready).toMatchObject({ id: first.id, status: 'ready-for-specification', pendingMaterials: [] })
+  expect(ready.releases?.requirement).toBeDefined()
+  expect(ready.documents.filter(({ dimension }) => dimension === 'supplement').at(-1)?.content).toContain(quote)
+  expect(await f.runs.listIds()).toEqual([first.id])
+}, PIPELINE_TIMEOUT_MS)
+
+it('rechecks repeated decisions internally and accepts only a cited later source for reopening', async () => {
+  const f = await fixture()
+  f.control.assess = (dimension, prompt) => {
+    if (dimension === 'round-1') return assessment([approvalDecision])
+    const wording = { ...approvalDecision, requiredDecision: '重新确认可审批的角色' }
+    const supplement = /补充需求材料 \[sourceId: ([^\]]+)\]/.exec(prompt)?.[1]
+    if (supplement) return assessment([{ ...wording, conflict: { sourceId: supplement, quote: '新的授权规定只允许应收会计审批。' } }])
+    return assessment([wording])
+  }
+  const first = await f.service.submit({ ...f.input, content: '订单审批需求' }, f.progress)
+  const revised = await f.service.answerClarifications({ ...f.input, runId: first.id,
+    answers: [{ questionId: first.clarificationQuestions[0].id, optionIndex: 0 }],
+  }, f.progress)
+  expect(revised.status).toBe('review-required')
+  expect(revised.clarificationQuestions).toEqual([])
+  expect(f.requests.filter((dimension) => dimension === 'clarification-recheck')).toHaveLength(1)
+  const reopened = await f.service.submit({ ...f.input, content: '新的授权规定只允许应收会计审批。' }, f.progress)
+  expect(reopened.status).toBe('awaiting-clarification')
+  expect(reopened.clarificationQuestions[0].id).not.toBe(first.clarificationQuestions[0].id)
+  f.control.assess = () => assessment([])
+  const ready = await f.service.answerClarifications({ ...f.input, runId: first.id,
+    answers: [{ questionId: reopened.clarificationQuestions[0].id, optionIndex: 1 }],
+  }, f.progress)
+  expect(ready.clarificationDecisions).toMatchObject([{ key: 'approval-role', choice: '应收会计' }])
+  expect(f.prompts.at(-1)).toContain('当前决定：应收会计')
+  expect(f.prompts.at(-1)).not.toContain('当前决定：财务主管')
+}, PIPELINE_TIMEOUT_MS)
+
 it.runIf(hasJdk)('runs the five public stages, compiles the Maven domain and checks workflow behavior without model calls after DSL', async () => {
   const f = await fixture()
   await f.spec()
@@ -121,8 +271,8 @@ it.runIf(hasJdk)('runs the five public stages, compiles the Maven domain and che
   expect(manifest).toMatchObject({ status: 'completed', adapter: 'java-domain', aiInvolvementAfterDsl: 'none' })
   expect(manifest.verification).toContain('领域行为测试通过')
   expect(manifest.generationCoverage.requiresTargetAdapter).toEqual([])
-  expect(manifest.specAcceptanceCasesPassed).toBe(6)
-  expect(manifest.generationCoverage.details.specAcceptanceVersion).toBe('3')
+  expect(manifest.specAcceptanceCasesPassed).toBe(7)
+  expect(manifest.generationCoverage.details.specAcceptanceVersion).toBe('4')
   expect(manifest.sourceSpecContractSha256).toBe(dsl.releases?.specification?.specContract?.sha256)
   expect(manifest.impact.spec.rules).toEqual(['FR-001'])
   const target = path.join(coded.workspacePackagePath!, 'coding', 'host-target.json')
@@ -186,9 +336,9 @@ it.runIf(process.env.EVA_VERIFY_MAVEN_HOST === '1' && hasJdk)('preflights a pinn
   const plan = preview.hostVerification!.plan!
   expect(plan.changes).toContainEqual({ path: hostHandlerPath, change: 'modified' })
   expect(plan.changes).toContainEqual({ path: `${mavenHostModule}/src/main/java/generated/sales/OrderWorkflow.java`, change: 'added' })
-  const patch = await fs.readFile(plan.patchPath, 'utf8')
-  expect(patch).toContain('OrderWorkflow.apply')
-  await fs.writeFile(plan.patchPath, patch + '\nchanged after preview\n')
+  const patch = await fs.readFile(plan.patchPath)
+  expect(patch.toString('utf8')).toContain('OrderWorkflow.apply')
+  await fs.writeFile(plan.patchPath, Buffer.concat([patch, Buffer.from('\nchanged after preview\n')]))
   const tampered = await f.service.verifyHost({ ...f.input, action: 'run' }, f.progress)
   expect(tampered.hostVerification).toMatchObject({ status: 'blocked', summary: expect.stringContaining('预览补丁已变更') })
   await fs.writeFile(plan.patchPath, patch)
@@ -197,11 +347,17 @@ it.runIf(process.env.EVA_VERIFY_MAVEN_HOST === '1' && hasJdk)('preflights a pinn
   expect(changed.hostVerification).toMatchObject({ status: 'blocked', summary: expect.stringContaining('重新预览') })
   await fs.writeFile(targetPath, JSON.stringify(target))
   const verified = await f.service.verifyHost({ ...f.input, action: 'run' }, f.progress)
-  expect(verified.hostVerification).toMatchObject({ status: 'passed', testCount: 3 })
+  expect(verified.hostVerification).toMatchObject({ status: 'passed', testCount: 3, integrationTests: [hostTestClass] })
   expect(verified.codingStatus).toBe('ready')
   expect(await fs.readFile(path.join(f.workspacePath, hostHandlerPath), 'utf8')).toBe(dirty)
   expect(git('status', '--porcelain', '-uno')).toBe(trackedChanges)
   expect(git('rev-parse', 'HEAD')).toBe(commit)
+
+  await fs.writeFile(targetPath, JSON.stringify({ ...target, adapterPatch: false }))
+  expect((await f.service.verifyHost({ ...f.input, action: 'preview' }, f.progress)).hostVerification?.status).toBe('preview-ready')
+  const disconnected = await f.service.verifyHost({ ...f.input, action: 'run' }, f.progress)
+  expect(disconnected.hostVerification).toMatchObject({ status: 'blocked', summary: expect.stringContaining('经业务代码调用了生成工作流') })
+  expect(disconnected.codingStatus).toBe('ready')
 
   const testPath = `${mavenHostModule}/src/test/java/${hostTestClass.replaceAll('.', '/')}.java`
   await write(testPath, approvalHandlerTests.replaceAll('@Test void', 'void'))
@@ -212,7 +368,7 @@ it.runIf(process.env.EVA_VERIFY_MAVEN_HOST === '1' && hasJdk)('preflights a pinn
   const noHostTests = await f.service.verifyHost({ ...f.input, action: 'run' }, f.progress)
   expect(noHostTests.hostVerification).toMatchObject({ status: 'blocked', summary: expect.stringMatching(/本次宿主测试报告|宿主测试未完整通过/) })
   expect(noHostTests.codingStatus).toBe('ready')
-}, 140_000)
+}, 300_000)
 
 it.runIf(hasJdk)('blocks release when a declared passing example fails its real guard', async () => {
   const f = await fixture()
@@ -335,11 +491,36 @@ it('keeps v2 acceptance contracts readable as historical artifacts', () => {
   expect(parseSpecContract(JSON.stringify(v2), '## FR-001 历史订单规格')).toMatchObject(v2)
 })
 
+it('marks host reports from the previous acceptance criteria as historical', async () => {
+  const f = await fixture()
+  const modeled = await f.model()
+  await f.runs.writeManifest({
+    ...modeled, hostVerification: { action: 'run', status: 'passed', testCount: 3, summary: '宿主验证通过' },
+  })
+  const [read] = await f.service.list(f.input.conversationId)
+  expect(read.hostVerification).toMatchObject({ status: 'stale', summary: expect.stringContaining('历史宿主验收') })
+}, PIPELINE_TIMEOUT_MS)
+
+it('blocks Spec review when the structured threshold differs from the published rule', async () => {
+  const f = await fixture()
+  await f.model()
+  const changed = approvalContract()
+  const numeric = changed.rules[0].checks!.find((check) => check.kind === 'numeric')
+  if (numeric?.kind !== 'numeric') throw new Error('Fixture needs a numeric rule')
+  numeric.threshold = '10000'
+  f.control.contract = changed
+  await expect(f.service.buildSpecification(f.input, f.progress)).rejects.toThrow('BR-001')
+  const run = (await f.service.list(f.input.conversationId))[0]
+  expect(run.specReview).toBeUndefined()
+  expect(run.releases?.specification).toBeUndefined()
+}, PIPELINE_TIMEOUT_MS)
+
 it('blocks DSL pending user confirmation and rejects a changed review artifact', async () => {
   const f = await fixture()
   await f.model()
   const draft = await f.service.buildSpecification(f.input, f.progress)
-  expect(draft.specReview?.rules.map(({ id }) => id)).toEqual(['BR-001', 'BR-002', 'BR-003', 'BR-004'])
+  expect(draft.specReview?.rules.map(({ id }) => id)).toEqual(['BR-001', 'BR-002', 'BR-003', 'BR-004', 'BR-005'])
+  expect(draft.specReview?.rules[0]).toMatchObject({ owner: 'FR-001', condition: 'Order.Approve.MinimumTotal total >= 100000' })
   expect(draft.releases?.specification).toBeUndefined()
   await expect(f.service.buildDsl(f.input, f.progress)).rejects.toThrow('请先在对话中确认')
   const contract = draft.documents.find(({ id }) => id === draft.specReview?.contract.documentId)!
@@ -525,4 +706,25 @@ it('rejects cross-worktree runs and links leading outside the workspace', async 
   await expect(f.service.submit({ conversationId: otherId, content: '另一个需求' }, f.progress))
     .rejects.toThrow('symbolic link or junction')
   expect(await fs.readdir(outside)).toEqual([])
+}, PIPELINE_TIMEOUT_MS)
+
+
+it('registers an idempotent material preview without releasing simulated evidence', async () => {
+  const f = await fixture()
+  f.control.assess = () => 'SCORE: 88\nREADINESS: BLOCKED\nUNRESOLVED_ITEMS_JSON:\n[{"id":"U-001","key":"sample","kind":"material","fact":"缺少样本","impact":"正式验收待补","requiredDecision":"提供客户清单","blocking":true}]\nBLOCKERS:\n- 样本待补\nASSESSMENT:\n待补材料。'
+  const run = await f.service.submit({ ...f.input, content: '客户清单需求' }, f.progress)
+  expect(run.status).toBe('awaiting-materials')
+  const input = { ...f.input, runId: run.id, action: 'simulate-materials' as const }
+  const preview = await f.service.submit(input, f.progress)
+  expect(preview.materialPreviewDocumentId).toBeTruthy()
+  expect(preview.status).toBe('awaiting-materials')
+  expect(preview.pendingMaterials).toHaveLength(1)
+  expect(preview.documents.filter(d => d.stage === 'source')).toHaveLength(1)
+  expect(preview.releases?.requirement).toBeUndefined()
+  const count = f.requests.length
+  const again = await f.service.submit(input, f.progress)
+  expect(again.materialPreviewDocumentId).toBe(preview.materialPreviewDocumentId)
+  expect(f.requests.length).toBe(count)
+  await expect(f.service.modelRequirements(f.input, f.progress)).rejects.toThrow()
+  await expect(f.service.submit({ ...input, runId: 'stale' }, f.progress)).rejects.toThrow('待补材料已变化')
 }, PIPELINE_TIMEOUT_MS)

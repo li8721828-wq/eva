@@ -69,9 +69,8 @@ interface Options {
 /** Native frameworks own prompts, transcripts, compaction, tool schemas and tool bodies. */
 export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
   const { config: c } = o
-  const reasoning = resolveProviderReasoning(c.provider, c.agentConfig.model, {
-    enabled: c.provider.supportsReasoning(c.agentConfig.model) && Boolean(c.agentConfig.showThinking),
-  })
+  const reasoning = resolveProviderReasoning(c.provider, c.agentConfig.model,
+    c.provider.supportsReasoning(c.agentConfig.model) && c.agentConfig.showThinking ? { enabled: true } : undefined)
   const workspacePath = c.workspacePath || os.homedir()
   const session = await prepareNativeSession({
     root: c.nativeSessionRoot,
@@ -248,6 +247,10 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
     })) {
       if (o.signal.aborted) break
       const p = request.params
+      if (request.method === 'provider-reasoning') {
+        if (typeof p.content === 'string' && p.content) yield { type: 'reasoning', content: p.content, reasoningSource: 'provider-response' }
+        continue
+      }
       if (request.method === 'event') {
         if (typeof p.type !== 'string')
           throw new ExecutionEngineError('原生事件缺少类型。')
@@ -326,6 +329,9 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
               if (o.signal.aborted) break
               firstResponse ??= Date.now() - started
               if (chunk.usage) usage = chunk.usage
+              // API-visible response only; SDK-internal/compaction reasoning
+              // never enters the public native transcript or chat surface.
+              if (p.purpose !== 'compaction' && chunk.reasoningContent) request.providerReasoning(chunk.reasoningContent)
               request.chunk(chunk as ChatChunk)
             }
             request.respond({})

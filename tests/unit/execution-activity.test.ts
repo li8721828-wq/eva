@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { groupToolActivity } from '../../src/renderer/lib/execution-activity'
 import { NativeAgentView } from '../../src/renderer/components/chat/NativeAgentView'
 import { MessageBubble } from '../../src/renderer/components/chat/MessageBubble'
+import { ConversationActivity } from '../../src/renderer/components/chat/ConversationActivity'
 import type { NativeAgentTranscript } from '../../src/shared/types/native-agent'
 import type { ChatMessage } from '../../src/shared/types/conversation'
 
@@ -20,6 +21,7 @@ it('groups only adjacent tools, keeps stable batch identities and leaves input u
 describe.each(['pi', 'deepseek-harness'] as const)('%s chronological activity', engine => {
   it('places public narration outside separate tool lists and keeps full feedback', () => {
     const payloads = [
+      { type: 'session', data: { resumed: true } },
       { type: 'text_delta', messageId: 'intro', content: 'First public explanation' },
       { type: 'tool_start', toolCallId: 'one', name: 'read', data: { arguments: { path: 'first.txt' }, implementation: 'native' } },
       { type: 'tool_end', toolCallId: 'one', content: 'Complete first output', data: {} },
@@ -36,7 +38,11 @@ describe.each(['pi', 'deepseek-harness'] as const)('%s chronological activity', 
     }))
     expect(html.match(/data-execution-details=/g)).toHaveLength(2)
     expect(html.indexOf('First public explanation')).toBeLessThan(html.indexOf('data-execution-details'))
-    expect(html).toMatch(/<\/details><div[^>]*data-native-message="r:message:middle"/)
+    expect(html.indexOf('Second public explanation')).toBeGreaterThan(html.indexOf('</details>'))
+    expect(html.match(/data-activity-tool-group="true"/g)).toHaveLength(2)
+    expect(html).not.toMatch(/\shidden[= >]/)
+    expect(html).not.toContain('data-activity-history-toggle')
+    expect(html).not.toContain('data-native-status="session"')
     expect(html.indexOf('Second public explanation')).toBeLessThan(html.lastIndexOf('data-execution-details'))
     expect(html).toContain('Complete first output')
     expect(html).toContain('Complete second output')
@@ -44,6 +50,29 @@ describe.each(['pi', 'deepseek-harness'] as const)('%s chronological activity', 
     expect(html).not.toContain('Final answer')
     expect(JSON.stringify(transcript)).toBe(before)
   })
+  it('keeps session diagnostics in the task view', () => {
+    const transcript: NativeAgentTranscript = { engine, events: [{ engine, runId: 'r', sequence: 0, timestamp: 0, type: 'session', data: { resumed: true } }] }
+    const html = renderToStaticMarkup(React.createElement(NativeAgentView, { transcript, collapsible: false }))
+    expect(html).toContain('data-native-status="session"')
+  })
+})
+
+it('preserves each batch once in place with visible attachments and no extra history disclosure', () => {
+  const items = [
+    { id: 'past', kind: 'tools' as const, content: React.createElement('details', null, React.createElement('summary', null, 'tool batch'), React.createElement('p', null, 'full past result')), attachments: React.createElement('img', { src: '/generated.png' }) },
+    { id: 'message', kind: 'item' as const, content: React.createElement('p', null, 'public narration') },
+    { id: 'active', kind: 'tools' as const, content: React.createElement('p', null, 'actual pending call') },
+  ]
+  const html = renderToStaticMarkup(React.createElement(ConversationActivity, { items, label: 'activity' }))
+  expect(html).toContain('</details></div><img')
+  expect(html).toContain('<div data-activity-tool-group="true"><p>actual pending call</p></div>')
+  expect(html).toContain('public narration')
+  expect(html.match(/full past result/g)).toHaveLength(1)
+  expect(html.match(/actual pending call/g)).toHaveLength(1)
+  expect(html.indexOf('full past result')).toBeLessThan(html.indexOf('public narration'))
+  expect(html.indexOf('public narration')).toBeLessThan(html.indexOf('actual pending call'))
+  expect(html).not.toMatch(/\shidden[= >]/)
+  expect(html).not.toContain('data-activity-history-toggle')
 })
 
 it('interleaves Eva public reports and tools by timestamp without exposing private reasoning', () => {

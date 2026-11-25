@@ -54,14 +54,15 @@
 
 ## RMSD 需求到代码流水线
 
-- `RequirementEngineeringService` 编排 `/requirement → /requirement-modeling → /spec → /dsl → /coding`。按会话与需求运行互斥，选中当前工作树的运行并校验状态。运行清单原子落盘，支持取消等待卡片和重试中断的 Spec、DSL 与代码生成。
+- `RequirementEngineeringService` 编排 `/requirement → /requirement-modeling → /spec → /dsl → /coding`。按会话与需求运行互斥，验证当前工作树。保留运行原始会话归属，进度与待确认卡片跟随同工作树的继续会话。运行清单原子落盘，支持取消等待卡片和重试中断的 Spec、DSL 与代码生成。
+- 需求评测区分业务决定、待补材料和需复核。决定按稳定问题键保存最新值及答复来源。补充文本与附件全文通过同会话 `/requirement` 追加到原运行。重新打开已决项或关闭待补项需引用后续入档的材料。资料是否充分及引文是否冲突由语义评测判断。
 - 发布回执记录产物文档、上游文档和 SHA-256。变更上游会使下游失效。Spec 同时检查评分与阻塞项并复核最终正文，DSL 通过严格语法、实际编号及语义审查后发布。项目写入通过工作树及路径边界校验。
-- 新 Spec 发布绑定第 3 版 `acceptance-contract.json`。最终 Spec 的 `BR` 清单与契约逐项匹配，用户确认后按草稿摘要发布。`/dsl java-domain` 和 Java 生成器共用结构检查，覆盖数值、布尔守卫、已声明的角色与状态检查，以及事件字段。JDK 验证实际行为。第 1、2 版契约可读，Java 生产需重发 Spec 与 DSL。Spec 与 DSL 按未完成的尝试、提示输入、模型与产物哈希恢复中间阶段。
+- 新 Spec 发布绑定第 4 版 `acceptance-contract.json`。最终 Spec 的 `BR` 可执行条件与契约逐项匹配，确认卡显示同一条件，用户确认后按草稿摘要发布。Java 目标使用共用结构检查验证守卫、角色、命令起始状态、工作流初始状态和事件字段，JDK 执行独立验收。第 1 至 3 版契约可读，新 Java 生产需重发 Spec 与 DSL。Spec 与 DSL 按尝试、提示输入、模型、有效输出预算和产物哈希恢复中间阶段。
 - `requirement-code-evidence.ts` 在当前工作树中发现并排序候选源码，使用同路径索引作候选提示，引用实读文件的相对路径、行号与 SHA-256。Git 候选遵循忽略规则，非 Git 工作区使用有界文件遍历。
 - `domain-dsl.ts` 解析可追溯 DSL，`DeterministicCodingService` 写语义包和生成 IR。自 `/coding` 起模型调用为零。注册表含 `java-reference`、`java-maven`、`java-domain`、`json-schema`、`sql-ddl`。
 - `/dsl <生成器 ID>` 可提前选择目标，`/coding <生成器 ID>` 可显式切换，首次无指定时使用 `java-reference`。目标配置存放在 `coding/intermediate/runs/<dslHash>/02-generation-ir/target-model.yaml`。代码输出使用生成契约、Spec、DSL、验收契约和目标配置共同决定的生成键，逐文件校验 SHA-256，拒绝覆盖不同字节。相同目标的上次成功产物提供规则、用例和文件影响基线。
 - `java-domain` 生成 Java 17 Maven 领域模块，支持角色、状态迁移、数值或布尔守卫及类型化事件。隔离运行 JDK 编译与生成的验收测试，成功后发布。宿主应用负责认证、事务、持久化和事件分发。详见 `docs/确定性代码生成流程说明.md`。
-- `/verify-host` 使用当前需求运行的 `coding/host-target.json`，按固定提交创建一次性 Git 副本。预检独立于代码生成。预览和执行绑定领域产物、宿主配置、适配补丁与合成差异摘要。离线 Maven 宿主验收以本次 Surefire 报告为准，状态与领域模块验收分开。宿主补丁和最近结果保存在 `coding/output/host`。
+- `/verify-host` 使用当前需求运行的 `coding/host-target.json`。预检、应用已预览原始补丁字节的正式验收和宿主调用对照使用独立 Git 副本。检查固定提交、暂存树及跟踪文件实际字节。验收通过需要正式 Maven 通过报告以及对照中证明经过宿主业务代码的生成工作流调用。宿主补丁和最近结果保存在 `coding/output/host`。
 
 ## 对外接口边界
 
@@ -112,12 +113,24 @@
 
 ## 统一对话阅读层（2026-11-04）
 
-- `MessageBubble` 为聊天正文、公开汇报和原生旁白启用 `MarkdownMessageContent.readingStandard`；`styles/conversation-reading.css` 统一静态/流式与三种渲染器的层级、间距和主题配色。保留字体与字号，旧装饰偏好仍存储；未启用此作用域的文档预览不变。规范见 `docs/CONVERSATION-READING.md`。
-- `lib/execution-activity.ts` 仅将相邻工具分组。聊天的公开说明在列表外，说明后的工具新起一组；`ToolActivityList` 为每组提供独立默认折叠、限高滚动与用户上滑优先，内部使用 `ExecutionDetails`。原生聊天显式启用 `NativeAgentView.collapsible` 的分组模式，任务侧栏沿用直接显示。Eva 汇报/工具按已有时间戳合并，同刻汇报优先。所有事件和原始反馈不变，用量/耗时独立折叠，布局状态仅属 DOM/renderer。
+- `MessageBubble` 为聊天正文、公开汇报和原生旁白启用 `MarkdownMessageContent.readingStandard`；聊天的流式和静态统一使用 Streamdown，避免完成时切换解析器。`lib/ink-reveal.ts` 为每块提供独立缓存身份与字素时间线，新包保留未完成的 500ms 透明渐显/短暂柔光，已稳定文字不重播；历史静态，reduced-motion 禁用动画。`stream-reveal-queue` 按会话做 16ms 批处理及事件顺序保护，不再逐字排空。`styles/conversation-reading.css` 统一层级、间距和主题，保留字体与字号；文档预览及原有偏好独立。规范见 `docs/CONVERSATION-READING.md`。
+- `lib/execution-activity.ts` 仅将相邻工具分组。`ConversationActivity` 按原顺序直接放置各组与公开说明，不拥有额外的总记录开关或跨位置隐藏逻辑；每组唯一的工具/命令调用入口由 `ToolActivityList`/`ExecutionDetails` 默认折叠、原位置展开，保留限高滚动与用户上滑优先。公开说明与生成图片持续可见。原生聊天过滤 session 接入/续接提示，任务侧栏沿用原始诊断。Eva 汇报/工具按已有时间戳合并，同刻汇报优先。所有事件和原始反馈不变；聊天不显示用量/耗时，原始统计仍保存。已完成回复下方使用常显、带无障碍名称的小图标操作，布局状态仅属 DOM/renderer。
 - 前端不生成语义摘要，不修改引擎、提示词、原始结果或来源。数量来自已有工具条目，仅表示调用、报错与停止后的未确认项，不作任务完成判据。
+- MessageBubble 的 Streamdown/ReactMarkdown 共用 GFM singleTilde=false，保留范围文字的字面波浪线与明确的双波浪线删除语义；Streamdown 的其他默认插件继续保留，不通过替换源文或全局取消删除线修正解析。
 
-- 柔和字形：`styles/typography.css` 仅映射本地 HarmonyOS Regular/Medium，不请求网络或安装字体；全局 UI 默认字体栈与聊天共用。`lib/reading-typography.ts` 提供实际 px 字级，OutputFormatPanel 标签与 Markdown 阅读层共享，应用根字号仍为 14px。阅读正文 400、标题/强调 500，关闭合成字重；主题墨色由阅读作用域拥有，旧原生深色规则排除它。字体缺失时由平台无衬线回退，字体文件未打包。
+- 柔和字形：`styles/typography.css` 仅映射本地 HarmonyOS Regular/Medium，不请求网络或安装字体；全局 UI 保留本地字体映射；聊天默认字体独立采用平台无衬线，与参考 New API 的字体轴一致。`lib/reading-typography.ts` 提供实际 px 字级，OutputFormatPanel 标签与 Markdown 阅读层共享，应用根字号仍为 14px。阅读正文 400、标题/强调 500，关闭合成字重；主题墨色由阅读作用域拥有，旧原生深色规则排除它。字体缺失时由平台无衬线回退，字体文件未打包。
 
 - 实际画布：App 外壳是唯一背景所有者，浅色使用 `--conversation-canvas`，深色/星空保留外壳主题；workspace、ChatPanel、桌面右栏及展开工作区透明，避免渐变重启、近白色遮盖与半透明主题多层叠色。紧凑便签/输入框保留表面，窄屏模态抽屉保留可读底色。未标语言代码通过 MarkdownBlockCodeContext 区分块级/行内。真实 App 与独立预览共用 reading-content.ts，并在右栏打开/关闭、缩放及展开时验证实际样式与边界像素。
 - 浅色材质：`--conversation-canvas` 由宽幅淡紫/冰蓝径向光色场与珠光线性底色组成，仍仅由 App 外壳绘制；reading-runner 在真实桌面布局取样阅读边缘与右栏空白的亮度/色差，防止画布连续却被摊平成灰蓝底。字体、数据和其他主题背景独立于此配色。
 - 版本：按用户要求每批更新同步递增 package/lockfile 根包与 APP_VERSION，application-version.test.ts 维护一致性；该轮视觉更新为 0.1.209。用户已确认当时视觉效果并明确恢复该版本的 Windows 打包；仅分发同一已验收版本时不额外递增版本号。
+
+## 参考回复样式与显式 Provider 思考（2026-11-25）
+
+- MessageBubble 拥有统一灰色加载行及无头像的回复列。聊天默认使用平台无衬线，字号仍由 reading-typography 的实际 px 档位提供。用户消息保留 Eva 原有透光渐变气泡及字体，不受助手阅读层覆盖；思考侧线、代码/表格/行内代码由 conversation-reading 作用域统一，基础 App 画布不变。
+- AgentRunner 只为 API 实际返回的 reasoningContent 标记 provider-response，展示不修改请求思考档位。原生传输通过 host-only provider-reasoning 队列项旁路转发相同响应字段，排除 compaction，不改变 SDK 公开事件或读取其内部推理。IPC 和 ChatMessage.reasoningSource 保留出处；旧的无来源内容保持隐藏。
+- ReasoningPanel 独立于工具时间线，生成时展开、正文开始后延迟收起一次。展开、代码折叠及内部跟随只属于 renderer；没有真实计时依据时不显示思考耗时。
+- 未选思考档位时不再因旧过程显示开关显式关闭模型思考；默认由供应商决定，显式 none/default/其他档位继续覆盖。OpenAI 兼容流接受字符串 reasoning_content 或 reasoning，忽略不透明对象；来源仍只标记真实 API 响应。
+
+- 需求模拟通过既有 typed submit 的 simulate-materials action 完成，保存带来源边界的材料/规格草稿引用；正式状态与发布仍由真实材料评测控制。聊天卡可直接模拟或在已放行后连续执行建模/规格、DSL/代码，仍遵守 Spec 关键规则确认。
+
+- Harness 使用 inject 导入不唤醒的历史参考，followup 提交当前请求，由 SDK 建立系统首节点。native-session 游标的 harnessImportVersion=2 隔离早期直接 append 生成的日志，旧文件保留；Pi 游标与原生回放不变。

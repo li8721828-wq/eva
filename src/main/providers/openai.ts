@@ -427,7 +427,9 @@ export class OpenAIProvider implements LLMProvider {
         rawFinishReason = providerFinishReason
       }
 
-      const reasoningContent = (delta as { reasoning_content?: string } | undefined)?.reasoning_content
+      const reasoningDelta = delta as { reasoning_content?: unknown; reasoning?: unknown } | undefined
+      const reasoningContent = typeof reasoningDelta?.reasoning_content === 'string' && reasoningDelta.reasoning_content
+        ? reasoningDelta.reasoning_content : typeof reasoningDelta?.reasoning === 'string' ? reasoningDelta.reasoning : undefined
       const yieldChunk: ChatChunk = {
         content: delta?.content || '',
         ...(reasoningContent ? { reasoningContent } : {}),

@@ -486,8 +486,9 @@ export async function runHarness(config, bridge) {
         message.role === 'tool'
           ? `Historical tool result ${message.toolCallId}`
           : `Historical ${message.role} message`
-      handle.agent.session.append(
-        'user/message',
+      // Queue context without waking the loop. The SDK must establish its
+      // protected system surface before writing any imported user messages.
+      handle.agent.inject(
         createUserMessage({
           source: { kind: 'user' },
           content: [
@@ -498,7 +499,6 @@ export async function runHarness(config, bridge) {
             ...(await toBlocks(message)).slice(1),
           ],
         }),
-        { surfaceOp: 'append' },
       )
     }
     const cancel = () => handle.agent.cancel({ kind: 'user' })

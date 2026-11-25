@@ -1,6 +1,6 @@
 import type { ChatDocumentAttachment } from './conversation'
 
-export type RequirementRunStatus = 'analyzing' | 'awaiting-clarification' | 'awaiting-spec-resolution' | 'ready-for-specification' | 'specifying' | 'ready-for-implementation' | 'failed' | 'cancelled'
+export type RequirementRunStatus = 'analyzing' | 'awaiting-clarification' | 'awaiting-materials' | 'review-required' | 'awaiting-spec-resolution' | 'ready-for-specification' | 'specifying' | 'ready-for-implementation' | 'failed' | 'cancelled'
 export type RequirementDocumentStage = 'source' | 'requirement-analysis' | 'code-analysis' | 'clarification' | 'evaluation' | 'modeling' | 'specification' | 'spec-validation' | 'dsl' | 'coding'
 
 export interface RequirementDocument {
@@ -30,6 +30,7 @@ export interface RequirementEvaluation {
    */
   readiness?: 'ready' | 'blocked'
   unresolvedItems?: RequirementUnresolvedItem[]
+  materialEvidence?: Array<{ key: string; sourceId: string; quote: string }>
 }
 
 export interface RequirementUnresolvedItem {
@@ -38,6 +39,9 @@ export interface RequirementUnresolvedItem {
   impact: string
   requiredDecision: string
   blocking: boolean
+  kind?: 'decision' | 'material'
+  key?: string
+  conflict?: { sourceId: string; quote: string }
   options?: string[]
   recommendedIndex?: number
 }
@@ -48,6 +52,14 @@ export interface RequirementClarificationQuestion {
   options: string[]
   recommendedIndex: number
   rationale?: string
+  decisionKey?: string
+}
+
+export interface RequirementDecision {
+  key: string
+  question: string
+  choice: string
+  answerDocumentId: string
 }
 
 export interface RequirementClarificationAnswer {
@@ -67,6 +79,8 @@ export interface RequirementRun {
   id: string
   conversationId: string
   conversationTitle: string
+  /** Same-worktree conversation currently continuing the run, if different from its origin. */
+  interactionConversationId?: string
   /** Stable business-derived label used to group this RMSD run, never a chat title. */
   requirementTitle?: string
   status: RequirementRunStatus
@@ -81,11 +95,17 @@ export interface RequirementRun {
     specification: RequirementArtifactReceipt
     contract: RequirementArtifactReceipt
     upstreamDocumentId: string
-    rules: Array<{ id: string; summary: string }>
+    rules: Array<{ id: string; summary: string; owner?: string; condition?: string }>
   }
   documents: RequirementDocument[]
   evaluations: RequirementEvaluation[]
   clarificationQuestions: RequirementClarificationQuestion[]
+  pendingMaterials?: RequirementUnresolvedItem[]
+  pendingMaterialsSince?: number
+  /** Draft only; never a material receipt or a published upstream release. */
+  materialPreviewDocumentId?: string
+  /** Latest user selection for each stable issue, with its chronological receipt. */
+  clarificationDecisions?: RequirementDecision[]
   /** Canonical worktree that owns the package. */
   workspaceRoot?: string
   /** Published stage outputs and the exact upstream revision each consumed. */
@@ -125,6 +145,8 @@ export interface RequirementRelease extends RequirementArtifactReceipt {
 
 export interface SubmitRequirementInput {
   conversationId: string
+  runId?: string
+  action?: 'simulate-materials'
   content?: string
   attachments?: ChatDocumentAttachment[]
 }
@@ -170,7 +192,7 @@ export interface HostVerificationPlan {
 
 export interface RequirementHostVerification {
   action: HostVerificationAction
-  status: 'running' | 'preflight-passed' | 'preview-ready' | 'blocked' | 'passed' | 'cancelled'
+  status: 'running' | 'preflight-passed' | 'preview-ready' | 'blocked' | 'passed' | 'cancelled' | 'stale'
   summary: string
   commit?: string
   module?: string
@@ -179,6 +201,7 @@ export interface RequirementHostVerification {
   generationKey?: string
   plan?: HostVerificationPlan & { patchPath: string }
   testCount?: number
+  integrationTests?: string[]
 }
 
 export interface SubmitHostVerificationInput {

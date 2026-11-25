@@ -16,7 +16,7 @@ window.addEventListener('error', (event) =>
   testWindow.uiErrors.push(event.message),
 )
 const root = createRoot(document.getElementById('root')!)
-const renderMessage = (message: ChatMessage, streaming: boolean, showActions = false) => {
+const renderMessage = (message: ChatMessage, streaming: boolean, showActions = false, reasoningActive = false) => {
   testWindow.nativeMessage = message
   root.render(
     <div className="eva-app-shell min-h-screen text-zinc-900"><div className="eva-chat-surface min-h-screen p-4">
@@ -24,12 +24,33 @@ const renderMessage = (message: ChatMessage, streaming: boolean, showActions = f
         key={message.id}
         message={message}
         isStreaming={streaming}
+        isReasoningStreaming={reasoningActive}
         showActions={showActions}
       />
     </div></div>,
   )
 }
 useAppStore.setState({ language: 'zh' })
+
+testWindow.setUserAppearanceScenario = () => {
+  document.documentElement.dataset.theme = 'light'
+  renderMessage({ id: 'original-user', conversationId: 'appearance', role: 'user', content: '你好，帮我做一份办公方案', timestamp: 1 }, false)
+}
+testWindow.updateThinkingText = (reasoningContent: string) => renderMessage({ ...testWindow.nativeMessage, reasoningContent }, true, false, true)
+
+testWindow.setReplyAppearanceScenario = (engine: 'eva' | NativeAgentEvent['engine'], theme: string, phase: 'waiting' | 'thinking' | 'answer' | 'legacy') => {
+  document.documentElement.dataset.theme = theme
+  useAgentStore.setState({ agents: [] })
+  const message: ChatMessage = {
+    id: `appearance-${engine}`, conversationId: 'appearance', role: 'assistant', timestamp: 1,
+    content: phase === 'answer' || phase === 'legacy' ? '可以。下面是一份办公方案。\n\n## 空间安排\n\n- 设置专注办公区。\n- 保留会议与交流空间。\n\n> 具体配置可按实际人数调整。\n\n| 区域 | 用途 |\n| --- | --- |\n| 会议区 | 团队讨论 |\n\n```js\nconst seats = 12\n```\n\n```\n' + Array.from({ length: 60 }, (_, index) => `source line ${index + 1}`).join('\n') + '\n```' : '',
+    ...(phase !== 'waiting' ? { reasoningContent: '模型返回的公开内容示例：先确认办公人数与空间需求，再比较布局方案。', reasoningSource: phase === 'legacy' ? undefined : 'provider-response' as const } : {}),
+    ...(engine !== 'eva' ? { nativeAgent: { engine, events: [] } } : {}),
+  }
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { testWindow.copiedText = text } } })
+  testWindow.appearanceSnapshot = JSON.stringify(message)
+  renderMessage(message, phase === 'waiting' || phase === 'thinking', phase === 'answer', phase === 'thinking')
+}
 testWindow.setNativeScenario = (
   engine: NativeAgentEvent['engine'],
   theme: string,
@@ -184,6 +205,7 @@ testWindow.setReadingScenario = (renderer: AgentMarkdownRenderer, theme: string,
   const message: ChatMessage = {
     ...testWindow.nativeMessage, id: `reading-${engine}`, agentId: agent.id, agentName: agent.name,
     content: READING_PREVIEW_MARKDOWN, timestamp: 0,
+    usage: { promptTokens: 500, completionTokens: 100, estimatedCostCny: 0.01 },
     timing: { modelDurationMs: 1200, toolExecutionMs: 300, totalMs: 1500, modelCalls: [], toolCalls: [] },
   }
   if (engine === 'eva') {
@@ -198,6 +220,15 @@ testWindow.setReadingScenario = (renderer: AgentMarkdownRenderer, theme: string,
   testWindow.readingSnapshot = JSON.stringify(message)
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { testWindow.copiedText = text } } })
   renderMessage(message, streaming, true)
+}
+
+testWindow.updateReadingStream = (content: string, streaming = true) => {
+  const message: ChatMessage = { ...testWindow.nativeMessage, content }
+  if (message.nativeAgent) message.nativeAgent = {
+    ...message.nativeAgent,
+    events: message.nativeAgent.events.map(event => event.messageId === 'final' && event.type === 'text_delta' ? { ...event, content } : event),
+  }
+  renderMessage(message, streaming, !streaming)
 }
 
 testWindow.setReadingPreference = () => useAgentStore.setState(state => ({ agents: state.agents.map(agent => ({ ...agent, outputFont: 'serif', outputFontSize: '2xlarge' })) }))

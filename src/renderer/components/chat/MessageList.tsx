@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useLayoutEffect, useState, useMemo, useCallback } from 'react'
-import type { ChatMessage, ChatUsage } from '../../../shared/types'
+import type { ChatMessage } from '../../../shared/types'
 import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
@@ -38,31 +38,6 @@ function RequirementElapsedTime({ startedAt }: { startedAt: number }) {
   }, [startedAt])
 
   return <span className="ml-auto text-xs font-normal tabular-nums text-zinc-500">已运行 {elapsed}s</span>
-}
-
-function sumConversationUsage(messages: ChatMessage[]): ChatUsage | undefined {
-  const usageMessages = messages.filter((message) => message.role === 'assistant' && message.usage)
-  if (usageMessages.length === 0) return undefined
-
-  return usageMessages.reduce<ChatUsage>((total, message) => {
-    const usage = message.usage!
-    return {
-      promptTokens: total.promptTokens + usage.promptTokens,
-      completionTokens: total.completionTokens + usage.completionTokens,
-      cachedTokens: (total.cachedTokens || 0) + (usage.cachedTokens || 0),
-      cacheMissTokens: (total.cacheMissTokens || 0) + (usage.cacheMissTokens || 0),
-      estimatedCostCny: (total.estimatedCostCny || 0) + (usage.estimatedCostCny || 0),
-      estimatedCost: total.estimatedCostCurrency === usage.estimatedCostCurrency
-        ? (total.estimatedCost || 0) + (usage.estimatedCost || 0)
-        : total.estimatedCost ?? usage.estimatedCost,
-      estimatedCostCurrency: total.estimatedCostCurrency || usage.estimatedCostCurrency,
-      providerReportedCost: total.providerReportedCurrency === usage.providerReportedCurrency
-        ? (total.providerReportedCost || 0) + (usage.providerReportedCost || 0)
-        : undefined,
-      providerReportedCurrency: total.providerReportedCurrency || usage.providerReportedCurrency,
-      modelCalls: (total.modelCalls || 0) + (usage.modelCalls || 1),
-    }
-  }, { promptTokens: 0, completionTokens: 0 })
 }
 
 export interface MessageListProps {
@@ -133,20 +108,30 @@ export function MessageList({ className }: MessageListProps) {
   })
 
   const [awaitingClarification, setAwaitingClarification] = useState<RequirementRun | null>(null)
+  const [readyRequirement, setReadyRequirement] = useState<RequirementRun | null>(null)
   const [awaitingSpecResolution, setAwaitingSpecResolution] = useState<RequirementRun | null>(null)
+  const pendingInteractionRequest = useRef(0)
 
   const loadAwaitingClarification = useCallback(async () => {
+    if (useChatStore.getState().currentConversationId !== currentConversationId) return
+    const request = ++pendingInteractionRequest.current
     if (!currentConversationId) {
       setAwaitingClarification(null)
+      setReadyRequirement(null)
       setAwaitingSpecResolution(null)
       return
     }
     try {
       const runs = await window.eva.requirements.listRuns(currentConversationId)
-      setAwaitingClarification(runs.find((run) => run.status === 'awaiting-clarification') || null)
-      setAwaitingSpecResolution(runs.find((run) => run.status === 'awaiting-spec-resolution') || null)
+      if (request !== pendingInteractionRequest.current || useChatStore.getState().currentConversationId !== currentConversationId) return
+      const interactions = runs.filter((run) => (run.interactionConversationId ?? run.conversationId) === currentConversationId)
+      setReadyRequirement(interactions.find(run => run.status === 'ready-for-specification' || (run.status === 'ready-for-implementation' && run.codingStatus !== 'ready')) || null)
+      setAwaitingClarification(interactions.find((run) => run.status === 'awaiting-clarification' || run.status === 'awaiting-materials' || run.status === 'review-required') || null)
+      setAwaitingSpecResolution(interactions.find((run) => run.status === 'awaiting-spec-resolution') || null)
     } catch {
+      if (request !== pendingInteractionRequest.current || useChatStore.getState().currentConversationId !== currentConversationId) return
       setAwaitingClarification(null)
+      setReadyRequirement(null)
       setAwaitingSpecResolution(null)
     }
   }, [currentConversationId])
@@ -156,40 +141,40 @@ export function MessageList({ className }: MessageListProps) {
   }, [loadAwaitingClarification, messages.length, requirementProgress])
 
   const submitClarificationAnswers = useCallback(async (answers: RequirementClarificationAnswer[]) => {
-    if (!awaitingClarification) return
-    startRequirementProgress(awaitingClarification.conversationId, '正在读取你确认的澄清选项')
+    if (awaitingClarification?.status !== 'awaiting-clarification' || !currentConversationId) return
+    startRequirementProgress(currentConversationId, '正在读取你确认的澄清选项')
     try {
-      await window.eva.requirements.answer({ conversationId: awaitingClarification.conversationId, runId: awaitingClarification.id, answers })
-      await refreshConversation(awaitingClarification.conversationId)
+      await window.eva.requirements.answer({ conversationId: currentConversationId, runId: awaitingClarification.id, answers })
+      await refreshConversation(currentConversationId)
       await loadAwaitingClarification()
     } finally {
-      finishRequirementProgress(awaitingClarification.conversationId)
+      finishRequirementProgress(currentConversationId)
     }
-  }, [awaitingClarification, loadAwaitingClarification, refreshConversation, startRequirementProgress, finishRequirementProgress])
+  }, [awaitingClarification, currentConversationId, loadAwaitingClarification, refreshConversation, startRequirementProgress, finishRequirementProgress])
 
   const abortClarificationAnalysis = useCallback(async () => {
-    if (!awaitingClarification) return
-    await window.eva.requirements.abort(awaitingClarification.conversationId, awaitingClarification.id)
+    if (!awaitingClarification || !currentConversationId) return
+    await window.eva.requirements.abort(currentConversationId, awaitingClarification.id)
     await loadAwaitingClarification()
-  }, [awaitingClarification, loadAwaitingClarification])
+  }, [awaitingClarification, currentConversationId, loadAwaitingClarification])
 
   const submitSpecificationResolution = useCallback(async (answers: RequirementClarificationAnswer[]) => {
-    if (!awaitingSpecResolution) return
-    startRequirementProgress(awaitingSpecResolution.conversationId, awaitingSpecResolution.specReview ? '正在保存关键规则确认' : '正在保存规格阻塞的处置选择')
+    if (!awaitingSpecResolution || !currentConversationId) return
+    startRequirementProgress(currentConversationId, awaitingSpecResolution.specReview ? '正在保存关键规则确认' : '正在保存规格阻塞的处置选择')
     try {
-      await window.eva.requirements.resolveSpec({ conversationId: awaitingSpecResolution.conversationId, runId: awaitingSpecResolution.id, answers })
-      await refreshConversation(awaitingSpecResolution.conversationId)
+      await window.eva.requirements.resolveSpec({ conversationId: currentConversationId, runId: awaitingSpecResolution.id, answers })
+      await refreshConversation(currentConversationId)
       await loadAwaitingClarification()
     } finally {
-      finishRequirementProgress(awaitingSpecResolution.conversationId)
+      finishRequirementProgress(currentConversationId)
     }
-  }, [awaitingSpecResolution, loadAwaitingClarification, refreshConversation, startRequirementProgress, finishRequirementProgress])
+  }, [awaitingSpecResolution, currentConversationId, loadAwaitingClarification, refreshConversation, startRequirementProgress, finishRequirementProgress])
 
   const abortSpecificationResolution = useCallback(async () => {
-    if (!awaitingSpecResolution) return
-    await window.eva.requirements.abort(awaitingSpecResolution.conversationId, awaitingSpecResolution.id)
+    if (!awaitingSpecResolution || !currentConversationId) return
+    await window.eva.requirements.abort(currentConversationId, awaitingSpecResolution.id)
     await loadAwaitingClarification()
-  }, [awaitingSpecResolution, loadAwaitingClarification])
+  }, [awaitingSpecResolution, currentConversationId, loadAwaitingClarification])
 
   const updateScrollAffordances = useCallback((scrollArea: HTMLDivElement, reveal = false) => {
     const overflow = Math.max(0, scrollArea.scrollHeight - scrollArea.clientHeight)
@@ -328,11 +313,6 @@ export function MessageList({ className }: MessageListProps) {
   const renderableMessages = useMemo(
     () => collapseToolHistoryMessages(messages.filter((message) => !liveProgressMessageIds.has(message.id))),
     [liveProgressMessageIds, messages],
-  )
-  const conversationUsage = useMemo(() => sumConversationUsage(renderableMessages), [renderableMessages])
-  const latestUsageMessageId = useMemo(
-    () => [...renderableMessages].reverse().find((message) => message.role === 'assistant' && message.usage)?.id,
-    [renderableMessages]
   )
   // Re-running a round replaces everything from its prompt onward, so only the
   // newest reply can offer it; an older one would delete later turns.
@@ -578,12 +558,11 @@ export function MessageList({ className }: MessageListProps) {
             key={item.id}
             ref={(element) => attachItemRef(item.id, element)}
             data-message-item-id={item.id}
-            className={cn('pb-9', item.id === renderItems[renderItems.length - 1]?.id && 'pb-4')}
+            className={cn('pb-6', item.id === renderItems[renderItems.length - 1]?.id && 'pb-4')}
           >
             <MessageBubble
               message={item.message}
               canRegenerate={item.message.id === latestReplyMessageId}
-              conversationUsage={item.message.id === latestUsageMessageId ? conversationUsage : undefined}
             />
           </div>
         ))}
@@ -613,28 +592,62 @@ export function MessageList({ className }: MessageListProps) {
               })}
             </ol>
             {requirementProgress.steps.filter((step) => step.document).map((step) => (
-              <details key={step.document!.id} open className="mt-3 border-t border-violet-100 pt-3">
+              <details key={step.document!.id} className="mt-3 border-t border-violet-100 pt-3">
                 <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium text-violet-600">
                   {step.phase === 'started' ? <Loader2 className={cn('h-3.5 w-3.5 text-violet-600', SMOOTH_SPIN_CLASS)} /> : step.phase === 'failed' ? <CircleAlert className="h-3.5 w-3.5 text-rose-600" /> : <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />}
                   <span>{step.document!.title}</span>
                   {step.phase === 'started' && <span className="text-xs font-normal text-violet-600">正在生成</span>}
                   {step.phase === 'failed' && <span className="text-xs font-normal text-rose-600">生成失败</span>}
                 </summary>
-                <MarkdownMessageContent content={step.document!.content} className="mt-2 text-zinc-700" />
+                <MarkdownMessageContent readingStandard content={step.document!.content} className="mt-2 text-zinc-700" />
               </details>
             ))}
           </section>
         )}
 
-        {awaitingClarification && !requirementProgress && (
+        {readyRequirement && (readyRequirement.interactionConversationId ?? readyRequirement.conversationId) === currentConversationId && !requirementProgress && <section className="mb-5 rounded-xl border border-[var(--ui-border)] p-4" aria-label="需求阶段下一步">
+          <p className="text-sm">{readyRequirement.status === 'ready-for-specification' ? '需求已通过，可以继续建模与规格编制。' : '规格已通过，可以继续生成 DSL 与代码。'}</p>
+          <button className="mt-3 rounded-md bg-violet-600 px-3 py-2 text-sm text-white" onClick={() => {
+            if (!currentConversationId) return
+            const input = { conversationId: currentConversationId, runId: readyRequirement.id }
+            startRequirementProgress(currentConversationId, '正在继续下一阶段')
+            void (async () => {
+              if (readyRequirement.status === 'ready-for-specification') {
+                if (!readyRequirement.releases?.modeling) await window.eva.requirements.model(input)
+                await window.eva.requirements.spec(input)
+              } else {
+                if (!readyRequirement.releases?.dsl) await window.eva.requirements.dsl(input)
+                await window.eva.requirements.coding(input)
+              }
+              await refreshConversation(input.conversationId)
+            })().catch(error => useChatStore.getState().setError(error instanceof Error ? error.message : '继续执行失败。')).finally(async () => {
+              finishRequirementProgress(input.conversationId); await loadAwaitingClarification()
+            })
+          }}>{readyRequirement.status === 'ready-for-specification' ? '继续建模并生成规格' : '继续生成 DSL 与代码'}</button>
+        </section>}
+        {awaitingClarification && (awaitingClarification.interactionConversationId ?? awaitingClarification.conversationId) === currentConversationId && !requirementProgress && (
           <RequirementClarificationCard
             run={awaitingClarification}
+            onSimulate={async () => {
+              if (!currentConversationId) return
+              startRequirementProgress(currentConversationId, '正在生成模拟材料与规格草稿')
+              try {
+                await window.eva.requirements.submit({ conversationId: currentConversationId, runId: awaitingClarification.id, action: 'simulate-materials' })
+                await refreshConversation(currentConversationId)
+                await loadAwaitingClarification()
+              } catch (error) {
+                // The card unmounts during progress, so its local error state
+                // cannot retain a failed request. Keep the error in chat state.
+                useChatStore.getState().setError(error instanceof Error ? error.message : '模拟草稿生成失败，请重试。')
+                throw error
+              } finally { finishRequirementProgress(currentConversationId) }
+            }}
             onSubmit={submitClarificationAnswers}
             onAbort={abortClarificationAnalysis}
           />
         )}
 
-        {awaitingSpecResolution && !requirementProgress && (
+        {awaitingSpecResolution && (awaitingSpecResolution.interactionConversationId ?? awaitingSpecResolution.conversationId) === currentConversationId && !requirementProgress && (
           <RequirementClarificationCard
             run={awaitingSpecResolution}
             mode="specification"
@@ -669,9 +682,10 @@ export function MessageList({ className }: MessageListProps) {
             ReactMarkdown tolerates incomplete syntax and progressively settles as
             subsequent chunks arrive. */}
         {(isStreaming || holdsStoppedStreamCopy) && !isDuplicateStreamingReply && (
-          <div ref={attachStreamingRef} data-streaming-item="true" className="pb-9">
+          <div ref={attachStreamingRef} data-streaming-item="true" className="pb-6">
             <MessageBubble
               isStreaming={isStreaming}
+              isReasoningStreaming={Boolean(stream?.reasoningActive)}
               showActions={false}
               message={{
                 id: `streaming-${currentConversationId || 'message'}`,
@@ -682,6 +696,7 @@ export function MessageList({ className }: MessageListProps) {
                 agentId: streamingAgentId,
                 agentName: streamingAgentName,
                 reasoningContent: streamingReasoningContent || undefined,
+                reasoningSource: stream?.reasoningSource,
                 toolCalls: streamingToolCalls.length > 0 ? streamingToolCalls : undefined,
                 executionTimeline: streamingExecutionTimeline.length > 0 ? streamingExecutionTimeline : undefined,
                 progressUpdates: streamingProgressUpdates.length > 0 ? streamingProgressUpdates : undefined,

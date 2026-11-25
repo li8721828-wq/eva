@@ -18,10 +18,14 @@ export async function writeJsonAtomicAsync(filePath: string, data: unknown): Pro
 }
 
 export async function writeTextAtomicAsync(filePath: string, text: string): Promise<void> {
+  await writeFileAtomicAsync(filePath, text)
+}
+
+export async function writeFileAtomicAsync(filePath: string, content: string | Buffer): Promise<void> {
   await fsPromises.mkdir(path.dirname(filePath), { recursive: true })
   const tmpPath = `${filePath}.${uuidv4()}.tmp`
   try {
-    await fsPromises.writeFile(tmpPath, text, { encoding: 'utf-8', flag: 'wx' })
+    await fsPromises.writeFile(tmpPath, content, { flag: 'wx' })
     for (let attempt = 1; ; attempt += 1) {
       try {
         await fsPromises.rename(tmpPath, filePath)

@@ -78,6 +78,8 @@ export interface AgentConfig {
 }
 
 export interface AgentEvent {
+  /** Only set for reasoning explicitly returned in the provider response. */
+  reasoningSource?: 'provider-response'
   type: 'text' | 'text_reset' | 'reasoning' | 'tool_call' | 'tool_result' | 'thinking' | 'error' | 'done' | 'native_event'
   nativeEvent?: NativeAgentEvent
   content?: string

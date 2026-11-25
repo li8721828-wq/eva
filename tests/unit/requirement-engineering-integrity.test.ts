@@ -107,10 +107,30 @@ describe('RequirementEngineeringService document integrity', () => {
     const chatComplete = vi.fn()
       .mockResolvedValueOnce({ content: '未完成正文', finishReason: 'length' })
       .mockResolvedValueOnce({ content: '', finishReason: 'stop' })
-    const service = new RequirementEngineeringService({ get: () => ({ chatComplete }) } as never, undefined, {
+    const service = new RequirementEngineeringService({
+      get: () => ({ type: 'custom', chatComplete }),
+      getModelCapabilities: () => undefined,
+    } as never, undefined, {
       storage: { config: { get: () => 'fixture', getActiveModel: () => 'fixture' } } as never,
     }) as unknown as { complete: (prompt: string) => Promise<string> }
     await expect(service.complete(prompt)).rejects.toThrow('自动续写未返回正文')
     expect(chatComplete.mock.calls[1][0].messages.at(-1).content).toContain(prompt)
+  })
+
+  it.each([
+    { outputTokenBudget: 1024, expected: 1024 },
+    { outputTokenBudget: 8192, expected: 2048 },
+  ])('applies the model budget and provider ceiling to each generation and continuation', async ({ outputTokenBudget, expected }) => {
+    const chatComplete = vi.fn()
+      .mockResolvedValueOnce({ content: '前半部分', finishReason: 'length' })
+      .mockResolvedValueOnce({ content: '后半部分', finishReason: 'stop' })
+    const service = new RequirementEngineeringService({
+      get: () => ({ type: 'custom', chatComplete }),
+      getModelCapabilities: () => ({ modelId: 'fixture', contextWindowTokens: 128_000, maxOutputTokens: 2048, outputTokenBudget }),
+    } as never, undefined, {
+      storage: { config: { get: () => 'fixture', getActiveModel: () => 'fixture' } } as never,
+    }) as unknown as { complete: (prompt: string) => Promise<string> }
+    await expect(service.complete('审批规则')).resolves.toBe('前半部分\n\n后半部分')
+    expect(chatComplete.mock.calls.map(([request]) => request.maxTokens)).toEqual([expected, expected])
   })
 })

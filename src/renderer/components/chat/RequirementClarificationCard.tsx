@@ -2,15 +2,17 @@ import { useMemo, useState } from 'react'
 import { CheckCircle2, Circle, Loader2, Square } from 'lucide-react'
 import type { RequirementClarificationAnswer, RequirementRun } from '../../../shared/types/requirement-engineering'
 import { cn } from '@/lib/utils'
+import { MarkdownMessageContent } from './MessageBubble'
 
 interface RequirementClarificationCardProps {
   run: RequirementRun
   onSubmit: (answers: RequirementClarificationAnswer[]) => Promise<void>
   onAbort: () => Promise<void>
   mode?: 'requirement' | 'specification'
+  onSimulate?: () => Promise<void>
 }
 
-export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'requirement' }: RequirementClarificationCardProps) {
+export function RequirementClarificationCard({ run, onSubmit, onAbort, onSimulate, mode = 'requirement' }: RequirementClarificationCardProps) {
   const [selection, setSelection] = useState<Record<string, number>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -18,6 +20,19 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
   const resolutionQuestions = useMemo(() => (run.specResolutionQuestions || []).filter((question) => Array.isArray(question.options) && question.options.length > 0), [run.specResolutionQuestions])
   const activeQuestions = mode === 'specification' ? resolutionQuestions : questions
   const review = mode === 'specification' ? run.specReview : undefined
+  const waitingForMaterials = mode === 'requirement' && run.status === 'awaiting-materials'
+  const needsReview = mode === 'requirement' && run.status === 'review-required'
+  const materials = mode === 'requirement' ? run.pendingMaterials ?? [] : []
+  const preview = run.documents.find(document => document.id === run.materialPreviewDocumentId)
+  const title = review ? '确认关键业务规则与例外'
+    : mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径`
+      : waitingForMaterials ? (preview ? '规格草稿已生成，正式验收材料待补' : '可先模拟材料并继续起草')
+        : needsReview ? '需求评测需要复核' : `需要你确认 ${activeQuestions.length} 个澄清点`
+  const instructions = review ? '请核对用于代码生成的条件值、比较符、角色和状态，以及仍需人工验证的规则。确认后发布本版规格。'
+    : mode === 'specification' ? '你的选择会明确下一步应回到需求、建模、代码证据或规格修订。'
+      : needsReview ? <>在本会话发送 <code>/requirement</code> 重新复核。{run.error}</>
+        : waitingForMaterials || materials.length ? <>在本会话发送 <code>/requirement</code> 并添加附件，或在命令后粘贴材料正文。</>
+          : '以下选择会保存为当前业务决定。'
   const isComplete = activeQuestions.length > 0 && activeQuestions.every((question) => selection[question.id] !== undefined)
 
   const submit = async () => {
@@ -43,22 +58,38 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
   }
 
   return (
-    <section className="mb-8 max-w-2xl border border-violet-200 bg-white p-5" aria-labelledby={`clarification-${run.id}`}>
+    <section className="mb-5 w-full max-w-2xl rounded-xl border border-[var(--ui-border)] bg-[var(--ui-surface-muted)] p-4" aria-labelledby={`clarification-${run.id}`}>
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-violet-100 text-violet-700">
           <Circle className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-violet-600">{review ? '规格确认' : mode === 'specification' ? '规格构建，阻塞处置' : `需求工程，第 ${run.round} 轮`}</p>
-          <h2 id={`clarification-${run.id}`} className="mt-1 text-sm font-semibold text-zinc-700">{review ? '确认关键业务规则与例外' : mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径` : `需要你确认 ${activeQuestions.length} 个澄清点`}</h2>
-          <p className="mt-1 text-sm leading-6 text-zinc-700">{review ? '请核对业务条件和例外是否完整。确认后发布本版规格。' : mode === 'specification' ? '每个阻塞项均已标注归因和检测建议。你的选择会被持久化，明确下一步应回到需求、建模、代码证据或规格修订。' : '已由代码和材料可以确定的内容会由 AI 自动采用。以下选择会成为下一轮分析与评测的依据。'}</p>
+          <h2 id={`clarification-${run.id}`} className="mt-1 text-sm font-semibold text-zinc-700">{title}</h2>
+          <p className="mt-1 text-sm leading-6 text-zinc-700">{instructions}</p>
         </div>
       </div>
 
+      {materials.length > 0 && (
+        <ul className="mt-4 list-disc space-y-2 pl-5 text-sm text-zinc-700" aria-label="待补材料">
+          {materials.map((item) => <li key={item.key || item.id}>{item.requiredDecision}</li>)}
+        </ul>
+      )}
+      {preview && <details className="mt-3" data-requirement-preview><summary className="cursor-pointer text-sm text-violet-600">查看模拟材料与规格草稿</summary><MarkdownMessageContent readingStandard content={preview.content} className="mt-2" /></details>}
+      {waitingForMaterials && onSimulate && <button type="button" disabled={isSubmitting} className="mt-3 rounded-md bg-violet-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={() => {
+        setIsSubmitting(true); setError(null)
+        void onSimulate().catch(error => setError(error instanceof Error ? error.message : '模拟失败，请重试。')).finally(() => setIsSubmitting(false))
+      }}>{isSubmitting ? '正在生成草稿…' : preview ? '复用或更新模拟草稿' : '模拟缺失材料，继续生成规格草稿'}</button>}
+
       {review && (review.rules.length ? (
         <ul className="mt-4 max-h-56 space-y-2 overflow-auto text-sm leading-6 text-zinc-700" aria-label="关键业务规则">
-          {review.rules.map(({ id, summary }) => (
-            <li key={id} className="break-words"><span className="mr-2 font-medium text-zinc-500">{id}</span>{summary}</li>
+          {review.rules.map(({ id, owner, summary, condition }) => (
+            <li key={id} className="break-words">
+              <span className="mr-2 font-medium text-zinc-500">{id}</span>
+              {owner && <span className="mr-2 text-zinc-500">{owner}</span>}
+              {condition && <code className="font-mono">{condition}</code>}
+              {summary && <span className={condition ? 'mt-0.5 block' : undefined}>{summary}</span>}
+            </li>
           ))}
         </ul>
       ) : <p className="mt-4 text-sm text-zinc-700">本版规格声明无需要单独确认的关键规则或例外。</p>)}
@@ -94,7 +125,7 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
 
       {error && <p className="mt-4 text-sm text-red-700" role="alert">{error}</p>}
       <div className="mt-5 flex items-center justify-between gap-3 border-t border-zinc-200 pt-4">
-        <span className="text-xs text-zinc-500">已选择 {Object.keys(selection).length}/{activeQuestions.length}</span>
+        {activeQuestions.length > 0 && <span className="text-xs text-zinc-500">已选择 {activeQuestions.filter((question) => selection[question.id] !== undefined).length}/{activeQuestions.length}</span>}
         {isSubmitting ? (
           <button type="button" onClick={() => void cancel()} className="inline-flex h-9 items-center gap-2 rounded-md bg-zinc-900 px-3 text-sm font-medium text-white hover:bg-zinc-700">
             <Square className="h-3.5 w-3.5 fill-current" /> 停止分析
@@ -104,9 +135,9 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, mode = 'r
             <button type="button" onClick={() => void cancel()} className="h-9 rounded-md px-3 text-sm text-zinc-600 hover:bg-zinc-100">
               取消本轮
             </button>
-            <button type="button" disabled={!isComplete} onClick={() => void submit()} className="inline-flex h-9 items-center gap-2 rounded-md bg-violet-600 px-3 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500">
+            {activeQuestions.length > 0 && <button type="button" disabled={!isComplete} onClick={() => void submit()} className="inline-flex h-9 items-center gap-2 rounded-md bg-violet-600 px-3 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-zinc-200 disabled:text-zinc-500">
               <CheckCircle2 className="h-4 w-4" /> {review ? '提交选择' : mode === 'specification' ? '保存处置选择' : '提交确认并继续'}
-            </button>
+            </button>}
           </div>
         )}
       </div>

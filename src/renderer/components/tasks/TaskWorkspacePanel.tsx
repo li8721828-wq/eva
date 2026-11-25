@@ -141,7 +141,8 @@ function latestEvaluationStatus(run: RequirementRun): { blockers: string[]; chec
   if (evaluation?.unresolvedItems) {
     const describe = (item: { id: string; fact: string; requiredDecision: string }) => `${item.id}: ${item.fact} (${item.requiredDecision})`
     return {
-      blockers: evaluation.unresolvedItems.filter((item) => item.blocking).map(describe),
+      blockers: run.pendingMaterials === undefined ? evaluation.unresolvedItems.filter((item) => item.blocking).map(describe)
+        : [...run.clarificationQuestions.map((question) => question.question), ...run.pendingMaterials.map((item) => item.requiredDecision)],
       checks: evaluation.unresolvedItems.filter((item) => !item.blocking).map(describe),
       structured: true,
     }
@@ -504,6 +505,8 @@ export function TaskWorkspacePanel({ onCompactChange }: { onCompactChange?: (com
                   <span className={cn('rounded px-1.5 py-0.5 text-[11px] font-medium', run.status === 'ready-for-implementation' ? 'bg-emerald-50 text-emerald-700' : run.status === 'ready-for-specification' && run.specQualityScore === undefined ? 'bg-emerald-50 text-emerald-700' : run.status === 'failed' || run.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700')}>{run.status === 'ready-for-implementation' || run.specQualityScore !== undefined ? `${run.specQualityScore || 0}/${run.specQualityThreshold || 85}` : `${run.qualityScore}/${run.qualityThreshold}`}</span>
                 </div>
                  <p className="mt-1 text-xs text-zinc-500">{run.specReview ? '规格草稿已通过校验，请在对话中确认关键规则与例外。' : run.status === 'ready-for-implementation' ? `规格已校验通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），可进入实现阶段。` : run.status === 'specifying' ? '正在构建并校验规格文档。' : run.status === 'awaiting-spec-resolution' ? `规格校验未通过（${run.specQualityScore || 0}/${run.specQualityThreshold || 85}），请在对话中选择阻塞处置路径。` : run.status === 'ready-for-specification' ? (run.specQualityScore !== undefined ? `规格校验未通过（${run.specQualityScore}/${run.specQualityThreshold || 85}），请修订后再次执行 /spec。` : '需求已明确，可进入规格阶段。') : run.status === 'cancelled' ? '本轮已停止。' : run.status === 'failed' ? '本轮处理失败。' : '等待补充澄清后重新评测。'}</p>
+                 {run.status === 'awaiting-materials' && <p className="mt-1 text-xs text-violet-700">等待补充验收材料。请在需求会话发送 /requirement 并附上材料。</p>}
+                 {run.status === 'review-required' && <p className="mt-1 text-xs text-violet-700">可在需求会话发送 /requirement 重新复核。</p>}
                  {((run.codingStatus === 'ready' && run.codingGenerator === 'java-domain') || run.hostVerification) && (
                    <div className="mt-2 space-y-1 text-xs leading-5 text-zinc-600" aria-label="宿主验收">
                      {run.codingStatus === 'ready' && run.codingGenerator === 'java-domain' && <p>领域模块通过</p>}

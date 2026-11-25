@@ -285,9 +285,10 @@ describe('OpenAIProvider streaming tool calls', () => {
     expect(provider.supportsReasoning('gpt-4o')).toBe(false)
   })
 
-  it('passes the thinking switch through a custom OpenAI-compatible gateway', async () => {
+  it.each(['reasoning_content', 'reasoning'])('passes the thinking switch and string %s through a custom gateway', async field => {
     async function* responseStream() {
-      yield { choices: [{ delta: { reasoning_content: 'plan' }, finish_reason: null }] }
+      yield { choices: [{ delta: { [field]: 'plan' }, finish_reason: null }] }
+      yield { choices: [{ delta: { [field]: { opaque: 'not display text' } }, finish_reason: null }] }
       yield { choices: [{ delta: { content: 'answer' }, finish_reason: 'stop' }] }
     }
 
@@ -306,6 +307,7 @@ describe('OpenAIProvider streaming tool calls', () => {
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ thinking: { type: 'enabled' } }), expect.anything())
     expect(chunks.some((chunk) => chunk.reasoningContent === 'plan')).toBe(true)
+    expect(chunks.filter(chunk => chunk.reasoningContent)).toHaveLength(1)
   })
 
   it('sends an explicit disabled thinking switch when reasoning is turned off', async () => {

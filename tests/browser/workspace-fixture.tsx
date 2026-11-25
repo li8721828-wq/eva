@@ -39,8 +39,16 @@ const api: Record<string, unknown> = {
   }, listArtifacts: async () => [] },
   requirements: {
     onProgress: unsubscribe,
-    listRuns: async (id?: string) => specDraft && (!id || id === specDraft.conversationId) ? [specDraft] : [],
+    listRuns: async (id?: string) => specDraft && (!id || id === specDraft.conversationId || id === specDraft.interactionConversationId) ? [specDraft] : [],
     resolveSpec: async (input: SubmitSpecificationResolutionInput) => { testWindow.fixtureSpecAnswer = input; specDraft = undefined },
+    submit: async (input: any) => {
+      testWindow.fixtureSupplement = input
+      if (input.action === 'simulate-materials' && specDraft) {
+        specDraft = { ...specDraft, materialPreviewDocumentId: 'preview', documents: [{ id: 'preview', stage: 'modeling', dimension: 'material-preview', title: '模拟材料与规格草稿', content: '## 模拟假设\n\n示例字段仅供起草，正式材料仍待验收。', path: '', createdAt: '', round: 1 }] }
+        return specDraft
+      }
+      specDraft = undefined
+    },
     dsl: async (input: SubmitDslInput) => { testWindow.fixtureDslTarget = input },
     verifyHost: async (input: SubmitHostVerificationInput) => { testWindow.fixtureHostAction = input },
   },
@@ -77,12 +85,12 @@ testWindow.setReadingPreview = (renderer: AgentMarkdownRenderer, theme: 'light' 
 }
 testWindow.showSpecReview = () => {
   specDraft = {
-    id: 'fixture-spec', conversationId: conversation.id, conversationTitle: conversation.title,
+    id: 'fixture-spec', conversationId: 'fixture-origin', interactionConversationId: conversation.id, conversationTitle: conversation.title,
     status: 'awaiting-spec-resolution', round: 1, qualityScore: 95, qualityThreshold: 80, specQualityScore: 95,
     documents: [], evaluations: [], clarificationQuestions: [], createdAt: '', updatedAt: '',
     specReview: {
       specification: { documentId: 'spec', sha256: 'fixture-spec-hash' }, contract: { documentId: 'contract', sha256: 'fixture-contract-hash' },
-      upstreamDocumentId: 'model', rules: [{ id: 'BR-001', summary: '未双签的订单不允许审批' }],
+      upstreamDocumentId: 'model', rules: [{ id: 'BR-001', owner: 'FR-001', summary: '', condition: 'Order.Approve.DualSignature dualSigned == true' }],
     },
     specResolutionQuestions: [{
       id: 'fixture-approval', question: '关键业务规则与例外是否完整、准确？', category: 'specification', blocker: '',
@@ -92,6 +100,17 @@ testWindow.showSpecReview = () => {
   testWindow.setReadingPreview('enhanced', 'light')
 }
 testWindow.enterDslCommand = () => useChatStore.getState().setInputText('/dsl java-domain')
+testWindow.showWaitingMaterials = () => {
+  testWindow.showSpecReview()
+  specDraft = {
+    ...specDraft!, status: 'awaiting-materials', specReview: undefined, specResolutionQuestions: [],
+    pendingMaterials: [{ id: 'privacy', fact: '缺少清单', impact: '脱敏验收受阻', blocking: true, kind: 'material', requiredDecision: '交付敏感字段清单' }],
+  }
+  useChatStore.setState((state) => ({ messages: [...state.messages, {
+    id: 'waiting-materials', conversationId: 'current', role: 'assistant', content: '等待补充材料。', timestamp: 2,
+  }] }))
+}
+testWindow.enterSupplement = () => useChatStore.getState().setInputText('/requirement 联系人手机号仅显示末四位')
 testWindow.showHostResult = () => {
   testWindow.showSpecReview()
   specDraft = {

@@ -53,8 +53,8 @@ function invalid(name: string, reason: string): never {
 function keys(block: ParsedDslBlock, allowed: string[]): Map<string, string> {
   const entries = new Map<string, string>()
   for (const line of block.body.split('\n').filter(Boolean)) {
-    const match = /^([a-z]+):\s*(\S.*)$/.exec(line)
-    if (!match || !allowed.includes(match[1]) || entries.has(match[1])) {
+    const match = /^([a-z]+):\s*(.*)$/.exec(line)
+    if (!match || !allowed.includes(match[1]) || entries.has(match[1]) || (!match[2] && match[1] !== 'fields')) {
       invalid(block.name, `unsupported or repeated property "${line}". Expected ${allowed.join(', ')}.`)
     }
     entries.set(match[1], match[2])
@@ -101,8 +101,10 @@ function parseWorkflows(parsed: ParsedDomainDsl): Workflow[] {
   const events = parsed.events.map((block) => {
     const props = keys(block, ['entity', 'fields'])
     const entity = named(parsed.aggregates, props.get('entity'), block.name, 'entity')
-    const fields = identifierList(props.get('fields') ?? '', block.name)
-      .map((field) => named(entity.fields, field, block.name, 'event field'))
+    const fieldList = props.get('fields')
+    const fields = fieldList && fieldList !== '[]'
+      ? identifierList(fieldList, block.name).map((field) => named(entity.fields, field, block.name, 'event field'))
+      : []
     return { name: block.name, entity, fields }
   })
   const rules = parsed.ruleDefinitions.map((rule) => {
@@ -198,14 +200,20 @@ function validateSpecCoverage(workflows: Workflow[], contract: SpecContract): vo
   for (const owner of contract.rules) {
     for (const check of owner.checks ?? []) {
       if (check.kind === 'manual') invalid(check.id, 'requires external acceptance.')
-      const key = 'rule' in check ? boundaryKey(check) : `${check.entity}.${check.command}:${check.kind}`
+      const key = check.kind === 'initial-state' ? `${check.entity}:initial-state`
+        : 'rule' in check ? boundaryKey(check) : `${check.entity}.${check.command}:${check.kind}`
       if (checks.has(key)) invalid(check.id, `duplicates Spec check ${key}.`)
       checks.set(key, { check, cases: owner.cases })
     }
   }
   const sideLabels = { [-1]: 'below', 0: 'equal to', 1: 'above' }
 
-  for (const { entity, commands } of workflows) {
+  for (const { entity, initial, commands } of workflows) {
+    const initialKey = `${entity.name}:initial-state`
+    const initialCheck = checks.get(initialKey)?.check
+    if (initialCheck?.kind !== 'initial-state') invalid(entity.name, 'missing independent initial-state check in the Spec.')
+    if (initialCheck.state !== initial.name) invalid(initialCheck.id, 'Spec initial state does not match DSL.')
+    checks.delete(initialKey)
     for (const command of commands) {
       const commandName = `${entity.name}.${command.name}`
       const tests = cases.filter((test) => test.entity === entity.name && test.command === command.name)
@@ -216,7 +224,7 @@ function validateSpecCoverage(workflows: Workflow[], contract: SpecContract): vo
       for (const kind of ['actor', 'state'] as const) {
         const key = `${commandName}:${kind}`
         const declared = checks.get(key)?.check
-        if (!declared) continue
+        if (!declared) invalid(commandName, `missing independent ${kind} check in the Spec.`)
         if (declared.kind === 'actor' && declared.actor !== command.actor) invalid(declared.id, 'Spec actor does not match DSL.')
         if (declared.kind === 'state' && declared.state !== command.from.name) invalid(declared.id, 'Spec starting state does not match DSL.')
         checks.delete(key)
@@ -262,7 +270,7 @@ function validateSpecCoverage(workflows: Workflow[], contract: SpecContract): vo
   }
   if (checks.size) {
     const remaining = [...checks.values()].map(({ check }) => check.id).sort()
-    invalid(remaining.join(', '), 'Spec checks have no corresponding DSL command or guard.')
+    invalid(remaining.join(', '), 'Spec checks have no corresponding DSL workflow, command or guard.')
   }
 }
 
@@ -323,7 +331,7 @@ function specCaseSource(workflows: Workflow[], test: SpecAcceptanceCase, index: 
   const workflow = workflows.find(({ entity }) => entity.name === test.entity)
   if (!workflow) invalid(test.id, `missing workflow ${test.entity}.`)
   const command = named(workflow.commands, test.command, test.id, 'command')
-  const from = named(workflow.states, test.state, test.id, 'starting state')
+  const from = test.state === null ? undefined : named(workflow.states, test.state, test.id, 'starting state')
   const type = `${workflow.entity.name}Workflow`
   const expected = test.expect
   for (const fieldName of Object.keys(test.input)) named(workflow.entity.fields, fieldName, test.id, 'input field')
@@ -335,7 +343,8 @@ function specCaseSource(workflows: Workflow[], test: SpecAcceptanceCase, index: 
   const fields = workflow.entity.fields.map((field) => Object.hasOwn(test.input, field.name)
     ? specLiteral(field, test.input[field.name], test.id)
     : DEFAULT_VALUE[field.type])
-  const apply = `${type}.apply(data, ${type}.State.${from.name}, ${type}.Command.${command.name}, "${test.actor}")`
+  const stateArgument = from ? `${type}.State.${from.name}` : 'null'
+  const apply = `${type}.apply(data, ${stateArgument}, ${type}.Command.${command.name}, "${test.actor}")`
   let assertions: string[]
   if ('reject' in expected) {
     if ((expected.reject === 'state') !== (from !== command.from)
@@ -362,7 +371,7 @@ function specCaseSource(workflows: Workflow[], test: SpecAcceptanceCase, index: 
       `            var outcome = ${apply};`,
       `            check(outcome.state() == ${type}.State.${to.name}, "Expected state ${to.name}");`,
       `            check(outcome.event() instanceof ${event.name}, "Expected event ${event.name}");`,
-      `            var event = (${event.name}) outcome.event();`,
+      ...(event.fields.length ? [`            var event = (${event.name}) outcome.event();`] : []),
       ...event.fields.map((field) => {
         const accessor = `event.${field.name}()`
         const value = specLiteral(field, payload[field.name], test.id)
@@ -385,35 +394,38 @@ function specCaseSource(workflows: Workflow[], test: SpecAcceptanceCase, index: 
   ].join('\n')
 }
 
-function acceptanceSource(workflows: Workflow[], specCases: SpecAcceptanceCase[]): string {
-  const checks = workflows.flatMap(({ entity, initial, states, commands }) => {
+function acceptanceSource(
+  workflows: Workflow[],
+  specCases: SpecAcceptanceCase[],
+  initialChecks: Extract<SpecCheck, { kind: 'initial-state' }>[],
+): string {
+  const checks = initialChecks.map(({ id, entity, state }) =>
+    `        check(${entity}Workflow.initialState() == ${entity}Workflow.State.${state}, "Spec acceptance ${id}: initial state ${entity}");`)
+  checks.push(...workflows.flatMap(({ entity, states, commands }) => {
     const workflow = `${entity.name}Workflow`
-    return [
-      `        check(${workflow}.initialState() == ${workflow}.State.${initial.name}, "Initial state: ${entity.name}");`,
-      ...commands.map((command) => {
-        const { name, actor, event } = command
-        const data = (omit?: string) => `new ${entity.name}(${entity.fields.map((field) =>
-          omit === field.name ? 'null' : command.example.get(field.name) ?? DEFAULT_VALUE[field.type]).join(', ')})`
-        const apply = (input: string, state: string, role: string) =>
-          `${workflow}.apply(${input}, ${state}, ${workflow}.Command.${name}, ${role})`
-        const from = `${workflow}.State.${command.from.name}`
-        const wrong = states.find((state) => state !== command.from)
-        return [
-          '        {',
-          `            var data = ${data()};`,
-          `            var result = ${apply('data', from, `"${actor}"`)};`,
-          `            check(result.state() == ${workflow}.State.${command.to.name}, "Transition: ${name}");`,
-          `            check(result.event() instanceof ${event.name}, "Event: ${name}");`,
-          `            var event = (${event.name}) result.event();`,
-          ...event.fields.map((field) => `            check(java.util.Objects.equals(event.${field.name}(), data.${field.name}()), "Payload: ${name}.${field.name}");`),
-          `            rejects(() -> ${apply('data', from, 'null')}, "Actor: ${name}");`,
-          `            rejects(() -> ${apply('data', wrong ? `${workflow}.State.${wrong.name}` : 'null', `"${actor}"`)}, "State: ${name}");`,
-          ...[...command.example.keys()].map((field) => `            rejects(() -> ${apply(data(field), from, `"${actor}"`)}, "Rule: ");`),
-          '        }',
-        ].join('\n')
-      }),
-    ]
-  })
+    return commands.map((command) => {
+      const { name, actor, event } = command
+      const data = (omit?: string) => `new ${entity.name}(${entity.fields.map((field) =>
+        omit === field.name ? 'null' : command.example.get(field.name) ?? DEFAULT_VALUE[field.type]).join(', ')})`
+      const apply = (input: string, state: string, role: string) =>
+        `${workflow}.apply(${input}, ${state}, ${workflow}.Command.${name}, ${role})`
+      const from = `${workflow}.State.${command.from.name}`
+      const wrong = states.find((state) => state !== command.from)
+      return [
+        '        {',
+        `            var data = ${data()};`,
+        `            var result = ${apply('data', from, `"${actor}"`)};`,
+        `            check(result.state() == ${workflow}.State.${command.to.name}, "Transition: ${name}");`,
+        `            check(result.event() instanceof ${event.name}, "Event: ${name}");`,
+        ...(event.fields.length ? [`            var event = (${event.name}) result.event();`] : []),
+        ...event.fields.map((field) => `            check(java.util.Objects.equals(event.${field.name}(), data.${field.name}()), "Payload: ${name}.${field.name}");`),
+        `            rejects(() -> ${apply('data', from, 'null')}, "Actor: ${name}");`,
+        `            rejects(() -> ${apply('data', wrong ? `${workflow}.State.${wrong.name}` : 'null', `"${actor}"`)}, "State: ${name}");`,
+        ...[...command.example.keys()].map((field) => `            rejects(() -> ${apply(data(field), from, `"${actor}"`)}, "Rule: ");`),
+        '        }',
+      ].join('\n')
+    })
+  }))
   checks.push(...specCases.map((_, index) => `        specCase${index}();`))
   const specMethods = specCases.length ? [
     '',
@@ -456,9 +468,14 @@ function prepareJavaDomain(parsed: ParsedDomainDsl, contract?: SpecContract) {
   if (manualRules.length) invalid(parsed.domain, `missing executable acceptance for ${manualRules.map((rule) => rule.id).join(', ')}.`)
   validateAcceptanceBindings(contract, parsed)
   const specCases = contract.rules.flatMap((rule) => rule.cases)
+  const initialChecks = contract.rules.flatMap((rule) => (rule.checks ?? []).filter((check) => check.kind === 'initial-state'))
   const workflows = parseWorkflows(parsed)
   validateSpecCoverage(workflows, contract)
-  return { workflows, acceptance: acceptanceSource(workflows, specCases), caseCount: specCases.length }
+  return {
+    workflows,
+    acceptance: acceptanceSource(workflows, specCases, initialChecks),
+    caseCount: specCases.length + initialChecks.length,
+  }
 }
 
 export function validateJavaDomainDsl(parsed: ParsedDomainDsl, contract?: SpecContract): void {

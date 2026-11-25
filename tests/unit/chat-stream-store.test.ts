@@ -21,6 +21,18 @@ function streamingForeground(content: string, startedAt: number) {
 const refreshConversationLive = useChatStore.getState().refreshConversation
 
 describe('chat stream state', () => {
+  it('keeps explicitly returned reasoning separate from legacy/internal text and ends its live phase on an answer', () => {
+    useChatStore.setState({ currentConversationId: 'reasoning-chat', messages: [], streamingByConversation: {}, loadConversations: vi.fn(async () => {}) })
+    const append = useChatStore.getState().appendStreamEvent
+    append({ type: 'reasoning_delta', conversationId: 'reasoning-chat', content: 'Legacy internal material' })
+    append({ type: 'reasoning_delta', conversationId: 'reasoning-chat', content: 'Provider summary.', reasoningSource: 'provider-response' })
+    expect(useChatStore.getState().streamingByConversation['reasoning-chat']).toMatchObject({ reasoningContent: 'Provider summary.', reasoningSource: 'provider-response', reasoningActive: true })
+    append({ type: 'reasoning_delta', conversationId: 'reasoning-chat', content: 'Unattributed private material' })
+    append({ type: 'text_delta', conversationId: 'reasoning-chat', content: 'Answer.' })
+    expect(useChatStore.getState().streamingByConversation['reasoning-chat'].reasoningActive).toBe(false)
+    append({ type: 'done', conversationId: 'reasoning-chat', content: 'Answer.', messageId: 'saved-reasoning' })
+    expect(useChatStore.getState().messages.at(-1)).toMatchObject({ reasoningContent: 'Provider summary.', reasoningSource: 'provider-response' })
+  })
   it('retains native narration and tool boundaries without Eva progress conversion', () => {
     useChatStore.setState({ currentConversationId: 'native-chat', messages: [], streamingByConversation: {}, loadConversations: vi.fn(async () => {}) })
     const append = useChatStore.getState().appendStreamEvent

@@ -276,15 +276,15 @@ describe('determinism and write safety', () => {
     }
   })
 
-  it('requires v3 acceptance before generating an executable Java domain', async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), 'eva-codegen-v3-'))
+  it('requires v4 acceptance before generating an executable Java domain', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'eva-codegen-v4-'))
     directories.push(directory)
     const parsed = service.parseDomainDsl(sampleDsl)
     const generator = service.resolveGenerator('java-domain')
     await expect(service.generatePackage(directory, parsed, generator, {}, true))
-      .rejects.toThrow('Spec acceptance v3 is required')
+      .rejects.toThrow('Spec acceptance v4 is required')
     await expect(service.generatePackage(directory, parsed, generator, {}, true, { ...approvalContract(), version: 2 }))
-      .rejects.toThrow('Spec acceptance v3 is required')
+      .rejects.toThrow('Spec acceptance v4 is required')
     expect(await readdir(directory)).toEqual([])
   })
 

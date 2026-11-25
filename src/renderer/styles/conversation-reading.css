@@ -1,13 +1,15 @@
 /* Conversation reading contract: one type hierarchy across all renderers.
    Only presentation is normalized; the engine's Markdown remains untouched. */
+:root { --conversation-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Noto Sans", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; --conversation-muted: #666; }
+:root:is([data-theme="dark"], [data-theme="starlight"]) { --conversation-muted: #aaabaf; }
 :root .chat-message-markdown.conversation-reading {
-  max-width: 70ch;
-  --reading-ink: #374151;
+  max-width: 78ch;
+  --reading-ink: #202124;
   color: var(--reading-ink);
   font-size: var(--reading-size, 15px);
   font-weight: 400;
-  line-height: 1.88;
-  letter-spacing: .012em;
+  line-height: 1.8;
+  letter-spacing: normal;
   font-synthesis: none;
   font-kerning: normal;
   -webkit-font-smoothing: antialiased;
@@ -18,12 +20,12 @@
   --reading-code-number: #405f98;
 }
 :root:is([data-theme="dark"], [data-theme="starlight"]) .chat-message-markdown.conversation-reading {
-  --reading-ink: #d7dce4;
+  --reading-ink: #e5e7eb;
   --reading-code-keyword: #c4b5fd;
   --reading-code-string: #9bd4b4;
   --reading-code-number: #aac8f2;
 }
-:root .chat-message-markdown.conversation-reading.chat-message-markdown--font-system { font-family: var(--font-sans); }
+:root .chat-message-markdown.conversation-reading.chat-message-markdown--font-system { font-family: var(--conversation-font); }
 :root .chat-message-markdown.conversation-reading.chat-message-markdown--font-macos { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Eva Sans", "Microsoft YaHei UI", "Noto Sans SC", "Segoe UI", sans-serif; }
 :root .chat-message-markdown.conversation-reading.chat-message-markdown--font-serif { font-family: Georgia, "Noto Serif", "Times New Roman", serif; }
 :root .chat-message-markdown.conversation-reading.chat-message-markdown--font-mono { font-family: "Cascadia Code", Consolas, monospace; }
@@ -38,19 +40,20 @@
   animation: none;
 }
 :root .chat-message-markdown.conversation-reading :is(h1, h2, h3, h4, h5, h6) {
-  margin: 1.6em 0 .6em;
+  margin: calc(var(--reading-size, 15px) * 1.6) 0 calc(var(--reading-size, 15px) * .8);
   padding: 0;
   border: 0;
   background: none;
   line-height: 1.6;
   letter-spacing: 0;
 }
-:root .chat-message-markdown.conversation-reading h1 { font-size: 1.25em; }
-:root .chat-message-markdown.conversation-reading h2 { font-size: 1.13em; }
-:root .chat-message-markdown.conversation-reading h3 { font-size: 1.04em; }
+:root .chat-message-markdown.conversation-reading h1 { font-size: 1.333333em; }
+:root .chat-message-markdown.conversation-reading h2 { font-size: 1.2em; }
+:root .chat-message-markdown.conversation-reading h3 { font-size: 1.066667em; }
+:root .chat-message-markdown.conversation-reading :is(h3, h4) { margin-top: calc(var(--reading-size, 15px) * 1.333333); margin-bottom: calc(var(--reading-size, 15px) * .533333); }
 :root .chat-message-markdown.conversation-reading :is(h4, h5, h6) { font-size: 1em; }
-:root .chat-message-markdown.conversation-reading :is(p, ul, ol) { margin: 0 0 .95em; line-height: inherit; }
-:root .chat-message-markdown.conversation-reading :is(ul, ol) { padding-left: 1.4em; list-style-position: outside; }
+:root .chat-message-markdown.conversation-reading :is(p, ul, ol) { margin: .8em 0; line-height: inherit; }
+:root .chat-message-markdown.conversation-reading :is(ul, ol) { padding-left: 1.333333em; list-style-position: outside; }
 :root .chat-message-markdown.conversation-reading li { padding: 0 0 0 .15em; line-height: inherit; }
 :root .chat-message-markdown.conversation-reading li + li { margin-top: .4em; }
 :root .chat-message-markdown.conversation-reading li > p { display: block; margin: 0 0 .4em; }
@@ -89,8 +92,8 @@
 :root .chat-message-markdown.conversation-reading :is(.markdown-code-block, [data-streamdown="code-block"]) {
   margin: 1em 0;
   border: 1px solid var(--ui-border);
-  border-radius: 8px;
-  background: var(--ui-surface);
+  border-radius: 12px;
+  background: var(--ui-surface-muted);
   box-shadow: none;
   backdrop-filter: none;
   padding: 0;
@@ -98,31 +101,32 @@
 }
 :root .chat-message-markdown.conversation-reading .markdown-code-block::before { display: none; }
 :root .chat-message-markdown.conversation-reading :is(.markdown-code-block__bar, [data-streamdown="code-block-header"]) {
-  min-height: 2rem;
-  padding: .4rem .8rem;
+  min-height: 36px;
+  padding: 6px 12px;
   border-bottom: 1px solid var(--ui-border);
   background: var(--ui-surface-muted);
   color: var(--text-secondary);
-  font-size: .75rem;
+  font-size: 12px;
+  text-transform: none;
   letter-spacing: 0;
   box-shadow: none;
 }
 :root .chat-message-markdown.conversation-reading pre {
   max-width: 100%;
-  max-height: 18rem;
+  max-height: calc(var(--code-visible-lines, 24) * 1.65em + 2rem);
   margin: 0;
   padding: .85rem 1rem;
   overflow: auto;
   border: 0;
-  border-radius: 0;
+  border-radius: 0 0 12px 12px;
   background: var(--ui-surface) !important;
   color: var(--reading-ink);
-  font-family: "Cascadia Code", Consolas, monospace;
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: .86em;
   line-height: 1.65;
   letter-spacing: 0;
 }
-:root .chat-message-markdown.conversation-reading pre code { color: inherit; font-family: inherit; font-size: 1em; font-weight: 400; line-height: inherit; }
+:root .chat-message-markdown.conversation-reading pre code { display: block; white-space: pre; color: inherit; font-family: inherit; font-size: 1em; font-weight: 400; line-height: inherit; }
 :root .chat-message-markdown.conversation-reading :is(.hljs-keyword, .hljs-type, .hljs-built_in) { color: var(--reading-code-keyword); }
 :root .chat-message-markdown.conversation-reading :is(.hljs-string, .hljs-regexp) { color: var(--reading-code-string); }
 :root .chat-message-markdown.conversation-reading :is(.hljs-number, .hljs-attr, .hljs-title, .hljs-selector-class) { color: var(--reading-code-number); }
@@ -154,13 +158,15 @@
 .execution-details__issue { color: var(--text-primary); font-weight: 500; }
 .execution-details__body { margin-top: .5rem; padding: .8rem 0 .8rem 1rem; border-left: 1px solid var(--ui-border); }
 .execution-details__body .execution-feed { margin: 0; }
-.conversation-metrics { margin-top: 1rem; color: var(--text-muted); font-size: .75rem; }
-.conversation-metrics > summary { width: fit-content; cursor: pointer; }
-.conversation-metrics[open] { color: var(--text-secondary); }
+.chat-reply-actions { display: flex; align-items: center; gap: 2px; margin-top: 4px; margin-left: 0; opacity: 1; }
+.chat-reply-actions .message-action { display: inline-flex; width: 30px; height: 30px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary); box-shadow: none; cursor: pointer; }
+.chat-reply-actions .message-action svg { width: 17px; height: 17px; }
+.chat-reply-actions .message-action:hover:not(:disabled) { color: var(--text-primary); background: transparent; }
+.chat-reply-actions .message-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) { .execution-details__chevron { transition: none; } }
 
 /* Public narration is the conversation; only consecutive tools are folded. */
-.chronological-activity { display: flex; flex-direction: column; gap: 1.1rem; max-width: 70ch; min-width: 0; }
+.chronological-activity { display: flex; flex-direction: column; gap: 6px; max-width: 78ch; min-width: 0; }
 .chronological-activity .execution-details { margin: 0; max-width: 100%; }
 .chronological-activity .execution-details__summary { color: var(--text-secondary); font-size: 13px; }
 .chronological-activity .execution-details__label { font-weight: 400; }
@@ -174,3 +180,40 @@
 .native-tool-row__details { display: grid; gap: .65rem; margin: .35rem 0 .65rem 1.25rem; min-width: 0; padding: .5rem 0 .5rem .85rem; border-left: 1px solid var(--ui-border); }
 .native-tool-row__details pre { min-width: 0; }
 .chronological-activity .tool-call-item__trigger { padding: .3rem 0; border: 0; border-radius: 0; background: transparent; font-size: 13px; }
+
+/* Only new ink fades. No blur, motion or typewriter timer is layered on top. */
+@media (prefers-reduced-motion: reduce) {
+  :root .conversation-reading [data-sd-animate] { animation: none !important; }
+}
+
+.conversation-loading { display: flex; align-items: center; gap: 10px; min-height: 28px; padding: 6px 0; color: var(--conversation-muted); font-family: var(--conversation-font); font-size: 15px; font-weight: 400; line-height: 1.6; }
+.conversation-loading__spinner { width: 18px; height: 18px; flex-shrink: 0; animation: conversation-loading-spin 1s linear infinite; }
+@keyframes conversation-loading-spin { to { transform: rotate(360deg); } }
+.conversation-reasoning { margin: 0 0 12px; min-width: 0; font-family: var(--conversation-font); }
+.conversation-reasoning__trigger { display: inline-flex; align-items: center; gap: 7px; padding: 0; border: 0; background: transparent; color: var(--conversation-muted); font-size: 14px; font-weight: 400; cursor: pointer; }
+.conversation-reasoning__trigger svg { width: 15px; height: 15px; flex-shrink: 0; }
+.conversation-reasoning__trigger svg:last-child { transition: transform 160ms ease; }
+.conversation-reasoning__trigger .is-open { transform: rotate(180deg); }
+.conversation-reasoning__trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+.conversation-reasoning__content { max-height: 18rem; margin: 10px 0 0 6px; padding-left: 14px; border-left: 1px solid var(--ui-border-strong); overflow: auto; overscroll-behavior: contain; }
+:root .conversation-reasoning__content .chat-message-markdown.conversation-reading { --reading-ink: var(--conversation-muted); font-size: calc(var(--reading-size, 15px) * .933333); line-height: 1.6; }
+:root .chat-message-markdown.conversation-reading p { white-space: pre-wrap; }
+:root .conversation-reasoning__content .conversation-reading :is(p, ul, ol) { margin: .45em 0; }
+.markdown-code-block__actions { display: flex; align-items: center; gap: 4px; }
+:root .conversation-reading .markdown-code-block__actions button { display: inline-flex; width: 28px; height: 28px; align-items: center; justify-content: center; padding: 0; }
+:root .chat-message-markdown.conversation-reading :is(.markdown-inline-code, .markdown-file-chip) { font-family: ui-monospace, "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; border-radius: 4px; padding: .15em .35em; }
+:root .conversation-reading .markdown-file-chip svg { display: none; }
+:root .chat-message-markdown.conversation-reading :is(.markdown-table-wrap, [data-streamdown="table-wrapper"]) { width: 100%; border-radius: 10px; }
+:root .chat-message-markdown.conversation-reading th { color: var(--text-secondary); font-size: .86em; }
+@media (prefers-reduced-motion: reduce) {
+  .conversation-loading__spinner { animation: none; }
+  .conversation-reasoning__trigger svg:last-child { transition: none; }
+}
+
+/* A single ink animation owns opacity and its short-lived light halo. */
+@keyframes eva-ink-reveal {
+  from { opacity: .08; text-shadow: 0 0 .5em color-mix(in srgb, var(--accent) 20%, transparent); }
+  55% { opacity: .78; }
+  to { opacity: 1; text-shadow: none; }
+}
+.chat-assistant-row .chronological-activity { margin-bottom: 8px; }

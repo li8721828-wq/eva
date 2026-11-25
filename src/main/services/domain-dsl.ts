@@ -33,7 +33,7 @@ command Approve {
   example: {"total":"125.00"}
   trace: FR-001
 }
-Use the example as grammar only. Declare one initial state per workflow. For commands with rules, include a synthetic passing example for every guarded field. In JSON, quote numbers to preserve precision and use boolean true/false for boolean fields. Rules support numeric comparisons or boolean equality only. Omit requires and example for commands without rules. Keep unsupported but resolved behavior explicit for reference outputs; it must never be treated as executable.
+Use the example as grammar only. Declare the approved initial state for each workflow. Use fields: [] for an event without payload fields. For commands with rules, include a synthetic passing example for every guarded field. In JSON, quote numbers to preserve precision and use boolean true/false for boolean fields. Rules support numeric comparisons or boolean equality only. Omit requires and example for commands without rules. Keep unsupported but resolved behavior explicit for reference outputs; it must never be treated as executable.
 Use declared field types only: ${DSL_FIELD_TYPES.join(', ')}. Each field is exactly name: type.
 Use one declaration per line and close every block on its own line. Preserve actual Spec trace IDs.
 An unresolved fact must be stated as OPEN: followed by the required decision. It blocks release.`

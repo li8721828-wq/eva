@@ -24,6 +24,8 @@ export function mavenDiagnostic(output: string, phase: string): string {
   return [`Maven ${phase} 失败`, reason].filter(Boolean).join('\n')
 }
 
+export class MavenBuildError extends Error {}
+
 /** Invoke only the PATH launcher and fixed Maven arguments, with bounded output and process-tree cancellation. */
 export function runMaven(launcher: string, cwd: string, args: string[], phase: string, timeout: number, signal?: AbortSignal): Promise<string> {
   signal?.throwIfAborted()
@@ -69,7 +71,8 @@ export function runMaven(launcher: string, cwd: string, args: string[], phase: s
       await stopped
       if (stopReason) reject(stopReason)
       else if (code === 0) resolve(output)
-      else reject(new Error(mavenDiagnostic(output, phase)))
+      else if (code !== null) reject(new MavenBuildError(mavenDiagnostic(output, phase)))
+      else reject(new Error(`Maven ${phase} 进程异常退出。`))
     })
   })
 }

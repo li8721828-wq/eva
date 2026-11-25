@@ -90,3 +90,21 @@ it('invalidates only the requested conversation native state', async () => {
   })
   expect((await fs.stat(other.directory!)).isDirectory()).toBe(true)
 })
+
+it('isolates legacy Harness generations without deleting their logs or importing only a tail', async () => {
+  const options = { ...await fixture(), engine: 'deepseek-harness' }
+  const first = await prepareNativeSession({ ...options, history: [{ role: 'user', content: 'first' }], userMessageIds: ['u1'] })
+  await first.commit!()
+  const cursorPath = path.join(path.dirname(first.directory!), 'cursor.json')
+  const cursor = JSON.parse(await fs.readFile(cursorPath, 'utf8'))
+  delete cursor.harnessImportVersion
+  await fs.writeFile(cursorPath, JSON.stringify(cursor))
+  await fs.mkdir(first.directory!, { recursive: true })
+  await fs.writeFile(path.join(first.directory!, 'preserved-log'), 'original bytes')
+  const history: ChatMessageInput[] = [{ role: 'user', content: 'first' }, { role: 'assistant', content: 'completed' }, { role: 'user', content: 'next' }]
+  const next = await prepareNativeSession({ ...options, history, userMessageIds: ['u1', 'u2'] })
+  expect(next.resume).toBe(false)
+  expect(next.directory).not.toBe(first.directory)
+  expect(next.history).toEqual(history)
+  expect(await fs.readFile(path.join(first.directory!, 'preserved-log'), 'utf8')).toBe('original bytes')
+})

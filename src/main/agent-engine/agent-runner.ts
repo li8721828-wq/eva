@@ -1300,8 +1300,8 @@ export class AgentRunner {
           maxTokens,
           stream: true,
           reasoning: options?.disableReasoning ? { enabled: false } : resolveProviderReasoning(provider, agentConfig.model,
-            !this.shouldRequestProviderReasoning(agentConfig) ? { enabled: false }
-              : provider.supportsReasoning(agentConfig.model) ? { enabled: true, budgetTokens: 1024 } : undefined),
+            this.shouldRequestProviderReasoning(agentConfig) && provider.supportsReasoning(agentConfig.model)
+              ? { enabled: true, budgetTokens: 1024 } : undefined),
         },
         signal
       )
@@ -1320,10 +1320,10 @@ export class AgentRunner {
 
         if (chunk.reasoningContent) {
           reasoningCharacters += chunk.reasoningContent.length
-          if (this.shouldRequestProviderReasoning(agentConfig)) {
-            reasoningContent += chunk.reasoningContent
-            yield { type: 'reasoning', content: chunk.reasoningContent }
-          }
+          // Collect only the explicit API response field. Display does not
+          // enable reasoning or change the user's per-model request settings.
+          reasoningContent += chunk.reasoningContent
+          yield { type: 'reasoning', content: chunk.reasoningContent, reasoningSource: 'provider-response' }
         }
 
         // ── Text content ──────────────────────────────────────────────────────

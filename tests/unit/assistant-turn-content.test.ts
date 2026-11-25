@@ -99,3 +99,10 @@ describe('resolveAssistantTurnContent', () => {
     expect(content.endsWith('（本轮已由用户停止）')).toBe(true)
   })
 })
+
+
+it('identifies corrupt local session logs instead of blaming the provider', () => {
+  const text = resolveAssistantTurnContent({ completedContent: '', runError: 'stored log is corrupt: SessionFormatError' })
+  expect(text).toContain('本地原生会话日志格式不兼容')
+  expect(text).not.toContain('模型服务返回异常')
+})

@@ -14,6 +14,8 @@ export interface ConversationStreamState {
   agentName?: string
   content: string
   reasoningContent: string
+  reasoningSource?: ChatMessage['reasoningSource']
+  reasoningActive?: boolean
   toolCalls: ToolCall[]
   executionTimeline: ExecutionTimelineEntry[]
   progressUpdates: ProgressUpdate[]
@@ -34,15 +36,9 @@ function createIdleStream(): ConversationStreamState {
 }
 
 /**
- * Whether the in-flight answer text is actually on screen. Character pacing
- * exists to make visible text appear gradually, so text the transcript is not
- * rendering would only delay the terminal event by tens of seconds of invisible
- * animation. That happens when the reply row for this round already shows the
- * same content, in which case the streamed copy is a duplicate.
- *
- * A tool round used to hide its streamed synthesis entirely, which is why this
- * check once keyed off `toolCalls`. The synthesis now streams in place, so the
- * duplicate reply row is the only case where pacing must be skipped.
+ * Whether the in-flight answer has a visible transcript surface. Only visible
+ * text needs a short fade-settle window before its terminal event. A persisted
+ * duplicate skips that wait. Tool rounds still render their live answer.
  */
 export function isStreamedTextRendered(
   state: Pick<ChatState, 'messages' | 'streamingByConversation'>,
@@ -704,6 +700,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (nativeEvent.type === 'message_end' && nativeEvent.content !== undefined) content = nativeEvent.content
           return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: {
             ...stream, ...agentIdentity, isStreaming: true, content,
+            ...(['text_delta', 'tool_start', 'message_end'].includes(nativeEvent.type) ? { reasoningActive: false } : {}),
             nativeAgent: { engine: nativeEvent.engine, events: nextEvents },
           } } }
         })
@@ -860,7 +857,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existingStream = s.streamingByConversation[conversationId]
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningContent: stream.reasoningContent + event.content! } } }
+            if (stream.reasoningSource && !event.reasoningSource) return s
+            const prefix = event.reasoningSource && !stream.reasoningSource ? '' : stream.reasoningContent
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, ...agentIdentity, isStreaming: true,
+              reasoningContent: prefix + event.content!, reasoningSource: event.reasoningSource || stream.reasoningSource,
+              reasoningActive: event.reasoningSource === 'provider-response',
+            } } }
           })
         }
         break
@@ -875,7 +877,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             // stale delta reopen it and render a duplicate assistant bubble.
             if (existingStream && !existingStream.isStreaming) return s
             const stream = existingStream || createIdleStream()
-            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content! } } }
+            return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, content: stream.content + event.content!, reasoningActive: false } } }
           })
         }
         break
@@ -907,11 +909,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             const existing = stream.toolCalls.find((t) => t.id === tc.id)
             if (existing) {
               return {
-                streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, toolCalls: stream.toolCalls.map((t) => t.id === tc.id ? { ...t, ...tc } : t) } },
+                streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningActive: false, toolCalls: stream.toolCalls.map((t) => t.id === tc.id ? { ...t, ...tc } : t) } },
               }
             }
             return {
-              streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, toolCalls: [...stream.toolCalls, {
+              streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, isStreaming: true, reasoningActive: false, toolCalls: [...stream.toolCalls, {
                   id: tc.id || generateId(),
                   name: tc.name || 'unknown',
                   arguments: (tc.arguments as Record<string, unknown>) || {},
@@ -999,6 +1001,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             content: finalContent,
             nativeAgent: stream.nativeAgent,
             reasoningContent: stream.reasoningContent || undefined,
+            reasoningSource: stream.reasoningSource,
             executionTimeline: transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
             progressUpdates: stream.progressUpdates.length > 0 ? stream.progressUpdates : undefined,
             toolCalls: stream.toolCalls.length > 0 ? stream.toolCalls : undefined,

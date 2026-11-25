@@ -5,6 +5,7 @@ import { useTaskStore } from '@/stores/use-task-store'
 import { useSymposiumStore } from '@/stores/use-symposium-store'
 import { cn } from '@/lib/utils'
 import { shouldUseExpertTeam } from '@/lib/team-routing'
+import { isMaterialSimulationRequest } from '@/lib/requirement-intent'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { AskUserCard } from './AskUserCard'
@@ -388,7 +389,14 @@ export function InputBar({ className }: InputBarProps) {
       if (textareaRef.current) textareaRef.current.style.height = 'auto'
       return
     }
-    const requirementMatch = inputText.trim().match(/^\/requirement(?:\s+([\s\S]*))?$/i)
+    let simulationRun: import('../../../shared/types/requirement-engineering').RequirementRun | undefined
+    if (currentConversation && !documentAttachments.length && !referenceImages.length && isMaterialSimulationRequest(inputText)) {
+      try {
+        simulationRun = (await window.eva.requirements.listRuns(currentConversation.id))
+          .find(run => (run.interactionConversationId ?? run.conversationId) === currentConversation.id && run.status === 'awaiting-materials' && Boolean(run.pendingMaterials?.length))
+      } catch (error) { setError(error instanceof Error ? error.message : '读取需求运行失败。'); return }
+    }
+    const requirementMatch = inputText.trim().match(/^\/requirement(?:\s+([\s\S]*))?$/i) || (simulationRun ? ['', ''] : null)
     if (requirementMatch) {
       if (referenceImages.length > 0) {
         setError('需求工程暂不直接接收图片，请先用普通对话描述图片内容或附加需求文档。')
@@ -414,6 +422,7 @@ export function InputBar({ className }: InputBarProps) {
         startRequirementProgress(conversation.id, '正在读取需求输入和附件')
         await window.eva.requirements.submit({
           conversationId: conversation.id,
+          ...(simulationRun ? { action: 'simulate-materials' as const, runId: simulationRun.id } : {}),
           content: requirementMatch[1]?.trim(),
           attachments: documentAttachments,
         })

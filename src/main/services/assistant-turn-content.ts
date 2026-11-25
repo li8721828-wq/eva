@@ -5,6 +5,9 @@
  * that never was user-facing, such as an exception thrown outside the runner.
  */
 function userFacingRunError(value: string): string {
+  if (/SessionFormatError|stored log is corrupt/i.test(value)) {
+    return '本次回复未完成：本地原生会话日志格式不兼容，历史聊天仍保留。请更新并重启 Eva 后重试；不要重复执行已完成的工具操作。'
+  }
   const firstLine = value.split(/\r?\n/, 1)[0]?.trim() || ''
   if (/[\u4e00-\u9fff]/.test(firstLine)) return `本次回复未完成：${firstLine}`
   return '本次回复未完成：模型服务返回异常，请检查当前供应商和模型配置后重试。'

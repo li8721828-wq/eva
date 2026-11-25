@@ -4,18 +4,20 @@ import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
+import hljs from 'highlight.js/lib/common'
 import 'streamdown/styles.css'
-import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ChatUsage, ExecutionTimelineEntry, ResponseTiming, ToolCall } from '../../../shared/types'
+import type { AgentMarkdownRenderer, AgentOutputColor, AgentOutputFont, AgentOutputFontSize, AgentOutputFormat, AgentOutputStyle, AgentOutputTextEffect, ChatMessage, ExecutionTimelineEntry, ToolCall } from '../../../shared/types'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/Badge'
 import { ToolCallGroupView, ToolCallView } from './ToolCallView'
 import { NativeAgentView } from './NativeAgentView'
 import { ToolActivityList } from './ToolActivityList'
+import { ConversationActivity } from './ConversationActivity'
 import { groupToolActivity } from '@/lib/execution-activity'
 import { PlanChecklist } from './PlanChecklist'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
-import { Bot, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, Loader2, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info, CircleDot, RefreshCw, Sparkles } from 'lucide-react'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Loader, Wrench, Copy, Check, Heart, Quote, ChevronDown, BrainCircuit, ExternalLink, FileText, FileSpreadsheet, FolderOpen, CheckCircle2, XCircle, Info, CircleDot, RefreshCw, Sparkles } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useChatStore } from '@/stores/use-chat-store'
 import { useAppStore } from '@/stores/use-app-store'
 import { useAgentStore } from '@/stores/use-agent-store'
@@ -25,6 +27,9 @@ import { buildProcessFeed, isInternalToolLifecycleUpdate, isStructuredReport, pr
 import { FilePathChip } from './FilePathChip'
 import '@/styles/conversation-reading.css'
 import { READING_FONT_SIZES } from '@/lib/reading-typography'
+import { CHAT_TEXT_ANIMATION, CHAT_TEXT_ANIMATION_MAX_CHARS } from '@/lib/stream-presentation'
+import { createInkRevealPlugin } from '@/lib/ink-reveal'
+import type { BlockProps, StreamdownProps } from 'streamdown'
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
@@ -57,6 +62,7 @@ export interface MessageBubbleProps {
   message: ChatMessage
   className?: string
   isStreaming?: boolean
+  isReasoningStreaming?: boolean
   /**
    * Whether the quote/copy/favorite row is offered. The live copy turns it off:
    * its id is synthetic, so these actions would address no stored row.
@@ -64,21 +70,6 @@ export interface MessageBubbleProps {
   showActions?: boolean
   /** True only for the newest persisted reply, which is the one that may re-run its round. */
   canRegenerate?: boolean
-  /** Shown only on the newest usage-bearing reply to avoid repeating totals. */
-  conversationUsage?: ChatUsage
-}
-
-function formatTokenCount(value: number): string {
-  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 }).format(value)
-}
-
-function formatCny(value: number): string {
-  return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
-}
-
-function formatDuration(value: number): string {
-  if (value < 1_000) return `${Math.max(0, Math.round(value))} ms`
-  return `${(value / 1_000).toFixed(value >= 10_000 ? 1 : 2)} s`
 }
 
 function formatAttachmentSize(size: number): string {
@@ -121,91 +112,35 @@ function MessageAttachments({ attachments }: { attachments: NonNullable<ChatMess
   )
 }
 
-function formatSupplierCost(value: number, currency?: string): string {
-  const normalizedCurrency = currency?.trim().toUpperCase()
-  if (!normalizedCurrency) return value < 0.01 ? value.toFixed(4) : value.toFixed(2)
-  if (normalizedCurrency === 'CNY') return `¥${formatCny(value)}`
-  if (normalizedCurrency === 'USD') return `$${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`
-  return `${normalizedCurrency} ${value < 0.01 ? value.toFixed(4) : value.toFixed(2)}`
-}
-
-function UsageSummary({ usage, conversationUsage }: { usage: ChatUsage; conversationUsage?: ChatUsage }) {
-  const totalTokens = usage.promptTokens + usage.completionTokens
-  const cacheRate = usage.cachedTokens && usage.promptTokens > 0
-    ? Math.round((usage.cachedTokens / usage.promptTokens) * 100)
-    : null
-  const conversationTokens = conversationUsage
-    ? conversationUsage.promptTokens + conversationUsage.completionTokens
-    : 0
-
-  return (
-    <div className="mt-4 pt-2.5">
-      <div className="chat-usage-summary flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs tabular-nums text-zinc-400">
-        <span>
-          {usage.modelCalls && usage.modelCalls > 1 ? `${usage.modelCalls} 次调用 · ` : ''}
-          本次 {formatTokenCount(totalTokens)} tokens
-        </span>
-        <span>输入 {formatTokenCount(usage.promptTokens)} · 输出 {formatTokenCount(usage.completionTokens)}</span>
-        {cacheRate !== null ? <span>缓存 {cacheRate}%</span> : null}
-        {usage.providerReportedCost !== undefined ? (
-          <span title={usage.providerReportedCurrency ? '由供应商响应返回的本次实际费用。' : '供应商响应返回了金额，但未声明币种，未纳入人民币汇总。'}>
-            {usage.providerReportedCurrency ? '费用' : '供应商金额'} {formatSupplierCost(usage.providerReportedCost, usage.providerReportedCurrency)}
-          </span>
-        ) : usage.estimatedCostCny !== undefined ? (
-          <span title="按此连接保存的模型价格卡计算；实际账单以供应商记录为准。">
-            预计 ¥{formatCny(usage.estimatedCostCny)}
-          </span>
-        ) : usage.estimatedCost !== undefined ? (
-          <span title={usage.pricingSourceUrl ? `按该供应商官网同步的费率计算：${usage.pricingSourceUrl}` : '按此连接保存的模型价格卡计算；实际账单以供应商记录为准。'}>
-            预计 {formatSupplierCost(usage.estimatedCost, usage.estimatedCostCurrency)}
-          </span>
-        ) : usage.pricingMode === 'subscription' ? (
-          <span title={usage.pricingSourceUrl ? `该连接为订阅额度制：${usage.pricingSourceUrl}` : '该连接为订阅额度制，无法按本次 Token 计算单独费用。'}>订阅额度制</span>
-        ) : null}
-        {conversationUsage && conversationTokens > totalTokens ? (
-          <span className="text-zinc-350">本对话 {formatTokenCount(conversationTokens)}</span>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function TimingSummary({ timing }: { timing: ResponseTiming }) {
-  const detail = [
-    `总耗时 ${formatDuration(timing.totalMs)}`,
-    timing.localPreparationMs !== undefined ? `本地准备 ${formatDuration(timing.localPreparationMs)}` : '',
-    timing.contextBuildMs !== undefined ? `上下文 ${formatDuration(timing.contextBuildMs)}` : '',
-    timing.timeToFirstResponseMs !== undefined ? `首响应 ${formatDuration(timing.timeToFirstResponseMs)}` : '',
-    `模型 ${formatDuration(timing.modelDurationMs)}`,
-    timing.toolCalls?.length ? `工具 ${formatDuration(timing.toolExecutionMs)} (${timing.toolCalls.length})` : '',
-  ].filter(Boolean).join(' · ')
-
-  return (
-    <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs tabular-nums text-zinc-400" title={detail}>
-      <span>总耗时 {formatDuration(timing.totalMs)}</span>
-      {timing.timeToFirstResponseMs !== undefined ? <span>首响应 {formatDuration(timing.timeToFirstResponseMs)}</span> : null}
-      <span>模型 {formatDuration(timing.modelDurationMs)}</span>
-      {timing.toolCalls?.length ? <span>工具 {formatDuration(timing.toolExecutionMs)} · {timing.toolCalls.length} 次</span> : null}
-    </div>
-  )
-}
-
-function ReasoningPanel({ content, streaming = false }: { content: string; streaming?: boolean }) {
-  // Raw chain-of-thought is a technical detail, never the headline: it starts
-  // folded, keeps a muted treatment, and sits after the work report.
-  const [open, setOpen] = useState(false)
-  if (!content) return null
-
-  return (
-    <details open={open} onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)} className="group mt-1.5 border-t border-zinc-100 pt-1">
-      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-2 py-1 text-xs font-normal text-zinc-400 hover:bg-zinc-50/70 hover:text-zinc-500">
-        <BrainCircuit className="h-3.5 w-3.5" />
-        <span className="flex-1">模型原始思考{streaming ? '中' : ''}</span>
-        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
-      </summary>
-      <div className="max-h-56 overflow-auto px-2 py-2 text-xs leading-5 text-zinc-500 whitespace-pre-wrap">{content}</div>
-    </details>
-  )
+function ReasoningPanel({ content, streaming = false, outputFont, outputFontSize }: { content: string; streaming?: boolean; outputFont: AgentOutputFont; outputFontSize: AgentOutputFontSize }) {
+  const language = useAppStore(state => state.language)
+  const [open, setOpen] = useState(streaming)
+  const previous = useRef(streaming)
+  const closeTimer = useRef<number | null>(null)
+  const body = useRef<HTMLDivElement>(null)
+  const following = useRef(true)
+  useEffect(() => {
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
+    if (streaming && !previous.current) { setOpen(true); following.current = true }
+    if (!streaming && previous.current) closeTimer.current = window.setTimeout(() => setOpen(false), 1000)
+    previous.current = streaming
+    return () => { if (closeTimer.current !== null) window.clearTimeout(closeTimer.current) }
+  }, [streaming])
+  useEffect(() => { if (open && body.current && following.current) body.current.scrollTop = body.current.scrollHeight }, [content, open])
+  const label = language === 'zh' ? (streaming ? '思考中…' : '思考内容') : language === 'ja' ? (streaming ? '考え中…' : '思考内容') : (streaming ? 'Thinking…' : 'Thinking')
+  return <section className={cn('conversation-reasoning', streaming && 'conversation-reasoning--streaming')} data-provider-reasoning>
+    <button type="button" className="conversation-reasoning__trigger" aria-expanded={open} onClick={() => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current)
+      setOpen(value => !value)
+    }}>
+      <BrainCircuit aria-hidden="true" /><span>{label}</span><ChevronDown aria-hidden="true" className={cn(open && 'is-open')} />
+    </button>
+    {open && <div ref={body} className="conversation-reasoning__content" onScroll={event => {
+      const el = event.currentTarget; following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    }}>
+      <MarkdownMessageContent readingStandard preserveSource content={content} isStreaming={streaming} outputFont={outputFont} outputFontSize={outputFontSize} />
+    </div>}
+  </section>
 }
 
 function TimelineToolGroup({ entries, streaming = false }: { entries: readonly { toolCall?: ToolCall }[]; streaming?: boolean }) {
@@ -230,22 +165,12 @@ function TimelineNoteRow({ content }: { content: string }) {
   )
 }
 
-const WAITING_MESSAGES = ['正在执行...', '请稍等片刻...', '正在处理中...', '还在继续，请稍候...', '正在准备回复...']
-
 function ExecutionStatusIndicator() {
-  const [messageIndex, setMessageIndex] = useState(0)
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setMessageIndex((previous) => (previous + 1 + Math.floor(Math.random() * (WAITING_MESSAGES.length - 1))) % WAITING_MESSAGES.length)
-    }, 4000)
-    return () => window.clearInterval(timer)
-  }, [])
-  return (
-    <div className="tool-execution-status mt-3 mb-2" role="status">
-      <span className="sr-only">正在处理，请稍候</span>
-      <span className="tool-execution-status__text" aria-hidden="true">{WAITING_MESSAGES[messageIndex]}</span>
-    </div>
-  )
+  const language = useAppStore(state => state.language)
+  return <div className="conversation-loading" role="status" data-conversation-loading>
+    <Loader className="conversation-loading__spinner" aria-hidden="true" />
+    <span>{language === 'zh' ? '正在回复…' : language === 'ja' ? '返信中…' : 'Responding…'}</span>
+  </div>
 }
 
 type ProgressMarkdownOptions = {
@@ -317,12 +242,10 @@ function ProcessReportsView({ feed, streaming = false, markdownOptions }: { feed
 function ExecutionFeedView({
   message,
   streaming = false,
-  shouldShowReasoning,
   markdownOptions,
 }: {
   message: ChatMessage
   streaming?: boolean
-  shouldShowReasoning: boolean
   markdownOptions: ProgressMarkdownOptions
 }) {
   const feed = buildProcessFeed(message.progressUpdates || [])
@@ -331,17 +254,9 @@ function ExecutionFeedView({
   // settled they claim work that already ended. Keep their ordering boundaries
   // so tool batches do not merge, but render the notes only while streaming.
   const timelineEntries = allTimelineEntries.filter((entry) => entry.kind !== 'reasoning')
-  // Raw reasoning travels either as timeline entries or as the message-level
-  // accumulator, depending on when it arrived.
-  const reasoningContent = allTimelineEntries
-    .filter((entry) => entry.kind === 'reasoning')
-    .map((entry) => entry.content || '')
-    .join('\n\n')
-    .trim() || message.reasoningContent || ''
   const hasReports = Boolean(feed.plan || feed.entries.length)
   const hasTimeline = timelineEntries.some(entry => entry.kind === 'tool' || streaming)
-  const hasReasoning = Boolean(shouldShowReasoning && reasoningContent)
-  const hasActivity = hasReports || hasTimeline || hasReasoning
+  const hasActivity = hasReports || hasTimeline
   if (!hasActivity) return null
 
   type ActivityEntry = { id: string; kind: 'tool' | 'note' | 'report'; timestamp: number; toolCall?: ToolCall; content?: string; report?: ProcessReportEntry }
@@ -353,19 +268,21 @@ function ExecutionFeedView({
     ...reports.map(report => ({ id: `report:${report.id}`, kind: 'report' as const, timestamp: updates.get(report.id)?.timestamp || 0, report })),
     ...timelineEntries.map(entry => ({ ...entry, kind: entry.kind as 'tool' | 'note' })),
   ].sort((a, b) => a.timestamp - b.timestamp)
-  return (
-    <section className="execution-feed chronological-activity" aria-label="工作进展" aria-live={streaming ? 'polite' : undefined}>
-      {groupToolActivity(activity).map(group => group.kind === 'tools'
-        ? <TimelineToolGroup key={group.id} entries={group.items} streaming={streaming} />
-        : group.item.kind === 'report' && group.item.report
+  return <ConversationActivity label="工作进展" items={groupToolActivity(activity).map(group => {
+    if (group.kind === 'tools') {
+      const tools = group.items.flatMap(entry => entry.toolCall ? [entry.toolCall] : [])
+      return { id: group.id, kind: 'tools' as const,
+        attachments: [...new Map(tools.flatMap(tool => tool.images || []).map(image => [image.path, image])).values()]
+          .map(image => <ReferenceImagePreview key={image.path} image={image} className="h-24 w-24 rounded-md" />),
+        content: <TimelineToolGroup entries={group.items} streaming={streaming} /> }
+    }
+    return { id: group.id, kind: 'item' as const, content: group.item.kind === 'report' && group.item.report
           ? group.item.report === feed.plan && feed.checklist
             ? <PlanChecklist key={group.id} checklist={feed.checklist} streaming={streaming} className="execution-feed__report execution-feed__report--plan"
                 renderItemText={text => <ProgressMarkdown content={text} streaming={streaming} markdownOptions={markdownOptions} />} />
             : <ProcessReportRow key={group.id} entry={group.item.report} streaming={streaming} markdownOptions={markdownOptions} />
-          : streaming ? <TimelineNoteRow key={group.id} content={group.item.content || ''} /> : null)}
-      {hasReasoning ? <ReasoningPanel content={reasoningContent} streaming={streaming} /> : null}
-    </section>
-  )
+          : streaming ? <TimelineNoteRow key={group.id} content={group.item.content || ''} /> : null }
+  })} />
 }
 
 function markdownNodeText(node: ReactNode): string {
@@ -379,7 +296,12 @@ const MarkdownBlockCodeContext = React.createContext(false)
 
 function MarkdownCodeBlock({ children, language }: { children: ReactNode; language?: string }) {
   const [copied, setCopied] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const uiLanguage = useAppStore(state => state.language)
   const code = markdownNodeText(children).replace(/\n$/, '')
+  const canCollapse = code.split('\n').length > 24
+  const copyLabel = uiLanguage === 'zh' ? (copied ? '已复制' : '复制代码') : uiLanguage === 'ja' ? (copied ? 'コピー済み' : 'コードをコピー') : (copied ? 'Copied' : 'Copy code')
+  const collapseLabel = uiLanguage === 'zh' ? (expanded ? '收起代码' : '展开代码') : uiLanguage === 'ja' ? (expanded ? 'コードを折りたたむ' : 'コードを展開') : (expanded ? 'Collapse code' : 'Expand code')
 
   const copy = async () => {
     await navigator.clipboard.writeText(code)
@@ -388,13 +310,15 @@ function MarkdownCodeBlock({ children, language }: { children: ReactNode; langua
   }
 
   return (
-    <div className="markdown-code-block group">
+    <div className="markdown-code-block group" data-code-expanded={canCollapse ? expanded : undefined} style={{ '--code-visible-lines': expanded ? 48 : 24 } as React.CSSProperties}>
       <div className="markdown-code-block__bar">
         <span>{language || 'text'}</span>
-        <button type="button" onClick={() => void copy()} title="Copy code" aria-label="Copy code">
+        <div className="markdown-code-block__actions">
+        {canCollapse && <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} title={collapseLabel} aria-label={collapseLabel}><ChevronDown className={cn('h-3.5 w-3.5', expanded && 'rotate-180')} /></button>}
+        <button type="button" onClick={() => void copy()} title={copyLabel} aria-label="Copy code">
           {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-          {copied ? 'Copied' : 'Copy'}
         </button>
+        </div>
       </div>
       <pre><MarkdownBlockCodeContext.Provider value={true}>{children}</MarkdownBlockCodeContext.Provider></pre>
     </div>
@@ -405,11 +329,40 @@ function StreamdownLink({ children, href, node: _node, ...props }: React.Compone
   return <a href={href} target="_blank" rel="noreferrer noopener" {...props}>{children}<ExternalLink aria-hidden="true" className="markdown-external-link" /></a>
 }
 
+/** Preserve literal newlines and the existing copy/highlighting contract in
+ * both live and completed chat, including fences without a language label. */
+function ReadingBlockCode({ children, className }: React.ComponentPropsWithoutRef<'code'>) {
+  const code = markdownNodeText(children)
+  const language = className?.match(/language-([^\s]+)/)?.[1]
+  const highlighted = useMemo(() => language && hljs.getLanguage(language)
+    ? hljs.highlight(code, { language, ignoreIllegals: true }).value
+    : null, [code, language])
+  return <MarkdownCodeBlock language={language}>
+    {highlighted === null ? <code className={className}>{code}</code>
+      // Only highlight.js's escaped token markup enters this HTML sink.
+      : <code className={className} dangerouslySetInnerHTML={{ __html: highlighted }} />}
+  </MarkdownCodeBlock>
+}
+
 const streamdownBaseComponents = { a: StreamdownLink }
+// A single tilde commonly denotes a range in Chinese prose. Only explicit
+// double-tilde Markdown should produce a deletion, including in previews.
+const markdownGfmPlugin: [typeof remarkGfm, { singleTilde: boolean }] = [remarkGfm, { singleTilde: false }]
 
 const StreamdownRenderer = React.lazy(async () => {
-  const { Streamdown } = await import('streamdown')
-  return { default: Streamdown }
+  const { Streamdown, Block, defaultRemarkPlugins } = await import('streamdown')
+  const remarkPlugins = Object.entries(defaultRemarkPlugins).map(([name, plugin]) => name === 'gfm' ? markdownGfmPlugin : plugin)
+  function IncrementalBlock(props: BlockProps) {
+    const enabled = Boolean(props.animatePlugin)
+    // Each Markdown block owns its previous character count. Sharing that
+    // count would mistake the start of a new paragraph for already-shown text.
+    const animation = useMemo(() => enabled ? createInkRevealPlugin() : null, [enabled])
+    const rehypePlugins = useMemo(() => props.rehypePlugins?.map(plugin =>
+      plugin === props.animatePlugin?.rehypePlugin && animation ? animation.rehypePlugin : plugin
+    ), [props.rehypePlugins, props.animatePlugin, animation])
+    return <Block {...props} animatePlugin={animation} rehypePlugins={rehypePlugins} />
+  }
+  return { default: (props: StreamdownProps) => <Streamdown {...props} remarkPlugins={remarkPlugins} BlockComponent={IncrementalBlock} /> }
 })
 
 function safeStreamdownUrl(url: string): string {
@@ -420,7 +373,9 @@ function safeStreamdownUrl(url: string): string {
 }
 
 export function MarkdownMessageContent({ content, className, isStreaming = false, conversationId, outputFormat = 'default', outputStyle = 'balanced', outputFont = 'system', outputColor = 'slate', outputFontSize = 'medium', outputTextEffect = 'none', markdownRenderer = 'enhanced', preserveSource = false, readingStandard = false }: { content: string; className?: string; isStreaming?: boolean; conversationId?: string; outputFormat?: AgentOutputFormat; outputStyle?: AgentOutputStyle; outputFont?: AgentOutputFont; outputColor?: AgentOutputColor; outputFontSize?: AgentOutputFontSize; outputTextEffect?: AgentOutputTextEffect; markdownRenderer?: AgentMarkdownRenderer; preserveSource?: boolean; readingStandard?: boolean }) {
-  const markdownContent = preserveSource ? content : isStreaming ? normalizeStreamingMarkdown(content) : normalizeChatMarkdown(content)
+  // The incremental parser repairs unfinished Markdown itself. Stripping a
+  // pending ** marker would change text structure again when the pair closes.
+  const markdownContent = preserveSource ? content : readingStandard ? normalizeChatMarkdown(content) : isStreaming ? normalizeStreamingMarkdown(content) : normalizeChatMarkdown(content)
   const markdownClassName = cn('chat-message-markdown max-w-none', readingStandard && 'conversation-reading', `chat-message-markdown--format-${outputFormat}`, `chat-message-markdown--${outputStyle}`, `chat-message-markdown--font-${outputFont}`, `chat-message-markdown--color-${outputColor}`, `chat-message-markdown--font-size-${outputFontSize}`, `chat-message-markdown--effect-${outputTextEffect}`, `chat-message-markdown--renderer-${markdownRenderer}`, className)
   const readingStyle = readingStandard ? { '--reading-size': `${READING_FONT_SIZES[outputFontSize]}px` } as React.CSSProperties : undefined
 
@@ -433,6 +388,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
       // Streamdown normally renders emphasis as a span. Use the same semantic
       // element as the static renderers so the reading contract applies to both.
       strong: ({ children }: React.ComponentPropsWithoutRef<'strong'>) => <strong>{children}</strong>,
+      code: ReadingBlockCode,
     } : {}),
     inlineCode: ({ children, node: _node, ...props }: React.ComponentPropsWithoutRef<'code'> & { node?: unknown }) => {
       const inlineText = markdownNodeText(children)
@@ -443,17 +399,16 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
     },
   }), [isStreaming, conversationId, readingStandard])
 
-  // Streamdown is used for every live reply because it can animate only the
-  // newly appended characters. Once complete, the user's chosen renderer
-  // takes over for the stable, fully formatted document.
-  if (isStreaming || markdownRenderer === 'streamdown') {
+  // Chat keeps the same Markdown renderer through completion. Document
+  // previews retain their chosen renderer and independent presentation.
+  if (readingStandard || isStreaming || markdownRenderer === 'streamdown') {
     return (
       <div className={markdownClassName} style={readingStyle} data-reading-standard={readingStandard || undefined} aria-busy={isStreaming || undefined}>
         <React.Suspense fallback={<div className="whitespace-pre-wrap">{markdownContent}</div>}>
           <StreamdownRenderer
             mode={isStreaming ? "streaming" : "static"}
             isAnimating={isStreaming}
-            animated={false}
+            animated={readingStandard && isStreaming && content.length <= CHAT_TEXT_ANIMATION_MAX_CHARS ? CHAT_TEXT_ANIMATION : false}
             parseIncompleteMarkdown
             lineNumbers={readingStandard ? false : undefined}
             skipHtml
@@ -472,7 +427,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
   return (
     <div className={markdownClassName} style={readingStyle} data-reading-standard={readingStandard || undefined} aria-busy={isStreaming || undefined}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[markdownGfmPlugin]}
         rehypePlugins={isStreaming ? [] : [rehypeHighlight]}
         components={{
           pre({ children }) {
@@ -515,7 +470,7 @@ export function MarkdownMessageContent({ content, className, isStreaming = false
   )
 }
 
-export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, showActions = true, canRegenerate = false, conversationUsage }: MessageBubbleProps) {
+export const MessageBubble = React.memo(function MessageBubble({ message, className, isStreaming = false, isReasoningStreaming = false, showActions = true, canRegenerate = false }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isTool = message.role === 'tool'
   const language = useAppStore((state) => state.language)
@@ -527,10 +482,10 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   const setQuotedMessage = useChatStore((state) => state.setQuotedMessage)
   const [copied, setCopied] = useState(false)
   const actionCopy = language === 'zh'
-    ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成' }
+    ? { copy: '复制', copied: '已复制', favorite: '收藏', unfavorite: '取消收藏', regenerate: '重新生成', quote: '引用消息' }
     : language === 'ja'
-      ? { copy: 'コピー', copied: 'コピー済み', favorite: 'お気に入り', unfavorite: 'お気に入りを解除', regenerate: '再生成' }
-      : { copy: 'Copy', copied: 'Copied', favorite: 'Favorite', unfavorite: 'Unfavorite', regenerate: 'Regenerate' }
+      ? { copy: 'コピー', copied: 'コピー済み', favorite: 'お気に入り', unfavorite: 'お気に入りを解除', regenerate: '再生成', quote: 'メッセージを引用' }
+      : { copy: 'Copy', copied: 'Copied', favorite: 'Favorite', unfavorite: 'Unfavorite', regenerate: 'Regenerate', quote: 'Quote message' }
 
   const handleCopyAssistant = async () => {
     await navigator.clipboard.writeText(message.content)
@@ -552,9 +507,9 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     ? agents.find((agent) => agent.id === message.agentId)
     : undefined
   const processOutput = outputAgent?.processOutput || (outputAgent?.showThinking ? 'detailed' : 'compact')
-  // Provider reasoning is private chain-of-thought, not verified execution
-  // evidence. Public progress and real tool rows are rendered separately.
-  const shouldShowReasoning = false
+  // Only explicitly attributed provider responses can enter the thinking UI.
+  // Legacy/internal reasoning is hidden and never becomes execution evidence.
+  const providerReasoning = message.reasoningSource === 'provider-response' ? message.reasoningContent || '' : ''
   const outputStyle = outputAgent?.outputStyle || 'balanced'
   const outputFormat = outputAgent?.outputFormat || 'default'
   const outputFont = outputAgent?.outputFont || 'system'
@@ -570,11 +525,8 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
     if (isInternalToolLifecycleUpdate(message.content)) return null
     return (
       <article className={cn('group flex items-start gap-3', className)}>
-        <div className="chat-message-avatar flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600">
-          <Bot className="h-3.5 w-3.5" />
-        </div>
         <div className="min-w-0 max-w-[66rem]">
-          <div className="chat-message-surface chat-assistant-message py-3 pl-3 pr-5">
+          <div className="chat-message-surface chat-assistant-message py-2">
             <ProcessReportsView
               feed={buildProcessFeed([{ id: message.id, kind: message.progressKind, content: message.content, timestamp: message.timestamp }], { numberSteps: false })}
               markdownOptions={{ outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
@@ -650,64 +602,40 @@ export const MessageBubble = React.memo(function MessageBubble({ message, classN
   }
 
   return (
-    <article className={cn('group flex items-start gap-3', className)} data-native-engine={message.nativeAgent?.engine}>
-      {/* Avatar */}
-      <div
-        aria-busy={isStreaming || undefined}
-        className={cn(
-          'chat-message-avatar flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium',
-          isTool
-            ? 'bg-zinc-100 text-zinc-500'
-            : 'bg-violet-100 text-violet-600'
-        )}
-      >
-        {isTool ? <Wrench className="h-3.5 w-3.5" /> : <Bot className="h-3.5 w-3.5" />}
-      </div>
+    <article className={cn('group chat-assistant-row flex items-start gap-3', className)} data-native-engine={message.nativeAgent?.engine} aria-label={displayedAuthor || undefined}>
+      {isTool && <div className="chat-message-avatar flex h-8 w-8 shrink-0 items-center justify-center"><Wrench className="h-3.5 w-3.5" /></div>}
 
       {/* Content */}
-      <div className="min-w-0 max-w-[66rem]">
-        <div className={cn('chat-message-surface chat-assistant-message py-4 pl-3 pr-5', `chat-assistant-message--format-${outputFormat}`)}>
-          {message.agentName && (
-            <div className="chat-agent-label mb-3 flex items-center gap-2">
-              <span className="h-1.5 w-1.5 rounded-full bg-violet-400" />
-              <Badge variant="primary" className="px-1.5 py-0">
-                {displayedAuthor}
-              </Badge>
-            </div>
-          )}
+      <div className="min-w-0 w-full max-w-[78ch]">
+        <div className={cn('chat-message-surface chat-assistant-message py-2', `chat-assistant-message--format-${outputFormat}`)}>
+          {providerReasoning && <ReasoningPanel key={`${message.conversationId}:provider-reasoning`} content={providerReasoning} streaming={isStreaming && isReasoningStreaming} outputFont={outputFont} outputFontSize={outputFontSize} />}
           {message.nativeAgent ? <NativeAgentView collapsible transcript={message.nativeAgent} finalContent={message.content} streaming={isStreaming}
-            renderMarkdown={(content) => <MarkdownMessageContent readingStandard preserveSource content={content} conversationId={message.conversationId} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} />} /> : <ExecutionFeedView
+            renderMarkdown={(content, streaming) => <MarkdownMessageContent readingStandard preserveSource content={content} isStreaming={streaming} conversationId={message.conversationId} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} />} /> : <ExecutionFeedView
             message={message}
             streaming={isStreaming}
-            shouldShowReasoning={shouldShowReasoning}
             markdownOptions={{ conversationId: message.conversationId, outputFormat, outputStyle, outputFont, outputColor, outputFontSize, outputTextEffect, markdownRenderer }}
           />}
-          {isStreaming && !message.nativeAgent && !message.content.trim() ? <ExecutionStatusIndicator key={message.id} /> : null}
+          {isStreaming && !message.content.trim() && !isReasoningStreaming ? <ExecutionStatusIndicator key={message.id} /> : null}
           <div className="conversation-answer" data-conversation-answer>
           <MarkdownMessageContent readingStandard preserveSource={Boolean(message.nativeAgent)} content={message.content} isStreaming={isStreaming} conversationId={message.conversationId} outputFormat={outputFormat} outputStyle={outputStyle} outputFont={outputFont} outputColor={outputColor} outputFontSize={outputFontSize} outputTextEffect={outputTextEffect} markdownRenderer={markdownRenderer} />
           </div>
-          {(message.usage || message.timing) && <details className="conversation-metrics">
-            <summary>{language === 'zh' ? '用量与耗时' : language === 'ja' ? '使用量と時間' : 'Usage and timing'}</summary>
-            {message.usage ? <UsageSummary usage={message.usage} conversationUsage={conversationUsage} /> : null}
-            {message.timing ? <TimingSummary timing={message.timing} /> : null}
-          </details>}
         </div>
 
         {!isStreaming && !isTool && showActions && (
-          <div className="message-actions mt-2 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-            <button type="button" onClick={quoteCurrentMessage} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title="引用消息" aria-label="引用消息">
-              <Quote className="h-3.5 w-3.5" />引用
+          <div className="message-actions chat-reply-actions" role="group" aria-label={language === 'zh' ? '回复操作' : language === 'ja' ? '返信操作' : 'Reply actions'}>
+            <button type="button" onClick={() => void handleCopyAssistant()} className="message-action" title={copied ? actionCopy.copied : actionCopy.copy} aria-label={copied ? actionCopy.copied : actionCopy.copy}>
+              {copied ? <Check className="text-emerald-500" /> : <Copy />}
             </button>
             {canRegenerate && (
-              <button type="button" onClick={() => void regenerateFromMessage(message.id)} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
-                <RefreshCw className="h-3.5 w-3.5" />{actionCopy.regenerate}
+              <button type="button" onClick={() => void regenerateFromMessage(message.id)} className="message-action" title={actionCopy.regenerate} aria-label={actionCopy.regenerate}>
+                <RefreshCw />
               </button>
             )}
-            <button type="button" onClick={() => void handleCopyAssistant()} className="message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-zinc-400 transition-colors" title={actionCopy.copy} aria-label={actionCopy.copy}>
-              {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}{copied ? actionCopy.copied : actionCopy.copy}
+            <button type="button" onClick={quoteCurrentMessage} className="message-action" title={actionCopy.quote} aria-label={actionCopy.quote}>
+              <Quote />
             </button>
-            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} className={cn('message-action inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs transition-colors', message.favorited ? 'text-violet-600' : 'text-zinc-400')} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
-              <Heart className={cn('h-3.5 w-3.5', message.favorited && 'fill-current')} />{message.favorited ? actionCopy.unfavorite : actionCopy.favorite}
+            <button type="button" onClick={() => void updateMessageFavorite(message.id, !message.favorited)} className="message-action" aria-pressed={Boolean(message.favorited)} title={message.favorited ? actionCopy.unfavorite : actionCopy.favorite} aria-label={message.favorited ? actionCopy.unfavorite : actionCopy.favorite}>
+              <Heart className={cn(message.favorited && 'fill-current text-violet-600')} />
             </button>
           </div>
         )}

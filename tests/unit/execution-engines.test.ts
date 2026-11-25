@@ -274,6 +274,16 @@ async function collect(runner: AgentRunner, request = input) {
 describe.each(['pi', 'deepseek-harness'] as const)(
   '%s native backend',
   (engine) => {
+    it('publishes explicit provider reasoning separately without exposing SDK internals or changing request settings', async () => {
+      const f = await fixture(engine, [{ ...answer, reasoningContent: 'Public provider summary.' }], { processOutput: 'compact', showThinking: false })
+      try {
+        const events = await collect(f.runner)
+        expect(events.filter(event => event.type === 'error')).toEqual([])
+        expect(events.find(event => event.type === 'reasoning')).toMatchObject({ content: 'Public provider summary.', reasoningSource: 'provider-response' })
+        expect(events.filter(event => event.type === 'native_event').some(event => event.nativeEvent?.content === 'Public provider summary.')).toBe(false)
+        expect(f.requests[0].reasoning).toBeUndefined()
+      } finally { await f.close() }
+    }, 15_000)
     it.each(['default', 'none', 'high', 'max'] as const)('sends the selected %s reasoning independently of public process settings', async (reasoningSelection) => {
       const f = await fixture(engine, [answer], { reasoningSelection, showThinking: false, processOutput: 'detailed' })
       try {
@@ -452,6 +462,20 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         }
       }, 20_000)
     }
+    it('resumes an imported-history SDK session with a protected system head', async () => {
+      const f = await fixture(engine, [answer, answer], { persistent: true })
+      const history = [{ ...input.newMessage, id: 'old-user', content: 'Old reference only.' },
+        { ...input.newMessage, id: 'old-answer', role: 'assistant' as const, content: 'Previously completed, do not rerun.' }]
+      try {
+        expect((await collect(f.runner, { ...input, messages: history })).filter(e => e.type === 'error')).toEqual([])
+        expect(JSON.stringify(f.requests[0].messages)).toContain('Old reference only.')
+        expect(JSON.stringify(f.requests[0].messages)).toContain('Previously completed, do not rerun.')
+        const events = await collect(f.runner, { messages: [...history, input.newMessage], newMessage: { ...input.newMessage, id: 'next-user', content: 'New request.' } })
+        expect(events.filter(e => e.type === 'error')).toEqual([])
+        expect(events.some(e => e.nativeEvent?.type === 'session' && e.nativeEvent.data?.resumed)).toBe(true)
+        expect(f.requests).toHaveLength(2)
+      } finally { await f.close() }
+    }, 20_000)
     it('resumes the SDK session instead of rebuilding it from rendered Eva history', async () => {
       const f = await fixture(
         engine,

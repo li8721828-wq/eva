@@ -5,23 +5,25 @@ import { createHash, randomUUID } from 'crypto'
 import type { ProviderRegistry } from '../providers'
 import type { ProjectIndexService } from './project-index-service'
 import type { ChatDocumentAttachment, Conversation } from '../../shared/types/conversation'
+import { inferModelCapabilities, resolveModelOutputBudget } from '../../shared/model-capabilities'
 import type { RequirementClarificationAnswer, RequirementClarificationQuestion, RequirementDocument, RequirementDocumentStage, RequirementEvaluation, RequirementHostVerification, RequirementProgress, RequirementReleaseStage, RequirementRun, RequirementUnresolvedItem, SpecificationBlockerCategory, SpecificationResolutionQuestion, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { getStorage } from '../storage'
 import { buildDocumentAttachmentContext } from './document-attachment-service'
 import { recordActivity } from './activity-log'
 import { RequirementRunRepository } from './requirement-run-repository'
+import { clarificationKey, isRequirementMaterial, latestRequirementDecisions, unresolvedRequirementItems } from './requirement-clarification-state'
 import { readRequirementCodeEvidence, requirementSearchTerms } from './requirement-code-evidence'
 import * as requirementPrompts from './requirement-prompt-factory'
 import { DeterministicCodingService } from './deterministic-coding-service'
 import { defaultTargetModel, targetModelDocument } from './codegen'
 import { activeRunRegistry } from './run-registry'
-import { writeTextAtomicAsync } from '../storage/atomic-file'
+import { writeFileAtomicAsync, writeTextAtomicAsync } from '../storage/atomic-file'
 import { rmsdPath } from './rmsd-path'
 import { DSL_CONTRACT, dslTraceIds } from './domain-dsl'
 import { verifyJavaSources } from './codegen/java-validation'
 import { parseMavenHostTarget, verifyMavenHost, type HostDomainArtifact } from './codegen/maven-host-verification'
 import { validateJavaDomainDsl } from './codegen/java-domain'
-import { diffSpecContracts, parseSpecContract, SPEC_ACCEPTANCE_VERSION, SPEC_CONTRACT_PROMPT, SPEC_CRITICAL_RULES_FORMAT, specCriticalRules, specTraceIds, validateAcceptanceBindings } from './spec-contract'
+import { diffSpecContracts, parseSpecContract, SPEC_ACCEPTANCE_VERSION, SPEC_CONTRACT_PROMPT, SPEC_CRITICAL_RULES_FORMAT, specReviewRules, specTraceIds, validateAcceptanceBindings } from './spec-contract'
 
 const QUALITY_THRESHOLD = 80
 const SPEC_QUALITY_THRESHOLD = 85
@@ -33,7 +35,7 @@ const RELEASE_DOCUMENTS = {
   specification: ['specification', 'implementation-ready', '/spec'],
   dsl: ['dsl', 'dsl-final', '/dsl'],
 } as const
-const CODEGEN_CONTRACT_VERSION = 5
+const CODEGEN_CONTRACT_VERSION = 6
 const SPEC_CONTRACT_DIMENSION = 'acceptance-contract'
 const CONFIRM_SPEC_RULES = '确认关键规则并发布规格'
 
@@ -80,57 +82,77 @@ export class RequirementEngineeringService {
   }
 
   async list(conversationId?: string): Promise<RequirementRun[]> {
-    const runs = await Promise.all((await this.runs.listIds()).map((id) => this.readRun(id)))
-    return runs.filter((run): run is RequirementRun => run !== null)
-      .filter((run) => !conversationId || run.conversationId === conversationId)
+    const manifests = await Promise.all((await this.runs.listIds()).map((id) => this.readRun(id)))
+    const runs = manifests.filter((run): run is RequirementRun => run !== null)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    if (!conversationId) return runs
+    const scoped = runs.filter((run) => run.conversationId === conversationId || run.interactionConversationId === conversationId)
+    const roots = new Map<string, Promise<string | undefined>>()
+    const available = await Promise.all(scoped.map(async (run) => {
+      const interactionId = run.interactionConversationId
+      if (!interactionId) return run
+      let lookup = roots.get(interactionId)
+      if (!lookup) {
+        lookup = this.storage.conversations.getConversation(interactionId)
+          .then((interaction) => interaction ? this.canonicalWorkspace(interaction) : undefined)
+          .catch(() => undefined)
+        roots.set(interactionId, lookup)
+      }
+      const root = await lookup
+      if (root && run.workspaceRoot && path.relative(root, run.workspaceRoot) === '') return run
+      // A deleted or moved continuation chat cannot own the confirmation card.
+      return run.conversationId === conversationId ? { ...run, interactionConversationId: undefined } : null
+    }))
+    return available.filter((run): run is RequirementRun => run !== null)
   }
 
   async submit(input: SubmitRequirementInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, (signal) => this.submitInternal(input, onProgress, signal))
+    return this.runSubmission(input.conversationId, onProgress, (signal, progress) => this.submitInternal(input, progress, signal))
   }
 
   async answerClarifications(input: SubmitClarificationAnswersInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, async (signal) => {
-      const run = (await this.list(input.conversationId)).find((item) => item.id === input.runId)
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
+      const run = (await this.list(input.conversationId)).find((item) =>
+        item.id === input.runId && (item.interactionConversationId ?? item.conversationId) === input.conversationId)
       if (!run || run.status !== 'awaiting-clarification') throw new Error('没有可提交的待澄清问题。')
       const answers = this.validateClarificationAnswers(run.clarificationQuestions, input.answers)
       const conversation = await this.getConversation(input.conversationId)
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
-        return this.advance(run, conversation, this.formatClarificationAnswers(answers), onProgress, signal)
+        return this.advance(run, conversation, answers, progress, signal)
       })
     }, input.runId)
   }
 
   async modelRequirements(input: SubmitRequirementModelingInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, async (signal) => {
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
       const run = await this.findWorkspaceRun(conversation, ['ready-for-specification', 'ready-for-implementation'], input.runId)
       if (!run) throw new Error('请先完成 /requirement 的需求澄清与评测。')
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
-        return this.modelRequirementsInternal(run, conversation, onProgress, signal)
+        return this.modelRequirementsInternal(run, conversation, progress, signal)
       })
-    })
+    }, input.runId)
   }
 
   async buildSpecification(input: SubmitSpecificationInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, async (signal) => {
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
       const run = await this.findWorkspaceRun(conversation, ['ready-for-specification', 'ready-for-implementation', 'specifying'], input.runId)
         ?? await this.importWorkspaceModelingRun(conversation)
       if (!run) throw new Error('请先完成 /requirement-modeling，再执行 /spec。')
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
-        return this.buildSpecificationInternal(run, conversation, onProgress, signal)
+        return this.buildSpecificationInternal(run, conversation, progress, signal)
       })
-    })
+    }, input.runId)
   }
 
   async resolveSpecificationBlockers(input: SubmitSpecificationResolutionInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, async (signal) => {
-      const run = (await this.list(input.conversationId)).find((item) => item.id === input.runId)
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
+      const run = (await this.list(input.conversationId)).find((item) =>
+        item.id === input.runId && (item.interactionConversationId ?? item.conversationId) === input.conversationId)
       if (!run || run.status !== 'awaiting-spec-resolution' || !run.specResolutionQuestions?.length) {
         throw new Error('没有可提交的规格阻塞处置选项。')
       }
@@ -138,8 +160,8 @@ export class RequirementEngineeringService {
       const conversation = await this.getConversation(input.conversationId)
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
-        if (run.specReview) return this.resolveSpecReview(run, conversation, answers[0]?.option === CONFIRM_SPEC_RULES, onProgress, signal)
-        return this.resolveSpecificationBlockersInternal(run, conversation, answers, onProgress, signal)
+        if (run.specReview) return this.resolveSpecReview(run, conversation, answers[0]?.option === CONFIRM_SPEC_RULES, progress, signal)
+        return this.resolveSpecificationBlockersInternal(run, conversation, answers, progress, signal)
       })
     }, input.runId)
   }
@@ -155,14 +177,17 @@ export class RequirementEngineeringService {
       }
       return
     }
-    await this.runSubmission(conversationId, async () => {
+    await this.runSubmission(conversationId, undefined, async () => {
       const run = (await this.list(conversationId)).find((item) => (
-        (!runId || runId === item.id) && (item.status === 'awaiting-clarification' || item.status === 'awaiting-spec-resolution')
+        (!runId || runId === item.id) && (item.interactionConversationId ?? item.conversationId) === conversationId
+        && (item.status === 'awaiting-clarification' || item.status === 'awaiting-materials'
+          || item.status === 'review-required' || item.status === 'awaiting-spec-resolution')
       ))
       if (!run) return
       await this.withRun(run, async () => {
         run.status = 'cancelled'
         run.clarificationQuestions = []
+        delete run.pendingMaterials
         run.specResolutionQuestions = []
         delete run.specReview
         await this.persist(run)
@@ -188,13 +213,19 @@ export class RequirementEngineeringService {
     }
   }
 
-  private async runSubmission<T>(conversationId: string, operation: (signal: AbortSignal) => Promise<T>, runId?: string): Promise<T> {
+  private async runSubmission<T>(
+    conversationId: string,
+    onProgress: ((progress: RequirementProgress) => void) | undefined,
+    operation: (signal: AbortSignal, progress?: (progress: RequirementProgress) => void) => Promise<T>,
+    runId?: string,
+  ): Promise<T> {
     if (this.abortControllers.has(conversationId)) throw new Error('当前需求工程正在处理中，请等待本轮完成。')
     const controller = new AbortController()
     this.abortControllers.set(conversationId, { controller, runId })
     activeRequirementControllers.set(conversationId, controller)
     try {
-      const result = await operation(controller.signal)
+      const progress = onProgress ? (event: RequirementProgress) => onProgress({ ...event, conversationId }) : undefined
+      const result = await operation(controller.signal, progress)
       activeRunRegistry.transition('requirement', conversationId, controller.signal.aborted ? 'cancelled' : 'completed')
       return result
     } catch (error) {
@@ -224,10 +255,53 @@ export class RequirementEngineeringService {
     const conversation = await this.storage.conversations.getConversation(input.conversationId)
     if (!conversation) throw new Error('Conversation not found.')
     this.requireProjectWorkspace(conversation)
-    const active = (await this.list(input.conversationId)).find((run) => run.status === 'awaiting-clarification' || run.status === 'analyzing')
+    const active = (await this.list(input.conversationId))
+      .filter((run) => (run.interactionConversationId ?? run.conversationId) === input.conversationId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
     const text = input.content?.trim() || ''
-    if (active && active.status === 'awaiting-clarification') {
-      throw new Error('请在对话中的澄清卡片选择选项后提交确认。')
+    if (input.action !== undefined && input.action !== 'simulate-materials') throw new Error('未知需求操作。')
+    if (input.action === 'simulate-materials') {
+      if (input.attachments?.length) throw new Error('请单独提交真实材料，再生成模拟草稿。')
+      if (!active || active.id !== input.runId || active.status !== 'awaiting-materials' || !active.pendingMaterials?.length) {
+        throw new Error('待补材料已变化，请刷新当前需求运行后重试。')
+      }
+      return this.withRun(active, async () => {
+        await this.ensureWorkspacePackage(active, conversation)
+        await this.persistCommand(conversation.id, input, text || '模拟当前缺失材料并生成规格草稿')
+        const source = active.documents.filter(document => document.stage === 'source').map(document => document.content).join('\n\n')
+        const missing = active.pendingMaterials!.map(item => `- [${item.key || item.id}] ${item.requiredDecision}`).join('\n')
+        const preview = await this.generateDocument(active, 'modeling', 'material-preview', '模拟材料与规格草稿',
+          `仅为当前待补材料制作可审阅的模拟草稿，并据此给出下一阶段的规格草稿。所有假设逐项明确标记，不得宣称真实交付、业务确认、READY、测试通过或正式发布。不要编写模拟器、脚本、执行计划或长篇评测。按“模拟材料（沿用标识）/假设清单/规格草稿/正式验收待补项”输出，保持紧凑。\n\n# 待补材料\n${missing}\n\n# 已确认决定\n${this.confirmedClarifications(active)}\n\n# 已入档需求\n${source}`,
+          signal, onProgress, `material-preview:${active.id}`)
+        active.materialPreviewDocumentId = preview.id
+        await this.persist(active)
+        this.reportProgress(onProgress, active, 'complete', '模拟材料和规格草稿已保存；正式验收材料仍待补齐')
+        return active
+      })
+    }
+    if (active && (active.interactionConversationId ?? active.conversationId) === input.conversationId) {
+      if (active.status === 'awaiting-clarification' && !active.pendingMaterials?.length) {
+        throw new Error('请在对话中的澄清卡片选择选项后提交确认。')
+      }
+      if (active.status === 'awaiting-clarification' || active.status === 'awaiting-materials' || active.status === 'review-required') {
+        return this.withRun(active, async () => {
+          if (!text && !input.attachments?.length && active.status !== 'review-required') {
+            throw new Error('请在 /requirement 后填写补充材料，或附上材料文件。')
+          }
+          await this.ensureWorkspacePackage(active, conversation)
+          if (text || input.attachments?.length) {
+            const attachmentContext = await buildDocumentAttachmentContext(input.attachments, { requireComplete: true })
+            const issue = this.attachmentReadinessError(attachmentContext)
+            if (issue) throw new Error(issue)
+            const supplement = [text, attachmentContext].filter(Boolean).join('\n\n')
+            this.completeContext(supplement, '补充材料')
+            await this.addDocument(active, 'source', 'supplement', '补充需求材料', `# 补充需求材料\n\n${supplement}\n`)
+            await this.persist(active)
+          }
+          await this.persistCommand(conversation.id, input, `/requirement${text ? ` ${text}` : ''}`)
+          return this.resumeRequirementReview(active, conversation, onProgress, signal)
+        })
+      }
     }
     if (!text && !input.attachments?.length) throw new Error('Add a requirement description or attach at least one document after /requirement.')
     return this.start(conversation, input, onProgress, signal)
@@ -368,7 +442,7 @@ export class RequirementEngineeringService {
   }
 
   async buildDsl(input: SubmitDslInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, async (signal) => {
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
       const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation', input.runId)
       if (!run) throw new Error('请先完成 /spec 并通过最终规格审查。')
@@ -391,9 +465,9 @@ export class RequirementEngineeringService {
         run.dslOutputPath = path.join(run.workspacePackagePath!, 'dsl')
         run.dslStatus = 'generating'
         run.error = undefined
-        return this.buildDslInternal(run, conversation, finalSpec, selected ? generator.id : undefined, onProgress, signal)
+        return this.buildDslInternal(run, conversation, finalSpec, selected ? generator.id : undefined, progress, signal)
       })
-    })
+    }, input.runId)
   }
 
   private async buildDslInternal(run: RequirementRun, conversation: Conversation, finalSpec: RequirementDocument, selectedGenerator?: string, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
@@ -518,29 +592,29 @@ ${sourcePack}`,
    * to the selected deterministic adapter in an isolated directory.
    */
   async buildCoding(input: SubmitCodingInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, async (signal) => {
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
       const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation', input.runId)
       if (!run) throw new Error('请先完成 /spec 和 /dsl。')
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
         const dsl = await this.requireRelease(run, 'dsl')
-        return this.buildCodingInternal(run, conversation, dsl, onProgress, signal, input.generator)
+        return this.buildCodingInternal(run, conversation, dsl, progress, signal, input.generator)
       })
-    })
+    }, input.runId)
   }
 
   async verifyHost(input: SubmitHostVerificationInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
     const { action } = input
     if (action !== 'preflight' && action !== 'preview' && action !== 'run') throw new Error('未知宿主验收操作。')
-    return this.runSubmission(input.conversationId, async (signal) => {
+    return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
       const run = await this.findWorkspaceRun(conversation, action === 'preflight'
         ? ['ready-for-specification', 'ready-for-implementation', 'awaiting-spec-resolution'] : 'ready-for-implementation', input.runId)
       if (!run) throw new Error('请先在当前工作区建立需求运行。')
       return this.withRun(run, async () => {
         await this.ensureWorkspacePackage(run, conversation)
-        return this.verifyHostInternal(run, input.conversationId, action, signal, onProgress)
+        return this.verifyHostInternal(run, input.conversationId, action, signal, progress)
       })
     }, input.runId)
   }
@@ -557,30 +631,33 @@ ${sourcePack}`,
       const configuration = await this.readHostTarget(run, coding, action !== 'preflight')
       const { target, adapter } = configuration
       result = { ...result, commit: target.commit, module: target.module }
+      let reviewedPatch: Buffer | undefined
       if (action === 'run') {
         if (!plan) throw new Error('请先执行 /verify-host 预览宿主补丁。')
-        const patchFile = await this.workspaceArtifact(run, plan.patchPath)
-        const preview = await fs.readFile(patchFile).catch(() => undefined)
-        if (!preview || createHash('sha256').update(preview).digest('hex') !== plan.patchSha256) {
-          throw new Error('预览补丁已变更，请重新执行 /verify-host。')
-        }
+        reviewedPatch = await this.readReviewedHostPatch(run, plan)
       }
       const artifact = action === 'preflight' ? undefined : await this.readHostArtifact(run)
       result = { ...result, generationKey: artifact?.key }
-      const checked = await verifyMavenHost({ action, workspace: run.workspaceRoot!, target, artifact, adapter, expectedPlan: plan }, signal,
+      const checked = await verifyMavenHost({ action, workspace: run.workspaceRoot!, target, artifact, adapter, expectedPlan: plan, reviewedPatch }, signal,
         (message) => this.reportProgress(onProgress, run, 'coding', message))
       this.throwIfAborted(signal)
       if ((await this.readHostTarget(run, coding, action !== 'preflight')).sha256 !== configuration.sha256
         || (artifact && (await this.readHostArtifact(run)).key !== artifact.key)) {
         throw new Error('验收期间宿主配置或生成产物已变更，请重新预览。')
       }
+      if (action === 'run' && plan) await this.readReviewedHostPatch(run, plan)
       result = { ...result, maven: checked.maven, java: checked.java }
       if (checked.plan && checked.patch !== undefined) {
         const patchPath = path.join(coding, 'output', 'host', `${checked.plan.patchSha256}.patch`)
         await this.writeWorkspaceArtifact(run, patchPath, checked.patch)
         result = { ...result, status: 'preview-ready', summary: '宿主补丁预览已生成。确认差异后执行 /verify-host run。', plan: { ...checked.plan, patchPath } }
-      } else if (checked.testCount !== undefined) {
-        result = { ...result, status: 'passed', summary: `宿主验证通过，隔离 Maven 构建实际通过 ${checked.testCount} 项测试。`, testCount: checked.testCount }
+      } else if (checked.testCount !== undefined && checked.integrationTests?.length) {
+        result = {
+          ...result, status: 'passed', testCount: checked.testCount, integrationTests: checked.integrationTests,
+          summary: `宿主验证通过，隔离 Maven 构建通过 ${checked.testCount} 项测试。已核实 ${checked.integrationTests.join('、')} 经宿主代码调用生成的领域行为。`,
+        }
+      } else if (action === 'run') {
+        throw new Error('宿主验收缺少可核实的生成模块调用证据。')
       } else {
         result = { ...result, status: 'preflight-passed', summary: '宿主预检通过，固定提交、Maven/JDK 和原始模块测试编译可用。' }
       }
@@ -607,6 +684,16 @@ ${sourcePack}`,
     return run
   }
 
+  private async readReviewedHostPatch(run: RequirementRun, plan: NonNullable<RequirementHostVerification['plan']>): Promise<Buffer> {
+    const file = await this.workspaceArtifact(run, plan.patchPath)
+    const stat = await fs.stat(file).catch(() => undefined)
+    const patch = stat?.isFile() && stat.size <= 12 * 1024 * 1024 ? await fs.readFile(file).catch(() => undefined) : undefined
+    if (!patch || createHash('sha256').update(patch).digest('hex') !== plan.patchSha256) {
+      throw new Error('预览补丁已变更，请重新执行 /verify-host。')
+    }
+    return patch
+  }
+
   private async readHostTarget(run: RequirementRun, coding: string, includeAdapter: boolean) {
     const location = await this.workspaceArtifact(run, path.join(coding, 'host-target.json'))
     const size = await fs.stat(location).then((file) => file.isFile() ? file.size : undefined, () => undefined)
@@ -631,13 +718,15 @@ ${sourcePack}`,
     await this.requireRelease(run, 'dsl')
     const spec = await this.requireRelease(run, 'specification')
     const acceptance = await this.readReleasedSpecContract(run, spec)
+    this.requireJavaSpecReview(run, acceptance?.contract.version)
     const manifestPath = await this.workspaceArtifact(run, path.join(run.codingOutputPath, 'codegen-manifest.json'))
     const document = [...run.documents].reverse().find((item) => item.dimension === 'codegen-manifest' && item.workspacePath === manifestPath)
     const bytes = await fs.readFile(manifestPath, 'utf8')
     const baseline = run.verifiedCoding?.['java-domain']
     if (!document || bytes !== document.content || !baseline || !acceptance) throw new Error('领域模块验收记录已变更，请重新执行 /coding java-domain。')
     const manifest = JSON.parse(bytes)
-    if (manifest.status !== 'completed' || manifest.adapter !== 'java-domain' || manifest.generationKey !== path.basename(run.codingOutputPath)
+    if (manifest.status !== 'completed' || manifest.adapter !== 'java-domain' || manifest.contractVersion !== CODEGEN_CONTRACT_VERSION
+      || manifest.generationKey !== path.basename(run.codingOutputPath)
       || manifest.sourceDslSha256 !== run.releases!.dsl!.sha256 || manifest.sourceSpecSha256 !== run.releases!.specification!.sha256
       || manifest.sourceSpecContractSha256 !== acceptance.receipt.sha256 || baseline.specContract?.sha256 !== acceptance.receipt.sha256) {
       throw new Error('当前生成产物不属于已验收的 Java 领域模块。')
@@ -733,7 +822,8 @@ ${sourcePack}`,
       const result = await this.deterministicCoding.generatePackage(
         codePath, parsed, generator, target.options, target.productionOutput, acceptance?.contract,
       )
-      if (generator.id === 'java-domain' && !result.manifest.details?.acceptanceClass) {
+      const caseCount = generator.id === 'java-domain' ? Number(result.manifest.details?.specAcceptanceCases) : 0
+      if (generator.id === 'java-domain' && (!result.manifest.details?.acceptanceClass || !Number.isSafeInteger(caseCount) || caseCount < 1)) {
         throw new Error('Java 领域目标缺少可执行验收入口。')
       }
       const targetVerification = generator.target === 'java'
@@ -750,7 +840,6 @@ ${sourcePack}`,
       const generationResult = await fs.readFile(await this.workspaceArtifact(run, result.resultPath), 'utf8')
       documents.push(await this.addDocument(run, 'coding', 'generation-result', `Generated ${generator.target} code package`, generationResult))
       const missing = result.manifest.requiresTargetAdapter
-      const caseCount = generator.id === 'java-domain' ? (acceptance?.contract.rules.reduce((sum, rule) => sum + rule.cases.length, 0) ?? 0) : 0
       const prior = run.verifiedCoding?.[generator.id]
       const priorReceipt = prior?.specContract
       const priorDoc = run.documents.find((document) => document.id === priorReceipt?.documentId)
@@ -876,8 +965,8 @@ ${sourcePack}`,
     return rmsdPath(run.workspaceRoot, file)
   }
 
-  private async writeWorkspaceArtifact(run: RequirementRun, file: string, text: string): Promise<void> {
-    await writeTextAtomicAsync(await this.workspaceArtifact(run, file), text)
+  private async writeWorkspaceArtifact(run: RequirementRun, file: string, content: string | Buffer): Promise<void> {
+    await writeFileAtomicAsync(await this.workspaceArtifact(run, file), content)
   }
 
   private invalidateAfter(run: RequirementRun, stage: RequirementReleaseStage): void {
@@ -970,6 +1059,14 @@ ${sourcePack}`,
       return canonical !== undefined && path.relative(root, canonical) === ''
     }
     let run = runId ? runs.find((item) => item.id === runId) : runs.find((item) => item.conversationId === conversation.id)
+    if (!run && !runId) {
+      for (const candidate of runs) {
+        if (candidate.interactionConversationId === conversation.id && await matchesScope(candidate)) {
+          run = candidate
+          break
+        }
+      }
+    }
     if (runId && !run) throw new Error('指定的需求运行不存在，请刷新需求记录后重试。')
     if (run && !await matchesScope(run)) throw new Error('该需求运行属于另一个工作区或 worktree。')
     if (!run) {
@@ -1159,11 +1256,11 @@ ${sourcePack}`,
 
       let finalSpec: RequirementDocument | undefined
       let acceptanceDocument: RequirementDocument | undefined
-      let criticalRules: ReturnType<typeof specCriticalRules> = []
+      let criticalRules: ReturnType<typeof specReviewRules> = []
       if (this.specificationPassed(evaluation)) {
         this.reportProgress(onProgress, run, 'specification', '正在汇总并复核最终实施规格')
         finalSpec = await this.generateDocument(run, 'specification', 'implementation-ready', '最终实施规格', this.finalSpecificationPrompt(sourcePack, generatedDocuments), signal, onProgress)
-        criticalRules = specCriticalRules(finalSpec.content)
+        criticalRules = specReviewRules(finalSpec.content)
         acceptanceDocument = await this.generateDocument(
           run, 'specification', SPEC_CONTRACT_DIMENSION, '规格验收契约',
           `${SPEC_CONTRACT_PROMPT}\n\n# 最终实施规格\n${finalSpec.content}`, signal, onProgress,
@@ -1176,7 +1273,7 @@ ${sourcePack}`,
         const finalAudit = await this.generateDocument(
           run, 'spec-validation', 'implementation-release-validation', '最终实施规格放行审查',
           this.specificationValidationPrompt(
-            `${sourcePack}\n\n逐项比较原始业务条件与最终规格的 BR 清单，遗漏、合并、增加或改变关键规则均列入阻塞项。核对每个 BR 在契约中的含义与正文一致，包括角色、状态、阈值与比较符、布尔条件、例外和独立拒绝用例，以及成功事件的完整字段和预期值。不得把尚未执行的测试写成验证事实。人工验收项须明确缺口和证据需求。`,
+            `${sourcePack}\n\n逐项比较原始业务条件与最终规格的 BR 清单，遗漏、合并、增加或改变关键规则均列入阻塞项。核对每个 BR 的可执行条件与其余正文和契约一致，包括角色、命令起始状态、工作流初始状态、阈值与比较符、布尔条件、例外和独立拒绝用例，以及成功事件的完整字段和预期值。不得把尚未执行的测试写成验证事实。人工验收项须明确缺口和证据需求。`,
             [finalSpec, acceptanceDocument],
           ), signal, onProgress,
         )
@@ -1192,7 +1289,7 @@ ${sourcePack}`,
           specification: { documentId: finalSpec.id, sha256: contentHash(finalSpec.content) },
           contract: { documentId: acceptanceDocument.id, sha256: contentHash(acceptanceDocument.content) },
           upstreamDocumentId: finalModeling.id,
-          rules: criticalRules.map(({ id, summary }) => ({ id, summary })),
+          rules: criticalRules,
         }
         run.specResolutionQuestions = [{
           id: randomUUID(), category: 'specification', blocker: '', question: '关键业务规则与例外是否完整、准确？',
@@ -1201,7 +1298,7 @@ ${sourcePack}`,
         run.status = 'awaiting-spec-resolution'
         await this.storage.conversations.addMessage(conversation.id, {
           id: randomUUID(), role: 'assistant', agentName: '规格构建',
-          content: '规格草稿已通过校验。请确认下方的关键规则与例外，确认后即可继续生成 DSL。', timestamp: Date.now(),
+          content: '规格草稿已通过校验。请确认下方将用于代码验收的条件及业务例外，确认后即可继续生成 DSL。', timestamp: Date.now(),
         })
         this.reportProgress(onProgress, run, 'complete', '正在等待确认关键规则与例外')
       } else {
@@ -1260,7 +1357,7 @@ ${sourcePack}`,
     if (modeling.id !== review.upstreamDocumentId) throw new Error('需求建模已变更，请重新生成规格。')
     const spec = await reviewedDocument(review.specification, 'implementation-ready')
     const acceptance = await reviewedDocument(review.contract, SPEC_CONTRACT_DIMENSION)
-    const rules = specCriticalRules(spec.content).map(({ id, summary }) => ({ id, summary }))
+    const rules = specReviewRules(spec.content)
     if (JSON.stringify(rules) !== JSON.stringify(review.rules)
       || parseSpecContract(acceptance.content, spec.content).version !== SPEC_ACCEPTANCE_VERSION) {
       throw new Error('待确认的关键规则与验收契约不一致，请重新生成规格。')
@@ -1426,22 +1523,46 @@ ${sourcePack}`,
     }
   }
 
-  private async advance(run: RequirementRun, conversation: Conversation, answer: string, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
-    const answeredRound = run.round
+  private async advance(run: RequirementRun, conversation: Conversation, answers: Array<{ question: RequirementClarificationQuestion; option: string }>, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
+    const answer = this.formatClarificationAnswers(answers)
+    const decisions = new Map(latestRequirementDecisions(run).map((item) => [item.key, item]))
+    const document = await this.addDocument(run, 'clarification', 'answers', `第 ${run.round} 轮澄清答复`, `# 需求澄清答复\n\n${answer}\n`)
+    for (const { question, option } of answers) {
+      const key = question.decisionKey || clarificationKey(question.question)
+      for (const [previousKey, previous] of decisions) {
+        if (clarificationKey(previous.question) === clarificationKey(question.question)) decisions.delete(previousKey)
+      }
+      decisions.set(key, { key, question: question.question, choice: option, answerDocumentId: document.id })
+    }
+    run.clarificationDecisions = [...decisions.values()]
+    run.clarificationQuestions = []
+    const waiting = run.pendingMaterials?.length
     this.invalidateAfter(run, 'requirement')
     delete run.releases!.requirement
-    await this.addDocument(run, 'clarification', 'answers', `第 ${answeredRound} 轮澄清答复`, `# 需求澄清答复\n\n${answer}\n`)
+    run.status = waiting ? 'awaiting-materials' : 'review-required'
+    await this.persist(run)
+    await this.persistCommand(conversation.id, { conversationId: conversation.id, content: answer }, `已提交第 ${run.round} 轮澄清选择\n\n${answer}`)
+    if (waiting) {
+      await this.persistSummary(conversation.id, run)
+      this.reportProgress(onProgress, run, 'complete', '业务决定已保存，等待补充材料')
+      return run
+    }
+    return this.resumeRequirementReview(run, conversation, onProgress, signal)
+  }
+
+  private async resumeRequirementReview(run: RequirementRun, conversation: Conversation, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
+    delete run.materialPreviewDocumentId
+    this.invalidateAfter(run, 'requirement')
+    delete run.releases!.requirement
     run.status = 'analyzing'
     run.round += 1
     run.clarificationQuestions = []
-    run.updatedAt = new Date().toISOString()
+    run.error = undefined
     await this.persist(run)
-    await this.persistCommand(conversation.id, { conversationId: conversation.id, content: answer }, `已提交第 ${answeredRound} 轮澄清选择\n\n${answer}`)
-    const originalRequirements = run.documents.filter((document) => document.stage === 'source').map((document) => document.content).join('\n\n')
-    const confirmedClarifications = this.confirmedClarifications(run)
-    // Put the user's decisions first. Attachments may be large, so appending
-    // answers after them could silently remove those decisions at the limit.
-    const context = `# 已确认的用户澄清（必须作为事实使用，不得再次提问）\n${confirmedClarifications}\n\n# 原始需求与附件\n${originalRequirements}`
+    const sources = run.documents.filter((document) => document.stage === 'source')
+      .map((document) => `## ${document.title} [sourceId: ${document.id}]\n${document.content}`).join('\n\n')
+    const missing = run.pendingMaterials?.map((item) => `- [${item.key || item.id}] ${item.requiredDecision}`).join('\n') || '无'
+    const context = `# 当前有效的用户决定（同一 key 只保留最新选择，覆盖原文和早期分析）\n${this.confirmedClarifications(run) || '无'}\n\n# 上次等待的材料\n${missing}\n\n# 原始需求与补充材料\n${sources}`
     return this.reassessClarifications(run, conversation, context, onProgress, signal)
   }
 
@@ -1449,32 +1570,30 @@ ${sourcePack}`,
     try {
       this.throwIfAborted(signal)
       this.reportProgress(onProgress, run, 'requirement-analysis', '正在合并本轮澄清并检查剩余矛盾')
-      const integration = await this.generateDocument(run, 'requirement-analysis', 'clarification-integration', `第 ${run.round} 轮澄清整合`, `根据以下已确认的用户澄清更新需求结论。只处理本轮选择带来的变化、仍存在的冲突和可验证的验收条件；不要重新输出代码分析或完整需求分析。\n\n${source}\n\n# 历史需求工程文档\n${run.documents.filter((document) => document.round < run.round && document.stage !== 'source').map((document) => `## ${document.title}\n${document.content}`).join('\n\n')}`, signal, onProgress)
+      const integration = await this.generateDocument(run, 'requirement-analysis', 'clarification-integration', `第 ${run.round} 轮澄清整合`, `根据实际交付的材料和当前有效的决定更新需求。现行决定覆盖早期原文。仅记录本轮变化、证据和真正影响验收的剩余缺口。\n\n${source}`, signal, onProgress)
 
       this.reportProgress(onProgress, run, 'evaluation', '正在根据本轮澄清重新评测需求')
-      const evaluationDocument = await this.generateDocument(run, 'evaluation', 'clarification-review', `第 ${run.round} 轮需求评测`, this.evaluationPrompt('澄清后的需求质量', source, [integration]), signal, onProgress)
-      const evaluation = this.parseEvaluation(`round-${run.round}`, evaluationDocument.content)
-      run.evaluations = [...run.evaluations, evaluation]
+      let evaluationDocument = await this.generateDocument(run, 'evaluation', 'clarification-review', `第 ${run.round} 轮需求评测`, this.evaluationPrompt('澄清后的需求质量', source, [integration]), signal, onProgress)
+      let evaluation = this.parseEvaluation(`round-${run.round}`, evaluationDocument.content)
+      const stale = this.excludedDecisions(run, evaluation)
+      if (stale.length) {
+        run.evaluations.push({ ...evaluation, dimension: `round-${run.round}-before-recheck` })
+        evaluationDocument = await this.generateDocument(run, 'evaluation', 'clarification-recheck', '复核重复提问',
+          this.evaluationPrompt('复核澄清后的需求质量', `${source}\n\n上次没有新证据却重新打开了已确认事项：\n${stale.map(({ requiredDecision }) => `- ${requiredDecision}`).join('\n')}`, [integration]), signal, onProgress)
+        evaluation = this.parseEvaluation(`round-${run.round}`, evaluationDocument.content)
+      }
+      run.evaluations.push(evaluation)
       run.qualityScore = evaluation.score
 
-      if (evaluation.score < run.qualityThreshold || this.hasBlockingRequirementGaps(evaluation)) {
-        this.reportProgress(onProgress, run, 'clarification', '评测未通过，正在整理仍需确认的选项')
-        const clarification = await this.generateDocument(run, 'clarification', `round-${run.round}`, `第 ${run.round} 轮需求澄清`, this.clarificationPrompt('本轮澄清后的剩余问题', source, [integration, evaluationDocument]), signal, onProgress)
-        run.clarificationQuestions = this.clarificationQuestionsFromUnresolvedItems(evaluation.unresolvedItems || [])
-        if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.extractClarificationQuestions(clarification.content).slice(0, 12)
-        if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.defaultClarificationQuestions()
-        run.status = 'awaiting-clarification'
-      } else {
-        run.clarificationQuestions = []
-        run.status = 'ready-for-specification'
-        const finalRequirement = await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', this.finalRequirementPrompt(run.documents.filter((document) => document.stage !== 'source')), signal, onProgress)
+      if (this.applyRequirementEvaluation(run, evaluation)) {
+        const finalRequirement = await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', `${this.finalRequirementPrompt([integration, evaluationDocument])}\n\n${source}`, signal, onProgress)
         await this.gateFinalRequirementReadiness(run, conversation, source, finalRequirement, onProgress, signal)
       }
 
       await this.persist(run)
       await this.persistRoundDocuments(conversation.id, run)
       await this.persistSummary(conversation.id, run)
-      this.reportProgress(onProgress, run, 'complete', run.status === 'ready-for-specification' ? '需求工程已完成' : '本轮澄清已整理，正在等待你的选择')
+      this.reportProgress(onProgress, run, 'complete', this.requirementStatusMessage(run))
       void recordActivity({ category: 'agent', action: 'requirement.clarification_reassessed', status: 'success', summary: `Requirement clarification round ${run.round} completed with score ${run.qualityScore}.`, conversationId: conversation.id })
       return run
     } catch (error) {
@@ -1486,7 +1605,7 @@ ${sourcePack}`,
         this.reportProgress(onProgress, run, 'failed', '需求工程已停止')
         return run
       }
-      run.status = 'failed'
+      run.status = 'review-required'
       run.error = error instanceof Error ? error.message : String(error)
       await this.persist(run)
       this.reportProgress(onProgress, run, 'failed', '澄清复核未能完成')
@@ -1510,61 +1629,28 @@ ${sourcePack}`,
       this.reportProgress(onProgress, run, 'evaluation', '正在进行第一轮需求评测')
       const firstEvaluationDocument = await this.generateDocument(run, 'evaluation', 'round-1', `第 ${run.round} 轮需求评测（第一次）`, this.evaluationPrompt('第一轮需求质量', source, [codeAnalysis, initialAnalysis, codeAwareAnalysis]), signal, onProgress)
       const firstEvaluation = this.parseEvaluation('round-1', firstEvaluationDocument.content)
-
-      this.reportProgress(onProgress, run, 'clarification', '正在梳理需求层面仍需确认的事项')
-      const clarification = await this.generateDocument(run, 'clarification', `round-${run.round}`, `第 ${run.round} 轮需求澄清`, `${REQUIREMENT_CLARIFICATION_POLICY}\n能够由材料或既有业务约定高置信度确定的内容，写入“自动确认”；只有需求本身仍不明确且会影响业务验收的内容，写入“需要用户确认”。已确认的用户澄清是本轮事实：不得把其中任何内容再次列为问题，只有与其冲突的新需求证据才可指出冲突原因。每个需要确认的问题必须以“- 问题：”开头，提供 2 到 4 个业务选项，并在第一个选项标注“推荐”。\n\n# 已确认的用户澄清\n${this.confirmedClarifications(run) || '无'}\n\n# 代码分析（仅作内部可行性参考）\n${codeAnalysis.content}\n\n# 结合代码的需求分析\n${codeAwareAnalysis.content}\n\n# 第一轮评测\n${firstEvaluationDocument.content}`, signal, onProgress)
-      const extractedQuestions = this.extractClarificationQuestions(clarification.content).slice(0, 12)
       run.evaluations = [firstEvaluation]
       run.qualityScore = firstEvaluation.score
-      const firstEvaluationHasBusinessBlockers = this.hasBlockingRequirementGaps(firstEvaluation)
-      const firstStructuredQuestions = this.clarificationQuestionsFromUnresolvedItems(firstEvaluation.unresolvedItems || [])
-      run.clarificationQuestions = firstStructuredQuestions.length > 0
-        ? firstStructuredQuestions
-        : firstEvaluation.score < run.qualityThreshold || firstEvaluationHasBusinessBlockers
-          ? extractedQuestions.length > 0 ? extractedQuestions : this.defaultClarificationQuestions()
-          : []
+      const needsInput = !this.applyRequirementEvaluation(run, firstEvaluation)
 
-      // A clarification is a user decision point. Persist the work completed so
-      // far, then stop here until the selected answers are submitted from chat.
-      if (run.clarificationQuestions.length > 0) {
-        run.status = 'awaiting-clarification'
-        run.updatedAt = new Date().toISOString()
+      if (needsInput) {
         await this.persist(run)
         await this.persistRoundDocuments(conversation.id, run)
         await this.persistSummary(conversation.id, run)
-        this.reportProgress(onProgress, run, 'complete', '已生成待确认选项，正在等待你的选择')
+        this.reportProgress(onProgress, run, 'complete', this.requirementStatusMessage(run))
         void recordActivity({ category: 'agent', action: 'requirement.awaiting_clarification', status: 'success', summary: `Requirement round ${run.round} is awaiting clarification.`, conversationId: conversation.id })
         return run
       }
 
-      this.reportProgress(onProgress, run, 'evaluation', '正在进行第二轮需求评测')
-      const secondEvaluationDocument = await this.generateDocument(run, 'evaluation', 'round-2', `第 ${run.round} 轮需求评测（第二次）`, this.evaluationPrompt('第二轮需求质量', source, [codeAnalysis, initialAnalysis, codeAwareAnalysis, firstEvaluationDocument, clarification]), signal, onProgress)
-      const secondEvaluation = this.parseEvaluation('round-2', secondEvaluationDocument.content)
-      run.evaluations = [firstEvaluation, secondEvaluation]
-      run.qualityScore = secondEvaluation.score
-      if (secondEvaluation.score < run.qualityThreshold || this.hasBlockingRequirementGaps(secondEvaluation)) {
-        this.reportProgress(onProgress, run, 'clarification', '第二次评测未通过，正在整理待确认选项')
-        const followUpClarification = await this.generateDocument(run, 'clarification', `round-${run.round}-follow-up`, `第 ${run.round} 轮需求澄清（评测后）`, this.clarificationPrompt('第二次评测后的待确认问题', source, [codeAnalysis, codeAwareAnalysis, secondEvaluationDocument]), signal, onProgress)
-        run.clarificationQuestions = this.clarificationQuestionsFromUnresolvedItems(secondEvaluation.unresolvedItems || [])
-        if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.extractClarificationQuestions(followUpClarification.content).slice(0, 12)
-        if (run.clarificationQuestions.length === 0) run.clarificationQuestions = this.defaultClarificationQuestions()
-      } else {
-        run.clarificationQuestions = []
-      }
-      run.status = run.qualityScore >= run.qualityThreshold && run.clarificationQuestions.length === 0
-        ? 'ready-for-specification'
-        : 'awaiting-clarification'
-      if (run.status === 'ready-for-specification') {
-        const finalRequirement = await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', this.finalRequirementPrompt(run.documents.filter((document) => document.round === run.round && document.stage !== 'source')), signal, onProgress)
-        await this.gateFinalRequirementReadiness(run, conversation, source, finalRequirement, onProgress, signal)
-      }
+      // The published requirement is still independently audited below.
+      // Re-evaluating identical inputs before producing it adds no new evidence.
+      const finalRequirement = await this.generateDocument(run, 'requirement-analysis', 'final-merged', '最终明确需求', this.finalRequirementPrompt(run.documents.filter((document) => document.round === run.round && document.stage !== 'source')), signal, onProgress)
+      await this.gateFinalRequirementReadiness(run, conversation, source, finalRequirement, onProgress, signal)
       run.updatedAt = new Date().toISOString()
       await this.persist(run)
       await this.persistRoundDocuments(conversation.id, run)
       await this.persistSummary(conversation.id, run)
-      this.reportProgress(onProgress, run, 'complete', run.status === 'ready-for-specification'
-        ? '需求工程已完成'
-        : '分析已完成，需求澄清问题已准备好')
+      this.reportProgress(onProgress, run, 'complete', this.requirementStatusMessage(run))
       void recordActivity({ category: 'agent', action: 'requirement.analysis_completed', status: 'success', summary: `Requirement round ${run.round} completed with score ${run.qualityScore}.`, conversationId: conversation.id })
       return run
     } catch (error) {
@@ -1589,9 +1675,10 @@ ${sourcePack}`,
   private async generateDocument(run: RequirementRun, stage: RequirementDocumentStage, dimension: string, title: string, prompt: string, signal?: AbortSignal, onProgress?: (progress: RequirementProgress) => void, checkpointAttempt?: string): Promise<RequirementDocument> {
     this.throwIfAborted(signal)
     const outputContract = this.documentOutputContract(stage, dimension)
-    const inputHash = checkpointAttempt ? contentHash(JSON.stringify([
-      1, checkpointAttempt, stage, dimension, title, this.storage.config.get('activeProviderId'),
-      this.storage.config.getActiveModel(), prompt, outputContract,
+    const request = this.modelRequest()
+    const inputHash = checkpointAttempt && request ? contentHash(JSON.stringify([
+      2, checkpointAttempt, stage, dimension, title, request.providerId, request.model,
+      request.maxTokens, prompt, outputContract,
     ])) : undefined
     if (inputHash) {
       const checkpoint = [...run.documents].reverse().find((item) => item.checkpoint?.inputHash === inputHash)
@@ -1610,7 +1697,7 @@ ${sourcePack}`,
     let content: string
     try {
       const constrainedPrompt = `${prompt}\n\n# 文档输出约束\n${outputContract}`
-      content = await this.complete(constrainedPrompt, signal, { title, stage, dimension, outputContract })
+      content = await this.complete(constrainedPrompt, signal, { title, stage, dimension, outputContract }, request)
       const integrityError = this.documentIntegrityError(stage, dimension, content)
       if (integrityError) {
         this.reportProgress(onProgress, run, stage, `检测到${title}不完整，正在重新生成完整文档`)
@@ -1618,6 +1705,7 @@ ${sourcePack}`,
           `${constrainedPrompt}\n\n# 上一次草稿未通过完整性校验\n${integrityError}\n\n请从头重新输出完整文档，不要引用、概述或续接上一版。必须覆盖请求的所有固定部分，并以完整的句子、表格行或 Markdown 结构结束。`,
           signal,
           { title, stage, dimension, outputContract },
+          request,
         )
         const retryIntegrityError = this.documentIntegrityError(stage, dimension, content)
         if (retryIntegrityError) throw new Error(`${title} 未生成完整内容：${retryIntegrityError}`)
@@ -1661,24 +1749,33 @@ ${sourcePack}`,
     return `${(fenced?.[1] ?? source).trim()}\n`
   }
 
+  private modelRequest() {
+    const providerId = this.storage.config.get('activeProviderId')
+    const model = this.storage.config.getActiveModel()
+    const provider = this.providers.get(providerId)
+    if (!provider || !model) return null
+    const profile = this.providers.getModelCapabilities(providerId, model) ?? inferModelCapabilities(provider.type, model)
+    const maxTokens = resolveModelOutputBudget(profile, undefined, false)
+    return { providerId, model, provider, maxTokens }
+  }
+
   private async complete(
     prompt: string,
     signal?: AbortSignal,
     context?: { title: string; stage: RequirementDocumentStage; dimension: string; outputContract: string },
+    request = this.modelRequest(),
   ): Promise<string> {
     this.throwIfAborted(signal)
     this.completeContext(prompt, '模型阶段输入', MAX_CONTEXT_CHARS * 3)
-    const providerId = this.storage.config.get('activeProviderId')
-    const model = this.storage.config.getActiveModel()
-    const provider = this.providers.get(providerId)
-    if (!provider || !model) {
+    if (!request) {
       throw new Error('尚未配置可用模型，无法执行需求工程。请在设置中配置模型后重试。')
     }
+    const { provider, model, maxTokens } = request
     try {
       let response = await provider.chatComplete({
         model,
         temperature: 0.2,
-        maxTokens: 3600,
+        maxTokens,
         reasoning: { enabled: false },
         messages: [
           { role: 'system', content: '你是软件需求工程师。只基于提供的材料工作，不要虚构事实。输出中文 Markdown，明确假设、不确定项和可验证的结论。' },
@@ -1693,7 +1790,7 @@ ${sourcePack}`,
         response = await provider.chatComplete({
           model,
           temperature: 0.2,
-          maxTokens: 3600,
+          maxTokens,
           reasoning: { enabled: false },
           messages: [
             { role: 'system', content: '你是软件需求工程师。请只输出中文 Markdown，且不得编造未提供的业务事实。' },
@@ -1865,10 +1962,6 @@ ${sourcePack}`,
     return requirementPrompts.codePrompt(title, source, codeEvidence)
   }
 
-  private clarificationPrompt(title: string, source: string, analyses: RequirementDocument[]): string {
-    return requirementPrompts.clarificationPrompt(title, source, analyses)
-  }
-
   private evaluationPrompt(title: string, source: string, documents: RequirementDocument[]): string {
     return requirementPrompts.evaluationPrompt(title, source, documents)
   }
@@ -1970,14 +2063,18 @@ ${sourcePack}`,
   private parseEvaluation(dimension: string, content: string): RequirementEvaluation {
     const score = Math.max(0, Math.min(100, Number(content.match(/SCORE\s*:\s*(\d{1,3})/i)?.[1] || 0)))
     const readiness = content.match(/READINESS\s*:\s*(READY|BLOCKED)/i)?.[1]?.toLowerCase() as RequirementEvaluation['readiness'] | undefined
-    const blockers = content.match(/BLOCKERS\s*:\s*([\s\S]*?)(?:ASSESSMENT\s*:|$)/i)?.[1]
-      ?.split('\n').map((line) => line.replace(/^[-*]\s*/, '').trim()).filter((line) => line && line !== '无' && !/^[-_|]{3,}$/.test(line)) || []
-    const summary = content.match(/ASSESSMENT\s*:\s*([\s\S]*)$/i)?.[1]?.trim() || '模型未按固定评测格式返回评测依据。'
-    const unresolvedItems = this.parseUnresolvedItems(content, readiness)
-    return { dimension, score, threshold: QUALITY_THRESHOLD, blockers, summary, readiness, unresolvedItems }
+    const blockerSection = content.match(/^[ \t]*BLOCKERS[ \t]*:([\s\S]*?)(?=^[ \t]*ASSESSMENT[ \t]*:)/im)?.[1]
+    const blockers = blockerSection?.split('\n').map((line) => line.trim().replace(/^[-*]\s*/, ''))
+      .filter((line) => line && !/^(?:无|none)[。.]?$/i.test(line) && !/^[-_|]{3,}$/.test(line)) ?? []
+    const summary = content.match(/^\s*ASSESSMENT\s*:\s*([\s\S]*?)(?=^[ \t]*MATERIAL_EVIDENCE_JSON[ \t]*:|(?![\s\S]))/im)?.[1]?.trim() || '模型未按固定评测格式返回评测依据。'
+    const unresolvedItems = !blockerSection?.trim()
+      ? [this.invalidEvaluationItem('评测结果缺少明确的 BLOCKERS，无法证明需求是否可放行。')]
+      : this.parseUnresolvedItems(content, readiness, blockers)
+    const materialEvidence = this.parseMaterialEvidence(content)
+    return { dimension, score, threshold: QUALITY_THRESHOLD, blockers, summary, readiness, unresolvedItems, ...(materialEvidence.length ? { materialEvidence } : {}) }
   }
 
-  private parseUnresolvedItems(content: string, readiness: RequirementEvaluation['readiness']): RequirementUnresolvedItem[] {
+  private parseUnresolvedItems(content: string, readiness: RequirementEvaluation['readiness'], blockers: string[]): RequirementUnresolvedItem[] {
     const section = content.match(/UNRESOLVED_ITEMS_JSON\s*:\s*([\s\S]*?)(?:\n\s*BLOCKERS\s*:|\n\s*ASSESSMENT\s*:|$)/i)?.[1]
     if (!section || !readiness) return [this.invalidEvaluationItem('评测结果缺少 READINESS 或 UNRESOLVED_ITEMS_JSON，无法证明需求是否可放行。')]
 
@@ -2007,18 +2104,25 @@ ${sourcePack}`,
       const recommendedIndex = typeof record.recommendedIndex === 'number' && Number.isInteger(record.recommendedIndex)
         ? record.recommendedIndex
         : undefined
+      const key = typeof record.key === 'string' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(record.key) && record.key.length <= 80 ? record.key : undefined
+      const kind = record.kind === 'decision' || record.kind === 'material' ? record.kind : undefined
+      const conflict = record.conflict as Partial<NonNullable<RequirementUnresolvedItem['conflict']>> | undefined
       items.push({
         id: typeof record.id === 'string' && record.id.trim() ? record.id.trim().slice(0, 80) : `U-${String(index + 1).padStart(3, '0')}`,
         fact: fact.slice(0, 600),
         impact: impact.slice(0, 600),
         requiredDecision: requiredDecision.slice(0, 600),
         blocking: record.blocking,
+        ...(key ? { key } : {}),
+        ...(kind ? { kind } : {}),
+        ...(conflict && typeof conflict.sourceId === 'string' && typeof conflict.quote === 'string'
+          && conflict.quote.trim().length >= 8 && conflict.quote.length <= 500 ? { conflict: { sourceId: conflict.sourceId, quote: conflict.quote } } : {}),
         options,
         recommendedIndex: recommendedIndex !== undefined && options && recommendedIndex >= 0 && recommendedIndex < options.length ? recommendedIndex : undefined,
       })
     }
-    if (readiness === 'ready' && items.some((item) => item.blocking)) {
-      return [this.invalidEvaluationItem('评测同时声明 READY 和 blocking=true 未决项，结果相互矛盾。')]
+    if (readiness === 'ready' && (blockers.length > 0 || items.some((item) => item.blocking))) {
+      return [this.invalidEvaluationItem('评测同时声明 READY 和阻塞项，结果相互矛盾。')]
     }
     if (readiness === 'blocked' && !items.some((item) => item.blocking)) {
       return [this.invalidEvaluationItem('评测声明 BLOCKED 但没有可执行的 blocking=true 未决项。')]
@@ -2094,20 +2198,73 @@ ${sourcePack}`,
     const audit = this.parseEvaluation(`final-readiness-${run.round}`, auditDocument.content)
     run.evaluations = [...run.evaluations, audit]
     run.qualityScore = audit.score
-    const questions = this.clarificationQuestionsFromUnresolvedItems(audit.unresolvedItems || [])
-    if (audit.score >= run.qualityThreshold && audit.readiness === 'ready' && questions.length === 0) {
+    if (this.applyRequirementEvaluation(run, audit)) {
       this.throwIfAborted(signal)
       await this.publishRelease(run, 'requirement', finalRequirement)
+      run.status = 'ready-for-specification'
       return
     }
 
-    this.reportProgress(onProgress, run, 'clarification', '最终需求放行审计发现需要业务确认的事项')
-    run.clarificationQuestions = questions.length > 0 ? questions : this.defaultClarificationQuestions()
-    run.status = 'awaiting-clarification'
+    this.reportProgress(onProgress, run, 'clarification', this.requirementStatusMessage(run))
   }
 
-  private clarificationQuestionsFromUnresolvedItems(items: RequirementUnresolvedItem[]): RequirementClarificationQuestion[] {
-    return items.filter((item) => item.blocking).slice(0, 12).map((item, index) => {
+  private excludedDecisions(run: RequirementRun, evaluation: RequirementEvaluation): RequirementUnresolvedItem[] {
+    const items = evaluation.unresolvedItems ?? []
+    const current = new Set(unresolvedRequirementItems(run, items))
+    return items.filter((item) => !current.has(item))
+  }
+
+  private parseMaterialEvidence(content: string): NonNullable<RequirementEvaluation['materialEvidence']> {
+    const line = /^MATERIAL_EVIDENCE_JSON:[ \t]*([^\r\n]+)$/im.exec(content)?.[1]
+    if (!line) return []
+    try {
+      const rows: unknown = JSON.parse(line)
+      if (!Array.isArray(rows) || rows.length > 24) return []
+      return rows.filter((row) => row && typeof row.key === 'string' && typeof row.sourceId === 'string'
+        && typeof row.quote === 'string' && row.quote.trim().length >= 8 && row.quote.length <= 500)
+    } catch { return [] }
+  }
+
+  private applyRequirementEvaluation(run: RequirementRun, evaluation: RequirementEvaluation): boolean {
+    const blocking = unresolvedRequirementItems(run, evaluation.unresolvedItems ?? []).filter(({ blocking }) => blocking)
+    const materials = new Map(blocking.filter(isRequirementMaterial).map((item) => [item.key || item.id, item]))
+    const pendingSince = run.pendingMaterialsSince ?? run.documents.length
+    for (const item of run.pendingMaterials ?? []) {
+      const key = item.key || item.id
+      const received = evaluation.materialEvidence?.some((evidence) => evidence.key === key
+        && run.documents.slice(pendingSince).some((document) => document.id === evidence.sourceId
+          && document.stage === 'source' && document.dimension === 'supplement' && document.content.includes(evidence.quote)))
+      if (!received && !materials.has(key)) materials.set(key, item)
+    }
+    run.pendingMaterials = [...materials.values()]
+    run.pendingMaterialsSince = run.pendingMaterials.length ? pendingSince : undefined
+    run.clarificationQuestions = this.clarificationQuestionsFromUnresolvedItems(run, blocking)
+    if (run.clarificationQuestions.length) run.status = 'awaiting-clarification'
+    else if (run.pendingMaterials.length) run.status = 'awaiting-materials'
+    else if (evaluation.readiness !== 'ready' || evaluation.score < run.qualityThreshold || blocking.some(({ id }) => id === 'U-FORMAT')) run.status = 'review-required'
+    else return true
+    return false
+  }
+
+  private requirementStatusMessage(run: RequirementRun): string {
+    if (run.status === 'awaiting-materials') return '等待补充验收材料'
+    if (run.status === 'review-required') return '评测未达到放行条件，可重新复核'
+    if (run.status === 'awaiting-clarification') return '等待确认业务决定'
+    if (run.status === 'ready-for-specification') return '需求已明确，可进入规格阶段'
+    if (run.status === 'failed') return '需求工程未完成'
+    return '需求仍在评测'
+  }
+
+  private clarificationQuestionsFromUnresolvedItems(run: RequirementRun, items: RequirementUnresolvedItem[]): RequirementClarificationQuestion[] {
+    const seen = new Set<string>()
+    return items.filter((item) => {
+      if (!item.blocking || item.id === 'U-FORMAT' || isRequirementMaterial(item)) return false
+      const key = item.key || clarificationKey(item.requiredDecision)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 12).map((item) => {
+      const decisionKey = item.key || clarificationKey(item.requiredDecision)
       const options = item.options && item.options.length >= 2
         ? item.options.slice(0, 4)
         : ['返回需求澄清，补充或确认该业务事实', '将该项登记为待确认风险，暂不纳入本次需求', '在当前已确认范围内排除该项']
@@ -2115,7 +2272,8 @@ ${sourcePack}`,
         ? item.recommendedIndex
         : 0
       return {
-        id: item.id || `unresolved-${index + 1}`,
+        id: contentHash(JSON.stringify([run.id, run.round, decisionKey])),
+        decisionKey,
         question: item.requiredDecision,
         options,
         recommendedIndex,
@@ -2232,10 +2390,7 @@ ${sourcePack}`,
   }
 
   private confirmedClarifications(run: RequirementRun): string {
-    return run.documents
-      .filter((document) => document.stage === 'clarification' && document.dimension === 'answers')
-      .map((document) => document.content)
-      .join('\n\n')
+    return latestRequirementDecisions(run).map(({ key, question, choice }) => `- [${key}] ${question}\n  - 当前决定：${choice}`).join('\n')
   }
 
   private async addDocument(run: RequirementRun, stage: RequirementDocumentStage, dimension: string, title: string, content: string, publishWorkspace = true): Promise<RequirementDocument> {
@@ -2263,6 +2418,12 @@ ${sourcePack}`,
     try {
       const run = await this.runs.readManifest(id)
       if (!run) return null
+      if (run.hostVerification?.status === 'passed' && !run.hostVerification.integrationTests?.length) {
+        run.hostVerification = {
+          ...run.hostVerification, status: 'stale',
+          summary: '历史宿主验收缺少领域调用证据。请用当前规格重新生成、预览并运行宿主验收。',
+        }
+      }
       if (run.clarificationQuestions.some((question) => typeof question === 'string')) {
         const legacyQuestions = run.clarificationQuestions as unknown as string[]
         const clarificationDocument = [...run.documents].reverse().find((document) => document.stage === 'clarification')
@@ -2276,6 +2437,14 @@ ${sourcePack}`,
               recommendedIndex: 0,
             }))
         run.clarificationQuestions.forEach((question, index) => { question.id = `${id}-legacy-clarification-${index}` })
+      }
+      const lastEvaluation = run.evaluations.at(-1)
+      if (run.status === 'awaiting-clarification' && !run.pendingMaterials && lastEvaluation?.unresolvedItems?.some((item) => item.blocking && isRequirementMaterial(item))) {
+        this.applyRequirementEvaluation(run, lastEvaluation)
+      }
+      if (run.status === 'analyzing' && !this.activeRuns.has(run.id)
+        && run.documents.some((document) => document.stage === 'clarification' && document.dimension === 'answers')) {
+        run.status = 'review-required'
       }
       if (
         run.status === 'ready-for-specification'
@@ -2355,6 +2524,9 @@ ${sourcePack}`,
     await this.workspaceArtifact(run, run.workspacePackagePath)
     run.workspaceOutputPath = path.join(run.workspacePackagePath, 'spec', 'output')
     await this.initializeRmsdPackage(run)
+    if (run.status !== 'awaiting-clarification' && run.status !== 'awaiting-materials' && run.status !== 'review-required' && run.status !== 'awaiting-spec-resolution') {
+      run.interactionConversationId = conversation.id === run.conversationId ? undefined : conversation.id
+    }
     if (needsMigration) {
       await this.publishExistingDocuments(run)
       await this.persist(run)
@@ -2516,12 +2688,12 @@ ${sourcePack}`,
   }
 
   private async persistDocuments(conversationId: string, documents: RequirementDocument[], agentName = '需求工程'): Promise<void> {
-    for (const document of documents) {
+    if (documents.length) {
       await this.storage.conversations.addMessage(conversationId, {
         id: randomUUID(),
         role: 'assistant',
         agentName,
-        content: `## ${document.title}\n\n${document.content}`,
+        content: `已保存 ${documents.length} 份阶段文档，可在右侧“需求”查看。\n\n${documents.map(document => `- ${document.title}：\`${document.workspacePath || document.path}\``).join('\n')}`,
         timestamp: Date.now(),
       })
     }
@@ -2544,7 +2716,8 @@ ${sourcePack}`,
     const projectLocation = projectDirectory ? `项目产物目录：\`${projectDirectory}\`\n` : ''
     const latestEvaluation = run.evaluations.at(-1)
     const blockerStatus = latestEvaluation ? this.requirementBlockerStatus(latestEvaluation) : undefined
-    const requirementBlockers = blockerStatus?.requirementBlockers || []
+    const requirementBlockers = run.pendingMaterials === undefined ? blockerStatus?.requirementBlockers || []
+      : [...run.clarificationQuestions.map((question) => question.question), ...run.pendingMaterials.map((item) => item.requiredDecision)]
     const specificationChecks = blockerStatus?.specificationChecks || []
     const blockerSection = latestEvaluation
       ? [
@@ -2552,7 +2725,11 @@ ${sourcePack}`,
           `后续规格核验事项：${specificationChecks.length ? `\n${specificationChecks.map((item) => `- ${item}`).join('\n')}` : '无'}`,
         ].join('\n')
       : '需求阶段阻塞：未提供评测明细（导入的既有文档）。'
-    const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${ready ? '需求已明确，可进入规格阶段。' : '等待你在下方选择澄清选项。'}\n${blockerSection}\n${projectLocation}运行档案：\`${this.runDirectory(run.id)}\`${questions}\n\n${ready ? '通过仅表示没有未解决的需求阶段阻塞；“后续规格核验事项”会在 /spec 中继续验证。' : '请在对话中的澄清卡片完成选择，然后点击“提交确认”继续。'}`
+    const guidance = ready ? '后续规格核验事项会在 /spec 中继续验证。'
+      : run.status === 'awaiting-materials' ? '在本会话发送 `/requirement` 并附上材料，或在命令后粘贴材料正文。'
+        : run.status === 'review-required' ? '可在本会话发送 `/requirement` 重新复核，也可带上补充材料。'
+          : run.status === 'awaiting-clarification' ? '请在澄清卡片完成选择并提交。' : run.error || ''
+    const content = `## 需求工程第 ${run.round} 轮\n\n综合评分：**${run.qualityScore}/${run.qualityThreshold}**\n状态：${this.requirementStatusMessage(run)}\n${blockerSection}\n${projectLocation}运行档案：\`${this.runDirectory(run.id)}\`${questions}\n\n${guidance}`
     await this.storage.conversations.addMessage(conversationId, { id: randomUUID(), role: 'assistant', agentName: '需求工程', content, timestamp: Date.now() })
   }
 }

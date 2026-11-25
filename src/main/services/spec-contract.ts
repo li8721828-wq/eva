@@ -10,12 +10,12 @@ export interface SpecAcceptanceCase {
   entity: string
   command: string
   actor: string
-  state: string
+  state: string | null
   input: Record<string, AcceptanceValue>
   expect: AcceptanceOutcome
 }
 
-export const SPEC_ACCEPTANCE_VERSION = 3
+export const SPEC_ACCEPTANCE_VERSION = 4
 export const NUMERIC_LITERAL = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/
 const numericOperators = ['>=', '<=', '==', '!=', '>', '<'] as const
 
@@ -34,8 +34,11 @@ export type SpecCheck = { id: string } & (
   | ({ kind: 'boolean'; rule: string; field: string; operator: '==' | '!='; value: boolean } & CheckCommand)
   | ({ kind: 'actor'; actor: string } & CheckCommand)
   | ({ kind: 'state'; state: string } & CheckCommand)
+  | { kind: 'initial-state'; entity: string; state: string }
   | { kind: 'manual' }
 )
+
+type CommandSpecCheck = Exclude<SpecCheck, { kind: 'manual' | 'initial-state' }>
 
 export interface SpecRule {
   id: string
@@ -48,23 +51,27 @@ export interface SpecRule {
 }
 
 export interface SpecContract {
-  version: 1 | 2 | typeof SPEC_ACCEPTANCE_VERSION
+  version: 1 | 2 | 3 | typeof SPEC_ACCEPTANCE_VERSION
   rules: SpecRule[]
 }
 
 export const SPEC_CONTRACT_PROMPT = `只输出一个 JSON 对象。示例的编号和领域名称仅用于说明格式。
 {"version":${SPEC_ACCEPTANCE_VERSION},"rules":[{"id":"FR-001","condition":"财务审批且达到 10 万","outcome":"审批通过并发布金额","checks":[
   {"id":"BR-001","kind":"numeric","entity":"Order","command":"Approve","rule":"MinimumTotal","field":"total","operator":">=","threshold":"100000"},
-  {"id":"BR-002","kind":"actor","entity":"Order","command":"Approve","actor":"Finance"}
+  {"id":"BR-002","kind":"actor","entity":"Order","command":"Approve","actor":"Finance"},
+  {"id":"BR-003","kind":"state","entity":"Order","command":"Approve","state":"Pending"},
+  {"id":"BR-004","kind":"initial-state","entity":"Order","state":"Pending"}
 ],"cases":[
   {"id":"AT-001","entity":"Order","command":"Approve","actor":"Finance","state":"Pending","input":{"total":"99999.99"},"expect":{"reject":"rule","rule":"MinimumTotal"}},
   {"id":"AT-002","entity":"Order","command":"Approve","actor":"Finance","state":"Pending","input":{"total":"100000.00"},"expect":{"state":"Approved","event":"OrderApproved","payload":{"total":"100000.00"}}},
   {"id":"AT-003","entity":"Order","command":"Approve","actor":"Finance","state":"Pending","input":{"total":"100000.01"},"expect":{"state":"Approved","event":"OrderApproved","payload":{"total":"100000.01"}}},
-  {"id":"AT-004","entity":"Order","command":"Approve","actor":"Visitor","state":"Pending","input":{"total":"100000.00"},"expect":{"reject":"actor"}}
+  {"id":"AT-004","entity":"Order","command":"Approve","actor":"Visitor","state":"Pending","input":{"total":"100000.00"},"expect":{"reject":"actor"}},
+  {"id":"AT-005","entity":"Order","command":"Approve","actor":"Finance","state":"Approved","input":{"total":"100000.00"},"expect":{"reject":"state"}}
 ]}]}
 每个 FR 编号恰好出现一次。实体、命令、角色、状态、事件、守卫及字段用稳定的 ASCII 标识。
-checks 必须覆盖最终规格“关键规则与例外”中的所有 BR 编号，且按原 FR 归属填入，每个 BR 恰好一次。无关键规则时用 []。每个数值守卫声明一次，覆盖可表达的小于、等于、大于三个区间。布尔守卫使用 kind: "boolean" 和 rule、field、operator（== 或 !=）、value（布尔值），提供条件满足与精确命中该守卫的拒绝用例。角色用 kind: "actor" 和 actor，起始状态用 kind: "state" 和 state，两者均需一个只改变该条件的拒绝用例。保留规格中的阈值、等号、单位和拒绝原因。更早的拒绝不能代替当前条件的验收。
-每个命令同时提供通过和拒绝的用例。通过用例的 expect 包含 state、event 和 payload，payload 逐字段列出规格声明的事件数据与独立预期值。拒绝类型为 actor、state 或 rule，rule 拒绝需指定守卫名。
+checks 必须逐项照抄最终规格“关键规则与例外”中 BR 的归属、类型、标识符、比较符与文字面值。无关键规则时用 []。每个数值守卫声明一次，覆盖可表达的小于、等于、大于三个区间。布尔守卫使用 kind: "boolean" 和 rule、field、operator（== 或 !=）、value（布尔值），提供条件满足与精确命中该守卫的拒绝用例。
+每个命令的权限用 kind: "actor" 和 actor，起始状态用 kind: "state" 和 state，两者均需一个只改变该条件的拒绝用例。没有其他合法状态时，拒绝状态的用例可用 state: null 表示无当前状态。实体生命周期的初始状态用 kind: "initial-state"、entity 和 state，每个工作流恰有一条。这一检查直接验证初始化，不占用命令用例；只声明初始状态的 FR 可用 cases: []。更早的拒绝不能代替当前条件的验收。
+每个命令同时提供通过和拒绝的用例。通过用例的 expect 包含 state、event 和 payload，payload 逐字段列出规格声明的事件数据与独立预期值，空载荷用 {}。拒绝类型为 actor、state 或 rule，rule 拒绝需指定守卫名。
 数值用 JSON 字符串，布尔值用 true/false，null 表示缺失。把判断依赖的字段和预期事件值所对应的输入全部填入。
 需要外部系统或现有格式无法表达的 FR 写 cases: [] 和 manual: "需补充的验证方式或适配"，其 BR 在 checks 里仅填写 id 和 kind: "manual"。不得补造业务决策。`
 
@@ -73,7 +80,14 @@ const requirementId = /^FR-[A-Z0-9]+(?:-[A-Z0-9]+)*$/
 const caseId = /^AT-[A-Z0-9]+(?:-[A-Z0-9]+)*$/
 const checkId = /^BR-[A-Z0-9]+(?:-[A-Z0-9]+)*$/
 
-export const SPEC_CRITICAL_RULES_FORMAT = `最终规格必须包含一个独立的二级标题“## 关键规则与例外”。标题下每行严格使用“- BR-001 [FR-001] [numeric] 用一句话说明一项关键条件或例外”，为每个独立条件分配不同 BR 编号。类型只用 numeric（数值门槛）、boolean（布尔条件）、actor（角色权限）、state（起始状态）、manual（外部或尚无法自动验收的条件）。逐项列出条件及例外，保留来源中已有的关键规则编号。只有确无关键规则时写单独一行“- 无”。`
+export const SPEC_CRITICAL_RULES_FORMAT = `最终规格必须包含一个独立的二级标题“## 关键规则与例外”。每个独立规则占一行，保留来源中已有的 BR 编号，以 FR 标明归属。按以下示例格式书写，保留示例反引号及空格，改用需求中的真实标识、比较符和数值：
+- BR-001 [FR-001] [numeric] \`Order.Approve.MinimumTotal total >= 100000\`
+- BR-002 [FR-001] [boolean] \`Order.Approve.DualSignature dualSigned == true\`
+- BR-003 [FR-001] [actor] \`Order.Approve actor = Finance\`
+- BR-004 [FR-001] [state] \`Order.Approve from = Pending\`
+- BR-005 [FR-001] [initial-state] \`Order initial = Pending\`
+- BR-006 [FR-002] [manual] 需要宿主提供持久化结果的验收证据
+可执行行里的值是规格的正式取值，使用稳定的 ASCII 实体、命令、守卫、字段、角色和状态名。业务解释、单位和来源写在正文其他章节，并与可执行行一致。自动验收的每个命令显式列出角色与起始状态，每个工作流显式列出初始状态。业务信息不足以声明完整规则时标为人工验收，保留待确认事项。只有确无关键规则时写单独一行“- 无”。`
 
 function invalid(label: string, reason: string): never {
   throw new Error(`规格验收契约 ${label}：${reason}`)
@@ -125,9 +139,12 @@ function acceptanceCase(raw: unknown, owner: string, version: SpecContract['vers
       ...(version >= 2 ? { payload: values(expectation.payload, `${id} 事件载荷`) } : {}),
     }
   }
+  const state = version >= 4 && item.state === null && 'reject' in expect && expect.reject === 'state'
+    ? null
+    : string(item.state, id, identifier)
   return {
     id, entity: string(item.entity, id, identifier), command: string(item.command, id, identifier),
-    actor: string(item.actor, id, identifier), state: string(item.state, id, identifier), input, expect,
+    actor: string(item.actor, id, identifier), state, input, expect,
   }
 }
 
@@ -143,7 +160,7 @@ function parseBoundary(raw: unknown, owner: string): SpecBoundary {
   }
 }
 
-function parseCheck(raw: unknown, owner: string): SpecCheck {
+function parseCheck(raw: unknown, owner: string, version: SpecContract['version']): SpecCheck {
   const item = record(raw, undefined, owner)
   const id = string(item.id, owner, checkId)
   const { kind, ...fields } = item
@@ -151,6 +168,10 @@ function parseCheck(raw: unknown, owner: string): SpecCheck {
   if (kind === 'manual') {
     record(fields, [], id)
     return { id, kind }
+  }
+  if (kind === 'initial-state' && version >= 4) {
+    record(fields, ['entity', 'state'], id)
+    return { id, kind, entity: string(fields.entity, id, identifier), state: string(fields.state, id, identifier) }
   }
   if (kind === 'numeric') return { id, kind, ...parseBoundary(fields, id) }
   const command = { entity: string(fields.entity, id, identifier), command: string(fields.command, id, identifier) }
@@ -173,7 +194,7 @@ function parseCheck(raw: unknown, owner: string): SpecCheck {
   return invalid(id, '关键规则类型无效。')
 }
 
-export function specCriticalRules(markdown: string): Array<{ id: string; owner: string; kind: string; summary: string }> {
+function specCriticalRules(markdown: string): Array<{ id: string; owner: string; kind: string; summary: string }> {
   const lines = markdown.split(/\r?\n/)
   const headings = lines.flatMap((line, index) => /^## 关键规则与例外\s*$/.test(line) ? [index] : [])
   if (headings.length !== 1) invalid('关键规则与例外', '最终规格必须包含唯一的关键规则清单。')
@@ -184,7 +205,7 @@ export function specCriticalRules(markdown: string): Array<{ id: string; owner: 
   if (!rows.length || rows.length > 120) invalid('关键规则与例外', '请逐项列出规则，或明确写无。')
   const ids = new Set<string>()
   return rows.map((row) => {
-    const match = /^- (\S+) \[(\S+)\] \[(numeric|boolean|actor|state|manual)\] (.+)$/.exec(row)
+    const match = /^- (\S+) \[(\S+)\] \[(numeric|boolean|actor|state|initial-state|manual)\] (.+)$/.exec(row)
     const id = string(match?.[1], '关键规则与例外', checkId)
     const owner = string(match?.[2], id, requirementId)
     const summary = string(match?.[4], id)
@@ -192,6 +213,22 @@ export function specCriticalRules(markdown: string): Array<{ id: string; owner: 
     ids.add(id)
     return { id, owner, kind: match![3], summary }
   })
+}
+
+export function specReviewRules(markdown: string) {
+  return specCriticalRules(markdown).map(({ id, owner, kind, summary }) => {
+    const condition = kind === 'manual' ? undefined : /^`([^`]+)`$/.exec(summary)?.[1]
+    return condition ? { id, owner, summary: '', condition } : { id, owner, summary }
+  })
+}
+
+function executableCondition(check: Exclude<SpecCheck, { kind: 'manual' }>): string {
+  if (check.kind === 'initial-state') return `${check.entity} initial = ${check.state}`
+  const command = `${check.entity}.${check.command}`
+  if (check.kind === 'actor') return `${command} actor = ${check.actor}`
+  if (check.kind === 'state') return `${command} from = ${check.state}`
+  const value = check.kind === 'numeric' ? check.threshold : check.value
+  return `${command}.${check.rule} ${check.field} ${check.operator} ${value}`
 }
 
 export function specTraceIds(markdown: string): Set<string> {
@@ -205,20 +242,21 @@ export function parseSpecContract(text: string, specification?: string): SpecCon
   try { raw = JSON.parse(json) } catch { invalid('JSON', '需要合法的 JSON。') }
   const root = record(raw, ['version', 'rules'], 'JSON')
   const version = root.version
-  if ((version !== 1 && version !== 2 && version !== SPEC_ACCEPTANCE_VERSION) || !Array.isArray(root.rules) || !root.rules.length || root.rules.length > 80) {
+  if ((version !== 1 && version !== 2 && version !== 3 && version !== SPEC_ACCEPTANCE_VERSION)
+    || !Array.isArray(root.rules) || !root.rules.length || root.rules.length > 80) {
     invalid('JSON', '需要受支持的契约版本和 1 到 80 条规则。')
   }
   const ruleIds = new Set<string>()
   const caseIds = new Set<string>()
   const boundaryIds = new Set<string>()
-  const checkOwners = new Map<string, { owner: string; kind: SpecCheck['kind'] }>()
+  const checkOwners = new Map<string, { owner: string; check: SpecCheck }>()
   const rules = root.rules.map((value): SpecRule => {
     const keys = ['id', 'condition', 'outcome', 'cases', 'manual']
-    const item = record(value, version === 3 ? [...keys, 'checks'] : version === 2 ? [...keys, 'boundaries'] : keys, '规则')
+    const item = record(value, version >= 3 ? [...keys, 'checks'] : version === 2 ? [...keys, 'boundaries'] : keys, '规则')
     const id = string(item.id, '规则', requirementId)
     if (ruleIds.has(id)) invalid(id, '规则编号重复。')
     ruleIds.add(id)
-    if (!Array.isArray(item.cases) || (!item.cases.length && item.manual === undefined) || (item.cases.length && item.manual !== undefined)) {
+    if (!Array.isArray(item.cases) || (item.cases.length && item.manual !== undefined)) {
       invalid(id, '需要可执行用例或明确的人工验收项。')
     }
     const cases = item.cases.map((value) => {
@@ -228,15 +266,18 @@ export function parseSpecContract(text: string, specification?: string): SpecCon
       return item
     }).sort((left, right) => left.id.localeCompare(right.id))
     const manual = item.manual === undefined ? {} : { manual: string(item.manual, id) }
-    if (version === 3 && !Array.isArray(item.checks)) invalid(id, '需要关键规则 checks 数组。')
+    if (version >= 3 && !Array.isArray(item.checks)) invalid(id, '需要关键规则 checks 数组。')
     const checks = (Array.isArray(item.checks) ? item.checks : []).map((value) => {
-      const check = parseCheck(value, id)
+      const check = parseCheck(value, id, version)
       if (checkOwners.has(check.id) || checkOwners.size >= 120) invalid(check.id, '关键规则编号重复或超过 120 条。')
       if ((check.kind === 'manual') !== (item.manual !== undefined)) invalid(check.id, '人工验收标记与所属需求不一致。')
-      checkOwners.set(check.id, { owner: id, kind: check.kind })
-      if (check.kind !== 'manual') validateCheckCases(check, cases)
+      checkOwners.set(check.id, { owner: id, check })
+      if (check.kind !== 'manual' && check.kind !== 'initial-state') validateCheckCases(check, cases)
       return check
     }).sort((left, right) => left.id.localeCompare(right.id))
+    if (!cases.length && item.manual === undefined && !(checks.length && checks.every(({ kind }) => kind === 'initial-state'))) {
+      invalid(id, '需要可执行用例、独立的初始状态检查或明确的人工验收项。')
+    }
     const rawBoundaries = item.boundaries === undefined ? [] : item.boundaries
     if (!Array.isArray(rawBoundaries) || (rawBoundaries.length && item.manual !== undefined)) invalid(id, '边界声明必须是可执行规则中的数组。')
     const boundaries = rawBoundaries.map((value) => {
@@ -251,7 +292,7 @@ export function parseSpecContract(text: string, specification?: string): SpecCon
     }).sort((left, right) => boundaryKey(left).localeCompare(boundaryKey(right)))
     return {
       id, condition: string(item.condition, id), outcome: string(item.outcome, id), cases, ...manual,
-      ...(version === 3 ? { checks } : version === 2 ? { boundaries } : {}),
+      ...(version >= 3 ? { checks } : version === 2 ? { boundaries } : {}),
     }
   }).sort((left, right) => left.id.localeCompare(right.id))
   if (specification !== undefined) {
@@ -259,12 +300,15 @@ export function parseSpecContract(text: string, specification?: string): SpecCon
     const missing = declared.filter((id) => !ruleIds.has(id))
     const unknown = [...ruleIds].filter((id) => !declared.includes(id))
     if (missing.length || unknown.length) invalid('规则追溯', `缺少 ${missing.join(', ') || '无'}，未知 ${unknown.join(', ') || '无'}。`)
-    if (version === 3) {
+    if (version >= 3) {
       const critical = new Set<string>()
-      for (const { id, owner, kind } of specCriticalRules(specification)) {
+      for (const { id, owner, kind, summary } of specCriticalRules(specification)) {
         critical.add(id)
-        const check = checkOwners.get(id)
-        if (check?.owner !== owner || check.kind !== kind) invalid(id, `契约缺少最终规格 ${owner} 的 ${kind} 关键规则。`)
+        const declared = checkOwners.get(id)
+        if (declared?.owner !== owner || declared.check.kind !== kind) invalid(id, `契约缺少最终规格 ${owner} 的 ${kind} 关键规则。`)
+        if (version >= 4 && declared.check.kind !== 'manual' && summary !== `\`${executableCondition(declared.check)}\``) {
+          invalid(id, '最终规格的可执行条件与验收契约不一致。')
+        }
       }
       for (const id of checkOwners.keys()) {
         if (!critical.has(id)) invalid(id, '关键规则未列在最终规格中。')
@@ -274,7 +318,7 @@ export function parseSpecContract(text: string, specification?: string): SpecCon
   return { version, rules }
 }
 
-function validateCheckCases(check: Exclude<SpecCheck, { kind: 'manual' }>, cases: SpecAcceptanceCase[]): void {
+function validateCheckCases(check: CommandSpecCheck, cases: SpecAcceptanceCase[]): void {
   const tests = cases.filter((test) => test.entity === check.entity && test.command === check.command)
   const pass = tests.filter((test) => 'state' in test.expect)
   if (!pass.length) invalid(check.id, '关键规则缺少成功用例。')
@@ -312,12 +356,12 @@ export function boundaryKey(boundary: Pick<SpecBoundary, 'entity' | 'command' | 
 export function validateAcceptanceBindings(contract: SpecContract, dsl: ParsedDomainDsl): void {
   for (const rule of contract.rules) {
     for (const check of rule.checks ?? []) {
-      if (check.kind !== 'manual') validateCheckCases(check, rule.cases)
+      if (check.kind !== 'manual' && check.kind !== 'initial-state') validateCheckCases(check, rule.cases)
     }
     for (const test of rule.cases) {
       const command = dsl.commands.find(({ name }) => name === test.command)
       const entity = dsl.aggregates.find(({ name }) => name === test.entity)
-      if (!command?.trace?.includes(rule.id) || !entity || !dsl.states.some(({ name }) => name === test.state)
+      if (!command?.trace?.includes(rule.id) || !entity || (test.state !== null && !dsl.states.some(({ name }) => name === test.state))
         || Object.keys(test.input).some((key) => !entity.fields.some(({ name }) => name === key))) {
         invalid(test.id, `DSL 缺少 ${rule.id} 的命令追溯或实体、字段、起始状态。`)
       }

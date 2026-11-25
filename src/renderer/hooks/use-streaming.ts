@@ -10,7 +10,7 @@ import {
   enqueueStreamItem,
   flushRevealQueue,
   queuedTextFor,
-  setRevealPacingCheck,
+  setRevealVisibilityCheck,
   setRevealSink,
 } from '@/lib/stream-reveal-queue'
 
@@ -21,11 +21,10 @@ import {
 export function useStreaming(): void {
   useEffect(() => {
     setRevealSink((event) => useChatStore.getState().appendStreamEvent(event))
-    // Pacing only makes visible text appear gradually. When the transcript is
-    // not rendering the in-flight text at all (its reply row already shows the
-    // same content), pacing would delay the terminal event behind an animation
-    // nobody can see, so those characters are released in one delta.
-    setRevealPacingCheck((conversationId) => (
+    // Packet coalescing never paces individual characters. Only a visible
+    // foreground answer needs a short window for its final fade to settle.
+    setRevealVisibilityCheck((conversationId) => (
+      useChatStore.getState().currentConversationId === conversationId &&
       isStreamedTextRendered(useChatStore.getState(), conversationId)
     ))
 

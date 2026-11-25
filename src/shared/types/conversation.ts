@@ -69,6 +69,8 @@ export interface ChatMessage {
   attachmentContext?: string
   /** Provider-supplied reasoning shown separately from the final answer. */
   reasoningContent?: string
+  /** Explicit provider response stream; legacy/unattributed internal reasoning stays hidden. */
+  reasoningSource?: 'provider-response'
   /** Chronological provider reasoning, tool calls, and tool feedback. */
   executionTimeline?: ExecutionTimelineEntry[]
   /** A concise, user-visible progress update emitted while work is underway. */
@@ -299,6 +301,7 @@ export interface AskUserRequest {
 }
 
 export interface ChatStreamEvent {
+  reasoningSource?: 'provider-response'
   nativeEvent?: NativeAgentEvent
   /** The conversation that owns this stream event. */
   conversationId?: string

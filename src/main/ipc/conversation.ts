@@ -601,7 +601,7 @@ function toChatStreamEvent(event: AgentEvent): ChatStreamEvent {
     case 'thinking':
       return { type: 'thinking', content: event.content }
     case 'reasoning':
-      return { type: 'reasoning_delta', content: event.content }
+      return { type: 'reasoning_delta', content: event.content, reasoningSource: event.reasoningSource }
     case 'tool_call':
       return { type: 'tool_call_start', toolCall: event.toolCall }
     case 'tool_result':
@@ -1266,6 +1266,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         let lastPublicExecutionNote = ''
         let assistantContent = ''
         let assistantReasoningContent = ''
+        let assistantReasoningSource: ChatMessage['reasoningSource']
         let assistantUsage: ChatUsage | undefined
         let assistantTiming: import('../../shared/types/conversation').ResponseTiming | undefined
         let assistantFinishReason: string | undefined
@@ -1377,7 +1378,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           }
           // Native events already own text boundaries and progress. Do not parse,
           // shorten, or promote their narration through Eva's progress protocol.
-          if (nativeMode && ['text', 'text_reset', 'thinking', 'reasoning'].includes(agentEvent.type)) continue
+          if (nativeMode && ['text', 'text_reset', 'thinking'].includes(agentEvent.type)) continue
           // Accumulate content and tool info for persistence
           if (agentEvent.type === 'text' && agentEvent.content) {
             await streamTextDelta(agentEvent.content)
@@ -1426,6 +1427,11 @@ export function registerConversationHandlers(services?: ChatServices): void {
             }
           }
           if (agentEvent.type === 'reasoning' && agentEvent.content) {
+            if (agentEvent.reasoningSource === 'provider-response' && !assistantReasoningSource) {
+              assistantReasoningContent = ''
+              assistantReasoningSource = agentEvent.reasoningSource
+            }
+            if (assistantReasoningSource && !agentEvent.reasoningSource) continue
             assistantReasoningContent += agentEvent.content
             const latest = executionTimeline[executionTimeline.length - 1]
             if (latest?.kind === 'reasoning') {
@@ -1572,6 +1578,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
           ...(nativeMode ? { nativeAgent: { engine: executionEngine.id as NativeAgentEvent['engine'], events: nativeEvents } } : {}),
           content: persistedContent,
           reasoningContent: assistantReasoningContent || undefined,
+          reasoningSource: assistantReasoningSource,
           executionTimeline: !nativeMode && transcriptTimeline.length > 0 ? transcriptTimeline : undefined,
           progressUpdates: progressUpdates.length > 0 ? progressUpdates : undefined,
           toolCalls: toolCallsForMessage,

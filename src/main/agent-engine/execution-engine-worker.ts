@@ -10,6 +10,7 @@ export class ExecutionEngineError extends Error {
 
 export interface EngineRequest {
   method:
+    | 'provider-reasoning'
     | 'event'
     | 'model'
     | 'extension'
@@ -23,6 +24,7 @@ export interface EngineRequest {
   respond(result: unknown): void
   reject(error: { message: string; code?: string; status?: number }): void
   chunk(chunk: ChatChunk): void
+  providerReasoning(content: string): void
 }
 
 /** One isolated framework session per Eva run. No credentials cross this boundary. */
@@ -105,6 +107,7 @@ export async function* executionEngineRequests(options: {
         })
         notify()
       } else if (message.type === 'request') {
+        if (message.method === 'provider-reasoning') throw new Error('Host-only provider event')
         queue.push(message)
         notify()
       } else if (message.type === 'done') {
@@ -147,6 +150,7 @@ export async function* executionEngineRequests(options: {
       }
       if (
         ![
+          'provider-reasoning',
           'event',
           'model',
           'extension',
@@ -167,6 +171,11 @@ export async function* executionEngineRequests(options: {
         respond: (result) => send({ type: 'response', id: message.id, result }),
         reject: (error) => send({ type: 'response', id: message.id, error }),
         chunk: (chunk) => send({ type: 'chunk', id: message.id, chunk }),
+        providerReasoning: (content) => {
+          if (options.signal.aborted || finished || !content) return
+          queue.push({ type: 'request', id: 0, method: 'provider-reasoning', params: { content } })
+          notify()
+        },
       }
     }
     if (error && !options.signal.aborted) throw error
