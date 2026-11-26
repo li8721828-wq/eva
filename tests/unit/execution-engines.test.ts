@@ -122,6 +122,12 @@ async function fixture(
     'write_file',
     'edit_file',
     'list_directory',
+    'search_files',
+    'search_code',
+    'search_by_regex',
+    'file_info',
+    'read_terminal',
+    'write_terminal',
     'execute_command',
   ]
   for (const name of core)
@@ -305,7 +311,7 @@ describe.each(['pi', 'deepseek-harness'] as const)(
       } finally { await f.close() }
     }, 15_000)
 
-    it('carries extension image results into the native feed and the tool result', async () => {
+    it('does not expose or execute Eva image-generation extensions in native mode', async () => {
       const f = await fixture(engine, [call('generate_image', 'img-1', {}), answer], {
         allowedTools: ['read_file', 'write_file', 'edit_file', 'list_directory', 'execute_command', 'inspect_runtime', 'generate_image'],
         withImageExtension: true,
@@ -313,11 +319,10 @@ describe.each(['pi', 'deepseek-harness'] as const)(
       try {
         const events = await collect(f.runner)
         expect(events.filter((event) => event.type === 'error')).toEqual([])
-        const expected = [{ path: path.join(f.dir, 'generated.png'), name: 'generated.png', mediaType: 'image/png' }]
         const toolResult = events.find((event): event is Extract<AgentEvent, { type: 'tool_result' }> => event.type === 'tool_result')
-        expect(toolResult?.toolResult.images).toEqual(expected)
-        const ends = events.filter((event) => event.type === 'native_event' && event.nativeEvent?.type === 'tool_end')
-        expect(ends.map((event) => event.type === 'native_event' ? event.nativeEvent?.data?.images : undefined)).toContainEqual(expected)
+        expect(toolResult?.toolResult).toMatchObject({ isError: true })
+        expect(toolResult?.toolResult.images).toBeUndefined()
+        expect(f.requests.every(request => !request.tools?.some(tool => tool.name === 'generate_image'))).toBe(true)
       } finally { await f.close() }
     }, 15_000)
     it.each([false, true])(
@@ -551,7 +556,7 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         await f.close()
       }
     }, 15_000)
-    it('does not replay an Eva extension action after a partial failure', async () => {
+    it('never dispatches repeated external or Eva extension calls through the native runtime', async () => {
       const f = await fixture(
         engine,
         [
@@ -563,14 +568,10 @@ describe.each(['pi', 'deepseek-harness'] as const)(
       )
       try {
         const events = await collect(f.runner)
-        expect(f.mutatingExtension).toHaveBeenCalledOnce()
-        expect(await fs.readFile(path.join(f.dir, 'partial.txt'), 'utf8')).toBe(
-          'partially applied',
-        )
-        expect(
-          events.filter((event) => event.type === 'tool_result').at(-1)
-            ?.toolResult?.result,
-        ).toContain('cannot be automatically replayed')
+        expect(f.mutatingExtension).not.toHaveBeenCalled()
+        await expect(fs.stat(path.join(f.dir, 'partial.txt'))).rejects.toMatchObject({ code: 'ENOENT' })
+        expect(events.filter(event => event.type === 'tool_result')).toHaveLength(2)
+        expect(events.filter(event => event.type === 'tool_result').every(event => event.toolResult?.isError)).toBe(true)
       } finally {
         await f.close()
       }
@@ -608,6 +609,9 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect(events.filter((e) => e.type === 'error')).toEqual([])
         expect(f.requests[0].tools?.map((t) => t.name)).toContain('read')
         expect(f.requests[0].nativeToolCallsOnly).toBe(true)
+        const nativeNames = engine === 'pi' ? ['read', 'write', 'edit', 'ls', process.platform === 'win32' ? 'powershell' : 'bash'] : ['read', 'write', 'edit', 'read_image', process.platform === 'win32' ? 'pwsh' : 'bash']
+        expect(f.requests.every(request => request.tools?.every(tool => nativeNames.includes(tool.name)))).toBe(true)
+        expect(JSON.stringify(f.requests[0].messages)).toContain('Runtime tool boundary')
         expect(f.requests[0].tools?.map((t) => t.name)).not.toContain(
           'read_file',
         )
@@ -642,6 +646,22 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         await f.close()
       }
     }, 15_000)
+    it('rejects legacy Eva directory calls and lists files through its own native tool', async () => {
+      const shell = process.platform === 'win32' ? 'pwsh' : 'bash'
+      const directoryCall = engine === 'pi'
+        ? call('ls', 'native-directory', { path: '.' })
+        : call(shell, 'native-directory', { command: process.platform === 'win32' ? 'Get-ChildItem -LiteralPath . -Name' : 'ls -a', description: 'List the current project directory' })
+      const f = await fixture(engine, [call('list_directory', 'legacy-directory', { path: '.' }), directoryCall, answer])
+      try {
+        const events = await collect(f.runner)
+        expect(events.filter(event => event.type === 'error')).toEqual([])
+        const results = events.filter(event => event.type === 'tool_result').map(event => event.toolResult)
+        expect(results[0]).toMatchObject({ isError: true, protocol: { status: 'rejected', data: { nativeTool: false, toolImplementation: 'unavailable' } } })
+        expect(results[1]).toMatchObject({ isError: false, result: expect.stringContaining('a.txt') })
+        expect(f.requests.every(request => !request.tools?.some(tool => tool.name === 'list_directory'))).toBe(true)
+        expect(f.oldCore).not.toHaveBeenCalled()
+      } finally { await f.close() }
+    }, 20_000)
     it('executes native read/edit/read against a real file', async () => {
       const edit =
         engine === 'pi'
@@ -699,7 +719,7 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         await f.close()
       }
     }, 15_000)
-    it('runs native writes, shell and Eva extensions without approval in a full-access conversation', async () => {
+    it('runs native writes and shell without approval but cannot elevate Eva tools in a full-access conversation', async () => {
       const shell = process.platform === 'win32' ? engine === 'pi' ? 'powershell' : 'pwsh' : 'bash'
       const f = await fixture(engine, [
         call('write', 'w', { ...argsFor(engine, 'full.txt'), content: 'full-access' }),
@@ -712,10 +732,11 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect(events.filter(event => event.type === 'error')).toEqual([])
         const results = events.filter(event => event.type === 'tool_result').map(event => event.toolResult)
         expect(results).toHaveLength(3)
-        expect(results.every(result => !result?.isError)).toBe(true)
+        expect(results.slice(0, 2).every(result => !result?.isError)).toBe(true)
+        expect(results[2]?.isError).toBe(true)
         expect(results[1]?.result).toContain('full-access-shell')
         expect(await fs.readFile(path.join(f.dir, 'full.txt'), 'utf8')).toBe('full-access')
-        expect(f.extension).toHaveBeenCalledOnce()
+        expect(f.extension).not.toHaveBeenCalled()
         expect(f.approve).not.toHaveBeenCalled()
         expect(f.oldCore).not.toHaveBeenCalled()
       } finally { await f.close() }
@@ -904,7 +925,7 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         await f.close()
       }
     }, 20_000)
-    it('keeps Eva-specific extensions alongside native tools', async () => {
+    it('rejects a remembered Eva tool without dispatching it or adding it to native schemas', async () => {
       const f = await fixture(engine, [
         call('inspect_runtime', 'x', {}),
         answer,
@@ -913,12 +934,10 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect((await collect(f.runner)).some((e) => e.type === 'error')).toBe(
           false,
         )
-        expect(f.extension).toHaveBeenCalledOnce()
+        expect(f.extension).not.toHaveBeenCalled()
         expect(f.oldCore).not.toHaveBeenCalled()
-        expect(
-          f.requests[0].tools?.find((t) => t.name === 'inspect_runtime')
-            ?.description,
-        ).toContain('[Eva extension]')
+        expect(f.requests.every(request => !request.tools?.some(tool => tool.name === 'inspect_runtime'))).toBe(true)
+        expect((await fs.readFile(path.join(f.dir, 'a.txt'), 'utf8'))).toBe('before\n')
       } finally {
         await f.close()
       }
@@ -1249,7 +1268,7 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         )
         expect(rejectedExtension?.toolResult?.protocol?.data).toMatchObject({
           nativeTool: false,
-          toolImplementation: 'eva-extension',
+          toolImplementation: 'unavailable',
         })
         expect(
           f.requests[1].messages

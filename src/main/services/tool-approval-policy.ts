@@ -5,6 +5,7 @@ import type { ToolApprovalConfig, ToolApprovalPolicy } from '../../shared/types/
 import { IPC } from '../../shared/ipc-channels'
 import { v4 as uuidv4 } from 'uuid'
 import { recordActivity } from './activity-log'
+import { toolCallSignature } from '../agent-engine/tool-runtime-policy'
 
 // -----------------------------------------------------------------------------
 // Tool classification: which tools need approval, at which policy level.
@@ -314,6 +315,9 @@ export function setApprovalRelay(conversationId: string, relay: ApprovalRelay | 
 
 export function createLocalToolApproval(context: ApprovalFactoryContext): (request: ToolApprovalRequest) => Promise<ToolApprovalDecision> {
   const { conversationId, workspaceId, window, config } = context
+  // One factory belongs to a run and its children. A failed human decision is
+  // not a transient I/O error that the model may fix by changing the call ID.
+  const blocked = new Map<string, ToolApprovalDecision>()
 
   return async (request: ToolApprovalRequest) => {
     if (request.signal?.aborted) return { approved: false, message: 'The run was cancelled.' }
@@ -331,6 +335,12 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
     if (!scoped && hasSessionGrant(conversationId, category)) {
       return { approved: true }
     }
+    const target = request.fileAccess?.path || request.toolCall.arguments.path || request.toolCall.arguments.file_path
+    const signature = toolCallSignature(request.toolCall.name, target
+      ? { path: target, scoped: Boolean(scoped) }
+      : request.toolCall.arguments)
+    const previous = blocked.get(signature)
+    if (previous) return previous
 
     const approvalId = uuidv4()
     const { summary, detail } = scoped
@@ -393,6 +403,13 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
         if (pending) clearTimeout(pending.timer)
         pendingApprovals.delete(approvalId)
         request.signal?.removeEventListener('abort', abort)
+        if (!decision.approved && !request.signal?.aborted && /Approval timed out|denied the (?:request|tool call)/i.test(decision.message || '')) blocked.set(signature, decision)
+        if (displayed && window && !window.isDestroyed()) {
+          try { window.webContents.send(IPC.CHAT_STREAM, {
+            conversationId, type: 'tool_approval_closed', toolApprovalId: approvalId,
+            ...(/Approval timed out/i.test(decision.message || '') ? { content: '审批等待超时，工具尚未执行。确认权限后发送“继续”可重新尝试。' } : {}),
+          }) } catch { /* Window closed while settling. */ }
+        }
         if (displayed) releaseApprovalSlot(conversationId)
         else {
           const waiting = approvalWaiters.get(conversationId)
@@ -410,7 +427,11 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
       }
 
       const deliver = (): void => {
+        const rejected = blocked.get(signature)
+        if (rejected) { settle(rejected); releaseApprovalSlot(conversationId); return }
         displayed = true
+        approvalPayload.requestedAt = Date.now()
+        approvalPayload.expiresAt = approvalPayload.requestedAt + config.timeoutMs
         // Registered before the card leaves: a client can answer as soon as it
         // receives it, and that answer has to find something to resolve.
         const timer = setTimeout(() => {
@@ -426,7 +447,7 @@ export function createLocalToolApproval(context: ApprovalFactoryContext): (reque
           })
           settle({
             approved: false,
-            message: `Approval timed out after ${Math.round(config.timeoutMs / 1000)}s. The tool call was denied.`,
+            message: `Approval timed out after ${Math.round(config.timeoutMs / 1000)}s. 审批等待超时，本次工具尚未执行。同一操作在本轮不会再次请求审批；请用户确认权限后发送“继续”，不要自动重试。`,
           })
         }, config.timeoutMs)
         pendingApprovals.set(approvalId, {

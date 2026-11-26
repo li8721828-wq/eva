@@ -281,7 +281,8 @@ export function NativeAgentView({
                 <span className="text-xs text-zinc-400" data-native-source>
                   {item.implementation === 'eva-extension'
                     ? 'Eva 扩展'
-                    : item.implementation === 'native' ? `${profile.label} 原生` : `${profile.label} 工具`}
+                    : item.implementation === 'unavailable' ? '当前运行时未启用'
+                      : item.implementation === 'native' ? `${profile.label} 原生` : `${profile.label} 工具`}
                 </span>
                 {view && !failed ? (
                   <NativeToolCard

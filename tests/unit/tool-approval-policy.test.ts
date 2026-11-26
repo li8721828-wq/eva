@@ -48,6 +48,29 @@ const REGISTERED_READ_ONLY_TOOLS = [
 ]
 
 describe('tool approval policy', () => {
+  it('publishes the actual deadline and closes an expired card without repeating the same write', async () => {
+    vi.useFakeTimers()
+    const events: any[] = []
+    const window = { isDestroyed: () => false, webContents: { send: (_channel: string, event: any) => events.push(event) } } as unknown as BrowserWindow
+    const conversationId = 'no-repeat-timeout'
+    const approve = createLocalToolApproval({ conversationId, window, config: { policy: 'safe', timeoutMs: 2000 } })
+    const call = (id: string, path: string, content = 'one'): ToolApprovalRequest => ({ toolCall: { id, name: 'write_file', arguments: { path, content } }, workspacePath: 'C:/a' })
+    try {
+      const first = approve(call('first', 'a.md'))
+      const queued = approve(call('queued-copy', 'a.md', 'new content'))
+      expect(events[0].toolApproval.expiresAt).toBe(Date.now() + 2000)
+      await vi.advanceTimersByTimeAsync(2000)
+      await expect(first).resolves.toMatchObject({ approved: false, message: expect.stringContaining('Approval timed out') })
+      await expect(queued).resolves.toMatchObject({ approved: false })
+      await expect(approve(call('retry', 'a.md', 'changed again'))).resolves.toMatchObject({ approved: false })
+      expect(events.filter(event => event.type === 'tool_approval_request')).toHaveLength(1)
+      expect(events.find(event => event.type === 'tool_approval_closed')).toMatchObject({ toolApprovalId: events[0].toolApproval.id, content: expect.stringContaining('尚未执行') })
+      const other = approve(call('other', 'b.md'))
+      const card = events.filter(event => event.type === 'tool_approval_request').at(-1).toolApproval
+      resolvePendingApproval(card.id, true)
+      await expect(other).resolves.toEqual({ approved: true })
+    } finally { rejectAllPendingApprovalsForConversation(conversationId, 'cleanup'); vi.useRealTimers() }
+  })
   it.each(['write_file', 'edit_file'])('shows the host workspace for %s instead of a model-supplied workspace', async (name) => {
     const conversationId = `workspace-summary-${name}`
     const approve = createLocalToolApproval({ conversationId, window: null, config: { policy: 'safe', timeoutMs: 1000 } })
@@ -95,8 +118,9 @@ describe('tool approval policy', () => {
     expect((await second).approved).toBe(false)
     resolvePendingApproval(sent[0].toolApproval.id, true)
     await first
-    expect(sent.map(event => event.toolApproval.toolCallId)).toEqual(['first', 'third'])
-    resolvePendingApproval(sent[1].toolApproval.id, false)
+    const cards = sent.filter(event => event.type === 'tool_approval_request')
+    expect(cards.map(event => event.toolApproval.toolCallId)).toEqual(['first', 'third'])
+    resolvePendingApproval(cards[1].toolApproval.id, false)
     await third
   })
 
@@ -130,8 +154,9 @@ describe('tool approval policy', () => {
     expect(resolvePendingApproval(card.id, true, undefined, 'session', { conversationId, webContentsId: 15 })).toBe(true)
     await expect(pending).resolves.toEqual({ approved: true, fileAccessApproved: true })
     const next = approve(request)
-    expect(send).toHaveBeenCalledTimes(2)
-    resolvePendingApproval(send.mock.calls[1][1].toolApproval.id, false, undefined, 'once', { conversationId, webContentsId: 15 })
+    const cards = send.mock.calls.map(call => call[1]).filter(event => event.type === 'tool_approval_request')
+    expect(cards).toHaveLength(2)
+    resolvePendingApproval(cards[1].toolApproval.id, false, undefined, 'once', { conversationId, webContentsId: 15 })
     await expect(next).resolves.toMatchObject({ approved: false })
     const headless = createLocalToolApproval({ conversationId, window: null, config: { policy: 'off', timeoutMs: 1000 } })
     await expect(headless(request)).resolves.toMatchObject({ approved: false })
@@ -264,7 +289,7 @@ describe('approval presentation queue', () => {
     })
 
     const first = approve(request(conversationId, 'call-a', 'read_file'))
-    const second = approve(request(conversationId, 'call-b', 'read_file'))
+    const second = approve({ ...request(conversationId, 'call-b', 'read_file'), toolCall: { id: 'call-b', name: 'read_file', arguments: { path: 'different.txt' } } })
     expect(shownApprovalIds(sent)).toHaveLength(1)
 
     const firstDecision = await first

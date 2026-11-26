@@ -117,6 +117,21 @@ describe('RequirementEngineeringService document integrity', () => {
     expect(chatComplete.mock.calls[1][0].messages.at(-1).content).toContain(prompt)
   })
 
+  it('checks the selected context window before sending initial and continuation requests', async () => {
+    const chatComplete = vi.fn().mockResolvedValue({ content: '已返回正文。', finishReason: 'stop' })
+    const service = new RequirementEngineeringService({
+      get: () => ({ type: 'custom', chatComplete }),
+      getModelCapabilities: () => ({ modelId: 'fixture', contextWindowTokens: 32_000, outputTokenBudget: 4096 }),
+    } as never, undefined, {
+      storage: { config: { get: () => 'fixture', getActiveModel: () => 'fixture' } } as never,
+    }) as unknown as { complete: (prompt: string) => Promise<string> }
+    await expect(service.complete('中'.repeat(20_000))).rejects.toThrow('可用输入预算')
+    expect(chatComplete).not.toHaveBeenCalled()
+    chatComplete.mockResolvedValueOnce({ content: '前'.repeat(18_000), finishReason: 'length' })
+    await expect(service.complete('任务。'.repeat(2_000))).rejects.toThrow('可用输入预算')
+    expect(chatComplete).toHaveBeenCalledTimes(1)
+  })
+
   it.each([
     { outputTokenBudget: 1024, expected: 1024 },
     { outputTokenBudget: 8192, expected: 2048 },

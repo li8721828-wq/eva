@@ -46,30 +46,27 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
   const label = CATEGORY_LABEL[request.category]
   const [remainingMs, setRemainingMs] = useState(timeoutMs)
   const decidedRef = useRef(false)
+  const expiresAt = request.expiresAt ?? request.requestedAt + timeoutMs
+  const durationMs = Math.max(1, expiresAt - request.requestedAt)
 
   useEffect(() => {
-    const startedAt = Date.now()
     const tick = () => {
-      const left = Math.max(0, timeoutMs - (Date.now() - startedAt))
+      const left = Math.max(0, expiresAt - Date.now())
       setRemainingMs(left)
-      if (left <= 0 && !decidedRef.current) {
-        decidedRef.current = true
-        onDecide(false, 'once')
-      }
     }
     tick()
     const timer = window.setInterval(tick, 250)
     return () => window.clearInterval(timer)
-  }, [timeoutMs, onDecide])
+  }, [expiresAt])
 
   const seconds = Math.ceil(remainingMs / 1000)
-  const fraction = Math.max(0, Math.min(1, remainingMs / timeoutMs))
+  const fraction = Math.max(0, Math.min(1, remainingMs / durationMs))
   const radius = 14
   const circumference = 2 * Math.PI * radius
   const dashOffset = circumference * (1 - fraction)
 
   const handleDecision = (approved: boolean, scope: 'once' | 'session') => {
-    if (decidedRef.current) return
+    if (decidedRef.current || Date.now() >= expiresAt) return
     decidedRef.current = true
     onDecide(approved, scope)
   }
@@ -132,6 +129,7 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
               type="button"
+              disabled={remainingMs <= 0}
               onClick={() => handleDecision(true, 'once')}
               className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-600 px-3 text-sm font-medium text-white transition-colors hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-300"
             >
@@ -140,6 +138,7 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
             </button>
             {!scoped && <button
               type="button"
+              disabled={remainingMs <= 0}
               onClick={() => handleDecision(true, 'session')}
               title={`本会话内不再询问「${label}」类操作`}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-200 bg-white px-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 focus:outline-none focus:ring-2 focus:ring-emerald-200"
@@ -148,6 +147,7 @@ export function ToolApprovalCard({ request, onDecide, timeoutMs = 60_000 }: Tool
             </button>}
             <button
               type="button"
+              disabled={remainingMs <= 0}
               onClick={() => handleDecision(false, 'once')}
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-600 transition-colors hover:border-zinc-300 hover:bg-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-200"
             >

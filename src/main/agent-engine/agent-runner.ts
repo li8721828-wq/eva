@@ -464,14 +464,15 @@ export class AgentRunner {
       if (this.config.executionEngine && this.config.executionEngine.id !== 'eva') {
         const nativeHistory = safeAllHistory.filter((message) => !message.progressKind).map(chatMessageToInput)
         const nativeRole = !agentConfig.isBuiltIn || agentConfig.systemPromptCustomized ? agentConfig.systemPrompt : ''
-        const instructions = [nativeRole, contextManager.getNativeReferenceContext(), buildCapabilityRecoveryPrompt(activeToolDefs),
+        const instructions = [nativeRole, contextManager.getNativeReferenceContext(), buildCapabilityRecoveryPrompt([]),
+          'Runtime tool boundary: use only tools exposed by this selected native runtime. Eva runtime tools and extensions are unavailable here. For directory listing or searches without a dedicated native tool, use the native shell only if it is exposed. Never invent or invoke tools remembered from earlier runtimes.',
           this.config.allowedWritePaths?.length ? `Only these exact files may be modified: ${this.config.allowedWritePaths.join(', ')}.` : '',
           fileAccessGrants?.length ? `Additional authorized folders: ${fileAccessGrants.map((grant) => `${grant.path} (${grant.access})`).join(', ')}.` : '',
         ].filter(Boolean).join('\n\n')
         for await (const event of runNativeEngine({
           config: this.config, engine: { ...this.config.executionEngine }, history: nativeHistory, instructions,
           userMessageIds: [...params.messages, params.newMessage].filter(message => message.role === 'user').map(message => message.id),
-          tools: activeToolDefs, contextWindow: modelCapabilities.contextWindowTokens || 128_000,
+          contextWindow: modelCapabilities.contextWindowTokens || 128_000,
           maxTokens: resolveModelOutputBudget(modelCapabilities, this.config.executionEngine, provider.supportsReasoning(agentConfig.model)),
           supportsVision: primarySupportsVision, signal: this.abortController.signal,
           sandbox: buildSandboxContext(this.config), runId: this.currentRunId, turnId: this.currentTurnId,
@@ -482,18 +483,6 @@ export class AgentRunner {
             accumulatedUsage = this.recordModelCallUsage(accumulatedUsage, priced)
           },
           onTool: (timing) => this.toolCallTimings.push(timing),
-          executeExtension: async (call, transcript) => {
-            const result = await this.executeTool(call, {
-              conversationId: this.config.conversationId, workspacePath, fileAccessGrants, fullFilesystemAccess,
-              supportsVisionInput: primarySupportsVision, requestUserChoice: this.config.requestUserChoice,
-              fileService: this.config.fileService, terminalService: this.config.terminalService,
-              allowedModelPoolIds: agentConfig.modelPoolIds, visualAttachments: recentVisualAttachments,
-              agentContext: this.buildModelPoolContext(transcript, new Map()),
-            })
-            if (result.images?.length) recentVisualAttachments = dedupeToolImages([...recentVisualAttachments, ...result.images]).slice(-8)
-            const modelImages = primarySupportsVision ? await this.loadToolImages([call], new Map([[call.id, result]]), [call.name]) : []
-            return { ...result, modelImages }
-          },
         })) {
           yield event.type === 'done' ? { ...event, usage: accumulatedUsage, timing: this.buildResponseTiming() } : event
         }

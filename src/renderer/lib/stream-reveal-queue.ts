@@ -79,7 +79,7 @@ export function enqueueStreamItem(item: QueuedStreamItem): void {
   if (item.kind === 'text' && previous?.kind === 'text') previous.content += item.content
   else queue.items.push(item)
 
-  if (item.kind === 'event' && (item.event.type === 'ask_user_request' || item.event.type === 'ask_user_closed')) {
+  if (item.kind === 'event' && ['ask_user_request', 'ask_user_closed', 'tool_approval_request', 'tool_approval_closed', 'permissions_changed'].includes(item.event.type)) {
     flushQueue(key)
     return
   }

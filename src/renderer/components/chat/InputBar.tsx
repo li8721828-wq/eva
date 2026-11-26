@@ -9,6 +9,7 @@ import { isMaterialSimulationRequest } from '@/lib/requirement-intent'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { AskUserCard } from './AskUserCard'
+import { ToolApprovalCard } from './ToolApprovalCard'
 import { ReferenceImagePreview } from './ReferenceImagePreview'
 import { Bot, Brain, ClipboardList, FileText, FolderKey, FolderLock, FolderOpen, HardDrive, Quote, Send, Sparkles, Square, X } from 'lucide-react'
 import { uiCopy } from '@/lib/ui-copy'
@@ -67,6 +68,8 @@ export function InputBar({ className }: InputBarProps) {
   const activeStream = useChatStore((state) => currentConversationId ? state.streamingByConversation[currentConversationId] : undefined)
   const isStreaming = Boolean(activeStream?.isStreaming)
   const askUser = activeStream?.askUser
+  const toolApproval = activeStream?.toolApproval
+  const decideToolApproval = useChatStore((state) => state.decideToolApproval)
   const decideAskUser = useChatStore((state) => state.decideAskUser)
   const { activeProviderId, activeModel, settingsOpen, setActiveProvider, setActiveModel, workMode, language } = useAppStore(useShallow((state) => ({
     activeProviderId: state.activeProviderId,
@@ -616,6 +619,11 @@ export function InputBar({ className }: InputBarProps) {
       )}
     >
       <div className="w-full">
+        {toolApproval && currentConversationId && (
+          <ToolApprovalCard key={toolApproval.id} request={toolApproval}
+            onDecide={(approved, scope) => { void decideToolApproval(currentConversationId, toolApproval.id, approved, scope)
+              .catch((error: unknown) => setError(error instanceof Error ? error.message : String(error))) }} />
+        )}
         {askUser && currentConversationId && (
           <AskUserCard
             request={askUser}

@@ -278,42 +278,6 @@ export async function runHarness(config, bridge) {
         enableRunInBackground: false,
       })
     }
-    for (const tool of config.extensions)
-      ctx.tools.register({
-        ...tool,
-        output: {
-          schema: { type: 'object' },
-          render: (_args, value) => [
-            { type: 'text', text: value.result },
-            ...(value.imageRefs || []).map((attachment) => ({
-              type: 'image',
-              attachment,
-            })),
-          ],
-        },
-        execute: async (args, execution) => {
-          if (!args || typeof args !== 'object' || Array.isArray(args))
-            throw new Error('Native tool arguments must be a JSON object')
-          dispatched.add(execution.callId)
-          const result = await bridge.rpc('extension', {
-            id: execution.callId,
-            name: tool.name,
-            arguments: args,
-          })
-          if (result.isError) throw new Error(result.result)
-          const imageRefs = []
-          for (const image of result.modelImages || [])
-            imageRefs.push(
-              await ctx.attachments.saveImage({
-                data: Buffer.from(image.dataUrl.split(',')[1], 'base64'),
-                mediaType: image.mediaType,
-                name: image.name,
-              }),
-            )
-          return { result: result.result, isError: result.isError, imageRefs }
-        },
-        isConcurrencySafe: () => false,
-      })
     ctx.on('tools/execute', async (execution, next) => {
       if (!nativeNames.has(execution.name)) return next()
       if (

@@ -36,5 +36,6 @@ export function toolImplementationLabel(
   if (data?.nativeTool === true && data.executionEngine === 'deepseek-harness')
     return 'Harness 原生'
   if (data?.toolImplementation === 'eva-extension') return 'Eva 扩展'
+  if (data?.toolImplementation === 'unavailable') return '当前运行时未启用'
   return undefined
 }

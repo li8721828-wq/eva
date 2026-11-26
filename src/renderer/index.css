@@ -147,9 +147,10 @@
   /* Broad transmitted-light fields keep lavender and ice blue visible at
      desktop scale, with a pearl highlight through the reading area. */
   --conversation-canvas:
-    radial-gradient(ellipse at 18% 12%, rgba(225, 218, 255, 0.42), transparent 58%),
-    radial-gradient(ellipse at 84% 44%, rgba(216, 247, 255, 0.44), transparent 62%),
-    linear-gradient(135deg, #f3efff, #f9fdff 48%, #eff3ff);
+    radial-gradient(ellipse at 48% 28%, rgba(255, 255, 255, 0.5), transparent 64%),
+    radial-gradient(ellipse at 18% 12%, rgba(223, 213, 255, 0.46), transparent 58%),
+    radial-gradient(ellipse at 84% 44%, rgba(210, 247, 255, 0.48), transparent 62%),
+    linear-gradient(135deg, #f7f3ff, #fcfeff 48%, #f3f7ff);
   /* The composer's recipe, decomposed: ambient glow, contact shadow, and a lit
      top lip. Surfaces reference these instead of a border to look raised. */
   --ui-shadow-float: 0 0 30px -10px rgba(53, 62, 104, 0.22), 0 0 12px -4px rgba(53, 62, 104, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.96);

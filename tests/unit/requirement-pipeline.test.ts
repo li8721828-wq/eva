@@ -51,6 +51,7 @@ async function fixture() {
     blocked: false, finalSpecBlocked: false, dslBlocked: false, dsl: sampleDsl, specId: 'FR-001',
     failDimension: '', above: '100000.01', contract: undefined as SpecContract | undefined,
     contradictFinalReadiness: false,
+    sourceReading: undefined as ((prompt: string) => string) | undefined,
     assess: undefined as ((dimension: string, prompt: string) => string) | undefined,
   }
   const prompts: string[] = []
@@ -62,6 +63,7 @@ async function fixture() {
       requests.push(dimension)
       if (dimension === control.failDimension) throw new Error('fixture model interrupted')
       let content = padding
+      if (dimension === 'source-reading' && control.sourceReading) content = control.sourceReading(request.messages.at(-1)!.content)
       if (dimension.startsWith('final-readiness') || dimension.startsWith('round-') || dimension.startsWith('clarification-re')) {
         const gaps = control.blocked ? [{ id: 'U-1', fact: '审批人未确定', impact: '无法验收', requiredDecision: '确定审批人', blocking: true, options: ['负责人', '财务'] }] : []
         const listsBlocker = control.blocked || (dimension.startsWith('final-readiness') && control.contradictFinalReadiness)
@@ -113,6 +115,24 @@ async function fixture() {
   const spec = async () => { await model(); return buildSpec() }
   return { root, workspacePath, conversations, conversation, input, runs, service, progress, prompts, requests, control, model, spec, buildSpec, confirm }
 }
+
+it('archives a long requirement and reads through its tail with reusable source checkpoints', async () => {
+  const f = await fixture()
+  const content = `${'第一章资产盘点规则。\n\n'.repeat(8_000)}文末唯一验收条款：差异单必须由负责人复核。`
+  f.control.sourceReading = prompt => `业务规则保持原编号；${prompt.includes('文末唯一验收条款') ? '文末唯一验收条款：差异单必须由负责人复核。' : '资产盘点须核对清单。'}`
+  const run = await f.service.submit({ ...f.input, content }, f.progress)
+  expect(run.status).toBe('ready-for-specification')
+  const source = run.documents.find(document => document.stage === 'source')!
+  expect(source.content).toContain(content)
+  expect(await fs.readFile(source.workspacePath!, 'utf8')).toBe(source.content)
+  const reading = run.documents.filter(document => document.dimension === 'source-reading')
+  expect(reading.length).toBeGreaterThan(1)
+  expect(reading.every(document => document.checkpoint)).toBe(true)
+  expect(f.prompts.find(prompt => prompt.includes('最终明确需求放行审计'))).toContain('文末唯一验收条款')
+  const before = f.requests.length
+  await (f.service as unknown as { prepareSourceContext: (run: RequirementRun) => Promise<string> }).prepareSourceContext(run)
+  expect(f.requests).toHaveLength(before)
+})
 
 it('keeps same-worktree continuation progress and Spec confirmation in the invoking conversation', async () => {
   const f = await fixture()
@@ -679,15 +699,36 @@ it('stops an active clarification submission using its run ID', async () => {
   expect((await f.runs.readManifest(pending.id))?.status).toBe('cancelled')
 }, PIPELINE_TIMEOUT_MS)
 
-it('keeps the full requirement input for review when the model limit would cut it', async () => {
+it('keeps the full requirement input when the local import limit is exceeded', async () => {
   const f = await fixture()
   const marker = '超过十万元必须双签。'
-  await expect(f.service.submit({ ...f.input, content: '订单审批\n' + 'a'.repeat(48_000) + marker }, f.progress))
-    .rejects.toThrow('需求输入超过 48000 字符')
+  await expect(f.service.submit({ ...f.input, content: '订单审批\n' + 'a'.repeat(2_000_000) + marker }, f.progress))
+    .rejects.toThrow('2,000,000 字符上限')
   expect(f.prompts).toEqual([])
   const [run] = await f.service.list(f.conversation.id)
   expect(run.status).toBe('failed')
   expect(run.documents.find((doc) => doc.stage === 'source')?.content).toContain(marker)
+}, PIPELINE_TIMEOUT_MS)
+
+it('retries an interrupted long-source import without rereading completed slices', async () => {
+  const f = await fixture()
+  const content = '资产盘点规则。\n\n'.repeat(10_000)
+  let calls = 0
+  f.control.sourceReading = () => {
+    calls += 1
+    if (calls === 2) throw new Error('分段读取中断')
+    return '资产盘点须核对清单，保留原规则。'
+  }
+  await expect(f.service.submit({ ...f.input, content }, f.progress)).rejects.toThrow('分段读取中断')
+  const [failed] = await f.service.list(f.input.conversationId)
+  expect(failed.status).toBe('failed')
+  const first = failed.documents.find(document => document.dimension === 'source-reading' && document.checkpoint)!
+  const result = await f.service.submit({ ...f.input, runId: failed.id }, f.progress)
+  expect(result.id).toBe(failed.id)
+  expect(result.round).toBe(failed.round + 1)
+  expect(result.status).toBe('ready-for-specification')
+  expect(result.documents.filter(document => document.checkpoint?.inputHash === first.checkpoint!.inputHash)).toHaveLength(1)
+  expect(calls).toBe(result.documents.filter(document => document.dimension === 'source-reading').length)
 }, PIPELINE_TIMEOUT_MS)
 
 it('rejects cross-worktree runs and links leading outside the workspace', async () => {
@@ -717,14 +758,45 @@ it('registers an idempotent material preview without releasing simulated evidenc
   const input = { ...f.input, runId: run.id, action: 'simulate-materials' as const }
   const preview = await f.service.submit(input, f.progress)
   expect(preview.materialPreviewDocumentId).toBeTruthy()
+  expect(preview.materialDraftDocumentIds).toHaveLength(2)
+  expect(preview.materialDraftDocumentIds!.map(id => preview.documents.find(document => document.id === id)?.dimension))
+    .toEqual(['material-draft-modeling', 'material-draft-specification'])
   expect(preview.status).toBe('awaiting-materials')
   expect(preview.pendingMaterials).toHaveLength(1)
   expect(preview.documents.filter(d => d.stage === 'source')).toHaveLength(1)
   expect(preview.releases?.requirement).toBeUndefined()
+  expect(preview.releases?.modeling).toBeUndefined()
+  expect(preview.releases?.specification).toBeUndefined()
+  expect(f.prompts.find(prompt => prompt.includes('继续当前需求的模拟分支'))).toContain('客户清单需求')
+  expect(f.prompts.find(prompt => prompt.includes('基于当前需求、模拟材料和业务建模继续起草'))).toContain('模拟材料与假设（不是已交付证据）')
   const count = f.requests.length
   const again = await f.service.submit(input, f.progress)
   expect(again.materialPreviewDocumentId).toBe(preview.materialPreviewDocumentId)
   expect(f.requests.length).toBe(count)
   await expect(f.service.modelRequirements(f.input, f.progress)).rejects.toThrow()
   await expect(f.service.submit({ ...input, runId: 'stale' }, f.progress)).rejects.toThrow('待补材料已变化')
+}, PIPELINE_TIMEOUT_MS)
+
+it('continues an existing material preview and resumes an interrupted draft specification', async () => {
+  const f = await fixture()
+  f.control.assess = () => 'SCORE: 88\nREADINESS: BLOCKED\nUNRESOLVED_ITEMS_JSON:\n[{"id":"U-001","key":"sample","kind":"material","fact":"缺少样本","impact":"验收待补","requiredDecision":"提供客户清单","blocking":true}]\nBLOCKERS:\n- 样本待补\nASSESSMENT:\n待补材料。'
+  const run = await f.service.submit({ ...f.input, content: '客户清单需求' }, f.progress)
+  const input = { ...f.input, runId: run.id, action: 'simulate-materials' as const }
+  f.control.failDimension = 'material-draft-modeling'
+  await expect(f.service.submit(input, f.progress)).rejects.toThrow('fixture model interrupted')
+  const [previewOnly] = await f.service.list(f.input.conversationId)
+  expect(previewOnly.materialPreviewDocumentId).toBeTruthy()
+  expect(previewOnly.materialDraftDocumentIds).toBeUndefined()
+  const previewCalls = f.requests.filter(dimension => dimension === 'material-preview').length
+  f.control.failDimension = 'material-draft-specification'
+  await expect(f.service.submit(input, f.progress)).rejects.toThrow('fixture model interrupted')
+  const modelingCalls = f.requests.filter(dimension => dimension === 'material-draft-modeling').length
+  f.control.failDimension = ''
+  const completed = await f.service.submit(input, f.progress)
+  expect(completed.id).toBe(run.id)
+  expect(completed.materialDraftDocumentIds).toHaveLength(2)
+  expect(completed.documents.filter(document => document.stage === 'source')).toHaveLength(1)
+  expect(f.requests.filter(dimension => dimension === 'material-preview')).toHaveLength(previewCalls)
+  expect(f.requests.filter(dimension => dimension === 'material-draft-modeling')).toHaveLength(modelingCalls)
+  expect(completed.releases?.specification).toBeUndefined()
 }, PIPELINE_TIMEOUT_MS)

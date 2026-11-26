@@ -6,11 +6,13 @@ import * as XLSX from 'xlsx'
 import pdf from 'pdf-parse/lib/pdf-parse.js'
 import JSZip from 'jszip'
 import type { ChatDocumentAttachment } from '../../shared/types/conversation'
+import { MAX_REQUIREMENT_SOURCE_CHARS } from './requirement-source-reader'
 
 const MAX_FILES = 40
 // Office documents are compressed containers. The previous 8 MB limit rejected
 // ordinary requirement documents before Mammoth/XLSX had a chance to extract them.
-// Extracted text is still bounded by MAX_TOTAL_CHARS before it reaches a model.
+// Chat excerpts and complete requirement imports have separate text budgets;
+// the requirement service fits archived input to each model request separately.
 const MAX_FILE_BYTES = 32 * 1024 * 1024
 const MAX_TOTAL_CHARS = 80_000
 const MAX_FILE_CHARS = 24_000
@@ -216,7 +218,7 @@ export async function buildDocumentAttachmentContext(
   if (options.requireComplete && (!filePaths.length || filePaths.length > MAX_FILES)) {
     throw new Error(`需求附件必须包含 1 到 ${MAX_FILES} 个可读取文件，请调整附件范围。`)
   }
-  let remainingChars = MAX_TOTAL_CHARS
+  let remainingChars = options.requireComplete ? MAX_REQUIREMENT_SOURCE_CHARS : MAX_TOTAL_CHARS
   const sections: string[] = []
   for (const filePath of filePaths.slice(0, MAX_FILES)) {
     if (options.requireComplete && path.extname(filePath).toLowerCase() === '.zip') {
@@ -224,10 +226,13 @@ export async function buildDocumentAttachmentContext(
     }
     const item = await parseFile(filePath)
     if (item.text !== undefined) {
-      const allowed = Math.min(MAX_FILE_CHARS, remainingChars)
+      const allowed = options.requireComplete ? remainingChars : Math.min(MAX_FILE_CHARS, remainingChars)
       const text = item.text.slice(0, allowed)
-      if (options.requireComplete && (!text.trim() || text.length !== item.text.length)) {
-        throw new Error(`需求附件「${item.name}」正文为空或超出完整读取上限，请拆分或转换后重试。`)
+      if (options.requireComplete && !item.text.trim()) {
+        throw new Error(`需求附件「${item.name}」未提取到正文。若为扫描件或图片，请先识别为可选中文字的文档。`)
+      }
+      if (options.requireComplete && text.length !== item.text.length) {
+        throw new Error(`需求附件正文合计超过 2,000,000 字符的单次导入上限（当前文件「${item.name}」共 ${item.text.length.toLocaleString('en-US')} 字符）。请按业务范围拆分后重试。`)
       }
       remainingChars -= text.length
       const truncated = text.length < item.text.length

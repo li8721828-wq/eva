@@ -153,16 +153,31 @@ app.whenReady().then(async () => {
       assert.ok(fonts.some(font => font.glyphCount > 0), 'measure the actual glyph font, not only the CSS family list')
       assert.equal(values.size, '15px', 'default prose matches its declared setting')
       assert.equal(values.rootSize, '14px', 'the workspace layout root never changes')
-      assert.equal(values.bodyWeight, '400')
-      assert.equal(values.weight, '500')
-      assert.equal(values.headingWeight, '500')
+      assert.equal(values.bodyWeight, '450')
+      assert.equal(values.weight, '600')
+      assert.equal(values.headingWeight, '600')
+      const materials = await run(`(() => {
+        const root=document.querySelector('[data-conversation-answer]');
+        const table=root.querySelector('[data-streamdown="table-wrapper"],.markdown-table-wrap');
+        const code=root.querySelector('.markdown-code-block');
+        return {tableImage:getComputedStyle(table).backgroundImage,tableShadow:getComputedStyle(table).boxShadow,
+          codeImage:getComputedStyle(code).backgroundImage,codeShadow:getComputedStyle(code).boxShadow,
+          codeBody:getComputedStyle(code.querySelector('pre')).backgroundColor,tableColor:getComputedStyle(table).backgroundColor,codeColor:getComputedStyle(code).backgroundColor,tableBlur:getComputedStyle(table).backdropFilter,codeBlur:getComputedStyle(code).backdropFilter};
+      })()`)
+      assert.ok(materials.tableImage.includes('linear-gradient'), 'glass has a restrained white specular reflection')
+      assert.ok(materials.tableBlur.includes('blur(14px)') && materials.codeBlur.includes('blur(14px)'), 'glass uses backdrop blur on both surfaces')
+      for (const color of [materials.tableColor,materials.codeColor]) { const channels=color.match(/[\d.]+/g).map(Number); assert.ok(channels[3]>0 && channels[3]<=.2,'glass lets at least 80% of the canvas light through its base fill') }
+      assert.notEqual(materials.tableColor, 'rgba(0, 0, 0, 0)', 'table is distinct from the canvas')
+      assert.ok(materials.codeImage.includes('linear-gradient'), 'code shares the restrained glass reflection')
+      assert.notEqual(materials.codeColor, 'rgb(255, 255, 255)', 'code does not use an opaque white field')
+      assert.equal(materials.codeBody, 'rgba(0, 0, 0, 0)', 'code body lets the tinted material show through instead of an opaque white field')
       assert.equal(values.synthesis, 'none', 'the browser never invents heavier strokes')
       assert.equal(values.bodyShadow, 'none', 'softness comes from font outlines, not blur or shadow')
       assert.equal(values.blockHasInlineChip, false, 'plain code fences never acquire an inner inline-code chip')
       assert.equal(values.bodyColor, values.color)
-      assert.equal(values.color, theme === 'light' ? 'rgb(32, 33, 36)' : 'rgb(229, 231, 235)', 'all engines share the reference prose colors')
-      assert.ok([...fonts, ...bodyFonts].every(font => !/HarmonyOS/.test(font.familyName)), 'the default chat font uses the platform sans-serif axis')
-      assert.ok([...fonts, ...bodyFonts].every(font => !/Bold|Black|Heavy|SimSun/i.test(font.postScriptName)), 'actual CJK glyphs use regular or medium outline faces')
+      assert.equal(values.color, theme === 'light' ? 'rgb(66, 68, 80)' : 'rgb(210, 212, 221)', 'all engines share the reference prose colors')
+      assert.ok([...fonts, ...bodyFonts].some(font => /NotoSansSC|Noto Sans SC/i.test(font.familyName + font.postScriptName) && font.glyphCount>0), 'bundled variable CJK face renders actual glyphs')
+      assert.ok([...fonts, ...bodyFonts].every(font => !/Black|Heavy|SimSun/i.test(font.postScriptName)), 'actual CJK glyphs use regular or medium outline faces')
       measurements.push({ theme, width, renderer, ...values, actualFonts: fonts, bodyFonts })
       if (renderer === 'enhanced') fs.writeFileSync(path.join(output, `typography-${theme}-${width}.png`), (await win.webContents.capturePage()).toPNG())
     }

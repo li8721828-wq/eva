@@ -279,6 +279,8 @@ export interface ToolApprovalRequest {
   /** Optional detail line (e.g. the command text or file path preview). */
   detail?: string
   requestedAt: number
+  /** Main-process deadline; the renderer never decides a timeout. */
+  expiresAt?: number
 }
 
 export interface AskUserOption {
@@ -308,7 +310,7 @@ export interface ChatStreamEvent {
   /** The Agent actually selected for this response by the main process. */
   agentId?: string
   agentName?: string
-  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'ask_user_request' | 'ask_user_closed' | 'done' | 'error' | 'native_event'
+  type: 'thinking' | 'reasoning_delta' | 'text_delta' | 'text_reset' | 'tool_call_start' | 'tool_call_delta' | 'tool_result' | 'execution_timeline' | 'progress' | 'goal_confirmation' | 'tool_approval_request' | 'tool_approval_closed' | 'permissions_changed' | 'ask_user_request' | 'ask_user_closed' | 'done' | 'error' | 'native_event'
   messageId?: string
   content?: string
   /** True only when provisional text was protocol markup and must be discarded. */
@@ -328,6 +330,7 @@ export interface ChatStreamEvent {
   progressItem?: number
   goalConfirmation?: GoalConfirmationRequest
   toolApproval?: ToolApprovalRequest
+  toolApprovalId?: string
   askUser?: AskUserRequest
   /** Identifies the question whose waiting slot was closed. */
   askUserId?: string

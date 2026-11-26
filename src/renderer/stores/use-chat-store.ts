@@ -6,6 +6,7 @@ import { useTaskStore } from './use-task-store'
 import { dropQueuedItemsFor } from '../lib/stream-reveal-queue'
 import type { NativeAgentTranscript } from '../../shared/types/native-agent'
 import { appendNativeEvent } from '../../shared/native-agent-transcript'
+import { pushToast } from './use-toast-store'
 
 export interface ConversationStreamState {
   nativeAgent?: NativeAgentTranscript
@@ -641,8 +642,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   decideToolApproval: async (conversationId, approvalId, approved, rememberScope = 'once') => {
-    const accepted = await window.eva.chat.decideToolApproval(conversationId, approvalId, approved, rememberScope)
-    if (!accepted) return
+    await window.eva.chat.decideToolApproval(conversationId, approvalId, approved, rememberScope)
+    // A late decision must also dismiss its dead card; never touch a newer ID.
     set((state) => {
       const stream = state.streamingByConversation[conversationId]
       if (!stream || stream.toolApproval?.id !== approvalId) return state
@@ -809,6 +810,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
             },
           }
         })
+        break
+      }
+
+      case 'tool_approval_closed': {
+        set((s) => {
+          const stream = s.streamingByConversation[conversationId]
+          if (!stream || stream.toolApproval?.id !== event.toolApprovalId) return s
+          return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: { ...stream, toolApproval: undefined } } }
+        })
+        if (event.content) pushToast({ kind: 'warning', title: '工具未执行：审批超时', description: event.content, durationMs: 9000 })
+        break
+      }
+
+      case 'permissions_changed': {
+        dropQueuedItemsFor(conversationId)
+        set((s) => {
+          const stream = s.streamingByConversation[conversationId] || createIdleStream()
+          return { streamingByConversation: { ...s.streamingByConversation, [conversationId]: {
+            ...stream, isStreaming: false, toolApproval: undefined, askUser: undefined, goalConfirmation: undefined,
+          } } }
+        })
+        pushToast({ kind: 'info', title: '权限已更新，本轮已停止', description: '发送“继续”后使用新权限。已执行的操作会保留。', durationMs: 9000 })
         break
       }
 

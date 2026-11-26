@@ -4,7 +4,6 @@ import { useChatStore } from '@/stores/use-chat-store'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
 import { GoalConfirmationCard } from './GoalConfirmationCard'
-import { ToolApprovalCard } from './ToolApprovalCard'
 import { RequirementClarificationCard } from './RequirementClarificationCard'
 import { CheckCircle2, ChevronsDown, CircleAlert, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -53,7 +52,6 @@ export function MessageList({ className }: MessageListProps) {
   const streamingByConversation = useChatStore((s) => s.streamingByConversation)
   const requirementProgressByConversation = useChatStore((s) => s.requirementProgressByConversation)
   const decideGoalConfirmation = useChatStore((s) => s.decideGoalConfirmation)
-  const decideToolApproval = useChatStore((s) => s.decideToolApproval)
   const refreshConversation = useChatStore((s) => s.refreshConversation)
   const startRequirementProgress = useChatStore((s) => s.startRequirementProgress)
   const finishRequirementProgress = useChatStore((s) => s.finishRequirementProgress)
@@ -82,7 +80,6 @@ export function MessageList({ className }: MessageListProps) {
   // reply row arrives. A stop during a tool cycle persists no reply to retire.
   const holdsStoppedStreamCopy = !isStreaming && Boolean(streamingContent || stream?.nativeAgent?.events.length)
   const goalConfirmation = stream?.goalConfirmation
-  const toolApproval = stream?.toolApproval
   const requirementProgress = currentConversationId ? requirementProgressByConversation[currentConversationId] : undefined
   const isRequirementRunning = Boolean(requirementProgress)
   const rightPanelVisible = useAppStore((s) => s.rightPanelVisible)
@@ -630,7 +627,7 @@ export function MessageList({ className }: MessageListProps) {
             run={awaitingClarification}
             onSimulate={async () => {
               if (!currentConversationId) return
-              startRequirementProgress(currentConversationId, '正在生成模拟材料与规格草稿')
+              startRequirementProgress(currentConversationId, '正在沿用当前需求，生成模拟材料并继续建模与规格草稿')
               try {
                 await window.eva.requirements.submit({ conversationId: currentConversationId, runId: awaitingClarification.id, action: 'simulate-materials' })
                 await refreshConversation(currentConversationId)
@@ -667,14 +664,6 @@ export function MessageList({ className }: MessageListProps) {
           <GoalConfirmationCard
             request={goalConfirmation}
             onDecide={(approved) => void decideGoalConfirmation(currentConversationId, goalConfirmation.id, approved)}
-          />
-        )}
-
-        {toolApproval && currentConversationId && (
-          <ToolApprovalCard
-            key={toolApproval.id}
-            request={toolApproval}
-            onDecide={(approved, rememberScope) => void decideToolApproval(currentConversationId, toolApproval.id, approved, rememberScope)}
           />
         )}
 

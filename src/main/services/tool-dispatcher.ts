@@ -1,4 +1,5 @@
 import path from 'path'
+import { toolFailure } from '../../shared/tool-failure'
 import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
 import type { ToolContext, ToolExecutionResult, ToolExecutor, ToolRegistry } from '../tools'
 import { createExecutionEnvelope } from '../tools'
@@ -50,11 +51,7 @@ function errorEnvelope(toolName: string, message: string, retryable = false): Ex
   return createExecutionEnvelope(toolRuntimePolicy(toolName).kind, 'failed', {
     tool: toolName,
   }, {
-    error: {
-      code: 'tool_dispatch_failed',
-      message,
-      retryable,
-    },
+    error: { ...toolFailure(message, 'tool_dispatch_failed'), ...(retryable ? {} : { retryable: false }) },
   })
 }
 
@@ -65,11 +62,7 @@ function rejection(toolName: string, message: string): ToolDispatchResult {
     protocol: {
       ...errorEnvelope(toolName, message),
       status: 'rejected',
-      error: {
-        code: 'tool_dispatch_rejected',
-        message,
-        retryable: false,
-      },
+      error: { ...toolFailure(message, 'tool_dispatch_rejected'), retryable: false },
     },
   }
 }

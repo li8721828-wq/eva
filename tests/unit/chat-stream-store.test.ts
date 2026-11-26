@@ -767,6 +767,29 @@ describe('tool approval card state', () => {
     expect(stream?.isStreaming).toBe(true)
   })
 
+  it('closes only the matching card and clears pending decisions when permissions change', () => {
+    const append = useChatStore.getState().appendStreamEvent
+    append({ type: 'tool_approval_request', conversationId: 'foreground', toolApproval: approval })
+    append({ type: 'tool_approval_closed', conversationId: 'foreground', toolApprovalId: 'old-card' })
+    expect(useChatStore.getState().streamingByConversation.foreground.toolApproval?.id).toBe(approval.id)
+    append({ type: 'tool_approval_closed', conversationId: 'foreground', toolApprovalId: approval.id })
+    expect(useChatStore.getState().streamingByConversation.foreground.toolApproval).toBeUndefined()
+    append({ type: 'text_delta', conversationId: 'foreground', content: '已完成的正文' })
+    append({ type: 'tool_approval_request', conversationId: 'foreground', toolApproval: approval })
+    append({ type: 'permissions_changed', conversationId: 'foreground' })
+    expect(useChatStore.getState().streamingByConversation.foreground).toMatchObject({ content: '已完成的正文', isStreaming: false, toolApproval: undefined, askUser: undefined })
+  })
+
+  it('dismisses an expired decision without clearing a newer card', async () => {
+    vi.stubGlobal('window', { eva: { chat: { decideToolApproval: vi.fn(async () => false) } } })
+    useChatStore.getState().appendStreamEvent({ type: 'tool_approval_request', conversationId: 'foreground', toolApproval: approval })
+    await useChatStore.getState().decideToolApproval('foreground', 'old', true)
+    expect(useChatStore.getState().streamingByConversation.foreground.toolApproval?.id).toBe(approval.id)
+    await useChatStore.getState().decideToolApproval('foreground', approval.id, true)
+    expect(useChatStore.getState().streamingByConversation.foreground.toolApproval).toBeUndefined()
+    vi.unstubAllGlobals()
+  })
+
   it('accepts a card that arrives after the calling round settled', () => {
     // Same shape as the ask_user case: the round that produced the tool call has
     // already settled its stream, so a streaming check here drops the only card

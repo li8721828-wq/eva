@@ -13,7 +13,6 @@ import type {
   ChatUsage,
   ModelCallTiming,
   ToolCallTiming,
-  ToolResultImageRef,
 } from '../../shared/types/conversation'
 import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
 import {
@@ -23,34 +22,25 @@ import {
 import {
   NativeToolPolicy,
   NATIVE_TOOL_ALIASES,
-  REPLACED_EVA_TOOLS,
   type NativeToolCall,
 } from './native-tool-policy'
 import { executionApproval } from '../services/execution-policy'
+import { toolFailure } from '../../shared/tool-failure'
 import { createExecutionEnvelope } from '../tools'
 import { toolCallSignature, toolRuntimePolicy } from './tool-runtime-policy'
 import type { SandboxContext } from '../services/sandbox/types'
 import { classifyError, type ProviderError } from '../providers/errors'
-import type { ExecutionEnvelope } from '../../shared/types/execution-protocol'
 import { resolveAuthorizedFileOperation } from '../services/file-service'
 import { prepareNativeSession } from './native-session'
 import type { NativeAgentEvent } from '../../shared/types/native-agent'
 import { resolveProviderReasoning } from '../providers/base-provider'
 
-interface NativeResult {
-  result: string
-  isError: boolean
-  protocol?: ExecutionEnvelope
-  images?: ToolResultImageRef[]
-  modelImages?: ChatMessageInput['images']
-}
 interface Options {
   config: AgentRunnerConfig
   engine: ExecutionEngineConfig
   history: ChatMessageInput[]
   userMessageIds?: string[]
   instructions: string
-  tools: ToolDefinition[]
   contextWindow: number
   maxTokens: number
   supportsVision: boolean
@@ -60,10 +50,6 @@ interface Options {
   turnId: string
   onUsage(usage: ChatUsage | undefined, timing: ModelCallTiming): void
   onTool(timing: ToolCallTiming): void
-  executeExtension(
-    call: NativeToolCall,
-    transcript: ChatMessageInput[],
-  ): Promise<NativeResult>
 }
 
 /** Native frameworks own prompts, transcripts, compaction, tool schemas and tool bodies. */
@@ -83,30 +69,14 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
   const allowed = c.agentConfig.tools
   const nativeGoal =
     o.engine.id === 'deepseek-harness' &&
-    (allowed.includes('run_goal') ||
-      o.tools.some((tool) => tool.name === 'run_goal'))
-  const extensions = o.tools
-    .filter(
-      (tool) =>
-        (!REPLACED_EVA_TOOLS.has(tool.name) &&
-          !(
-            o.engine.id === 'deepseek-harness' &&
-            tool.name === 'create_execution_plan'
-          ) &&
-          !(nativeGoal && ['run_goal', 'manage_goal'].includes(tool.name))) ||
-        (o.engine.id === 'deepseek-harness' && tool.name === 'list_directory'),
-    )
-    .map((tool) => ({
-      ...tool,
-      description: `[Eva extension] ${tool.description}`,
-    }))
+    (allowed.includes('run_goal') || Boolean(c.runGoal))
   const policy = new NativeToolPolicy({
     engine: o.engine.id,
     allowedTools: [
       ...new Set([
         ...allowed,
-        ...o.tools.map((tool) => tool.name),
-        ...(nativeGoal ? ['manage_goal'] : []),
+        ...(c.createExecutionPlan ? ['create_execution_plan'] : []),
+        ...(nativeGoal ? ['run_goal', 'manage_goal'] : []),
       ]),
     ],
     workspacePath:
@@ -148,13 +118,11 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
   let calls = 0,
     complete = false
   let providerFailure: ProviderError | undefined
-  let latestTranscript = o.history
   let offeredNativeTools = new Set<string>()
   const { maxTokens } = o
   const capabilities = {
     plan:
-      allowed.includes('create_execution_plan') ||
-      o.tools.some((tool) => tool.name === 'create_execution_plan'),
+      allowed.includes('create_execution_plan') || Boolean(c.createExecutionPlan),
     goal: nativeGoal,
     read: allowed.includes('read_file'),
     write: allowed.includes('write_file'),
@@ -234,7 +202,6 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
         resumeSession: session.resume,
         instructions: o.instructions,
         projectContext,
-        extensions,
         capabilities,
         model: {
           id: c.agentConfig.model,
@@ -281,14 +248,12 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
           )
         if (!Array.isArray(p.messages) || !Array.isArray(p.tools))
           throw new ExecutionEngineError('原生模型请求格式无效。')
-        latestTranscript = p.messages
         if (p.purpose !== 'compaction')
           offeredNativeTools = new Set(
             p.tools
               .filter(
                 (tool: ToolDefinition) =>
-                  Object.hasOwn(NATIVE_TOOL_ALIASES, tool.name) &&
-                  !extensions.some((extension) => extension.name === tool.name),
+                  Object.hasOwn(NATIVE_TOOL_ALIASES, tool.name),
               )
               .map((tool: ToolDefinition) => tool.name),
           )
@@ -474,6 +439,8 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
             },
           ),
           durationMs,
+          ...(isError ? { error: toolFailure(p.result) } : {}),
+          ...(!entry.approved ? { status: 'rejected' as const } : {}),
         }
         if (entry.approved)
           await c.eventStore
@@ -520,67 +487,7 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
         }
         request.respond({})
       } else if (request.method === 'extension') {
-        const call = p as NativeToolCall
-        if (!extensions.some((tool) => tool.name === call.name))
-          throw new ExecutionEngineError('未授权的 Eva 扩展工具。')
-        yield { type: 'text_reset' }
-        yield { type: 'tool_call', toolCall: call }
-        yield native({
-          type: 'tool_start',
-          toolCallId: call.id,
-          name: call.name,
-          data: { arguments: call.arguments, implementation: 'eva-extension' },
-        })
-        if (o.signal.aborted) break
-        const signature = toolCallSignature(call.name, call.arguments)
-        const repeated = seenIds.has(call.id) || failedActions.has(signature)
-        seenIds.add(call.id)
-        const result: NativeResult = repeated
-          ? {
-              result:
-                'This extension action cannot be automatically replayed after a reused call ID or failed operation.',
-              isError: true,
-            }
-          : await o.executeExtension(call, latestTranscript)
-        if (
-          result.isError &&
-          toolRuntimePolicy(call.name, call.arguments).kind === 'action'
-        )
-          failedActions.add(signature)
-        const protocol = result.protocol
-          ? {
-              ...result.protocol,
-              data: {
-                ...result.protocol.data,
-                executionEngine: o.engine.id,
-                nativeTool: false,
-                toolImplementation: 'eva-extension',
-              },
-            }
-          : undefined
-        yield native({
-          type: 'tool_end',
-          toolCallId: call.id,
-          name: call.name,
-          content: result.result,
-          data: {
-            isError: result.isError,
-            protocol,
-            ...(result.images?.length ? { images: result.images } : {}),
-          },
-        })
-        yield {
-          type: 'tool_result',
-          toolResult: {
-            toolCallId: call.id,
-            name: call.name,
-            result: result.result,
-            isError: result.isError,
-            protocol,
-            ...(result.images?.length ? { images: result.images } : {}),
-          },
-        }
-        request.respond(result)
+        throw new ExecutionEngineError('当前原生运行时不接受 Eva 工具调用。')
       } else if (request.method === 'tool-rejected') {
         if (
           typeof p.id !== 'string' ||
@@ -589,16 +496,14 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
         )
           throw new ExecutionEngineError('框架拒绝事件格式无效。')
         yield { type: 'text_reset' }
-        const extensionRejected = extensions.some(
-          (tool) => tool.name === p.name,
-        )
+        const isNativeTool = offeredNativeTools.has(p.name)
         yield native({
           type: 'tool_start',
           toolCallId: p.id,
           name: p.name,
           data: {
             arguments: p.arguments,
-            implementation: extensionRejected ? 'eva-extension' : 'native',
+            implementation: isNativeTool ? 'native' : 'unavailable',
           },
         })
         yield native({
@@ -632,11 +537,10 @@ export async function* runNativeEngine(o: Options): AsyncGenerator<AgentEvent> {
               ...createExecutionEnvelope('action', 'failed', {
                 nativeTool: offeredNativeTools.has(p.name),
                 executionEngine: o.engine.id,
-                ...(extensionRejected
-                  ? { toolImplementation: 'eva-extension' }
-                  : {}),
+                ...(!isNativeTool ? { toolImplementation: 'unavailable' } : {}),
               }),
               status: 'rejected',
+              error: { ...toolFailure(p.result, 'tool_dispatch_rejected'), retryable: false },
             },
           },
         }

@@ -3,6 +3,7 @@ import type { StorageManager } from '../storage'
 import { ensureProviderPricing } from './supplier-pricing-service'
 import { hydrateUsagePricing } from './usage-pricing-service'
 import { invalidateNativeSessions } from '../agent-engine/native-session'
+import { conversationPermissionsChanged } from '../../shared/conversation-permissions'
 
 export type CreateConversationInput = {
   title?: string
@@ -22,7 +23,10 @@ export type UpdateConversationInput = Partial<Pick<Conversation,
 
 /** Storage-backed conversation operations that have no renderer or Agent-runner dependency. */
 export class ConversationLifecycleService {
-  constructor(private readonly storage: StorageManager) {}
+  constructor(
+    private readonly storage: StorageManager,
+    private readonly onPermissionsChanged?: (id: string) => void,
+  ) {}
 
   list(): Promise<Conversation[]> {
     return this.storage.conversations.listConversations()
@@ -76,6 +80,7 @@ export class ConversationLifecycleService {
       ...data,
       ...(data.title && !data.titleSource ? { titleSource: 'manual' } : {}),
     })
+    if (conversation && conversationPermissionsChanged(conversation, data)) this.onPermissionsChanged?.(id)
     return conversation
   }
 

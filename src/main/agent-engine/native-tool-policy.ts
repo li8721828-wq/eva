@@ -16,12 +16,6 @@ import type { SandboxContext } from '../services/sandbox/types'
 import { NATIVE_TOOL_ALIASES } from '../../shared/tool-semantics'
 export { NATIVE_TOOL_ALIASES } from '../../shared/tool-semantics'
 
-export const REPLACED_EVA_TOOLS = new Set(
-  Object.values(NATIVE_TOOL_ALIASES).filter(
-    (name) =>
-      !['create_execution_plan', 'run_goal', 'manage_goal'].includes(name),
-  ),
-)
 export interface NativeToolCall {
   id: string
   name: string

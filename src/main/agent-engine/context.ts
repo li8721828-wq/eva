@@ -7,6 +7,7 @@ import type { EnvironmentRulesConfig } from '../../shared/types/environment-rule
 import { buildSharedEnvironmentPrompt } from '../services/environment-profile-service'
 import { buildSkillCatalogLines, SKILL_CATALOG_HEADER, SKILL_CATALOG_MAX_TOKENS, SKILL_CATALOG_NOTE_RESERVE_TOKENS } from '../services/skill-service'
 import { sanitizeUnicode, truncateUnicode, truncateUnicodeEnd } from '../utils/unicode'
+import { estimateTextTokens } from '../../shared/token-estimate'
 
 const COMPRESSED_HISTORY_MAX_CHARS = 8_000
 const OLD_MESSAGE_MAX_CHARS = 520
@@ -260,17 +261,7 @@ export class ContextManager {
 
   /** Conservative multilingual estimate for prose, CJK text, code, and JSON. */
   estimateTokens(text: string): number {
-    if (!text) return 0
-    let cjk = 0
-    let asciiWordChars = 0
-    let symbols = 0
-    for (const char of text) {
-      const code = char.codePointAt(0) || 0
-      if ((code >= 0x3400 && code <= 0x9fff) || (code >= 0xf900 && code <= 0xfaff)) cjk += 1
-      else if (/[A-Za-z0-9_]/.test(char)) asciiWordChars += 1
-      else symbols += 1
-    }
-    return Math.ceil(cjk * 1.15 + asciiWordChars / 3.6 + symbols / 2.2)
+    return estimateTextTokens(text)
   }
 
   private estimateMessageTokens(message: ChatMessageInput): number {

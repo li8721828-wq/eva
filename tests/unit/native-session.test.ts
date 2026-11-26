@@ -108,3 +108,25 @@ it('isolates legacy Harness generations without deleting their logs or importing
   expect(next.history).toEqual(history)
   expect(await fs.readFile(path.join(first.directory!, 'preserved-log'), 'utf8')).toBe('original bytes')
 })
+
+it.each(['pi', 'deepseek-harness'])('replaces the %s mixed tool profile once, preserves old files and then resumes normally', async (engine) => {
+  const options = { ...await fixture(), engine }
+  const first = await prepareNativeSession({ ...options, history: [{ role: 'user', content: 'first' }], userMessageIds: ['u1'] })
+  await first.commit!()
+  const cursorPath = path.join(path.dirname(first.directory!), 'cursor.json')
+  const cursor = JSON.parse(await fs.readFile(cursorPath, 'utf8'))
+  delete cursor.toolProfile
+  await fs.writeFile(cursorPath, JSON.stringify(cursor))
+  await fs.mkdir(first.directory!, { recursive: true })
+  await fs.writeFile(path.join(first.directory!, 'old-tools-log'), 'unchanged old history')
+  const history: ChatMessageInput[] = [{ role: 'user', content: 'first' }, { role: 'assistant', content: 'previous result' }, { role: 'user', content: 'continue' }]
+  const next = await prepareNativeSession({ ...options, history, userMessageIds: ['u1', 'u2'] })
+  expect(next.resume).toBe(false)
+  expect(next.history).toEqual(history)
+  expect(next.directory).not.toBe(first.directory)
+  expect(await fs.readFile(path.join(first.directory!, 'old-tools-log'), 'utf8')).toBe('unchanged old history')
+  await next.commit!()
+  const resumed = await prepareNativeSession({ ...options, history: [...history, { role: 'user', content: 'one more' }], userMessageIds: ['u1', 'u2', 'u3'] })
+  expect(resumed.resume).toBe(true)
+  expect(resumed.directory).toBe(next.directory)
+})

@@ -48,6 +48,12 @@ it('does not claim native execution from the selected engine alone', () => {
   expect(render({ executionEngine: 'pi' })).not.toContain('Pi 原生')
 })
 
+it('labels rejected cross-runtime calls as unavailable while preserving old extension history', () => {
+  const html = render({ executionEngine: 'deepseek-harness', nativeTool: false, toolImplementation: 'unavailable' })
+  expect(html).toContain('当前运行时未启用')
+  expect(html).not.toContain('Harness 原生')
+})
+
 it.each([
   ['pi', 'Pi Agent'],
   ['deepseek-harness', 'DeepSeek Harness'],

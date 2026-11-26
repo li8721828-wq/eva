@@ -139,31 +139,6 @@ export async function runPi(config, bridge) {
       return result
     },
   }))
-  for (const tool of config.extensions)
-    tools.push({
-      ...tool,
-      label: tool.name,
-      execute: async (id, args) => {
-        dispatched.add(id)
-        const result = await bridge.rpc('extension', {
-          id,
-          name: tool.name,
-          arguments: args,
-        })
-        return {
-          content: [
-            { type: 'text', text: result.result },
-            ...(result.modelImages || []).map((image) => ({
-              type: 'image',
-              mimeType: image.mediaType,
-              data: image.dataUrl.split(',')[1],
-            })),
-          ],
-          details: {},
-          isError: result.isError,
-        }
-      },
-    })
   const stream = (_model, context, _options, purpose = 'turn') => {
     const events = createAssistantMessageEventStream()
     void (async () => {

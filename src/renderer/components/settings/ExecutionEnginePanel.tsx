@@ -12,7 +12,7 @@ import {
 const copy = {
   zh: {
     title: '执行引擎',
-    hint: 'Pi / Harness 使用原生提示词、上下文和核心工具；Eva 保留界面、模型连接与权限审批。保存后用于新开始的运行，当前运行继续使用原引擎。',
+    hint: '每个引擎只使用自己的工具。Pi / Harness 不加载 Eva 工具或扩展；Eva 提供界面、模型连接与权限审批。保存后用于新运行，当前运行继续使用原引擎。',
     label: '底层引擎',
     node: 'Node.js 可执行文件',
     runtime:
@@ -25,7 +25,7 @@ const copy = {
   },
   en: {
     title: 'Execution engine',
-    hint: 'Pi / Harness own their prompts, context and core tools. Eva provides the UI, model connection and permission checks. Saved changes apply to new runs.',
+    hint: 'Each engine uses only its own tools. Pi / Harness do not load Eva tools or extensions. Eva provides the UI, model connection and permission checks. Saved changes apply to new runs.',
     label: 'Engine',
     node: 'Node.js executable',
     runtime:
@@ -39,7 +39,7 @@ const copy = {
   },
   ja: {
     title: '実行エンジン',
-    hint: 'Pi / Harness 独自のプロンプト・文脈・基本ツールを使用します。画面・モデル接続・権限確認は Eva が担当します。保存後、新しい実行から適用されます。',
+    hint: '各エンジンは独自のツールのみを使用します。Pi / Harness は Eva のツールや拡張を読み込みません。画面・モデル接続・権限確認は Eva が担当します。変更は新しい実行から適用されます。',
     label: 'エンジン',
     node: 'Node.js 実行ファイル',
     runtime:

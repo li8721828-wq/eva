@@ -15,7 +15,12 @@ const server = await createServer({
   cacheDir: path.join(root, 'tmp/ui-check/vite-cache'),
   plugins: [tailwindcss()],
   resolve: { alias: { '@': path.join(root, 'src/renderer') } },
-  server: { host: '127.0.0.1', port: 0 },
+  server: {
+    host: '127.0.0.1', port: 0,
+    // Build/test artifacts are not fixture source. Reloading on copied HTML or
+    // runner edits can destroy clipboard/font assertions midway through a run.
+    watch: { ignored: ['**/tmp/**', '**/out/**', '**/dist/**', '**/build/**', '**/docs/**', '**/*runner.cjs'] },
+  },
 })
 try {
   await server.listen()

@@ -651,7 +651,28 @@ export function conversationWorkspacePath(conversation: Conversation, fallback =
 
 export function registerConversationHandlers(services?: ChatServices): void {
   registerBackgroundGoalController(controlBackgroundGoal)
-  const conversationLifecycle = new ConversationLifecycleService(services?.storage || getStorage())
+  const conversationLifecycle = new ConversationLifecycleService(services?.storage || getStorage(), (id) => {
+    clearSessionApprovals(id)
+    const token = activeChatRunTokens.get(id)
+    const running = Boolean(token || activeRunRegistry.list(id).length)
+    if (!running) return
+    if (token) userStoppedChatRunTokens.add(token)
+    activeChatRunTokens.delete(id)
+    // A running framework owns a permission snapshot. Never silently retain it
+    // after the composer displays a different grant, or replay side effects.
+    for (const kind of ['chat', 'chat-task', 'background-goal', 'delegated-team', 'task-team', 'task-goal'] as const) {
+      activeRunRegistry.get<{ abort(): void }>(kind, id)?.abort()
+    }
+    symposiumExecution?.abort(id)
+    resolvePendingGoalConfirmation(id, false)
+    rejectAllPendingApprovalsForConversation(id, '会话权限已更改，本轮已停止。请发送“继续”以使用新权限；不要自动重试旧操作。')
+    cancelAllPendingAskUsersForConversation(id, '会话权限已更改')
+    void getAgentOsScheduler().cancelInteractive(id, 'Conversation permissions changed.')
+    void getAgentOsScheduler().cancelTask(id, undefined, 'Conversation permissions changed.')
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) window.webContents.send(IPC.CHAT_STREAM, { conversationId: id, type: 'permissions_changed' } satisfies ChatStreamEvent)
+    }
+  })
   const symposiumExecution = services ? new SymposiumExecutionService(services) : undefined
   // ─── Conversation CRUD ──────────────────────────────────────────────────────
 

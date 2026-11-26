@@ -104,6 +104,8 @@ export interface RequirementRun {
   pendingMaterialsSince?: number
   /** Draft only; never a material receipt or a published upstream release. */
   materialPreviewDocumentId?: string
+  /** Downstream assumption-based drafts; never published requirement/spec releases. */
+  materialDraftDocumentIds?: string[]
   /** Latest user selection for each stable issue, with its chronological receipt. */
   clarificationDecisions?: RequirementDecision[]
   /** Canonical worktree that owns the package. */

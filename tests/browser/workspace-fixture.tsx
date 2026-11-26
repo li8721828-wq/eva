@@ -25,6 +25,11 @@ const api: Record<string, unknown> = {
   config: { set: async (key: string, value: unknown) => { writes.push({ key, value }) }, selectModel: async (providerId: string, model: string, reasoningSelection?: string) => { writes.push({ key: 'modelSelection', providerId, model, reasoningSelection }); const entry = providers.find(provider => provider.id === providerId)?.models.find(item => item.id === model); if (entry && reasoningSelection !== undefined) (entry as any).reasoningSelection = reasoningSelection } },
   chat: {
     onStream: (listener: typeof chatListener) => { chatListener = listener; return () => { chatListener = undefined } },
+    decideToolApproval: async (conversationId: string, approvalId: string, approved: boolean) => {
+      testWindow.fixtureApprovalDecisions = [...(testWindow.fixtureApprovalDecisions || []), { conversationId, approvalId, approved }]
+      emitChat({ conversationId, type: 'tool_approval_closed', toolApprovalId: approvalId })
+      return true
+    },
     decideAskUser: async (conversationId: string, askId: string, optionId: string) => {
       testWindow.fixtureChoice = { conversationId, askId, optionId }
       emitChat({ type: 'text_delta', conversationId, content: '已收到选择，继续检查。' })
@@ -44,7 +49,11 @@ const api: Record<string, unknown> = {
     submit: async (input: any) => {
       testWindow.fixtureSupplement = input
       if (input.action === 'simulate-materials' && specDraft) {
-        specDraft = { ...specDraft, materialPreviewDocumentId: 'preview', documents: [{ id: 'preview', stage: 'modeling', dimension: 'material-preview', title: '模拟材料与规格草稿', content: '## 模拟假设\n\n示例字段仅供起草，正式材料仍待验收。', path: '', createdAt: '', round: 1 }] }
+        specDraft = { ...specDraft, materialPreviewDocumentId: 'preview', materialDraftDocumentIds: ['draft-model', 'draft-spec'], documents: [
+          { id: 'preview', stage: 'modeling', dimension: 'material-preview', title: '模拟材料与规格草稿', content: '## 模拟假设\n\n示例字段仅供起草，正式材料仍待验收。', path: '', createdAt: '', round: 1 },
+          { id: 'draft-model', stage: 'modeling', dimension: 'material-draft-modeling', title: '模拟分支：业务建模草稿', content: '## 业务行为\n\n假设仅供起草。', path: '', createdAt: '', round: 1 },
+          { id: 'draft-spec', stage: 'specification', dimension: 'material-draft-specification', title: '模拟分支：实施规格草稿', content: '## 实施规格草稿\n\n真实材料后续核对。', path: '', createdAt: '', round: 1 },
+        ] }
         return specDraft
       }
       specDraft = undefined
@@ -74,6 +83,16 @@ testWindow.useOtherProject = () => useWorkspaceStore.setState({ workspaces: [pro
 testWindow.switchFixtureConversation = (id: string) => useChatStore.setState({ currentConversationId: id, conversations: [conversation, { ...conversation, id }], messages: [] })
 testWindow.setTestTheme = (theme: 'light' | 'dark' | 'starlight') => useAppStore.setState({ theme })
 testWindow.setFullFilesystemAccess = () => useChatStore.setState({ conversations: [{ ...conversation, permissionLevel: 'full-access' }] })
+testWindow.showToolApproval = (expiresIn = 60000) => {
+  testWindow.fixtureApprovalDecisions = []
+  emitChat({ conversationId: 'current', type: 'tool_approval_request', toolApproval: {
+    id: 'approval-fixture', toolCallId: 'write-file', toolName: 'write_file', arguments: { path: 'specs/example.md' },
+    workspacePath: project.path, category: 'workspace-write', summary: 'Write specs/example.md',
+    requestedAt: Date.now() - 500, expiresAt: Date.now() + expiresIn,
+  } })
+}
+testWindow.closeToolApproval = () => emitChat({ conversationId: 'current', type: 'tool_approval_closed', toolApprovalId: 'approval-fixture' })
+testWindow.changePermissionsWhileRunning = () => emitChat({ conversationId: 'current', type: 'permissions_changed' })
 testWindow.setReasoningRoute = (enabled: boolean) => useAppStore.setState({ activeProviderId: enabled ? 'reasoning-demo' : 'demo', activeModel: enabled ? 'deepseek-flash' : 'coding-demo' })
 
 testWindow.setReadingPreview = (renderer: AgentMarkdownRenderer, theme: 'light' | 'dark' | 'starlight') => {

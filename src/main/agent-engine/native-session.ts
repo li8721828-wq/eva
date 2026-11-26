@@ -12,6 +12,8 @@ interface Cursor {
   ready: boolean
   /** Harness history must be queued after its protected system head. */
   harnessImportVersion?: number
+  /** Tool catalogs from the former mixed runtime must not be resumed. */
+  toolProfile?: 'runtime-only-v1'
 }
 const digest = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -64,12 +66,13 @@ export async function prepareNativeSession(options: {
   }
   const resume = Boolean(
     previous?.ready &&
+    previous.toolProfile === 'runtime-only-v1' &&
     (options.engine !== 'deepseek-harness' || previous.harnessImportVersion === 2) &&
     previous.users.length < users.length &&
     previous.users.every((value, i) => value === users[i]),
   )
   const generation = resume ? previous!.generation : randomUUID()
-  const cursor: Cursor = { version: 1, generation, users, ready: false,
+  const cursor: Cursor = { version: 1, generation, users, ready: false, toolProfile: 'runtime-only-v1',
     ...(options.engine === 'deepseek-harness' ? { harnessImportVersion: 2 } : {}) }
   await writeJsonAtomicAsync(cursorPath, cursor)
   let imported = options.history

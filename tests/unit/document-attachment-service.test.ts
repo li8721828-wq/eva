@@ -12,6 +12,35 @@ afterEach(async () => {
 })
 
 describe('document attachment context', () => {
+  it('imports a long Word requirement in full while ordinary chat retains bounded excerpts', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-attachment-'))
+    temporaryDirectories.push(directory)
+    const filePath = path.join(directory, 'long.docx')
+    const text = `${'资产盘点规则。'.repeat(14_000)}文末唯一验收条款。`
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`)
+    await fs.writeFile(filePath, await zip.generateAsync({ type: 'nodebuffer' }))
+    const attachments = [{ path: filePath, name: 'long.docx', size: 0, kind: 'file' as const }]
+    const full = await buildDocumentAttachmentContext(attachments, { requireComplete: true })
+    expect(full).toContain(text)
+    expect(full).not.toContain('excerpt truncated')
+    const chat = await buildDocumentAttachmentContext(attachments)
+    expect(chat).toContain('excerpt truncated')
+    expect(chat).not.toContain('文末唯一验收条款')
+  })
+
+  it('distinguishes empty text from the local aggregate import limit', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-attachment-'))
+    temporaryDirectories.push(directory)
+    const filePath = path.join(directory, 'source.md')
+    const attachments = [{ path: filePath, name: 'source.md', size: 0, kind: 'file' as const }]
+    await fs.writeFile(filePath, '   ')
+    await expect(buildDocumentAttachmentContext(attachments, { requireComplete: true })).rejects.toThrow('未提取到正文')
+    await fs.writeFile(filePath, '字'.repeat(2_000_001))
+    await expect(buildDocumentAttachmentContext(attachments, { requireComplete: true })).rejects.toThrow('2,000,000 字符')
+  })
+
   it('reads plain-text attachments into the local model context', async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'eva-attachment-'))
     temporaryDirectories.push(directory)

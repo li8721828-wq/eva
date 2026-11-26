@@ -1,6 +1,6 @@
 {
   "name": "eva",
-  "version": "0.1.233",
+  "version": "0.1.238",
   "description": "Eva - AI Coding Agent Desktop Client",
   "main": "./out/main/index.js",
   "scripts": {
@@ -247,6 +247,10 @@
       {
         "from": "resources/searxng",
         "to": "searxng"
+      },
+      {
+        "from": "src/renderer/assets/fonts/noto-sans-sc/LICENSE",
+        "to": "licenses/NotoSansSC-OFL.txt"
       }
     ],
     "win": {
