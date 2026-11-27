@@ -1,4 +1,5 @@
 import type { ChatDocumentAttachment } from './conversation'
+import type { RequirementImplementation } from './requirement-implementation'
 
 export type RequirementRunStatus = 'analyzing' | 'awaiting-clarification' | 'awaiting-materials' | 'review-required' | 'awaiting-spec-resolution' | 'ready-for-specification' | 'specifying' | 'ready-for-implementation' | 'failed' | 'cancelled'
 export type RequirementDocumentStage = 'source' | 'requirement-analysis' | 'code-analysis' | 'clarification' | 'evaluation' | 'modeling' | 'specification' | 'spec-validation' | 'dsl' | 'coding'
@@ -106,6 +107,19 @@ export interface RequirementRun {
   materialPreviewDocumentId?: string
   /** Downstream assumption-based drafts; never published requirement/spec releases. */
   materialDraftDocumentIds?: string[]
+  implementation?: RequirementImplementation
+  /** Isolated assumption-based execution; independent of formal release status. */
+  materialTrial?: {
+    inputHash: string
+    stage: 'specification' | 'dsl' | 'coding'
+    status: 'running' | 'ready' | 'failed' | 'cancelled'
+    specification: RequirementArtifactReceipt
+    dsl?: RequirementArtifactReceipt
+    outputPath?: string
+    generator?: string
+    verification?: string
+    error?: string
+  }
   /** Latest user selection for each stable issue, with its chronological receipt. */
   clarificationDecisions?: RequirementDecision[]
   /** Canonical worktree that owns the package. */
@@ -148,7 +162,7 @@ export interface RequirementRelease extends RequirementArtifactReceipt {
 export interface SubmitRequirementInput {
   conversationId: string
   runId?: string
-  action?: 'simulate-materials'
+  action?: 'simulate-materials' | 'continue-material-trial'
   content?: string
   attachments?: ChatDocumentAttachment[]
 }

@@ -23,6 +23,7 @@ import type { RuntimeKernelAuditRecord, RuntimeKernelSnapshot } from '../shared/
 import type { ActivePlan } from '../shared/types/active-plan'
 import type { NetworkConfig, NetworkTestResult } from '../shared/types/network'
 import type { RequirementDocument, RequirementProgress, RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../shared/types/requirement-engineering'
+import type { ImplementRequirementInput, ImplementationHandoff, ImplementationReview } from '../shared/types/requirement-implementation'
 import type { AgentTokenEstimate } from '../shared/types/agent-token-estimate'
 import type { McpServerConfig, McpServerState } from '../shared/types/mcp'
 import type { SkillInventory, SkillRootKind } from '../shared/types/skill'
@@ -319,6 +320,8 @@ export interface EvaAPI {
     spec(input: SubmitSpecificationInput): Promise<RequirementRun>
     dsl(input: SubmitDslInput): Promise<RequirementRun>
     coding(input: SubmitCodingInput): Promise<RequirementRun>
+    implement(input: ImplementRequirementInput): Promise<ImplementationHandoff>
+    reviewImplementation(input: Pick<ImplementRequirementInput, 'conversationId' | 'runId'>): Promise<ImplementationReview>
     verifyHost(input: SubmitHostVerificationInput): Promise<RequirementRun>
     resolveSpec(input: SubmitSpecificationResolutionInput): Promise<RequirementRun>
     abort(conversationId: string, runId?: string): Promise<void>
@@ -651,6 +654,8 @@ const evaAPI: EvaAPI = {
     spec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_SUBMIT, input),
     dsl: (input) => invokeContract(IPC.REQUIREMENT_DSL_SUBMIT, input),
     coding: (input) => invokeContract(IPC.REQUIREMENT_CODING_SUBMIT, input),
+    implement: (input) => invokeContract(IPC.REQUIREMENT_IMPLEMENT, input),
+    reviewImplementation: (input) => invokeContract(IPC.REQUIREMENT_IMPLEMENT_REVIEW, input),
     verifyHost: (input) => invokeContract(IPC.REQUIREMENT_HOST_VERIFY, input),
     resolveSpec: (input) => invokeContract(IPC.REQUIREMENT_SPECIFICATION_RESOLUTION, input),
     abort: (conversationId, runId) => invokeContract(IPC.REQUIREMENT_RUN_ABORT, conversationId, runId),

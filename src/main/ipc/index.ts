@@ -45,7 +45,7 @@ export function registerAllIpcHandlers(services?: Services): void {
         memoryAgent: services.memoryAgent,
       }
     : undefined
-  registerConversationHandlers(chatServices)
+  const startDesktopChat = registerConversationHandlers(chatServices)
   registerWorkspaceHandlers(services?.projectIndexService)
   registerActivityHandlers()
   registerRuntimeProposalHandlers()
@@ -55,7 +55,7 @@ export function registerAllIpcHandlers(services?: Services): void {
   registerPluginHandlers()
   if (services) registerMcpHandlers(services.mcpClientManager)
   registerPersonalPreferenceHandlers()
-  if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService, services.storage)
+  if (services) registerRequirementEngineeringHandlers(services.providerRegistry, services.projectIndexService, services.storage, startDesktopChat)
   registerGitHandlers()
   registerCostHandlers()
   registerTaskHandlers(taskServices)

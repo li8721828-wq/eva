@@ -334,7 +334,7 @@ export class ConversationStore {
 
   async updateConversation(
     id: string,
-    updates: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'gitRepositoryPath' | 'gitBranch' | 'gitWorktreePath' | 'workspacePath' | 'symposium' | 'executionStatus' | 'executionUpdatedAt' | 'executionStatusAcknowledgedAt' | 'updatedAt' | 'purposeId'>>
+    updates: Partial<Pick<Conversation, 'title' | 'titleSource' | 'agentId' | 'archived' | 'permissionLevel' | 'fileAccessGrants' | 'multiDimensionalIndexEnabled' | 'gitRepositoryPath' | 'gitBranch' | 'gitWorktreePath' | 'workspacePath' | 'symposium' | 'executionStatus' | 'executionUpdatedAt' | 'executionStatusAcknowledgedAt' | 'updatedAt' | 'purposeId' | 'requirementImplementation'>>
   ): Promise<void> {
     return this.enqueue(() => {
       const meta = this.readJson<Conversation | null>(this.metaPath(id), null)

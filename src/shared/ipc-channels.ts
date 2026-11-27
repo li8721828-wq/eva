@@ -106,6 +106,8 @@ export const IPC = {
   REQUIREMENT_SPECIFICATION_SUBMIT: 'requirement:specification-submit',
   REQUIREMENT_DSL_SUBMIT: 'requirement:dsl-submit',
   REQUIREMENT_CODING_SUBMIT: 'requirement:coding-submit',
+  REQUIREMENT_IMPLEMENT: 'requirement:implement',
+  REQUIREMENT_IMPLEMENT_REVIEW: 'requirement:implementation-review',
   REQUIREMENT_HOST_VERIFY: 'requirement:host-verify',
   REQUIREMENT_SPECIFICATION_RESOLUTION: 'requirement:specification-resolution',
   REQUIREMENT_RUN_ABORT: 'requirement:abort',

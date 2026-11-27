@@ -6,6 +6,12 @@ vi.mock('../../src/main/services/supplier-pricing-service', () => ({ ensureProvi
 vi.mock('../../src/main/services/usage-pricing-service', () => ({ hydrateUsagePricing: vi.fn() }))
 
 describe('conversation access changes', () => {
+  it('rejects renderer attempts to forge implementation task ownership', async () => {
+    const updateConversation = vi.fn()
+    const service = new ConversationLifecycleService({ conversations: { updateConversation } } as any)
+    await expect(service.update('c', { requirementImplementation: { taskId: 'foreign' } } as any)).rejects.toThrow('managed by the host')
+    expect(updateConversation).not.toHaveBeenCalled()
+  })
   it('compares effective permissions and ignores folder order and ordinary metadata', () => {
     const previous = { permissionLevel: 'granted-folders' as const, fileAccessGrants: [{ path: 'D:/a', access: 'read' as const }, { path: 'D:/b', access: 'read-write' as const }] }
     expect(conversationPermissionsChanged(previous, { fileAccessGrants: [...previous.fileAccessGrants].reverse() })).toBe(false)

@@ -5,6 +5,8 @@ import { ScrollArea } from '@/components/ui/ScrollArea'
 import { MarkdownMessageContent, MessageBubble } from './MessageBubble'
 import { GoalConfirmationCard } from './GoalConfirmationCard'
 import { RequirementClarificationCard } from './RequirementClarificationCard'
+import { RequirementImplementationCard } from './RequirementImplementationCard'
+import { requirementImplementationMode } from '../../../shared/requirement-implementation'
 import { CheckCircle2, ChevronsDown, CircleAlert, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/use-app-store'
@@ -48,6 +50,8 @@ export function MessageList({ className }: MessageListProps) {
   // unrelated store field (e.g. `inputText`, `quotedMessage`) changes.
   const messages = useChatStore((s) => s.messages)
   const currentConversationId = useChatStore((s) => s.currentConversationId)
+  const conversations = useChatStore((s) => s.conversations)
+  const currentConversation = conversations.find(conversation => conversation.id === currentConversationId)
   const isConversationLoading = useChatStore((s) => s.isConversationLoading)
   const streamingByConversation = useChatStore((s) => s.streamingByConversation)
   const requirementProgressByConversation = useChatStore((s) => s.requirementProgressByConversation)
@@ -106,6 +110,7 @@ export function MessageList({ className }: MessageListProps) {
 
   const [awaitingClarification, setAwaitingClarification] = useState<RequirementRun | null>(null)
   const [readyRequirement, setReadyRequirement] = useState<RequirementRun | null>(null)
+  const [implementationRequirement, setImplementationRequirement] = useState<RequirementRun | null>(null)
   const [awaitingSpecResolution, setAwaitingSpecResolution] = useState<RequirementRun | null>(null)
   const pendingInteractionRequest = useRef(0)
 
@@ -115,6 +120,7 @@ export function MessageList({ className }: MessageListProps) {
     if (!currentConversationId) {
       setAwaitingClarification(null)
       setReadyRequirement(null)
+      setImplementationRequirement(null)
       setAwaitingSpecResolution(null)
       return
     }
@@ -122,6 +128,7 @@ export function MessageList({ className }: MessageListProps) {
       const runs = await window.eva.requirements.listRuns(currentConversationId)
       if (request !== pendingInteractionRequest.current || useChatStore.getState().currentConversationId !== currentConversationId) return
       const interactions = runs.filter((run) => (run.interactionConversationId ?? run.conversationId) === currentConversationId)
+      setImplementationRequirement(interactions.find(run => requirementImplementationMode(run)) || null)
       setReadyRequirement(interactions.find(run => run.status === 'ready-for-specification' || (run.status === 'ready-for-implementation' && run.codingStatus !== 'ready')) || null)
       setAwaitingClarification(interactions.find((run) => run.status === 'awaiting-clarification' || run.status === 'awaiting-materials' || run.status === 'review-required') || null)
       setAwaitingSpecResolution(interactions.find((run) => run.status === 'awaiting-spec-resolution') || null)
@@ -129,6 +136,7 @@ export function MessageList({ className }: MessageListProps) {
       if (request !== pendingInteractionRequest.current || useChatStore.getState().currentConversationId !== currentConversationId) return
       setAwaitingClarification(null)
       setReadyRequirement(null)
+      setImplementationRequirement(null)
       setAwaitingSpecResolution(null)
     }
   }, [currentConversationId])
@@ -516,7 +524,8 @@ export function MessageList({ className }: MessageListProps) {
     streamingToolCalls.length,
   ])
 
-  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !isRequirementRunning) {
+  if (messages.length === 0 && !isConversationLoading && !isStreaming && !isTeamRunning && !isRequirementRunning
+    && !currentConversation?.requirementImplementation && !implementationRequirement) {
     return <div className={cn('relative min-h-0 flex-1', className)} aria-hidden />
   }
 
@@ -602,7 +611,17 @@ export function MessageList({ className }: MessageListProps) {
           </section>
         )}
 
-        {readyRequirement && (readyRequirement.interactionConversationId ?? readyRequirement.conversationId) === currentConversationId && !requirementProgress && <section className="mb-5 rounded-xl border border-[var(--ui-border)] p-4" aria-label="需求阶段下一步">
+        {currentConversation?.requirementImplementation && <RequirementImplementationCard
+          key={`task-${currentConversation.id}`} conversationId={currentConversation.id} runId={currentConversation.requirementImplementation.runId}
+          mode={currentConversation.requirementImplementation.mode}
+          taskConversation={{ sourceConversationId: currentConversation.requirementImplementation.sourceConversationId, executionStatus: currentConversation.executionStatus, workspacePath: currentConversation.workspacePath }}
+        />}
+        {!currentConversation?.requirementImplementation && implementationRequirement && currentConversationId && !requirementProgress && <RequirementImplementationCard
+          key={`requirement-${currentConversationId}-${implementationRequirement.id}`} conversationId={currentConversationId} runId={implementationRequirement.id}
+          mode={requirementImplementationMode(implementationRequirement) || 'confirmed'} implementation={implementationRequirement.implementation} disabled={isStreaming}
+        />}
+        {readyRequirement && (readyRequirement.interactionConversationId ?? readyRequirement.conversationId) === currentConversationId && !requirementProgress && <details className="mb-5 rounded-xl border border-[var(--ui-border)] p-4" aria-label="需求阶段下一步">
+          <summary className="cursor-pointer text-sm text-[var(--text-secondary)]">生成独立领域模块（可选）</summary>
           <p className="text-sm">{readyRequirement.status === 'ready-for-specification' ? '需求已通过，可以继续建模与规格编制。' : '规格已通过，可以继续生成 DSL 与代码。'}</p>
           <button className="mt-3 rounded-md bg-violet-600 px-3 py-2 text-sm text-white" onClick={() => {
             if (!currentConversationId) return
@@ -621,10 +640,21 @@ export function MessageList({ className }: MessageListProps) {
               finishRequirementProgress(input.conversationId); await loadAwaitingClarification()
             })
           }}>{readyRequirement.status === 'ready-for-specification' ? '继续建模并生成规格' : '继续生成 DSL 与代码'}</button>
-        </section>}
+        </details>}
         {awaitingClarification && (awaitingClarification.interactionConversationId ?? awaitingClarification.conversationId) === currentConversationId && !requirementProgress && (
           <RequirementClarificationCard
             run={awaitingClarification}
+            onContinueTrial={async () => {
+              if (!currentConversationId) return
+              startRequirementProgress(currentConversationId, '正在采用当前模拟假设，继续 DSL 与隔离试验代码')
+              try {
+                await window.eva.requirements.submit({ conversationId: currentConversationId, runId: awaitingClarification.id, action: 'continue-material-trial' })
+                await refreshConversation(currentConversationId)
+              } catch (error) {
+                useChatStore.getState().setError(error instanceof Error ? error.message : '继续试验失败，请重试。')
+                throw error
+              } finally { finishRequirementProgress(currentConversationId); await loadAwaitingClarification() }
+            }}
             onSimulate={async () => {
               if (!currentConversationId) return
               startRequirementProgress(currentConversationId, '正在沿用当前需求，生成模拟材料并继续建模与规格草稿')

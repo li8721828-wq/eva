@@ -5,10 +5,19 @@ import type { ProjectIndexService } from '../services/project-index-service'
 import type { StorageManager } from '../storage'
 import type { SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from '../../shared/types/requirement-engineering'
 import { RequirementEngineeringService } from '../services/requirement-engineering-service'
+import type { DesktopChatStarter } from '../services/desktop-chat-starter'
+import type { ImplementRequirementInput } from '../../shared/types/requirement-implementation'
 
-export function registerRequirementEngineeringHandlers(providers: ProviderRegistry, projectIndex: ProjectIndexService | undefined, storage: StorageManager): void {
+export function registerRequirementEngineeringHandlers(providers: ProviderRegistry, projectIndex: ProjectIndexService | undefined, storage: StorageManager, startDesktopChat?: DesktopChatStarter): void {
   const service = new RequirementEngineeringService(providers, projectIndex, { storage })
   ipcMain.handle(IPC.REQUIREMENT_RUN_LIST, async (_event, conversationId?: string) => service.list(conversationId))
+  ipcMain.handle(IPC.REQUIREMENT_IMPLEMENT, async (event, input: ImplementRequirementInput) => {
+    if (!startDesktopChat) throw new Error('当前窗口未启用桌面 Agent 执行。')
+    const handoff = await service.implement(input)
+    await startDesktopChat(event.sender, { conversationId: handoff.conversationId, messageId: handoff.messageId, message: handoff.message, agentId: handoff.agentId })
+    return handoff
+  })
+  ipcMain.handle(IPC.REQUIREMENT_IMPLEMENT_REVIEW, async (_event, input: Pick<ImplementRequirementInput, 'conversationId' | 'runId'>) => service.reviewImplementation(input))
   ipcMain.handle(IPC.REQUIREMENT_RUN_SUBMIT, async (event, input: SubmitRequirementInput) => {
     return service.submit(input, (progress) => event.sender.send(IPC.REQUIREMENT_PROGRESS, progress))
   })

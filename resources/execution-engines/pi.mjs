@@ -93,7 +93,9 @@ export async function runPi(config, bridge) {
         )
         return backend.exec(nativeCommand, plan.cwd, {
           ...options,
-          env: { ...options.env, ...plan.envOverrides },
+          // The worker already contains only the host's safe OS environment.
+          // Passing an empty object would suppress the SDK shell's defaults.
+          env: { ...process.env, ...options.env, ...plan.envOverrides },
         })
       },
     }

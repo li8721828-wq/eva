@@ -18,6 +18,8 @@ export interface ChatMessageReference {
 
 export interface Conversation {
   id: string
+  /** Host-created link to the requirement implementation task, never renderer-editable. */
+  requirementImplementation?: { taskId: string; runId: string; sourceConversationId: string; mode: 'confirmed' | 'assumptions' }
   title: string
   /** Distinguishes model-generated titles from titles explicitly chosen by the user. */
   titleSource?: ConversationTitleSource

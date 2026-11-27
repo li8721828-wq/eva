@@ -14,7 +14,10 @@ app.whenReady().then(async () => {
       webPreferences: { backgroundThrottling: false, offscreen: true },
     })
     win.webContents.on('console-message', (_event, level, message) => { if (level >= 3) console.error('Renderer:', message) })
-    const run = (code) => win.webContents.executeJavaScript(code)
+    const run = async (code) => {
+      try { return await win.webContents.executeJavaScript(code) }
+      catch (error) { throw new Error(`UI script failed: ${code}`, { cause: error }) }
+    }
     await win.loadURL(process.argv[2])
     for (let i = 0; i < 100 && !(await run('Boolean(window.uiReady)')); i++) await delay(100)
     assert.equal(await run('Boolean(window.uiReady)'), true, 'fixture loaded')
@@ -459,7 +462,9 @@ app.whenReady().then(async () => {
     }
 
     await win.loadURL(`${process.argv[2]}?page=workspace`)
-    for (let i = 0; i < 200 && !(await run('Boolean(window.uiReady)')); i++) await delay(100)
+    // The real App imports more modules than the focused fixtures. Wait for
+    // its actual readiness marker on cold Windows dev-server transforms.
+    for (let i = 0; i < 1200 && !(await run('Boolean(window.uiReady)')); i++) await delay(100)
     await delay(300)
     assert.equal(await run('Boolean(window.uiReady)'), true, 'actual application workspace loaded')
     assert.deepEqual(await run('window.uiErrors'), [], 'workspace has no renderer errors')
@@ -601,6 +606,25 @@ app.whenReady().then(async () => {
     assert.equal(await run("document.querySelectorAll('[data-requirement-draft]').length"), 2, 'simulation continues to modeling and specification drafts')
     assert.equal(await run("document.querySelector('[aria-label=待补材料]').closest('details').open"), false, 'formal material list does not obscure the draft continuation')
     assert.match(await run("document.querySelector('[aria-label=待补材料]').closest('section').textContent"), /原需求与模拟材料已沿用/)
+    assert.match(await run("document.querySelector('[data-requirement-phase]').textContent"), /规格阶段/)
+    await run("document.querySelector('[data-continue-material-trial]').click()")
+    for (let i=0;i<80 && !(await run("document.querySelector('[data-requirement-phase]')?.textContent.includes('代码阶段')"));i++) await delay(40)
+    assert.deepEqual(await run('window.fixtureSupplement'), { conversationId: 'current', runId: 'fixture-spec', action: 'continue-material-trial' })
+    assert.match(await run("document.querySelector('[data-requirement-phase]').textContent"), /代码阶段/)
+    assert.equal(await run("document.querySelector('[aria-label=待补材料]').textContent"), '交付敏感字段清单', 'trial code never closes formal material requirements')
+    assert.match(await run("document.querySelector('[data-continue-material-trial]').closest('section').textContent"), /trial\/code/)
+    assert.match(await run("document.querySelector('[data-start-requirement-implementation]').textContent"), /实现项目功能/)
+    await run("document.querySelector('[data-start-requirement-implementation]').click()")
+    for (let i=0;i<100 && !(await run("document.querySelector('[data-requirement-implementation] h2')?.textContent.includes('待审查')"));i++) await delay(40)
+    assert.deepEqual(await run('window.fixtureImplementationInput'), { conversationId: 'current', runId: 'fixture-spec', mode: 'assumptions' })
+    assert.equal(await run('window.chatState().currentConversationId'), 'implementation-child')
+    await run("document.querySelector('[data-review-requirement-implementation]').click()")
+    for (let i=0;i<80 && !(await run("Boolean(document.querySelector('[data-implementation-review]'))"));i++) await delay(40)
+    assert.match(await run("document.querySelector('[data-implementation-review]').textContent"), /业务验收：待确认/)
+    assert.match(await run("document.querySelector('[data-implementation-review]').textContent"), /ApprovalTest\.java/)
+    fs.writeFileSync(path.join(output, 'implementation-review-0.1.240.png'), (await win.webContents.capturePage()).toPNG())
+    await run("[...document.querySelectorAll('button')].find(button=>button.textContent==='返回需求会话').click()")
+    for (let i=0;i<80 && (await run('window.chatState().currentConversationId'))!=='current';i++) await delay(40)
     await run("window.enterSupplement();document.querySelector('.chat-composer__textarea').focus()")
     await key('Return')
     assert.deepEqual(await run('window.fixtureSupplement'), { conversationId: 'current', content: '联系人手机号仅显示末四位', attachments: [] })

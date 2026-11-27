@@ -12,6 +12,9 @@ import type { RequirementClarificationAnswer, RequirementClarificationQuestion, 
 import { getStorage } from '../storage'
 import { buildDocumentAttachmentContext } from './document-attachment-service'
 import { assertRequirementSourceSize, readRequirementSource } from './requirement-source-reader'
+import { RequirementImplementationService } from './requirement-implementation-service'
+import type { ImplementRequirementInput, ImplementationHandoff, ImplementationReview } from '../../shared/types/requirement-implementation'
+import { requirementImplementationMode } from '../../shared/requirement-implementation'
 import { recordActivity } from './activity-log'
 import { RequirementRunRepository } from './requirement-run-repository'
 import { clarificationKey, isRequirementMaterial, latestRequirementDecisions, unresolvedRequirementItems } from './requirement-clarification-state'
@@ -65,6 +68,7 @@ const EVALUATION_DIMENSIONS = [
 const activeRequirementControllers = activeRunRegistry.forKind<AbortController>('requirement')
 
 export class RequirementEngineeringService {
+  private implementationService?: RequirementImplementationService
   private readonly activeRuns = new Set<string>()
   private readonly abortControllers = new Map<string, { controller: AbortController; runId?: string }>()
   private readonly injectedStorage?: ReturnType<typeof getStorage>
@@ -74,10 +78,11 @@ export class RequirementEngineeringService {
   constructor(
     private readonly providers: ProviderRegistry,
     private readonly projectIndex?: ProjectIndexService,
-    dependencies: { storage?: ReturnType<typeof getStorage>; runs?: RequirementRunRepository } = {},
+    dependencies: { storage?: ReturnType<typeof getStorage>; runs?: RequirementRunRepository; implementationService?: RequirementImplementationService } = {},
   ) {
     this.injectedStorage = dependencies.storage
     this.runs = dependencies.runs || new RequirementRunRepository()
+    this.implementationService = dependencies.implementationService
   }
 
   private get storage(): ReturnType<typeof getStorage> {
@@ -110,7 +115,65 @@ export class RequirementEngineeringService {
   }
 
   async submit(input: SubmitRequirementInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
-    return this.runSubmission(input.conversationId, onProgress, (signal, progress) => this.submitInternal(input, progress, signal))
+    return this.runSubmission(input.conversationId, onProgress, (signal, progress) => this.submitInternal(input, progress, signal), input.runId)
+  }
+
+  async implement(input: ImplementRequirementInput): Promise<ImplementationHandoff> {
+    if (!input || (input.mode !== 'confirmed' && input.mode !== 'assumptions') || !input.runId) throw new Error('请选择已确认需求或明确采用模拟假设的实现方式。')
+    return this.runSubmission(input.conversationId, undefined, async () => {
+      const conversation = await this.getConversation(input.conversationId)
+      const run = (await this.list(input.conversationId)).find(run => run.id === input.runId && (run.interactionConversationId ?? run.conversationId) === input.conversationId)
+      if (!run) throw new Error('当前会话中不存在指定需求运行。')
+      if (requirementImplementationMode(run) !== input.mode) throw new Error('请先确认会影响业务结果的需求决定，或明确采用已有模拟规格试验。')
+      if (conversation.executionStatus === 'running') throw new Error('当前会话仍在执行，请结束或停止后开始隔离实现。')
+      return this.withRun(run, async () => {
+        await this.ensureWorkspacePackage(run, conversation)
+        const documents = run.documents.filter(document => document.stage === 'source')
+        if (input.mode === 'confirmed') {
+          if (!['ready-for-specification', 'ready-for-implementation', 'awaiting-spec-resolution'].includes(run.status)) throw new Error('请先确认会影响业务结果的需求决定，或明确采用已有模拟规格试验。')
+          documents.push(await this.requireRelease(run, 'requirement'))
+          if (run.releases?.specification) documents.push(await this.requireRelease(run, 'specification'))
+        } else {
+          if (run.status !== 'awaiting-materials' || !run.materialPreviewDocumentId) throw new Error('当前没有可采用的模拟材料与规格。')
+          const draft = (run.materialDraftDocumentIds || []).map(id => run.documents.find(document => document.id === id)).filter((document): document is RequirementDocument => Boolean(document))
+          if (!draft.some(document => document.dimension === 'material-draft-specification')) throw new Error('请先生成模拟规格，再采用假设实现。')
+          const preview = run.documents.find(document => document.id === run.materialPreviewDocumentId)
+          if (!preview) throw new Error('模拟材料已失效，请更新草稿。')
+          documents.push(preview, ...draft)
+        }
+        for (const document of documents) {
+          const local = await fs.readFile(await rmsdPath(this.runDirectory(run.id), document.path), 'utf8')
+          const workspace = document.workspacePath && await fs.readFile(await this.workspaceArtifact(run, document.workspacePath), 'utf8')
+          if (local !== document.content || workspace !== document.content) throw new Error(`实现输入「${document.title}」已修改，请重新复核来源。`)
+        }
+        const inputs = [...documents.map(document => ({ title: document.title, content: document.content })),
+          { title: '当前业务决定与验收边界', content: `${this.confirmedClarifications(run) || '以已确认需求为准。'}\n\n正式待补材料：\n${run.pendingMaterials?.map(item => `- ${item.requiredDecision}`).join('\n') || '无'}\n\n实现会话返回不代表业务验收通过。` }]
+        const businessHash = contentHash(JSON.stringify(inputs))
+        this.implementationService ??= new RequirementImplementationService(this.storage)
+        const task = await this.implementationService.prepare({ parent: conversation, runId: run.id, title: run.requirementTitle || conversation.title,
+          mode: input.mode, businessHash, documents: inputs, existing: run.implementation })
+        run.implementation = { taskId: task.taskId, inputHash: task.inputHash, conversationId: task.conversationId, mode: task.mode,
+          worktreePath: task.worktreePath, branch: task.branch, baselineCommit: task.baselineCommit, createdAt: task.createdAt }
+        await this.persist(run)
+        return task
+      })
+    }, input.runId)
+  }
+
+  async reviewImplementation(input: Pick<ImplementRequirementInput, 'conversationId' | 'runId'>): Promise<ImplementationReview> {
+    return this.runSubmission(input.conversationId, undefined, async () => {
+      const conversation = await this.getConversation(input.conversationId)
+      if (conversation.requirementImplementation) {
+        if (conversation.requirementImplementation.runId !== input.runId) throw new Error('实现任务不属于指定需求。')
+        this.implementationService ??= new RequirementImplementationService(this.storage)
+        return this.implementationService.reviewFromImplementation(conversation.requirementImplementation.taskId, conversation.id, input.runId)
+      }
+      const run = (await this.list(input.conversationId)).find(run => run.id === input.runId && (run.interactionConversationId ?? run.conversationId) === input.conversationId)
+      if (!run?.implementation) throw new Error('当前需求还没有实现任务。')
+      await this.ensureWorkspacePackage(run, conversation)
+      this.implementationService ??= new RequirementImplementationService(this.storage)
+      return this.implementationService.review(run.implementation, conversation.id, run.id)
+    }, input.runId)
   }
 
   async answerClarifications(input: SubmitClarificationAnswersInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
@@ -142,6 +205,8 @@ export class RequirementEngineeringService {
   async buildSpecification(input: SubmitSpecificationInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
     return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
+      const trial = await this.findMaterialTrialRun(input.conversationId, input.runId)
+      if (trial) return this.withRun(trial, () => this.continueMaterialTrial(trial, conversation, 'specification', progress, signal))
       const run = await this.findWorkspaceRun(conversation, ['ready-for-specification', 'ready-for-implementation', 'specifying'], input.runId)
         ?? await this.importWorkspaceModelingRun(conversation)
       if (!run) throw new Error('请先完成 /requirement-modeling，再执行 /spec。')
@@ -262,7 +327,13 @@ export class RequirementEngineeringService {
       .filter((run) => (run.interactionConversationId ?? run.conversationId) === input.conversationId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
     const text = input.content?.trim() || ''
-    if (input.action !== undefined && input.action !== 'simulate-materials') throw new Error('未知需求操作。')
+    if (input.action !== undefined && input.action !== 'simulate-materials' && input.action !== 'continue-material-trial') throw new Error('未知需求操作。')
+    if (input.action === 'continue-material-trial') {
+      if (text || input.attachments?.length) throw new Error('请单独补充真实材料，再继续试验分支。')
+      const trial = await this.findMaterialTrialRun(input.conversationId, input.runId)
+      if (!input.runId || !trial) throw new Error('当前没有可继续的模拟规格草稿，请先生成草稿。')
+      return this.withRun(trial, () => this.continueMaterialTrial(trial, conversation, 'coding', onProgress, signal, undefined, true))
+    }
     if (input.action === 'simulate-materials') {
       if (input.attachments?.length) throw new Error('请单独提交真实材料，再生成模拟草稿。')
       if (!active || active.id !== input.runId || active.status !== 'awaiting-materials' || !active.pendingMaterials?.length) {
@@ -283,6 +354,7 @@ export class RequirementEngineeringService {
         const modeling = await this.generateDocument(active, 'modeling', 'material-draft-modeling', '模拟分支：业务建模草稿',
           `继续当前需求的模拟分支，不要求用户重新输入需求。将业务行为整理为带来源编号的 EARS 需求与 BDD 验收场景，列明规则、角色、边界和例外。涉及模拟材料的条目逐项标记“假设，待真实材料确认”，不得宣称已通过正式评测或验收。不要再提出交付这些材料才能开始起草的要求；未知技术细节留作实现前核对。\n\n${draftContext}`,
           signal, onProgress, `material-draft:${active.id}`)
+        if (!active.materialDraftDocumentIds?.includes(modeling.id)) delete active.materialTrial
         active.materialDraftDocumentIds = [modeling.id]
         await this.persist(active)
         this.reportProgress(onProgress, active, 'specification', '业务建模草稿已保存，正在继续生成实施规格草稿')
@@ -290,6 +362,7 @@ export class RequirementEngineeringService {
           `基于当前需求、模拟材料和业务建模继续起草实施规格。按范围与目标、需求编号与业务规则、BDD 验收、数据与集成约束、追溯矩阵、假设及实现前核对项组织。已有事实和模拟假设分开，未知接口/字段/技术方案标为待核对，不虚构现有代码事实。此产物仅供预览和后续修订，不得标为正式发布、READY、验收通过或可直接生产实施，不生成验收回执。不要要求重新提交原需求。\n\n${draftContext}\n\n# 业务建模草稿\n${modeling.content}`,
           signal, onProgress, `material-draft:${active.id}`)
         active.materialDraftDocumentIds.push(specification.id)
+        if (active.materialTrial?.specification.documentId !== specification.id) delete active.materialTrial
         await this.persist(active)
         await this.persistDocuments(conversation.id, [preview, modeling, specification], '模拟分支')
         this.reportProgress(onProgress, active, 'complete', '已沿用当前需求推进至实施规格草稿，无需重新输入；真实材料只影响正式发布与验收')
@@ -472,9 +545,160 @@ export class RequirementEngineeringService {
     return run
   }
 
+  private async findMaterialTrialRun(conversationId: string, runId?: string): Promise<RequirementRun | undefined> {
+    const runs = (await this.list(conversationId)).filter(run => (run.interactionConversationId ?? run.conversationId) === conversationId)
+    const run = runId ? runs.find(run => run.id === runId) : runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]
+    return run?.status === 'awaiting-materials' && run.materialDraftDocumentIds?.some(id =>
+      run.documents.some(document => document.id === id && document.dimension === 'material-draft-specification')) ? run : undefined
+  }
+
+  /** Trial outputs never enter formal releases or the project's application source. */
+  private async continueMaterialTrial(
+    run: RequirementRun, conversation: Conversation, stage: 'specification' | 'dsl' | 'coding',
+    onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal, selectedGenerator?: string, autoDsl = false,
+  ): Promise<RequirementRun> {
+    await this.ensureWorkspacePackage(run, conversation)
+    const drafts = (run.materialDraftDocumentIds || []).map(id => run.documents.find(document => document.id === id))
+    const originalSpec = drafts.find(document => document?.dimension === 'material-draft-specification')
+    const modeling = drafts.find(document => document?.dimension === 'material-draft-modeling')
+    const preview = run.documents.find(document => document.id === run.materialPreviewDocumentId)
+    if (!originalSpec || !modeling || !preview) throw new Error('模拟分支缺少已有草稿，请更新模拟材料后继续。')
+    const readDocument = async (document: RequirementDocument): Promise<void> => {
+      try {
+        const local = await fs.readFile(await rmsdPath(this.runDirectory(run.id), document.path), 'utf8')
+        const workspace = document.workspacePath && await fs.readFile(await this.workspaceArtifact(run, document.workspacePath), 'utf8')
+        if (local !== document.content || workspace !== document.content
+          || (document.checkpoint && contentHash(local) !== document.checkpoint.sha256)) {
+          throw new Error(`试验上游「${document.title}」已修改或缺失，请更新草稿后继续。`)
+        }
+      } catch (error) {
+        if (run.materialTrial) {
+          run.materialTrial.status = 'failed'
+          run.materialTrial.error = error instanceof Error ? error.message : String(error)
+          delete run.materialTrial.verification
+          await this.persist(run)
+        }
+        throw error
+      }
+    }
+    const sources = run.documents.filter(document => document.stage === 'source')
+    for (const document of [...sources, preview, modeling, originalSpec]) await readDocument(document)
+    const inputHash = contentHash(JSON.stringify([
+      sources.map(document => [document.id, contentHash(document.content)]), this.confirmedClarifications(run), run.pendingMaterials,
+      [preview, modeling, originalSpec].map(document => [document.id, contentHash(document.content)]),
+    ]))
+    if (run.materialTrial && run.materialTrial.inputHash !== inputHash) {
+      run.materialTrial.status = 'failed'
+      run.materialTrial.error = '试验分支的上游需求或假设已变化，请更新建模与规格草稿后重新继续。'
+      delete run.materialTrial.verification
+      await this.persist(run)
+      throw new Error('试验分支的上游需求或假设已变化，请更新建模与规格草稿后重新继续。')
+    }
+    if (stage === 'coding' && !autoDsl && !run.materialTrial?.dsl) {
+      throw new Error('当前为试验分支，请先执行 /dsl，再执行 /coding；也可点击“继续生成 DSL 与试验代码”。')
+    }
+    const generator = this.deterministicCoding.resolveGenerator(selectedGenerator || run.materialTrial?.generator)
+    if (generator.outputKind !== 'reference') throw new Error('模拟分支仅使用隔离的参考生成器；生产目标需要正式验收契约。可使用 /coding java-reference 或 /coding java-maven。')
+    try {
+      this.throwIfAborted(signal)
+      if (run.materialTrial?.specification.documentId === originalSpec.id) delete run.materialTrial
+      if (!run.materialTrial) {
+        run.materialTrial = { inputHash, stage: 'specification', status: 'running', specification: { documentId: originalSpec.id, sha256: contentHash(originalSpec.content) } }
+        await this.persist(run)
+        const specification = await this.generateDocument(run, 'specification', 'material-trial-specification', '试验分支：规格交接稿',
+          `采用用户选择继续试验的模拟假设，将已有规格整理为 DSL 的交接输入。保留业务行为、规则、角色、边界和例外，不重新澄清或要求重输需求。逐条使用 FR-001 等稳定编号，验收用 AC-001 等编号，并给出与已有草稿的对应关系；已有编号保持不变。模拟假设必须显式标记，未知事实保持待核对，不宣称正式发布或验收通过。\n\n# 模拟材料\n${preview.content}\n\n# 业务建模\n${modeling.content}\n\n# 已有实施规格\n${originalSpec.content}`,
+          signal, onProgress, `material-trial:${inputHash}`)
+        if (![...specTraceIds(specification.content)].some(id => id.startsWith('FR-'))) {
+          delete specification.checkpoint
+          throw new Error('试验规格缺少 FR 追溯编号，请重试 /spec。')
+        }
+        run.materialTrial.specification = { documentId: specification.id, sha256: contentHash(specification.content) }
+      }
+      const trial = run.materialTrial
+      const specification = run.documents.find(document => document.id === trial.specification.documentId)
+      if (!specification || specification.dimension !== 'material-trial-specification'
+        || contentHash(specification.content) !== trial.specification.sha256) {
+        // A cancelled first attempt may not yet have committed the handoff.
+        delete run.materialTrial
+        await this.persist(run)
+        throw new Error('试验规格交接尚未完成，请重试 /spec 或点击继续。')
+      }
+      await readDocument(specification)
+      trial.status = 'running'
+      trial.error = undefined
+      trial.generator = generator.id
+      if (stage === 'specification') {
+        if (!trial.dsl) trial.stage = 'specification'
+      } else {
+        if (!trial.dsl && (stage === 'dsl' || autoDsl)) {
+          trial.stage = 'dsl'
+          await this.persist(run)
+          const dslDocument = await this.generateDocument(run, 'dsl', 'material-trial-dsl', '试验分支：领域 DSL',
+            `将以下试验规格转换为严格的领域 DSL，只输出 DSL 正文。采用已明确标记的模拟假设，不发起新一轮需求澄清；不编造未提供的业务事实。保持实际 FR/AC 编号，覆盖全部 FR；确实不可判定的行为使用 OPEN 并停止。\n${DSL_CONTRACT}\n\n# 试验规格\n${specification.content}`,
+            signal, onProgress, `material-trial:${inputHash}`)
+          const dsl = this.extractDslContent(dslDocument.content)
+          const parsed = this.deterministicCoding.parseDomainDsl(dsl)
+          this.validateDslTraceability(parsed, specification.content)
+          const audit = await this.generateDocument(run, 'dsl', 'material-trial-audit', '试验分支：DSL 行为核对',
+            this.specificationValidationPrompt(`这是隔离试验，不是正式发布。将已标记的模拟假设作为本次试验前提，核对 DSL 对规格业务行为的覆盖、角色、状态、规则、异常和事件。不得仅因仍缺正式材料而阻断试验；不得忽略语义遗漏。\n${specification.content}`, [{ ...dslDocument, content: dsl }]),
+            signal, onProgress, `material-trial:${inputHash}`)
+          const evaluation = this.parseSpecificationEvaluation(audit.content)
+          if (!this.specificationPassed(evaluation)) throw new Error(`试验 DSL 行为核对未通过：${evaluation.blockers.join('；') || evaluation.score + ' 分'}。请更新规格草稿后继续。`)
+          trial.dsl = { documentId: dslDocument.id, sha256: contentHash(dslDocument.content) }
+          await this.persist(run)
+        }
+        const dslDocument = run.documents.find(document => document.id === trial.dsl?.documentId)
+        if (!dslDocument || contentHash(dslDocument.content) !== trial.dsl?.sha256) throw new Error('试验 DSL 缺失或变化，请先执行 /dsl。')
+        await readDocument(dslDocument)
+        const dsl = this.extractDslContent(dslDocument.content)
+        const parsed = this.deterministicCoding.parseDomainDsl(dsl)
+        this.validateDslTraceability(parsed, specification.content)
+        const root = await this.workspaceArtifact(run, path.join(run.workspacePackagePath!, 'trial', inputHash, contentHash(dsl)))
+        await this.writeWorkspaceArtifact(run, path.join(root, 'TRIAL-NOT-FOR-RELEASE.md'), `# 模拟假设试验分支\n\n未通过正式业务验收，不得当作生产发布产物。\n\n## 假设与材料\n${preview.content}\n\n## 试验规格\n${specification.content}`)
+        await this.writeWorkspaceArtifact(run, path.join(root, 'domain-language.dsl'), dsl)
+        if (stage === 'coding') {
+          trial.stage = 'coding'
+          delete trial.verification
+          delete trial.outputPath
+          await this.persist(run)
+          this.reportProgress(onProgress, run, 'coding', `正在隔离目录生成并验证试验代码：${generator.id}`)
+          const output = await this.workspaceArtifact(run, path.join(root, generator.id, 'code'))
+          this.throwIfAborted(signal)
+          const result = await this.deterministicCoding.generatePackage(output, parsed, generator, {}, false)
+          const verification = generator.target === 'java' ? await verifyJavaSources(output, result.files, signal) : result.verification
+          this.throwIfAborted(signal)
+          trial.outputPath = output
+          trial.verification = `${result.verification}；${verification}。未实现的目标适配：${result.manifest.requiresTargetAdapter.join('、') || '无'}。正式业务验收未执行。`
+          await this.writeWorkspaceArtifact(run, path.join(root, generator.id, 'verification.json'), JSON.stringify({ status: 'trial-verified', production: false, generator: generator.id, files: result.files, verification: trial.verification }, null, 2))
+        } else if (trial.stage !== 'coding') trial.stage = 'dsl'
+      }
+      this.throwIfAborted(signal)
+      trial.status = 'ready'
+      await this.persist(run)
+      await this.storage.conversations.addMessage(conversation.id, { id: randomUUID(), role: 'assistant', agentName: '试验分支',
+        content: trial.stage === 'coding' ? `试验代码已生成并校验：\`${trial.outputPath}\`\n\n${trial.verification}` : `已进入${trial.stage === 'dsl' ? 'DSL' : '规格'}阶段（模拟假设试验）。${trial.stage === 'dsl' ? '可执行 /coding 生成试验代码。' : '可执行 /dsl，或点击继续生成 DSL 与试验代码。'}原需求保留，真实材料仍仅影响正式发布。`, timestamp: Date.now() })
+      this.reportProgress(onProgress, run, 'complete', trial.stage === 'coding' ? '试验代码生成与校验完成，正式验收仍待材料' : '试验阶段已推进，可继续下一步')
+      return run
+    } catch (error) {
+      if (!signal?.aborted && !run.materialTrial?.dsl) {
+        for (const document of run.documents.filter(document => document.dimension === 'material-trial-dsl' || document.dimension === 'material-trial-audit')) delete document.checkpoint
+      }
+      if (run.materialTrial) {
+        // Leave a failed handoff retryable instead of pinning its placeholder.
+        if (run.materialTrial.specification.documentId === originalSpec.id) delete run.materialTrial
+        else { run.materialTrial.status = signal?.aborted ? 'cancelled' : 'failed'; run.materialTrial.error = error instanceof Error ? error.message : String(error) }
+      }
+      await this.persist(run)
+      this.reportProgress(onProgress, run, 'failed', signal?.aborted ? '试验已停止，已完成产物保留' : '试验未完成，可从原阶段重试')
+      throw error
+    }
+  }
+
   async buildDsl(input: SubmitDslInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
     return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
+      const trial = await this.findMaterialTrialRun(input.conversationId, input.runId)
+      if (trial) return this.withRun(trial, () => this.continueMaterialTrial(trial, conversation, 'dsl', progress, signal, input.generator))
       const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation', input.runId)
       if (!run) throw new Error('请先完成 /spec 并通过最终规格审查。')
       return this.withRun(run, async () => {
@@ -625,6 +849,8 @@ ${sourcePack}`,
   async buildCoding(input: SubmitCodingInput, onProgress?: (progress: RequirementProgress) => void): Promise<RequirementRun> {
     return this.runSubmission(input.conversationId, onProgress, async (signal, progress) => {
       const conversation = await this.getConversation(input.conversationId)
+      const trial = await this.findMaterialTrialRun(input.conversationId, input.runId)
+      if (trial) return this.withRun(trial, () => this.continueMaterialTrial(trial, conversation, 'coding', progress, signal, input.generator))
       const run = await this.findWorkspaceRun(conversation, 'ready-for-implementation', input.runId)
       if (!run) throw new Error('请先完成 /spec 和 /dsl。')
       return this.withRun(run, async () => {
@@ -1584,6 +1810,7 @@ ${sourcePack}`,
   private async resumeRequirementReview(run: RequirementRun, conversation: Conversation, onProgress?: (progress: RequirementProgress) => void, signal?: AbortSignal): Promise<RequirementRun> {
     delete run.materialPreviewDocumentId
     delete run.materialDraftDocumentIds
+    delete run.materialTrial
     this.invalidateAfter(run, 'requirement')
     delete run.releases!.requirement
     run.status = 'analyzing'

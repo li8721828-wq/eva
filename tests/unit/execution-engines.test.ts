@@ -2,6 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { randomUUID } from 'node:crypto'
+import { ImplementationWorktree } from '../../src/main/services/implementation-worktree'
 import {
   AgentRunner,
   type RunParams,
@@ -104,6 +108,7 @@ async function fixture(
     outputTokenBudget?: number
     maxOutputTokens?: number
     noWorkspace?: boolean
+    workspacePath?: string
     fullFilesystemAccess?: boolean
     localFullAccess?: boolean
     withImageExtension?: boolean
@@ -228,7 +233,7 @@ async function fixture(
     ...(options.localFullAccess ? createLocalExecutionPolicy({ toolApproval: { policy: 'paranoid', timeoutMs: 1000 } }, { conversationId: 'c', conversation: { permissionLevel: 'full-access' }, window: null }) : {}),
     toolRegistry: registry,
     contextManager: context,
-    workspacePath: options.noWorkspace ? '' : dir,
+    workspacePath: options.noWorkspace ? '' : options.workspacePath || dir,
     fullFilesystemAccess: options.fullFilesystemAccess,
     ...(options.vision || options.contextWindow || options.outputTokenBudget || options.maxOutputTokens
       ? {
@@ -662,6 +667,45 @@ describe.each(['pi', 'deepseek-harness'] as const)(
         expect(f.oldCore).not.toHaveBeenCalled()
       } finally { await f.close() }
     }, 20_000)
+    it('implements and tests a real isolated project using only the selected SDK tools', async () => {
+      const parent = await fs.realpath(os.tmpdir())
+      const root = await fs.mkdtemp(path.join(parent, 'eva-implementation-sdk-'))
+      const source = path.join(root, 'project')
+      await fs.mkdir(source)
+      const git = (...args: string[]) => promisify(execFile)('git', ['-C', source, ...args], { windowsHide: true, timeout: 15_000 })
+      await git('init', '-b', 'main')
+      await fs.appendFile(path.join(source, '.git', 'config'), '\n[user]\nname = Fixture\nemail = fixture@example.invalid\n[core]\nautocrlf = false\n[commit]\ngpgsign = false\n')
+      await fs.writeFile(path.join(source, 'a.txt'), 'before\n')
+      await fs.writeFile(path.join(source, 'test.cjs'), "const fs = require('node:fs'); require('node:assert').match(fs.readFileSync('a.txt','utf8'),/after/); fs.writeFileSync('test-result.txt','business-check-passed'); console.log('business-check-passed')")
+      await git('add', '.')
+      await git('commit', '-m', 'base')
+      const worktrees = new ImplementationWorktree(path.join(root, 'tasks'))
+      const id = randomUUID()
+      const tree = await worktrees.create(source, id)
+      const shell = process.platform === 'win32' ? engine === 'pi' ? 'powershell' : 'pwsh' : 'bash'
+      const testCommand = process.platform === 'win32'
+        ? `& '${process.execPath.replace(/'/g, "''")}' test.cjs`
+        : `'${process.execPath.replace(/'/g, "'\\''")}' test.cjs`
+      const edit = engine === 'pi' ? { path: 'a.txt', oldText: 'before', newText: 'after' } : { file_path: 'a.txt', old_string: 'before', new_string: 'after' }
+      const f = await fixture(engine, [call('read', 'read', argsFor(engine, 'a.txt')), call('edit', 'edit', edit),
+        call(shell, 'test', { command: testCommand, ...(engine === 'deepseek-harness' ? { description: 'Run the project business check' } : {}) }), answer], { workspacePath: tree.workspace })
+      try {
+        const events = await collect(f.runner)
+        expect(events.filter(event => event.type === 'error' || (event.type === 'tool_result' && event.toolResult?.isError))).toEqual([])
+        expect(events.some(event => event.type === 'tool_result' && event.toolResult?.toolCallId === 'test' && event.toolResult.protocol?.status === 'applied')).toBe(true)
+        expect(events.some(event => event.type === 'tool_result' && event.toolResult?.result.includes('business-check-passed'))).toBe(true)
+        expect(await fs.readFile(path.join(tree.directory, 'test-result.txt'), 'utf8')).toBe('business-check-passed')
+        expect(await fs.readFile(path.join(source, 'a.txt'), 'utf8')).toBe('before\n')
+        expect(await fs.readFile(path.join(tree.directory, 'a.txt'), 'utf8')).toBe('after\n')
+        expect((await worktrees.review(tree.directory, id, tree.baselineCommit, '.eva/implementation')).files).toEqual(['a.txt', 'test-result.txt'])
+        expect(f.oldCore).not.toHaveBeenCalled()
+      } finally {
+        await f.close()
+        if (path.dirname(await fs.realpath(root)) !== parent || !path.basename(root).startsWith('eva-implementation-sdk-')) throw new Error('Unexpected SDK fixture root')
+        await fs.rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+      }
+    }, 120_000)
+
     it('executes native read/edit/read against a real file', async () => {
       const edit =
         engine === 'pi'

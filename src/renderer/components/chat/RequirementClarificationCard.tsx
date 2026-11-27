@@ -10,9 +10,10 @@ interface RequirementClarificationCardProps {
   onAbort: () => Promise<void>
   mode?: 'requirement' | 'specification'
   onSimulate?: () => Promise<void>
+  onContinueTrial?: () => Promise<void>
 }
 
-export function RequirementClarificationCard({ run, onSubmit, onAbort, onSimulate, mode = 'requirement' }: RequirementClarificationCardProps) {
+export function RequirementClarificationCard({ run, onSubmit, onAbort, onSimulate, onContinueTrial, mode = 'requirement' }: RequirementClarificationCardProps) {
   const [selection, setSelection] = useState<Record<string, number>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -26,15 +27,17 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, onSimulat
   const preview = run.documents.find(document => document.id === run.materialPreviewDocumentId)
   const drafts = (run.materialDraftDocumentIds || []).flatMap(id => run.documents.filter(document => document.id === id))
   const hasSpecificationDraft = drafts.some(document => document.dimension === 'material-draft-specification')
+  const trial = waitingForMaterials && hasSpecificationDraft ? run.materialTrial : undefined
+  const phase = trial?.stage === 'coding' ? '代码阶段' : trial?.stage === 'dsl' ? 'DSL 阶段' : '规格阶段'
   const title = review ? '确认关键业务规则与例外'
     : mode === 'specification' ? `需要你选择 ${activeQuestions.length} 个阻塞项的处置路径`
-      : waitingForMaterials ? (hasSpecificationDraft ? '已推进至实施规格草稿' : preview ? '模拟材料已保存，可继续下一阶段' : '可先模拟材料并继续起草')
+      : waitingForMaterials ? (trial?.status === 'failed' || trial?.status === 'cancelled' ? `${phase}已中断，可继续` : trial?.stage === 'coding' && trial.status === 'ready' ? '试验代码已生成并校验' : trial?.stage === 'dsl' ? 'DSL 已生成，可继续试验代码' : hasSpecificationDraft ? '规格草稿已就绪，可继续 DSL 与试验代码' : preview ? '模拟材料已保存，可继续下一阶段' : '可先模拟材料并继续起草')
         : needsReview ? '需求评测需要复核' : `需要你确认 ${activeQuestions.length} 个澄清点`
   const instructions = review ? '请核对用于代码生成的条件值、比较符、角色和状态，以及仍需人工验证的规则。确认后发布本版规格。'
     : mode === 'specification' ? '你的选择会明确下一步应回到需求、建模、代码证据或规格修订。'
       : needsReview ? <>在本会话发送 <code>/requirement</code> 重新复核。{run.error}</>
         : waitingForMaterials || materials.length ? (hasSpecificationDraft
-          ? <>原需求与模拟材料已沿用，建模和规格草稿见下方。真实材料可稍后在本会话通过 <code>/requirement</code> 补充，用于正式发布与验收。</>
+          ? <>原需求与模拟材料已沿用。采用当前模拟假设后，可从这里继续 DSL 和试验代码，也可依次使用 <code>/spec</code>、<code>/dsl</code>、<code>/coding</code>。真实材料仅影响正式发布与验收。</>
           : <>无需重新输入需求。可先基于模拟材料继续生成建模与规格草稿，真实材料稍后补充。</>)
           : '以下选择会保存为当前业务决定。'
   const isComplete = activeQuestions.length > 0 && activeQuestions.every((question) => selection[question.id] !== undefined)
@@ -68,7 +71,7 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, onSimulat
           <Circle className="h-4 w-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-violet-600">{review ? '规格确认' : mode === 'specification' ? '规格构建，阻塞处置' : `需求工程，第 ${run.round} 轮`}</p>
+          <p className="text-xs font-medium text-violet-600" data-requirement-phase>{review ? '规格确认' : mode === 'specification' ? '规格构建，阻塞处置' : waitingForMaterials && hasSpecificationDraft ? `${phase} · 模拟假设试验` : `需求工程，第 ${run.round} 轮`}</p>
           <h2 id={`clarification-${run.id}`} className="mt-1 text-sm font-semibold text-zinc-700">{title}</h2>
           <p className="mt-1 text-sm leading-6 text-zinc-700">{instructions}</p>
         </div>
@@ -81,10 +84,17 @@ export function RequirementClarificationCard({ run, onSubmit, onAbort, onSimulat
       )}
       {preview && <details className="mt-3" data-requirement-preview><summary className="cursor-pointer text-sm text-violet-600">查看模拟材料与规格草稿</summary><MarkdownMessageContent readingStandard content={preview.content} className="mt-2" /></details>}
       {drafts.map(document => <details className="mt-3" key={document.id} data-requirement-draft><summary className="cursor-pointer text-sm text-violet-600">{document.title}</summary><MarkdownMessageContent readingStandard content={document.content} className="mt-2" /></details>)}
+      {trial?.error && <p role="alert" className="mt-3 text-sm text-red-600">{trial.error}</p>}
+      {trial?.outputPath && <p className="mt-3 break-all text-sm text-zinc-700">试验代码目录：<code>{trial.outputPath}</code></p>}
+      {trial?.verification && <p className="mt-2 text-sm text-zinc-600">{trial.verification}</p>}
+      {waitingForMaterials && hasSpecificationDraft && onContinueTrial && <button type="button" data-continue-material-trial disabled={isSubmitting} className="mt-3 rounded-md bg-violet-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={() => {
+        setIsSubmitting(true); setError(null)
+        void onContinueTrial().catch(error => setError(error instanceof Error ? error.message : '继续试验失败，请重试。')).finally(() => setIsSubmitting(false))
+      }}>{isSubmitting ? '正在推进试验阶段…' : trial?.stage === 'coding' && trial.status === 'ready' ? '重新校验试验代码' : '采用当前模拟假设，继续生成 DSL 与试验代码'}</button>}
       {waitingForMaterials && onSimulate && <button type="button" disabled={isSubmitting} className="mt-3 rounded-md bg-violet-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={() => {
         setIsSubmitting(true); setError(null)
         void onSimulate().catch(error => setError(error instanceof Error ? error.message : '模拟失败，请重试。')).finally(() => setIsSubmitting(false))
-      }}>{isSubmitting ? '正在继续生成草稿…' : hasSpecificationDraft ? '复用或更新建模与规格草稿' : preview ? '基于模拟材料，继续生成建模与规格草稿' : '模拟缺失材料，继续生成建模与规格草稿'}</button>}
+      }}>{isSubmitting ? '正在继续生成草稿…' : hasSpecificationDraft ? '更新模拟假设与规格草稿' : preview ? '基于模拟材料，继续生成建模与规格草稿' : '模拟缺失材料，继续生成建模与规格草稿'}</button>}
 
       {review && (review.rules.length ? (
         <ul className="mt-4 max-h-56 space-y-2 overflow-auto text-sm leading-6 text-zinc-700" aria-label="关键业务规则">

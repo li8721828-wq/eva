@@ -19,7 +19,7 @@ const server = await createServer({
     host: '127.0.0.1', port: 0,
     // Build/test artifacts are not fixture source. Reloading on copied HTML or
     // runner edits can destroy clipboard/font assertions midway through a run.
-    watch: { ignored: ['**/tmp/**', '**/out/**', '**/dist/**', '**/build/**', '**/docs/**', '**/*runner.cjs'] },
+    watch: { ignored: ['**/tmp/**', '**/out/**', '**/dist/**', '**/build/**', '**/docs/**', '**/src/main/**', '**/src/preload/**', '**/tests/unit/**', '**/*runner.cjs'] },
   },
 })
 try {

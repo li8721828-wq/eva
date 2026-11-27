@@ -15,6 +15,7 @@ const testWindow = window as any
 const unsubscribe = () => () => {}
 const project = { id: 'project', name: '订单服务', path: 'D:/demo/orders', createdAt: 1, updatedAt: 1 }
 const conversation = { id: 'current', title: '订单退款与幂等处理', agentId: 'demo', mode: 'normal' as const, workspaceId: project.id, workspacePath: project.path, createdAt: 1, updatedAt: 1, messageCount: 2 }
+let implementationChild: any
 const writes: unknown[] = []
 let specDraft: RequirementRun | undefined
 let chatListener: ((event: unknown, payload: ChatStreamEvent) => void) | undefined
@@ -36,7 +37,12 @@ const api: Record<string, unknown> = {
       return true
     },
   }, goal: { onStream: unsubscribe }, symposium: { onStream: unsubscribe },
-  conversation: { onChanged: unsubscribe }, terminal: { onPanelVisibility: unsubscribe },
+  conversation: {
+    onChanged: unsubscribe,
+    list: async () => [conversation, ...(implementationChild ? [implementationChild] : [])],
+    load: async (id: string) => ({ conversation: id === implementationChild?.id ? implementationChild : conversation, messages: [] }),
+    update: async () => undefined,
+  }, terminal: { onPanelVisibility: unsubscribe },
   task: { onStream: unsubscribe, getSnapshot: async (id: string) => {
     if (id === 'slow') return new Promise(resolve => { testWindow.completeSlowWorkspace = () => resolve({ status: 'running', goal: '不应出现在新会话的旧任务' }) })
     if (testWindow.failWorkspaceLoad) throw new Error('演示读取失败')
@@ -44,10 +50,30 @@ const api: Record<string, unknown> = {
   }, listArtifacts: async () => [] },
   requirements: {
     onProgress: unsubscribe,
+    implement: async (input: any) => {
+      testWindow.fixtureImplementationInput = input
+      implementationChild = { ...conversation, id: 'implementation-child', title: '业务实现', workspacePath: 'D:/demo/implementation/worktree', executionStatus: 'completed',
+        requirementImplementation: { taskId: 'implementation-task', runId: input.runId, sourceConversationId: input.conversationId, mode: input.mode } }
+      const result = { taskId: 'implementation-task', inputHash: 'implementation-hash', conversationId: implementationChild.id, mode: input.mode, worktreePath: implementationChild.workspacePath,
+        branch: 'codex/implementation-fixture', baselineCommit: 'a'.repeat(40), createdAt: '', messageId: 'kickoff', message: 'implement', agentId: 'demo' }
+      if (specDraft) specDraft = { ...specDraft, implementation: result }
+      return result
+    },
+    reviewImplementation: async (input: any) => {
+      testWindow.fixtureImplementationReview = input
+      return { conversationId: 'implementation-child', executionStatus: 'completed', files: ['src/Approval.java', 'src/ApprovalTest.java'], patch: 'diff --git a/src/Approval.java b/src/Approval.java\n+actual change', patchPath: 'D:/demo/implementation/review.patch', patchSha256: 'fixture', truncated: false, acceptance: 'pending' }
+    },
     listRuns: async (id?: string) => specDraft && (!id || id === specDraft.conversationId || id === specDraft.interactionConversationId) ? [specDraft] : [],
     resolveSpec: async (input: SubmitSpecificationResolutionInput) => { testWindow.fixtureSpecAnswer = input; specDraft = undefined },
     submit: async (input: any) => {
       testWindow.fixtureSupplement = input
+      if (input.action === 'continue-material-trial' && specDraft) {
+        specDraft = { ...specDraft, materialTrial: {
+          inputHash: 'fixture-trial', stage: 'coding', status: 'ready', specification: { documentId: 'draft-spec', sha256: 'fixture-spec' },
+          outputPath: 'D:/demo/orders/.eva/RMSD/demo/trial/code', generator: 'java-reference', verification: 'JDK 17 编译通过。正式业务验收未执行。',
+        } }
+        return specDraft
+      }
       if (input.action === 'simulate-materials' && specDraft) {
         specDraft = { ...specDraft, materialPreviewDocumentId: 'preview', materialDraftDocumentIds: ['draft-model', 'draft-spec'], documents: [
           { id: 'preview', stage: 'modeling', dimension: 'material-preview', title: '模拟材料与规格草稿', content: '## 模拟假设\n\n示例字段仅供起草，正式材料仍待验收。', path: '', createdAt: '', round: 1 },
@@ -77,8 +103,11 @@ useAgentStore.setState({ agents: [], loadAgents: async () => {} })
 useChatStore.setState({ conversations: [conversation], currentConversationId: 'current', messages: [
   { id: 'question', role: 'user', content: '帮我梳理部分退款的实现步骤，并保留同事可以接手的进度。', timestamp: 1 },
   { id: 'answer', role: 'assistant', content: '可以先在项目主线中明确退款边界和验收标准，再逐步记录实现与验证结果。\n\n接手时可以查看当前里程碑、阻塞事项和下一步行动。', timestamp: 2 },
-], loadConversations: async () => {}, refreshConversation: async () => {} })
+], loadConversations: async () => {
+  if (implementationChild) useChatStore.setState({ conversations: [conversation, implementationChild] })
+}, refreshConversation: async () => {} })
 testWindow.workspaceState = () => useAppStore.getState()
+testWindow.chatState = () => useChatStore.getState()
 testWindow.useOtherProject = () => useWorkspaceStore.setState({ workspaces: [project, { ...project, id: 'other', name: '其他项目', path: 'D:/demo/other' }], activeWorkspaceId: 'other' })
 testWindow.switchFixtureConversation = (id: string) => useChatStore.setState({ currentConversationId: id, conversations: [conversation, { ...conversation, id }], messages: [] })
 testWindow.setTestTheme = (theme: 'light' | 'dark' | 'starlight') => useAppStore.setState({ theme })

@@ -2,7 +2,8 @@ import type { ExecutionEngineConfig } from '../../shared/types/execution-engine'
 import { toolTargetPath } from '../../shared/tool-semantics'
 import fs from 'fs'
 import path from 'path'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, type WebContents } from 'electron'
+import { createDesktopChatStarter, type DesktopChatPayload, type DesktopChatStarter } from '../services/desktop-chat-starter'
 import { trustedIpcMain as ipcMain } from './trusted-ipc'
 import { IPC } from '../../shared/ipc-channels'
 import type { Conversation, ChatDocumentAttachment, ChatImageAttachment, ChatMessage, ChatMessageReference, ChatUsage, ToolCall, ChatStreamEvent, ExecutionTimelineEntry, ProgressUpdate, ProgressUpdateKind } from '../../shared/types/conversation'
@@ -649,7 +650,7 @@ export function conversationWorkspacePath(conversation: Conversation, fallback =
   return conversation.workspaceId ? (conversation.workspacePath || fallback) : ''
 }
 
-export function registerConversationHandlers(services?: ChatServices): void {
+export function registerConversationHandlers(services?: ChatServices): DesktopChatStarter {
   registerBackgroundGoalController(controlBackgroundGoal)
   const conversationLifecycle = new ConversationLifecycleService(services?.storage || getStorage(), (id) => {
     clearSessionApprovals(id)
@@ -780,9 +781,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
 
   // ─── Chat: send (fire-and-forget; events streamed via CHAT_STREAM) ──────────
 
-  ipcMain.on(
-    IPC.CHAT_SEND,
-    async (event, payload: { conversationId: string; message: string; agentId?: string; images?: ChatImageAttachment[]; attachments?: ChatDocumentAttachment[]; quotedMessage?: ChatMessageReference; messageId?: string; skillName?: string }) => {
+  const handleDesktopChat = async (event: { sender: WebContents }, payload: DesktopChatPayload): Promise<void> => {
       const { conversationId, message } = payload
       const win = BrowserWindow.fromWebContents(event.sender)
       if (!win) return
@@ -1742,7 +1741,7 @@ export function registerConversationHandlers(services?: ChatServices): void {
         userStoppedChatRunTokens.delete(runToken)
       }
     }
-  )
+  ipcMain.on(IPC.CHAT_SEND, handleDesktopChat)
 
   // ─── Chat: abort ────────────────────────────────────────────────────────────
 
@@ -1859,4 +1858,12 @@ export function registerConversationHandlers(services?: ChatServices): void {
   ipcMain.on(IPC.TASK_GOAL_ABORT, (_event, conversationId: string) => {
     activeBackgroundGoalPlanners.get(conversationId)?.abort()
   })
+  return createDesktopChatStarter(
+    id => (services?.storage || getStorage()).conversations.getMessages(id),
+    id => activeChatRunTokens.has(id),
+    (sender, payload) => handleDesktopChat({ sender }, payload),
+    (sender, payload, error) => {
+      if (!sender.isDestroyed()) sender.send(IPC.CHAT_STREAM, { conversationId: payload.conversationId, type: 'error', error: error instanceof Error ? error.message : String(error) })
+    },
+  )
 }

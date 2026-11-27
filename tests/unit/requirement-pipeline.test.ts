@@ -74,15 +74,15 @@ async function fixture() {
       if (dimension === 'ears-spec') content = 'EARS\n' + padding
       if (dimension === 'business-specification' || dimension === 'code-aligned-specification') content = 'FR-001\n' + padding
       if (dimension === 'traceability-matrix') content = '| FR-001 | 验收 |\n' + padding
-      if (dimension.startsWith('validation-round') || dimension === 'implementation-release-validation' || dimension === 'dsl-release-validation') {
+      if (dimension.startsWith('validation-round') || dimension === 'implementation-release-validation' || dimension === 'dsl-release-validation' || dimension === 'material-trial-audit') {
         const blocked = dimension === 'implementation-release-validation' && control.finalSpecBlocked
-          || dimension === 'dsl-release-validation' && control.dslBlocked
+          || (dimension === 'dsl-release-validation' || dimension === 'material-trial-audit') && control.dslBlocked
         const blocker = blocked ? '审批权限仍未决定' : '无'
         content = `SCORE: 96\nBLOCKERS:\n- ${blocker}\nASSESSMENT:\n${padding}\nREPAIR:\n- 无`
       }
-      if (dimension === 'implementation-ready') content = `## ${control.specId} 订单审批\n财务角色对达到 100000 元且已双签的订单放行，发布 OrderApproved。\n${approvalCriticalRules(control.specId)}\n## AC-001 审批验收\n${padding}`
+      if (dimension === 'implementation-ready' || dimension === 'material-trial-specification') content = `## ${control.specId} 订单审批\n财务角色对达到 100000 元且已双签的订单放行，发布 OrderApproved。\n${approvalCriticalRules(control.specId)}\n## AC-001 审批验收\n${padding}`
       if (dimension === 'acceptance-contract') content = JSON.stringify(control.contract ?? approvalContract(control.specId, control.above))
-      if (dimension === 'dsl-final') content = control.dsl
+      if (dimension === 'dsl-final' || dimension === 'material-trial-dsl') content = control.dsl
       return { content, finishReason: 'stop' }
     },
   }
@@ -94,10 +94,18 @@ async function fixture() {
       addMessage: vi.fn(async () => undefined),
     },
   }
+  const implementation = {
+    prepare: vi.fn(async (input: any) => ({
+      taskId: 'implementation-task', inputHash: input.businessHash, conversationId: 'implementation-chat', mode: input.mode,
+      worktreePath: path.join(root, 'implementation'), branch: 'codex/implementation-fixture', baselineCommit: 'a'.repeat(40),
+      createdAt: new Date().toISOString(), messageId: 'kickoff', message: 'implement', agentId: 'fixture',
+    })),
+    review: vi.fn(async () => ({ acceptance: 'pending', files: [], patch: '', patchPath: '', patchSha256: 'fixture', truncated: false })),
+  }
   const service = new RequirementEngineeringService({
     get: () => provider,
     getModelCapabilities: () => undefined,
-  } as never, undefined, { storage: storage as never, runs })
+  } as never, undefined, { storage: storage as never, runs, implementationService: implementation as never })
   const progress = (event: RequirementProgress) => {
     if (event.phase === 'started' && event.document) dimension = event.document.dimension
   }
@@ -113,8 +121,45 @@ async function fixture() {
     return draft.specReview ? confirm(draft) : draft
   }
   const spec = async () => { await model(); return buildSpec() }
-  return { root, workspacePath, conversations, conversation, input, runs, service, progress, prompts, requests, control, model, spec, buildSpec, confirm }
+  return { root, workspacePath, conversations, conversation, input, runs, service, progress, prompts, requests, control, model, spec, buildSpec, confirm, implementation }
 }
+
+it('hands confirmed requirements directly to project implementation without modeling, DSL or more model calls', async () => {
+  const f = await fixture()
+  const run = await f.service.submit({ ...f.input, content: '订单审批达到十万元需双签。' }, f.progress)
+  expect(run.releases?.modeling).toBeUndefined()
+  const calls = f.requests.length
+  const task = await f.service.implement({ ...f.input, runId: run.id, mode: 'confirmed' })
+  expect(task.conversationId).toBe('implementation-chat')
+  expect(f.requests).toHaveLength(calls)
+  expect(f.implementation.prepare.mock.calls[0][0].documents.map((document: any) => document.content).join('\n')).toContain('十万元需双签')
+  const [saved] = await f.service.list(f.input.conversationId)
+  expect(saved.implementation?.conversationId).toBe(task.conversationId)
+  expect(saved.releases?.dsl).toBeUndefined()
+})
+
+it('requires explicit adoption of assumptions and intact inputs before project implementation', async () => {
+  const f = await materialTrialFixture()
+  await expect(f.service.implement({ ...f.input, mode: 'confirmed' })).rejects.toThrow('明确采用')
+  await expect(f.service.implement({ ...f.input, conversationId: 'unrelated', mode: 'assumptions' })).rejects.toThrow()
+  const task = await f.service.implement({ ...f.input, mode: 'assumptions' })
+  expect(task.mode).toBe('assumptions')
+  const [run] = await f.service.list(f.input.conversationId)
+  expect(run.pendingMaterials).toHaveLength(1)
+  expect(run.releases).toEqual({})
+  const source = run.documents.find(document => document.stage === 'source')!
+  await fs.appendFile(source.workspacePath!, '\nchanged')
+  await expect(f.service.implement({ ...f.input, mode: 'assumptions' })).rejects.toThrow('已修改')
+  expect(f.implementation.prepare).toHaveBeenCalledTimes(1)
+})
+
+it('does not treat a newly discovered business blocker as confirmed implementation input', async () => {
+  const f = await fixture()
+  const run = await f.service.submit({ ...f.input, content: '订单审批需求' }, f.progress)
+  await f.runs.writeManifest({ ...run, status: 'awaiting-spec-resolution', specResolutionQuestions: [{ id: 'business', category: 'requirements', blocker: '审批角色未定', question: '审批角色是什么？', options: ['财务', '负责人'], recommendedIndex: 0 }] })
+  await expect(f.service.implement({ ...f.input, runId: run.id, mode: 'confirmed' })).rejects.toThrow('影响业务结果')
+  expect(f.implementation.prepare).not.toHaveBeenCalled()
+})
 
 it('archives a long requirement and reads through its tail with reusable source checkpoints', async () => {
   const f = await fixture()
@@ -133,6 +178,107 @@ it('archives a long requirement and reads through its tail with reusable source 
   await (f.service as unknown as { prepareSourceContext: (run: RequirementRun) => Promise<string> }).prepareSourceContext(run)
   expect(f.requests).toHaveLength(before)
 })
+
+async function materialTrialFixture() {
+  const f = await fixture()
+  f.control.assess = () => 'SCORE: 88\nREADINESS: BLOCKED\nUNRESOLVED_ITEMS_JSON:\n[{"id":"U-001","key":"sample","kind":"material","fact":"缺少样本","impact":"正式验收待补","requiredDecision":"提供客户清单","blocking":true}]\nBLOCKERS:\n- 样本待补\nASSESSMENT:\n待补材料。'
+  const run = await f.service.submit({ ...f.input, content: '订单审批需求' }, f.progress)
+  const input = { ...f.input, runId: run.id }
+  await f.service.submit({ ...input, action: 'simulate-materials' }, f.progress)
+  return { ...f, input }
+}
+
+it.runIf(hasJdk)('advances an existing simulated draft through /spec, /dsl and /coding without formal releases', async () => {
+  const f = await materialTrialFixture()
+  const spec = await f.service.buildSpecification(f.input, f.progress)
+  expect(spec.materialTrial).toMatchObject({ stage: 'specification', status: 'ready' })
+  const dsl = await f.service.buildDsl(f.input, f.progress)
+  expect(dsl.materialTrial).toMatchObject({ stage: 'dsl', status: 'ready' })
+  const count = f.requests.length
+  const code = await f.service.buildCoding(f.input, f.progress)
+  expect(f.requests).toHaveLength(count)
+  expect(code.materialTrial).toMatchObject({ stage: 'coding', status: 'ready', generator: 'java-reference' })
+  expect(code.materialTrial!.outputPath).toContain(`${path.sep}trial${path.sep}`)
+  expect(code.materialTrial!.verification).toContain('JDK 17 编译通过')
+  expect(code.status).toBe('awaiting-materials')
+  expect(code.pendingMaterials).toHaveLength(1)
+  expect(code.releases).toEqual({})
+  expect(code.codingOutputPath).toBeUndefined()
+  expect(code.documents.filter(document => document.stage === 'source')).toHaveLength(1)
+  const result = await fs.readFile(path.join(code.materialTrial!.outputPath!, 'generation-result.yaml'), 'utf8')
+  await f.service.buildCoding(f.input, f.progress)
+  expect(f.requests).toHaveLength(count)
+  expect(await fs.readFile(path.join(code.materialTrial!.outputPath!, 'generation-result.yaml'), 'utf8')).toBe(result)
+}, PIPELINE_TIMEOUT_MS)
+
+it('keeps /coding model-free and rejects invalid or semantically blocked trial DSL until repaired', async () => {
+  const f = await materialTrialFixture()
+  const count = f.requests.length
+  await expect(f.service.buildCoding(f.input, f.progress)).rejects.toThrow('请先执行 /dsl')
+  expect(f.requests).toHaveLength(count)
+  f.control.dsl = sampleDsl.replace('trace: FR-001', 'trace: FR-999')
+  await expect(f.service.buildDsl(f.input, f.progress)).rejects.toThrow('未知编号')
+  f.control.dsl = sampleDsl
+  f.control.dslBlocked = true
+  await expect(f.service.buildDsl(f.input, f.progress)).rejects.toThrow('行为核对未通过')
+  f.control.dslBlocked = false
+  const dsl = await f.service.buildDsl(f.input, f.progress)
+  expect(dsl.materialTrial).toMatchObject({ stage: 'dsl', status: 'ready' })
+  const code = await f.service.buildCoding({ ...f.input, generator: 'sql-ddl' }, f.progress)
+  expect(code.materialTrial).toMatchObject({ stage: 'coding', status: 'ready', generator: 'sql-ddl' })
+  expect(code.releases).toEqual({})
+}, PIPELINE_TIMEOUT_MS)
+
+it('continues a trial from the card, retaining completed handoffs after interruption', async () => {
+  const f = await materialTrialFixture()
+  const input = { ...f.input, action: 'continue-material-trial' as const }
+  f.control.failDimension = 'material-trial-dsl'
+  await expect(f.service.submit(input, f.progress)).rejects.toThrow('fixture model interrupted')
+  const [failed] = await f.service.list(f.input.conversationId)
+  expect(failed.materialTrial).toMatchObject({ stage: 'dsl', status: 'failed' })
+  const count = f.requests.filter(dimension => dimension === 'material-trial-specification').length
+  f.control.failDimension = ''
+  // Select the non-Java reference adapter first so this retry is portable.
+  await f.service.buildDsl({ ...f.input, generator: 'sql-ddl' }, f.progress)
+  const code = await f.service.submit(input, f.progress)
+  expect(code.id).toBe(f.input.runId)
+  expect(code.materialTrial).toMatchObject({ stage: 'coding', status: 'ready' })
+  expect(f.requests.filter(dimension => dimension === 'material-trial-specification')).toHaveLength(count)
+}, PIPELINE_TIMEOUT_MS)
+
+it('stops trial generation on cancellation and retains the same run for retry', async () => {
+  const f = await materialTrialFixture()
+  await expect(f.service.submit({ ...f.input, action: 'continue-material-trial' }, event => {
+    f.progress(event)
+    if (event.phase === 'started' && event.document?.dimension === 'material-trial-dsl') void f.service.abort(f.input.conversationId, f.input.runId)
+  })).rejects.toThrow('stopped')
+  const [run] = await f.service.list(f.input.conversationId)
+  expect(run.materialTrial).toMatchObject({ stage: 'dsl', status: 'cancelled' })
+  expect(run.materialTrial?.outputPath).toBeUndefined()
+  const next = await f.service.buildDsl(f.input, f.progress)
+  expect(next.id).toBe(run.id)
+  expect(next.materialTrial).toMatchObject({ stage: 'dsl', status: 'ready' })
+}, PIPELINE_TIMEOUT_MS)
+
+it('rejects changed trial input, changed generated files, production targets and cross-worktree continuation', async () => {
+  const f = await materialTrialFixture()
+  const trial = await f.service.buildDsl({ ...f.input, generator: 'sql-ddl' }, f.progress)
+  await expect(f.service.buildCoding({ ...f.input, generator: 'java-domain' }, f.progress)).rejects.toThrow('生产目标需要正式验收契约')
+  const code = await f.service.buildCoding(f.input, f.progress)
+  const manifest = JSON.parse(await fs.readFile(path.join(code.materialTrial!.outputPath!, 'generation-result.yaml'), 'utf8'))
+  await fs.appendFile(path.join(code.materialTrial!.outputPath!, manifest.files[0].path), '\nchanged')
+  await expect(f.service.buildCoding(f.input, f.progress)).rejects.toThrow()
+  const doc = trial.documents.find(document => document.stage === 'source')!
+  await fs.appendFile(doc.workspacePath!, '\nchanged')
+  const count = f.requests.length
+  await expect(f.service.buildDsl(f.input, f.progress)).rejects.toThrow('上游')
+  expect(f.requests).toHaveLength(count)
+  const other = path.join(f.root, 'other-trial-project')
+  await fs.mkdir(other)
+  f.conversation.workspacePath = other
+  await expect(f.service.buildSpecification(f.input, f.progress)).rejects.toThrow('另一个工作区')
+  expect(await fs.readdir(other)).toEqual([])
+}, PIPELINE_TIMEOUT_MS)
 
 it('keeps same-worktree continuation progress and Spec confirmation in the invoking conversation', async () => {
   const f = await fixture()

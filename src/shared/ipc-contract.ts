@@ -7,6 +7,7 @@ import type { LongTermMemory, LongTermMemoryScope, LongTermMemoryStatus, UpdateL
 import type { TaskRunSnapshot } from './types/task'
 import type { AppServerStatus } from './types/automation'
 import type { RequirementRun, SubmitClarificationAnswersInput, SubmitCodingInput, SubmitDslInput, SubmitHostVerificationInput, SubmitRequirementInput, SubmitRequirementModelingInput, SubmitSpecificationInput, SubmitSpecificationResolutionInput } from './types/requirement-engineering'
+import type { ImplementRequirementInput, ImplementationHandoff, ImplementationReview } from './types/requirement-implementation'
 
 /** Canonical argument/result contracts for high-risk renderer/main boundaries. */
 export interface IpcContract {
@@ -48,6 +49,8 @@ export interface IpcContract {
   [IPC.REQUIREMENT_SPECIFICATION_SUBMIT]: { args: [input: SubmitSpecificationInput]; result: RequirementRun }
   [IPC.REQUIREMENT_DSL_SUBMIT]: { args: [input: SubmitDslInput]; result: RequirementRun }
   [IPC.REQUIREMENT_CODING_SUBMIT]: { args: [input: SubmitCodingInput]; result: RequirementRun }
+  [IPC.REQUIREMENT_IMPLEMENT]: { args: [input: ImplementRequirementInput]; result: ImplementationHandoff }
+  [IPC.REQUIREMENT_IMPLEMENT_REVIEW]: { args: [input: Pick<ImplementRequirementInput, 'conversationId' | 'runId'>]; result: ImplementationReview }
   [IPC.REQUIREMENT_HOST_VERIFY]: { args: [input: SubmitHostVerificationInput]; result: RequirementRun }
   [IPC.REQUIREMENT_SPECIFICATION_RESOLUTION]: { args: [input: SubmitSpecificationResolutionInput]; result: RequirementRun }
   [IPC.REQUIREMENT_RUN_ABORT]: { args: [conversationId: string, runId?: string]; result: void }
